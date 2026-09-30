@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/inference/vertexauth"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -159,37 +160,348 @@ func TestRunAgent_VertexMissingGCPInputsFailsBeforePreScript(t *testing.T) {
 	assert.NoFileExists(t, marker)
 }
 
+const testGCPWIFProvider = "projects/123456789/locations/global/workloadIdentityPools/fullsend/providers/github"
+
+// wifStub replaces prepareGitHubWIF for one test and records its use.
+type wifStub struct {
+	calls   int
+	cleaned bool
+	cfg     vertexauth.Config
+	env     map[string]string
+}
+
+// stubPrepareGitHubWIF installs a prepareGitHubWIF that returns real
+// temporary credential files, or prepErr when it is non-nil.
+func stubPrepareGitHubWIF(t *testing.T, prepErr error) *wifStub {
+	t.Helper()
+	dir := t.TempDir()
+	creds := filepath.Join(dir, "sandbox-gcp-credentials.json")
+	require.NoError(t, os.WriteFile(creds, []byte(`{"type":"external_account","credential_source":{"file":"/sandbox/workspace/.gcp-oidc-token"}}`), 0o600))
+	token := filepath.Join(dir, "gcp-oidc-token.json")
+	require.NoError(t, os.WriteFile(token, []byte(`{"value":"stub-oidc-token"}`), 0o600))
+	s := &wifStub{env: map[string]string{
+		"GOOGLE_APPLICATION_CREDENTIALS": creds,
+		"GCP_OIDC_TOKEN_FILE":            token,
+		"FULLSEND_GCP_OIDC_URL":          "https://token.actions.githubusercontent.com/token?audience=https%3A%2F%2Fiam.googleapis.com%2F" + testGCPWIFProvider,
+	}}
+	orig := prepareGitHubWIF
+	prepareGitHubWIF = func(_ context.Context, cfg vertexauth.Config) (map[string]string, func(), error) {
+		s.calls++
+		s.cfg = cfg
+		if prepErr != nil {
+			return nil, nil, prepErr
+		}
+		if cfg.OnSubjectToken != nil {
+			cfg.OnSubjectToken("stub-subject-jwt-value")
+		}
+		return s.env, func() { s.cleaned = true }, nil
+	}
+	t.Cleanup(func() { prepareGitHubWIF = orig })
+	return s
+}
+
+// setActionsGCPEnv simulates a GitHub Actions job with the given GCP inputs.
+// usePreScriptStub resets GITHUB_ACTIONS, so call this after it.
+func setActionsGCPEnv(t *testing.T, runtimeName, projectID, wifProvider string) {
+	t.Helper()
+	t.Setenv("FULLSEND_RUNTIME", runtimeName)
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("FULLSEND_GCP_PROJECT_ID", projectID)
+	t.Setenv("FULLSEND_GCP_WIF_PROVIDER", wifProvider)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+}
+
+func runSkipHarnessAgent(t *testing.T, dir string, printer *ui.Printer) error {
+	t.Helper()
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	return runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, printer, false, runOverrideFlags{})
+}
+
 func TestRunAgent_VertexPreservesExistingGCPCredentials(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		projectID string
-		provider  string
+		name         string
+		projectID    string
+		provider     string
+		wantPrepared bool
 	}{
 		{name: "legacy workflow without GCP inputs"},
-		{name: "impersonated credentials with GCP inputs", projectID: "test-project", provider: "test-provider"},
+		{name: "GCP inputs override an existing credential file", projectID: "test-project", provider: testGCPWIFProvider, wantPrepared: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			usePreScriptStub(t)
-			t.Setenv("FULLSEND_RUNTIME", "claude")
-			t.Setenv("GITHUB_ACTIONS", "true")
-			t.Setenv("FULLSEND_GCP_PROJECT_ID", tc.projectID)
-			t.Setenv("FULLSEND_GCP_WIF_PROVIDER", tc.provider)
-			t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
-			t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+			setActionsGCPEnv(t, "claude", tc.projectID, tc.provider)
+			stub := stubPrepareGitHubWIF(t, nil)
+			tokenFile := filepath.Join(t.TempDir(), "oidc-token.json")
 			credentials := filepath.Join(t.TempDir(), "credentials.json")
-			require.NoError(t, os.WriteFile(credentials, []byte(`{"type":"external_account","service_account_impersonation_url":"https://example.invalid/impersonate"}`), 0o600))
+			require.NoError(t, os.WriteFile(credentials, []byte(`{"type":"external_account","service_account_impersonation_url":"https://example.invalid/impersonate","credential_source":{"file":"`+tokenFile+`"}}`), 0o600))
+			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credentials)
+			record := filepath.Join(t.TempDir(), "pre-script-env")
+			dir := newSkipHarnessDir(t, `printf '%s' "${GOOGLE_APPLICATION_CREDENTIALS:-}" > `+record+"\n")
+			var out strings.Builder
+
+			err := runSkipHarnessAgent(t, dir, ui.New(&out))
+			require.ErrorContains(t, err, "creating sandbox")
+			seen, readErr := os.ReadFile(record)
+			require.NoError(t, readErr, "pre-script must run")
+			if tc.wantPrepared {
+				assert.Equal(t, 1, stub.calls)
+				assert.Equal(t, stub.env["GOOGLE_APPLICATION_CREDENTIALS"], string(seen))
+				assert.True(t, stub.cleaned)
+				assert.Contains(t, out.String(), "Vertex credentials: prepared GitHub WIF")
+			} else {
+				assert.Zero(t, stub.calls)
+				assert.Equal(t, credentials, string(seen))
+				assert.Contains(t, out.String(), "Vertex credentials: existing GOOGLE_APPLICATION_CREDENTIALS file")
+			}
+			assert.Equal(t, credentials, os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+		})
+	}
+}
+
+// An existing credential file is only kept when the sandbox can use it
+// without the runner's OIDC request token.
+func TestRunAgent_VertexRejectsUnusableExistingCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{name: "URL source", content: `{"type":"external_account","credential_source":{"url":"https://token.actions.githubusercontent.com/token","headers":{"Authorization":"bearer request-token"}}}`, wantErr: "credential_source.url"},
+		{name: "headers alongside a file", content: `{"type":"external_account","credential_source":{"file":"/tmp/token","headers":{"Authorization":"bearer request-token"}}}`, wantErr: "credential_source.url or headers"},
+		{name: "no source", content: `{"type":"external_account"}`, wantErr: "credential_source.file"},
+		{name: "no type", content: `{"client_email":"x"}`, wantErr: "no credential type"},
+		{name: "invalid JSON", content: `not json`, wantErr: "not valid credential JSON"},
+		{name: "empty file", content: ``, wantErr: "non-empty credential file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usePreScriptStub(t)
+			setActionsGCPEnv(t, "claude", "", "")
+			credentials := filepath.Join(t.TempDir(), "credentials.json")
+			require.NoError(t, os.WriteFile(credentials, []byte(tc.content), 0o600))
 			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credentials)
 			marker := filepath.Join(t.TempDir(), "pre-script-ran")
 			dir := newSkipHarnessDir(t, "touch "+marker+"\n")
 
-			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
-			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
-				statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
-			require.ErrorContains(t, err, "creating sandbox")
-			assert.FileExists(t, marker)
-			assert.Equal(t, credentials, os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+			err := runSkipHarnessAgent(t, dir, ui.New(io.Discard))
+			require.ErrorContains(t, err, tc.wantErr)
+			assert.NotContains(t, err.Error(), "request-token")
+			assert.NoFileExists(t, marker)
 		})
 	}
+}
+
+func TestValidateExistingGCPCredentialFile(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{name: "service account key", content: `{"type":"service_account"}`},
+		{name: "file source", content: `{"type":"external_account","credential_source":{"file":"/tmp/token"}}`},
+		{name: "null headers", content: `{"type":"external_account","credential_source":{"file":"/tmp/token","headers":null}}`},
+		{name: "empty file name", content: `{"type":"external_account","credential_source":{"file":""}}`, wantErr: "credential_source.file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "credentials.json")
+			require.NoError(t, os.WriteFile(path, []byte(tc.content), 0o600))
+			err := validateExistingGCPCredentialFile(path)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tc.wantErr)
+			}
+		})
+	}
+
+	t.Run("missing file", func(t *testing.T) {
+		require.ErrorContains(t, validateExistingGCPCredentialFile(filepath.Join(t.TempDir(), "missing.json")), "non-empty credential file")
+	})
+	t.Run("directory", func(t *testing.T) {
+		require.ErrorContains(t, validateExistingGCPCredentialFile(t.TempDir()), "non-empty credential file")
+	})
+}
+
+func TestRunAgent_VertexPartialGCPInputsFails(t *testing.T) {
+	for _, tc := range []struct{ name, projectID, provider string }{
+		{name: "project only", projectID: "test-project"},
+		{name: "provider only", provider: testGCPWIFProvider},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usePreScriptStub(t)
+			setActionsGCPEnv(t, "claude", tc.projectID, tc.provider)
+			stub := stubPrepareGitHubWIF(t, nil)
+			marker := filepath.Join(t.TempDir(), "pre-script-ran")
+			dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+
+			err := runSkipHarnessAgent(t, dir, ui.New(io.Discard))
+			require.ErrorContains(t, err, "only one is set")
+			assert.Zero(t, stub.calls)
+			assert.NoFileExists(t, marker)
+		})
+	}
+}
+
+// A required ${GOOGLE_APPLICATION_CREDENTIALS} host file must resolve to the
+// prepared credentials: preparation runs before env validation.
+func TestRunAgent_VertexPreparedWIFSatisfiesRequiredHostFile(t *testing.T) {
+	usePreScriptStub(t)
+	setActionsGCPEnv(t, "claude", "test-project", testGCPWIFProvider)
+	// Unset, not empty: env validation accepts a set-but-empty variable.
+	require.NoError(t, os.Unsetenv("GOOGLE_APPLICATION_CREDENTIALS"))
+	stub := stubPrepareGitHubWIF(t, nil)
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+	f, err := os.OpenFile(filepath.Join(dir, "harness", "code.yaml"), os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteString("host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	err = runSkipHarnessAgent(t, dir, ui.New(io.Discard))
+	require.ErrorContains(t, err, "creating sandbox")
+	assert.NotContains(t, err.Error(), "validating env")
+	assert.Equal(t, 1, stub.calls)
+	assert.FileExists(t, marker)
+}
+
+// A Vertex parent fails closed when the WIF exchange fails.
+func TestRunAgent_VertexPrepareErrorFailsBeforePreScript(t *testing.T) {
+	usePreScriptStub(t)
+	setActionsGCPEnv(t, "claude", "test-project", testGCPWIFProvider)
+	stub := stubPrepareGitHubWIF(t, fmt.Errorf("validating Google STS exchange failed"))
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+
+	err := runSkipHarnessAgent(t, dir, ui.New(io.Discard))
+	require.ErrorContains(t, err, "validating Google STS exchange failed")
+	assert.Equal(t, 1, stub.calls)
+	assert.NoFileExists(t, marker)
+}
+
+// The prepared credentials reach the pre-script and the rest of the run,
+// the OIDC URL stays runner-only, and everything is undone on return.
+func TestRunAgent_VertexPreparedWIFReachesRun(t *testing.T) {
+	usePreScriptStub(t)
+	setActionsGCPEnv(t, "claude", "test-project", testGCPWIFProvider)
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	t.Setenv("GCP_OIDC_TOKEN_FILE", "original-token-file")
+	stub := stubPrepareGitHubWIF(t, nil)
+
+	// Wrap the openshell stub so a runner-side command records the process
+	// environment the run exported.
+	realStub, err := filepath.Abs(filepath.Join("testdata", "prescript-stub", "openshell"))
+	require.NoError(t, err)
+	wrapDir := t.TempDir()
+	runnerRecord := filepath.Join(t.TempDir(), "runner-env")
+	require.NoError(t, os.WriteFile(filepath.Join(wrapDir, "openshell"), []byte("#!/bin/sh\n"+
+		`printf '%s\n' "${FULLSEND_GCP_OIDC_URL:-}" >> `+runnerRecord+"\n"+
+		`exec `+realStub+` "$@"`+"\n"), 0o755))
+	t.Setenv("PATH", wrapDir+string(filepath.ListSeparator)+os.Getenv("PATH"))
+
+	record := filepath.Join(t.TempDir(), "pre-script-env")
+	dir := newSkipHarnessDir(t, `printf '%s\n%s\n%s\n' "${GOOGLE_APPLICATION_CREDENTIALS:-}" "${GCP_OIDC_TOKEN_FILE:-}" "${FULLSEND_GCP_OIDC_URL:-unset}" > `+record+"\n")
+
+	var runErr error
+	stderr := captureStderr(t, func() {
+		runErr = runSkipHarnessAgent(t, dir, ui.New(io.Discard))
+	})
+	require.ErrorContains(t, runErr, "creating sandbox")
+
+	assert.Equal(t, 1, stub.calls)
+	assert.Equal(t, "test-project", stub.cfg.ProjectID)
+	assert.Equal(t, testGCPWIFProvider, stub.cfg.WorkloadIdentityProvider)
+	assert.Contains(t, stderr, "::add-mask::stub-subject-jwt-value")
+
+	seen, err := os.ReadFile(record)
+	require.NoError(t, err, "pre-script must run")
+	assert.Equal(t, stub.env["GOOGLE_APPLICATION_CREDENTIALS"]+"\n"+stub.env["GCP_OIDC_TOKEN_FILE"]+"\nunset\n", string(seen),
+		"the pre-script gets the credential files but not the runner-only OIDC URL")
+	runnerSeen, err := os.ReadFile(runnerRecord)
+	require.NoError(t, err)
+	assert.Contains(t, strings.Split(string(runnerSeen), "\n"), stub.env["FULLSEND_GCP_OIDC_URL"])
+
+	assert.True(t, stub.cleaned)
+	assert.Equal(t, "", os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+	assert.Equal(t, "original-token-file", os.Getenv("GCP_OIDC_TOKEN_FILE"))
+	_, urlSet := os.LookupEnv("FULLSEND_GCP_OIDC_URL")
+	assert.False(t, urlSet)
+}
+
+// An OpenAI parent can dispatch Vertex sub-agents, so it gets Vertex
+// credentials when the GCP inputs are set; that setup never fails the run.
+func TestRunAgent_OpenAIParentVertexSubAgentCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		projectID    string
+		provider     string
+		prepErr      error
+		wantCalls    int
+		wantPrepared bool
+		wantWarn     string
+	}{
+		{name: "GCP inputs set", projectID: "test-project", provider: testGCPWIFProvider, wantCalls: 1, wantPrepared: true},
+		{name: "no GCP inputs", wantCalls: 0},
+		{name: "prepare error", projectID: "test-project", provider: testGCPWIFProvider, prepErr: fmt.Errorf("validating Google STS exchange failed"), wantCalls: 1, wantWarn: "Vertex credentials for sub-agents unavailable: validating Google STS exchange failed"},
+		{name: "partial inputs", projectID: "test-project", wantCalls: 0, wantWarn: "only one is set"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usePreScriptStub(t)
+			setActionsGCPEnv(t, "codex", tc.projectID, tc.provider)
+			stub := stubPrepareGitHubWIF(t, tc.prepErr)
+			record := filepath.Join(t.TempDir(), "pre-script-env")
+			dir := newSkipHarnessDir(t, `printf '%s' "${GOOGLE_APPLICATION_CREDENTIALS:-}" > `+record+"\n")
+			var out strings.Builder
+
+			err := runSkipHarnessAgent(t, dir, ui.New(&out))
+			require.ErrorContains(t, err, "creating sandbox")
+			assert.Equal(t, tc.wantCalls, stub.calls)
+			assert.Equal(t, tc.wantPrepared, stub.cleaned)
+			seen, readErr := os.ReadFile(record)
+			require.NoError(t, readErr, "pre-script must run")
+			if tc.wantPrepared {
+				assert.Equal(t, stub.env["GOOGLE_APPLICATION_CREDENTIALS"], string(seen))
+				assert.Contains(t, out.String(), "prepared GitHub WIF (for Vertex sub-agents)")
+			} else {
+				assert.Empty(t, string(seen))
+			}
+			if tc.wantWarn != "" {
+				assert.Contains(t, out.String(), tc.wantWarn)
+			}
+		})
+	}
+}
+
+// dummy runtimes do no inference, so a GitHub Actions run without GCP
+// inputs must not fail on Vertex setup.
+func TestRunAgent_DummyRuntimeNeedsNoGCPInputs(t *testing.T) {
+	for _, runtimeName := range []string{"dummy", "dummy-playback"} {
+		t.Run(runtimeName, func(t *testing.T) {
+			usePreScriptStub(t)
+			setActionsGCPEnv(t, runtimeName, "", "")
+			stub := stubPrepareGitHubWIF(t, nil)
+			marker := filepath.Join(t.TempDir(), "pre-script-ran")
+			dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+
+			err := runSkipHarnessAgent(t, dir, ui.New(io.Discard))
+			if err != nil {
+				assert.NotContains(t, err.Error(), "FULLSEND_GCP_PROJECT_ID")
+				assert.NotContains(t, err.Error(), "GOOGLE_APPLICATION_CREDENTIALS")
+			}
+			assert.Zero(t, stub.calls)
+			assert.FileExists(t, marker)
+		})
+	}
+}
+
+func TestRunInferenceProvider(t *testing.T) {
+	assert.Equal(t, runProviderOpenAI, runInferenceProvider("codex", true))
+	assert.Equal(t, runProviderNone, runInferenceProvider("dummy", false))
+	assert.Equal(t, runProviderNone, runInferenceProvider("dummy-playback", false))
+	assert.Equal(t, runProviderVertex, runInferenceProvider("opencode", false))
+	assert.Equal(t, runProviderVertex, runInferenceProvider("claude", false))
 }
 
 func TestValidateVertexGCPCredentials(t *testing.T) {
@@ -214,6 +526,13 @@ func TestValidateVertexGCPCredentials(t *testing.T) {
 	t.Run("Vertex rejects a directory", func(t *testing.T) {
 		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", t.TempDir())
 		require.ErrorContains(t, validateVertexGCPCredentials(h), "regular file")
+	})
+
+	t.Run("Vertex rejects an empty file", func(t *testing.T) {
+		credentials := filepath.Join(t.TempDir(), "credentials.json")
+		require.NoError(t, os.WriteFile(credentials, nil, 0o600))
+		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credentials)
+		require.ErrorContains(t, validateVertexGCPCredentials(h), "non-empty file")
 	})
 }
 

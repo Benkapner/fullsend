@@ -97,7 +97,14 @@ const (
 	// Run-scoped inference providers resolved from the selected agent.
 	runProviderVertex = "vertex"
 	runProviderOpenAI = "openai"
+	// runProviderNone marks runtimes that do no inference (dummy,
+	// dummy-playback).
+	runProviderNone = "none"
 )
+
+// prepareGitHubWIF is a seam so tests can stub the GitHub-to-Google
+// credential exchange.
+var prepareGitHubWIF = vertexauth.PrepareGitHubWIF
 
 // preflightCheckTimeout bounds the execution time for a validation_loop
 // preflight_check command. Mirrors the preflightGitHubTimeout pattern —
@@ -949,93 +956,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		defer mintCleanup()
 	}
 
-	// Expand env vars in runner_env values. FULLSEND_DIR is injected so
-	// harness configs can reference files relative to the fullsend directory
-	// (e.g., ${FULLSEND_DIR}/schemas/triage-result.schema.json).
-	expander := func(key string) string {
-		if key == "FULLSEND_DIR" {
-			return absFullsendDir
-		}
-		// Refuse OIDC credential vars and provider-only keys so ${VAR}
-		// expansion in harness YAML cannot leak mint-usable or workflow
-		// credentials (#5832, #6649).
-		return harnessEnvExpand(key)
-	}
-	lookup := func(key string) (string, bool) {
-		if key == "FULLSEND_DIR" {
-			return absFullsendDir, true
-		}
-		// Refuse OIDC credential vars and provider-only keys (#5832, #6649).
-		// Unlike expander (which silently returns "" to produce an empty
-		// expansion), lookup returns false so ValidateRunnerEnvWith treats
-		// the reference as an unresolvable variable and fails validation.
-		return harnessEnvLookup(key)
-	}
-	if err := h.ValidateRunnerEnvWith(lookup); err != nil {
-		printer.StepFail("Environment validation failed")
-		return fmt.Errorf("validating env: %w", err)
-	}
-	for k, v := range h.RunnerEnv {
-		h.RunnerEnv[k] = os.Expand(v, expander)
-	}
-
-	// Expand ${VAR} references in env.runner and env.sandbox (ADR 0055).
-	if h.Env != nil {
-		for k, v := range h.Env.Runner {
-			h.Env.Runner[k] = os.Expand(v, expander)
-		}
-		for k, v := range h.Env.Sandbox {
-			h.Env.Sandbox[k] = os.Expand(v, expander)
-		}
-	}
-
-	// Expand ${VAR} references in validation_loop.schema so the path
-	// resolves before ValidateFilesExist stat-checks it.
-	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
-		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
-	}
-	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.PreflightCheck, "${") {
-		h.ValidationLoop.PreflightCheck = os.Expand(h.ValidationLoop.PreflightCheck, expander)
-	}
-
-	if err := h.ValidateFilesExist(); err != nil {
-		printer.StepFail("File validation failed")
-		return fmt.Errorf("validating files: %w", err)
-	}
-	// Ensure scripts are executable. The GitHub Contents API does not
-	// preserve file permissions, so scripts written via admin install
-	// may lack the execute bit.
-	for _, script := range h.Scripts() {
-		if script != "" {
-			if chmodErr := os.Chmod(script, 0o755); chmodErr != nil {
-				printer.StepWarn("Could not chmod " + script + ": " + chmodErr.Error())
-			}
-		}
-	}
-	printer.StepDone(fmt.Sprintf("Harness loaded (%.1fs)", time.Since(harnessStart).Seconds()))
-
-	// Run lint checks before merging env.runner into RunnerEnv so that
-	// Lint() sees the original YAML state and only warns when runner_env
-	// was actually declared (not when env.runner entries are merged in).
-	for _, diag := range h.Lint() {
-		emitDiagnostic(printer, diag)
-	}
-
-	// ADR 0055: build effective runner env — start with runner_env,
-	// overlay env.runner so the new field takes precedence.
-	effectiveRunnerEnv := make(map[string]string)
-	for k, v := range h.RunnerEnv {
-		effectiveRunnerEnv[k] = v
-	}
-	if h.Env != nil {
-		for k, v := range h.Env.Runner {
-			effectiveRunnerEnv[k] = v
-		}
-	}
-	// NOTE: after this point h.RunnerEnv contains the merged effective set
-	// (runner_env + env.runner), not just the declared runner_env entries.
-	h.RunnerEnv = effectiveRunnerEnv
-
 	// Resolve the per-run overrides (flag > env) and the runtime early so
 	// both appear in the plan block. The full backend is used later (step
 	// 5b) for sandbox setup. Overrides are resolved once, here; runtimes
@@ -1125,33 +1045,110 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	agentDefModel := agentruntime.AgentDefinitionModel(h.Agent)
 	needsOpenAIProvider := agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
-	provider := runProviderVertex
-	if needsOpenAIProvider {
-		provider = runProviderOpenAI
+	provider := runInferenceProvider(runtimeBackend.Runtime.Name(), needsOpenAIProvider)
+	// Prepare credentials before env validation and expansion, so harness
+	// references to GOOGLE_APPLICATION_CREDENTIALS resolve to the prepared file.
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		cleanup, err := setupActionsVertexCredentials(ctx, provider == runProviderVertex, printer, setFlagEnv)
+		if err != nil {
+			printer.StepFail("Vertex credential setup failed")
+			return err
+		}
+		defer cleanup()
 	}
 	if provider == runProviderVertex {
-		if os.Getenv("GITHUB_ACTIONS") == "true" && !hasExistingGCPCredentials() {
-			vertexEnv, cleanup, err := vertexauth.PrepareGitHubWIF(ctx, vertexauth.Config{
-				ProjectID:                os.Getenv(vertexinference.SecretProjectID),
-				WorkloadIdentityProvider: os.Getenv(vertexinference.SecretWIFProvider),
-				OIDCRequestURL:           os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL"),
-				OIDCRequestToken:         os.Getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN"),
-				TempDir:                  os.Getenv("RUNNER_TEMP"),
-			})
-			if err != nil {
-				printer.StepFail("Vertex credential setup failed")
-				return err
-			}
-			defer cleanup()
-			for key, value := range vertexEnv {
-				setFlagEnv(key, value)
-			}
-		}
 		if err := validateVertexGCPCredentials(h); err != nil {
 			printer.StepFail("Inference credential validation failed")
 			return err
 		}
 	}
+
+	// Expand env vars in runner_env values. FULLSEND_DIR is injected so
+	// harness configs can reference files relative to the fullsend directory
+	// (e.g., ${FULLSEND_DIR}/schemas/triage-result.schema.json).
+	expander := func(key string) string {
+		if key == "FULLSEND_DIR" {
+			return absFullsendDir
+		}
+		// Refuse OIDC credential vars and provider-only keys so ${VAR}
+		// expansion in harness YAML cannot leak mint-usable or workflow
+		// credentials (#5832, #6649).
+		return harnessEnvExpand(key)
+	}
+	lookup := func(key string) (string, bool) {
+		if key == "FULLSEND_DIR" {
+			return absFullsendDir, true
+		}
+		// Refuse OIDC credential vars and provider-only keys (#5832, #6649).
+		// Unlike expander (which silently returns "" to produce an empty
+		// expansion), lookup returns false so ValidateRunnerEnvWith treats
+		// the reference as an unresolvable variable and fails validation.
+		return harnessEnvLookup(key)
+	}
+	if err := h.ValidateRunnerEnvWith(lookup); err != nil {
+		printer.StepFail("Environment validation failed")
+		return fmt.Errorf("validating env: %w", err)
+	}
+	for k, v := range h.RunnerEnv {
+		h.RunnerEnv[k] = os.Expand(v, expander)
+	}
+
+	// Expand ${VAR} references in env.runner and env.sandbox (ADR 0055).
+	if h.Env != nil {
+		for k, v := range h.Env.Runner {
+			h.Env.Runner[k] = os.Expand(v, expander)
+		}
+		for k, v := range h.Env.Sandbox {
+			h.Env.Sandbox[k] = os.Expand(v, expander)
+		}
+	}
+
+	// Expand ${VAR} references in validation_loop.schema so the path
+	// resolves before ValidateFilesExist stat-checks it.
+	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
+		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
+	}
+	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.PreflightCheck, "${") {
+		h.ValidationLoop.PreflightCheck = os.Expand(h.ValidationLoop.PreflightCheck, expander)
+	}
+
+	if err := h.ValidateFilesExist(); err != nil {
+		printer.StepFail("File validation failed")
+		return fmt.Errorf("validating files: %w", err)
+	}
+	// Ensure scripts are executable. The GitHub Contents API does not
+	// preserve file permissions, so scripts written via admin install
+	// may lack the execute bit.
+	for _, script := range h.Scripts() {
+		if script != "" {
+			if chmodErr := os.Chmod(script, 0o755); chmodErr != nil {
+				printer.StepWarn("Could not chmod " + script + ": " + chmodErr.Error())
+			}
+		}
+	}
+	printer.StepDone(fmt.Sprintf("Harness loaded (%.1fs)", time.Since(harnessStart).Seconds()))
+
+	// Run lint checks before merging env.runner into RunnerEnv so that
+	// Lint() sees the original YAML state and only warns when runner_env
+	// was actually declared (not when env.runner entries are merged in).
+	for _, diag := range h.Lint() {
+		emitDiagnostic(printer, diag)
+	}
+
+	// ADR 0055: build effective runner env — start with runner_env,
+	// overlay env.runner so the new field takes precedence.
+	effectiveRunnerEnv := make(map[string]string)
+	for k, v := range h.RunnerEnv {
+		effectiveRunnerEnv[k] = v
+	}
+	if h.Env != nil {
+		for k, v := range h.Env.Runner {
+			effectiveRunnerEnv[k] = v
+		}
+	}
+	// NOTE: after this point h.RunnerEnv contains the merged effective set
+	// (runner_env + env.runner), not just the declared runner_env entries.
+	h.RunnerEnv = effectiveRunnerEnv
 
 	// provider/id is pi's model form; Claude Code takes an alias or an
 	// Anthropic model id. The syntax is accepted for every runtime (ids are
@@ -4114,15 +4111,140 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 	}
 }
 
-// hasExistingGCPCredentials preserves credentials prepared by an earlier
-// workflow step, including service-account impersonation configurations.
-func hasExistingGCPCredentials() bool {
-	path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
-	if path == "" {
-		return false
+// runInferenceProvider maps the resolved runtime to the provider the parent
+// agent calls.
+func runInferenceProvider(runtimeName string, needsOpenAI bool) string {
+	switch {
+	case needsOpenAI:
+		return runProviderOpenAI
+	case runtimeName == "dummy" || runtimeName == "dummy-playback":
+		return runProviderNone
+	default:
+		return runProviderVertex
 	}
+}
+
+// setupActionsVertexCredentials selects the Vertex credentials for a GitHub
+// Actions run. With both GCP inputs set it prepares WIF credentials and
+// overrides GOOGLE_APPLICATION_CREDENTIALS; with neither set it keeps an
+// existing credential file from an earlier workflow step; one input alone is
+// an error. When required is false (the parent agent does not use Vertex),
+// credentials are still prepared for Vertex sub-agents if both inputs are
+// set, and any failure is a warning. The returned cleanup is never nil.
+func setupActionsVertexCredentials(ctx context.Context, required bool, printer *ui.Printer, setEnv func(key, value string)) (func(), error) {
+	noop := func() {}
+	projectID := strings.TrimSpace(os.Getenv(vertexinference.SecretProjectID))
+	wifProvider := strings.TrimSpace(os.Getenv(vertexinference.SecretWIFProvider))
+	inputsSet := projectID != "" && wifProvider != ""
+	partial := !inputsSet && (projectID != "" || wifProvider != "")
+	partialErr := fmt.Errorf("Vertex inference requires both %s and %s; only one is set",
+		vertexinference.SecretProjectID, vertexinference.SecretWIFProvider)
+
+	if !required {
+		switch {
+		case partial:
+			printer.StepWarn("Vertex credentials for sub-agents skipped: " + partialErr.Error())
+		case inputsSet:
+			cleanup, err := prepareActionsWIF(ctx, projectID, wifProvider, setEnv)
+			if err != nil {
+				printer.StepWarn("Vertex credentials for sub-agents unavailable: " + err.Error())
+				return noop, nil
+			}
+			printer.StepDone("Vertex credentials: prepared GitHub WIF (for Vertex sub-agents)")
+			return cleanup, nil
+		}
+		return noop, nil
+	}
+
+	if partial {
+		return nil, partialErr
+	}
+	if !inputsSet {
+		path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+		if path == "" {
+			return nil, fmt.Errorf("Vertex inference requires %s and %s, or GOOGLE_APPLICATION_CREDENTIALS pointing to a credential file",
+				vertexinference.SecretProjectID, vertexinference.SecretWIFProvider)
+		}
+		if err := validateExistingGCPCredentialFile(path); err != nil {
+			return nil, err
+		}
+		printer.StepDone("Vertex credentials: existing GOOGLE_APPLICATION_CREDENTIALS file")
+		return noop, nil
+	}
+	cleanup, err := prepareActionsWIF(ctx, projectID, wifProvider, setEnv)
+	if err != nil {
+		return nil, err
+	}
+	printer.StepDone("Vertex credentials: prepared GitHub WIF")
+	return cleanup, nil
+}
+
+// prepareActionsWIF exchanges the job's OIDC token for Google credentials
+// and exports the resulting environment for the rest of the run.
+func prepareActionsWIF(ctx context.Context, projectID, wifProvider string, setEnv func(key, value string)) (func(), error) {
+	env, cleanup, err := prepareGitHubWIF(ctx, vertexauth.Config{
+		ProjectID:                projectID,
+		WorkloadIdentityProvider: wifProvider,
+		OIDCRequestURL:           os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL"),
+		OIDCRequestToken:         os.Getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN"),
+		TempDir:                  os.Getenv("RUNNER_TEMP"),
+		OnSubjectToken:           maskActionsValue,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range env {
+		setEnv(key, value)
+	}
+	return cleanup, nil
+}
+
+// maskActionsValue asks GitHub Actions to mask a secret in the job log.
+func maskActionsValue(value string) {
+	if value != "" && os.Getenv("GITHUB_ACTIONS") == "true" {
+		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", value)
+	}
+}
+
+// validateExistingGCPCredentialFile checks a credential file prepared by an
+// earlier workflow step before the run relies on it. An external_account
+// file must read its subject token from a file: the sandbox cannot reach a
+// URL source, and URL headers would copy the runner's request token into
+// the sandbox.
+func validateExistingGCPCredentialFile(path string) error {
 	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular()
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		return fmt.Errorf("GOOGLE_APPLICATION_CREDENTIALS must point to a non-empty credential file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading the GOOGLE_APPLICATION_CREDENTIALS file failed")
+	}
+	var creds struct {
+		Type             string `json:"type"`
+		CredentialSource *struct {
+			File    string          `json:"file"`
+			URL     string          `json:"url"`
+			Headers json.RawMessage `json:"headers"`
+		} `json:"credential_source"`
+	}
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return fmt.Errorf("the GOOGLE_APPLICATION_CREDENTIALS file is not valid credential JSON")
+	}
+	if strings.TrimSpace(creds.Type) == "" {
+		return fmt.Errorf("the GOOGLE_APPLICATION_CREDENTIALS file has no credential type")
+	}
+	if creds.Type != "external_account" {
+		return nil
+	}
+	src := creds.CredentialSource
+	if src != nil && (src.URL != "" || (len(src.Headers) > 0 && string(src.Headers) != "null")) {
+		return fmt.Errorf("the GOOGLE_APPLICATION_CREDENTIALS file uses credential_source.url or headers; the sandbox needs a credential_source.file token")
+	}
+	if src == nil || src.File == "" {
+		return fmt.Errorf("the GOOGLE_APPLICATION_CREDENTIALS file has no credential_source.file")
+	}
+	return nil
 }
 
 // validateVertexGCPCredentials fails a Vertex run before its pre-script can
@@ -4142,6 +4264,9 @@ func validateVertexGCPCredentials(h *harness.Harness) error {
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("host_files[%d]: Vertex inference requires GOOGLE_APPLICATION_CREDENTIALS to point to a regular file", i)
+		}
+		if info.Size() == 0 {
+			return fmt.Errorf("host_files[%d]: Vertex inference requires GOOGLE_APPLICATION_CREDENTIALS to point to a non-empty file", i)
 		}
 	}
 	return nil
@@ -4637,6 +4762,12 @@ func refreshOIDCToken(ctx context.Context, sandboxName, oidcURL, oidcAuth string
 	}
 	if !json.Valid(body) {
 		return fmt.Errorf("OIDC endpoint returned non-JSON response")
+	}
+	var token struct {
+		Value string `json:"value"`
+	}
+	if json.Unmarshal(body, &token) == nil {
+		maskActionsValue(token.Value)
 	}
 
 	tmpFile, err := os.CreateTemp("", "fullsend-oidc-*.token")

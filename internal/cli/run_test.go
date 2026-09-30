@@ -2601,6 +2601,28 @@ func TestRefreshOIDCToken_FetchSucceedsSCPFails(t *testing.T) {
 	assert.Contains(t, err.Error(), "copying token to sandbox")
 }
 
+// Each refreshed token is masked in the Actions log before it is used.
+func TestRefreshOIDCToken_MasksTokenOnActions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"value":"refreshed-oidc-jwt"}`)
+	}))
+	defer srv.Close()
+
+	for _, actions := range []string{"true", "false"} {
+		t.Run("GITHUB_ACTIONS="+actions, func(t *testing.T) {
+			t.Setenv("GITHUB_ACTIONS", actions)
+			stderr := captureStderr(t, func() {
+				_ = refreshOIDCToken(context.Background(), "nonexistent-sandbox", srv.URL, "bearer test-auth")
+			})
+			if actions == "true" {
+				assert.Contains(t, stderr, "::add-mask::refreshed-oidc-jwt")
+			} else {
+				assert.NotContains(t, stderr, "::add-mask::")
+			}
+		})
+	}
+}
+
 func TestRefreshOIDCToken_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
