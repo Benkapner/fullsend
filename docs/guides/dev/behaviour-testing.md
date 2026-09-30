@@ -372,6 +372,14 @@ If a scenario needs to seed additional files, use a filename that does not colli
 
 Reference: [`ensureRepoExists`](../../../pkg/behaviourtest/drivers/install/ensure.go) — see the `auto_init` comment and `CreateRepo` call.
 
+### Repo deletion can lag behind `GetRepo`
+
+After `DeleteRepo`, GitHub may keep serving a cached repository object for several seconds. A successful `GetRepo` immediately after delete does **not** mean the name is still taken — and it also does not mean the repo will still exist by the time `fullsend github setup` runs. Treating that stale success as "already ready" skips recreation and then 404s during setup.
+
+GitHub's reads are not monotonic here: a confirmed 404 can be followed by a stale 200, and a 404 does not guarantee `CreateRepo` will accept the name yet. So the install ensurer waits for a 404 (`awaitDeletion`) and then always calls `CreateRepo`, never trusting a single `GetRepo`. If creation fails because the name is still taken, it deletes the repository blocking creation, and any leftover `-fork`, with `deleteBlockingRepo`. It waits for that deletion to propagate, backs off exponentially, and retries `CreateRepo`. It fails the allocation if the name never becomes free within the attempt budget.
+
+Reference: [`ensureRepoExists`](../../../pkg/behaviourtest/drivers/install/ensure.go), [`deleteBlockingRepo`](../../../pkg/behaviourtest/drivers/install/ensure.go) and [`awaitDeletion`](../../../pkg/behaviourtest/drivers/install/ensure.go).
+
 ### Fork name derivation depends on `World.RepoName`
 
 The `Given a fork` step resolves the fork repo name by replacing the `test-repo` prefix with `World.RepoName`. For example, the logical Gherkin name `"test-repo-fork"` with a leased base `test-repo-07` resolves to `test-repo-07-fork`.

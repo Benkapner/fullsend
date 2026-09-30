@@ -314,17 +314,19 @@ func (e *repoEnsurer) resetRepo(ctx context.Context, org, repoName, target strin
 		return fmt.Errorf("deleting repo %s for history reset: %w", target, err)
 	}
 
-	// Wait for GitHub API to propagate the deletion. Without this,
-	// ensureRepoExists may see a stale cached response for the deleted
-	// repo, skip re-creation, and subsequent operations fail with 404.
+	// Wait for GitHub API to propagate the deletion so CreateRepo can
+	// succeed on the first attempt. ensureRepoExists still retries on
+	// already-exists if this poll times out with a stale GetRepo (#7839).
 	return e.awaitDeletion(ctx, org, repoName, target)
 }
 
 // awaitDeletion polls GetRepo with exponential backoff until the repo
 // returns 404, confirming the deletion has propagated through the
 // GitHub API's eventual-consistency layer. If the repo is still
-// visible after all attempts the function returns nil anyway — the
-// subsequent ensureRepoExists call will handle the conflict.
+// visible after all attempts the function returns nil anyway —
+// ensureRepoExists always calls CreateRepo and retries on
+// already-exists rather than treating a stale GetRepo success as
+// allocation-ready.
 func (e *repoEnsurer) awaitDeletion(ctx context.Context, org, repoName, target string) error {
 	e.logf("[ensure] waiting for %s deletion to propagate", target)
 	delay := resetRetryDelay
@@ -353,32 +355,97 @@ func (e *repoEnsurer) awaitDeletion(ctx context.Context, org, repoName, target s
 			delay *= 2
 		}
 	}
-	e.logf("[ensure] %s still visible after %d attempts; proceeding", target, resetMaxAttempts)
+	e.logf("[ensure] %s still visible after %d attempts; proceeding to create", target, resetMaxAttempts)
 	return nil
 }
 
-// ensureRepoExists creates the repo if it does not already exist.
-// The forge's CreateRepo uses auto_init, so GitHub creates an initial
-// commit with a README — no explicit seeding is needed.
-// Idempotent: a repo that already exists is left untouched.
+// ensureRepoExists creates the repo after reset. The forge's CreateRepo
+// uses auto_init, so GitHub creates an initial commit with a README —
+// no explicit seeding is needed.
+//
+// A successful GetRepo after delete is not treated as "already ready":
+// GitHub can keep serving a stale repo object for a name whose deletion
+// is still propagating (#7839). Always CreateRepo; on already-exists,
+// delete the repo that is actually blocking creation (resetRepo may
+// have skipped its delete on a stale 404, or a retried create request
+// may have succeeded server-side despite a client-side timeout) and
+// retry until the name is free or attempts are exhausted.
 func (e *repoEnsurer) ensureRepoExists(ctx context.Context, org, repoName, target string) error {
-	_, err := e.client.GetRepo(ctx, org, repoName)
-	if err == nil {
-		return nil // repo exists
-	}
-	if !forge.IsNotFound(err) {
-		return fmt.Errorf("checking repo %s: %w", target, err)
-	}
-
 	e.logf("[ensure] creating %s (auto_init provides initial commit)", target)
-	if _, createErr := e.client.CreateRepo(ctx, org, repoName, "Behaviour test repo", false); createErr != nil {
-		return fmt.Errorf("creating repo %s: %w", target, createErr)
+	var lastErr error
+	delay := resetRetryDelay
+	for attempt := 1; attempt <= resetMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("context cancelled while creating %s: %w", target, err)
+		}
+
+		_, createErr := e.client.CreateRepo(ctx, org, repoName, "Behaviour test repo", false)
+		if createErr == nil {
+			// Wait for the newly created repo to be visible via the API.
+			// GitHub's eventual consistency means operations on a just-created
+			// repo can 404 until propagation completes.
+			return e.awaitCreation(ctx, org, repoName, target)
+		}
+		lastErr = createErr
+		if !forge.IsAlreadyExists(createErr) {
+			return fmt.Errorf("creating repo %s: %w", target, createErr)
+		}
+		if attempt < resetMaxAttempts {
+			e.logf("[ensure] %s name still taken after reset, attempt %d/%d — deleting and retrying",
+				target, attempt, resetMaxAttempts)
+			if err := e.deleteBlockingRepo(ctx, org, repoName, target); err != nil {
+				return err
+			}
+			// deleteBlockingRepo's awaitDeletion can return immediately when
+			// GetRepo already 404s, even though CreateRepo can keep
+			// rejecting the name as taken for a few seconds afterward — a
+			// GetRepo 404 is not proof the name is free for CreateRepo any
+			// more than a GetRepo success is proof it's still taken (#7839's
+			// mirror case). Back off explicitly so this retry never fires
+			// back-to-back with the previous one.
+			e.logf("[ensure] %s still taken after delete, backing off %v before retrying create", target, delay)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled while creating %s: %w", target, ctx.Err())
+			case <-time.After(delay):
+			}
+			delay *= 2
+		}
+	}
+	return fmt.Errorf("creating repo %s: name still taken after %d attempts following reset: %w", target, resetMaxAttempts, lastErr)
+}
+
+// deleteBlockingRepo removes repoName (and a leftover org/repoName-fork,
+// the same way resetRepo does) after CreateRepo reports it already
+// exists. Without this, an already-exists error can never clear: the
+// name stays taken forever and every retry just re-hits the same
+// error, so the allocation fails slowly instead of recovering (#7839).
+//
+// A 404 on delete is treated as success — a concurrent deleter (or the
+// original resetRepo delete finally propagating) may have already won
+// the race. Waits for the deletion to propagate via awaitDeletion
+// before the caller retries CreateRepo.
+func (e *repoEnsurer) deleteBlockingRepo(ctx context.Context, org, repoName, target string) error {
+	forkName := repoName + "-fork"
+	forkTarget := org + "/" + forkName
+	if _, forkErr := e.client.GetRepo(ctx, org, forkName); forkErr == nil {
+		e.logf("[ensure] deleting fork %s before recreate retry", forkTarget)
+		if err := e.client.DeleteRepo(ctx, org, forkName); err != nil {
+			if !forge.IsNotFound(err) {
+				return fmt.Errorf("deleting fork repo %s for recreate retry: %w", forkTarget, err)
+			}
+		} else if err := e.awaitDeletion(ctx, org, forkName, forkTarget); err != nil {
+			return err
+		}
+	} else if !forge.IsNotFound(forkErr) {
+		return fmt.Errorf("checking fork repo %s for recreate retry: %w", forkTarget, forkErr)
 	}
 
-	// Wait for the newly created repo to be visible via the API.
-	// GitHub's eventual consistency means operations on a just-created
-	// repo can 404 until propagation completes.
-	return e.awaitCreation(ctx, org, repoName, target)
+	e.logf("[ensure] deleting %s (blocking recreate) before retry", target)
+	if err := e.client.DeleteRepo(ctx, org, repoName); err != nil && !forge.IsNotFound(err) {
+		return fmt.Errorf("deleting repo %s for recreate retry: %w", target, err)
+	}
+	return e.awaitDeletion(ctx, org, repoName, target)
 }
 
 // awaitCreation polls GetRepo with exponential backoff until the
