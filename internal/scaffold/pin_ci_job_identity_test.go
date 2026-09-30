@@ -401,6 +401,56 @@ func TestPinCIJobIdentity_IgnoresHTTPProxy(t *testing.T) {
 	assert.Contains(t, out, "PINNED_SOURCE=api")
 }
 
+// TestPinCIJobIdentity_UnsetsProxyEnvInParentShellOnSuccess is a regression
+// test for the secret-exposure finding: fullsend_gate_curl only strips
+// proxy env vars for its own curl invocations (env -u ...); it does not
+// remove them from the sourcing shell. The subsequent fullsend poll/run Go
+// processes inherit that shell's exported environment and build their
+// http.Client with a nil Transport (ProxyFromEnvironment), so a
+// trigger-influenced HTTP_PROXY/HTTPS_PROXY left set after a successful pin
+// could still CONNECT-proxy PAT-bearing API traffic. After the pin
+// succeeds, HTTP_PROXY/HTTPS_PROXY/http_proxy/https_proxy (the names Go's
+// ProxyFromEnvironment honors) must be unset in the parent shell.
+func TestPinCIJobIdentity_UnsetsProxyEnvInParentShellOnSuccess(t *testing.T) {
+	root, script := writePinCIJobIdentityScripts(t)
+	st := &pinAPIState{
+		jobJSON:      pinJobJSON("42", "100", "main"),
+		projectJSON:  `{"id":42,"default_branch":"main","path_with_namespace":"group/project"}`,
+		branchJSON:   `{"name":"main","protected":true}`,
+		pipelineJSON: `{"id":100,"source":"api"}`,
+	}
+	srv := startPinAPI(t, st)
+	t.Cleanup(srv.Close)
+
+	cmd := exec.Command("bash", "-c",
+		"set -euo pipefail; . \"$SCRIPT\"; "+
+			"echo POST_PIN_HTTP_PROXY=\"${HTTP_PROXY:-UNSET}\"; "+
+			"echo POST_PIN_HTTPS_PROXY=\"${HTTPS_PROXY:-UNSET}\"; "+
+			"echo POST_PIN_http_proxy=\"${http_proxy:-UNSET}\"; "+
+			"echo POST_PIN_https_proxy=\"${https_proxy:-UNSET}\"")
+	cmd.Env = append([]string{
+		"SCRIPT=" + script,
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"CI_PROJECT_DIR=" + root,
+		"RUNNER_TEMP=" + t.TempDir(),
+		"FULLSEND_ADMIT_SOURCE=api",
+		"CI_JOB_TOKEN=job-token",
+		"HTTP_PROXY=http://attacker.example:8080",
+		"HTTPS_PROXY=http://attacker.example:8080",
+		"http_proxy=http://attacker.example:8080",
+		"https_proxy=http://attacker.example:8080",
+	}, pinTLSEnv(t, srv)...)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	got := string(out)
+
+	assert.Contains(t, got, "POST_PIN_HTTP_PROXY=UNSET")
+	assert.Contains(t, got, "POST_PIN_HTTPS_PROXY=UNSET")
+	assert.Contains(t, got, "POST_PIN_http_proxy=UNSET")
+	assert.Contains(t, got, "POST_PIN_https_proxy=UNSET")
+}
+
 // TestPinCIJobIdentity_AuthHeaderNotOnCurlArgv verifies that
 // fullsend_gate_curl rewrites a caller's `-H "JOB-TOKEN: ..."` into
 // `-H @tempfile` before invoking curl, so the token value itself never

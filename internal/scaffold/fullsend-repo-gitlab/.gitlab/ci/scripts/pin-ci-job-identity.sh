@@ -275,6 +275,18 @@ fullsend_pin_ci_job_identity() {
     return 1
   fi
 
+  # GET /projects/:id/repository/branches/:branch is a same-project call
+  # (FULLSEND_PINNED_PROJECT_ID is the project_id of the pipeline that owns
+  # the supplied CI_JOB_TOKEN, from GET /job above) rather than a
+  # cross-project one. GitLab's CI/CD job token *scope* allowlist restricts
+  # only cross-project access; it has never gated a token's calls into its
+  # own project. GitLab's fine-grained job-token permissions documentation
+  # (introduced for cross-project grants, GA in 18.3) separately lists
+  # "GET /projects/:id/repository/branches" under the read_repository
+  # policy, the same family as this single-branch lookup. Both facts
+  # support CI_JOB_TOKEN authenticating this same-project read on current
+  # GitLab; this has not been checked against the oldest self-hosted
+  # GitLab version fullsend supports.
   _fs_ref_enc=$(printf '%s' "${FULLSEND_PINNED_REF}" | jq -sRr @uri)
   _fs_branch_json=""
   if ! _fs_branch_json=$(fullsend_gate_curl \
@@ -317,6 +329,17 @@ fullsend_pin_ci_job_identity() {
   FULLSEND_PINNED_GITLAB_URL="${_fs_api%/api/v4}"
   export FULLSEND_PINNED_GITLAB_URL
   unset _fs_api _fs_trust
+
+  # fullsend_gate_curl only strips proxy env vars for its own curl
+  # invocations (env -u ...); it does not remove them from this shell.
+  # The subsequent fullsend poll/run Go processes inherit this shell's
+  # exported environment and build their http.Client with a nil
+  # Transport (ProxyFromEnvironment), so a trigger-influenced
+  # HTTP_PROXY/HTTPS_PROXY left in the parent shell could still
+  # CONNECT-proxy PAT-bearing API traffic after the pin succeeds. Unset
+  # them here (the names Go's ProxyFromEnvironment honors) so later
+  # CLI calls in this job cannot be steered by a trigger-supplied proxy.
+  unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
 }
 
 fullsend_pin_ci_job_identity

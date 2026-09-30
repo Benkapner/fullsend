@@ -1270,3 +1270,112 @@ func TestRunAgentJobScript_IgnoresUnsignedMergeRequestIIDWhenStatusIIDMissing(t 
 	assert.Contains(t, got, "--status-number 0")
 	assert.NotContains(t, got, "--status-number 999")
 }
+
+// TestRunAgentJobScript_UnsetsMergeRequestIIDForIssueEvent is a regression
+// test for the auth-bypass finding: in the issue_* EVENT_TYPE arm, this
+// job's admit source is api-only, so GitLab never natively populates
+// CI_MERGE_REQUEST_IID — any value present is an ordinary, outrankable
+// project/group/pipeline CI/CD variable. newGitLabClientFromEnv
+// (internal/cli/reconcilestatus.go) routes status-comment API calls to the
+// merge_requests noteable type whenever CI_MERGE_REQUEST_IID is merely
+// non-empty, regardless of FULLSEND_NOTE_TARGET — so a stray
+// CI_MERGE_REQUEST_IID must not reach the fullsend CLI subprocess on an
+// issue event, even when its value happens to equal the signed STATUS_IID
+// (mere presence, not value mismatch, is what misdirects the note target).
+func TestRunAgentJobScript_UnsetsMergeRequestIIDForIssueEvent(t *testing.T) {
+	root := t.TempDir()
+	writeGitLabScript(t, root, ".gitlab/ci/scripts/trust-ci-server-ca.sh")
+	writeGitLabScript(t, root, gitlabPinCIJobIdentityScriptPath)
+	writeGitLabScript(t, root, ".gitlab/ci/scripts/select-gitlab-role-token.sh")
+	script := writeGitLabScript(t, root, gitlabRunAgentJobScriptPath)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/job", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(pinJobJSON("42", "100", "main")))
+	})
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":7,"username":"fullsend-bot"}`))
+	})
+	mux.HandleFunc("/api/v4/projects/", func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case strings.Contains(path, "/repository/branches/"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"name":"main","protected":true}`))
+		case strings.Contains(path, "/pipelines/"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":100,"source":"api","user":{"id":7}}`))
+		case strings.Contains(path, "/members/all/"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"access_level":40}`))
+		case strings.Contains(path, "/notes"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":42,"default_branch":"main","path_with_namespace":"pinned/project"}`))
+		}
+	})
+	srv := httptest.NewTLSServer(mux)
+	t.Cleanup(srv.Close)
+
+	// run-agent-job.sh ends with `exit "${RUN_STATUS}"`, so a sourcing
+	// shell never returns control to any commands appended after the
+	// `. "$SCRIPT"` call. Observe the resolved identity by having the
+	// stub `fullsend` binary — invoked as a child process that inherits
+	// the exported environment — dump the variable under test before the
+	// script exits.
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(
+		"#!/bin/sh\n"+
+			"echo FULLSEND_ARGS: \"$@\"\n"+
+			"echo STUB_ENV GITLAB_ISSUE_URL=\"${GITLAB_ISSUE_URL:-EMPTY}\"\n"+
+			"echo STUB_ENV CI_MERGE_REQUEST_IID=\"${CI_MERGE_REQUEST_IID:-UNSET}\"\n"+
+			"exit 0\n"), 0o755))
+
+	const secret = "test-hmac-secret"
+	// STATUS_IID carries the signed issue IID for this issue_note dispatch.
+	hmacHex := computeDispatchHMAC(secret, "5", "", "issue_note", "", "false", "", "", "", "test-key", "review", "7")
+
+	setupPinnedConfigOrigin(t, root)
+
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"`)
+	cmd.Dir = root
+	cmd.Env = append([]string{
+		"SCRIPT=" + script,
+		"PATH=" + bin + ":" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"CI_PROJECT_DIR=" + root,
+		"RUNNER_TEMP=" + t.TempDir(),
+		"CI_JOB_TOKEN=job-token",
+		"FULLSEND_GITLAB_POLLER_TOKEN=poller-pat",
+		"FULLSEND_GITLAB_ANALYST_TOKEN=analyst-pat",
+		"STAGE=review",
+		"EVENT_TYPE=issue_note",
+		"RESOURCE_KEY=test-key",
+		"ACTOR_ID=5",
+		"IS_FORK=false",
+		"FULLSEND_DISPATCH_SECRET=" + secret,
+		"FULLSEND_DISPATCH_HMAC=" + hmacHex,
+		"CI_PIPELINE_URL=https://gitlab.example/pinned/project/-/pipelines/999",
+		"STATUS_IID=7",
+		// An ordinary, overridable CI/CD variable that happens to equal
+		// the signed STATUS_IID. Even though the value "agrees", its mere
+		// presence must not reach the fullsend CLI subprocess for an
+		// issue event, since newGitLabClientFromEnv treats any non-empty
+		// CI_MERGE_REQUEST_IID as a merge_requests note target.
+		"CI_MERGE_REQUEST_IID=7",
+		"CI_PROJECT_ID=1",
+		"CI_PROJECT_PATH=unpinned/project",
+		"CI_SERVER_URL=https://unpinned.example",
+	}, pinTLSEnv(t, srv)...)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	got := string(out)
+
+	assert.Contains(t, got, "STUB_ENV GITLAB_ISSUE_URL=https://")
+	assert.Contains(t, got, "/-/issues/7")
+	assert.Contains(t, got, "STUB_ENV CI_MERGE_REQUEST_IID=UNSET")
+}

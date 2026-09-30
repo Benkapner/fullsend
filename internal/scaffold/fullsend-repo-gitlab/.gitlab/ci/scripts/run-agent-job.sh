@@ -389,6 +389,14 @@ case "${EVENT_TYPE:-}" in
     if [[ -n "${STATUS_IID:-}" && "${STATUS_IID}" != "0" ]]; then
       GITLAB_ISSUE_URL="${FULLSEND_PINNED_GITLAB_URL}/${FULLSEND_PINNED_PROJECT_PATH}/-/issues/${STATUS_IID}"
     fi
+    # This job's admit source is api only, so GitLab never natively
+    # populates CI_MERGE_REQUEST_IID for an issue event — any value
+    # present is an ordinary, outrankable project/group/pipeline CI/CD
+    # variable. newGitLabClientFromEnv (internal/cli/reconcilestatus.go)
+    # sets the note target to merge_requests whenever CI_MERGE_REQUEST_IID
+    # is merely non-empty, regardless of FULLSEND_NOTE_TARGET, so unset it
+    # here to keep status-comment API calls on the issues target.
+    unset CI_MERGE_REQUEST_IID
     ;;
   *)
     # STATUS_IID is part of the HMAC-signed dispatch message;
