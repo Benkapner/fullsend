@@ -397,6 +397,11 @@ case "${EVENT_TYPE:-}" in
     # is merely non-empty, regardless of FULLSEND_NOTE_TARGET, so unset it
     # here to keep status-comment API calls on the issues target.
     unset CI_MERGE_REQUEST_IID
+    # FULLSEND_NOTE_TARGET is the same class of outrankable
+    # project/group/pipeline CI/CD variable — a pre-set
+    # FULLSEND_NOTE_TARGET=merge_requests would otherwise survive into
+    # this arm and misdirect the status comment. Pin it explicitly.
+    export FULLSEND_NOTE_TARGET="issues"
     ;;
   *)
     # STATUS_IID is part of the HMAC-signed dispatch message;

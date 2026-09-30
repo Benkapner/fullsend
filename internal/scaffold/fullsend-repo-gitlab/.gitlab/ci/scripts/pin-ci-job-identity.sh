@@ -339,7 +339,10 @@ fullsend_pin_ci_job_identity() {
   # CONNECT-proxy PAT-bearing API traffic after the pin succeeds. Unset
   # them here (the names Go's ProxyFromEnvironment honors) so later
   # CLI calls in this job cannot be steered by a trigger-supplied proxy.
-  unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
+  # ALL_PROXY/all_proxy is included too: git (used for post-pin,
+  # credential-bearing fetches elsewhere in the scaffold) honors it as
+  # a fallback, matching the set fullsend_gate_curl already strips.
+  unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy
 }
 
 fullsend_pin_ci_job_identity

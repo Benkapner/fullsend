@@ -1333,6 +1333,7 @@ func TestRunAgentJobScript_UnsetsMergeRequestIIDForIssueEvent(t *testing.T) {
 			"echo FULLSEND_ARGS: \"$@\"\n"+
 			"echo STUB_ENV GITLAB_ISSUE_URL=\"${GITLAB_ISSUE_URL:-EMPTY}\"\n"+
 			"echo STUB_ENV CI_MERGE_REQUEST_IID=\"${CI_MERGE_REQUEST_IID:-UNSET}\"\n"+
+			"echo STUB_ENV FULLSEND_NOTE_TARGET=\"${FULLSEND_NOTE_TARGET:-UNSET}\"\n"+
 			"exit 0\n"), 0o755))
 
 	const secret = "test-hmac-secret"
@@ -1370,6 +1371,12 @@ func TestRunAgentJobScript_UnsetsMergeRequestIIDForIssueEvent(t *testing.T) {
 		"CI_PROJECT_ID=1",
 		"CI_PROJECT_PATH=unpinned/project",
 		"CI_SERVER_URL=https://unpinned.example",
+		// An ordinary, overridable CI/CD variable — the same class as
+		// CI_MERGE_REQUEST_IID above — pre-set to the value
+		// newGitLabClientFromEnv treats as selecting the merge_requests
+		// note target. The issue_* arm must override it so the fullsend
+		// CLI subprocess never inherits it.
+		"FULLSEND_NOTE_TARGET=merge_requests",
 	}, pinTLSEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "stdout/stderr: %s", out)
@@ -1378,4 +1385,5 @@ func TestRunAgentJobScript_UnsetsMergeRequestIIDForIssueEvent(t *testing.T) {
 	assert.Contains(t, got, "STUB_ENV GITLAB_ISSUE_URL=https://")
 	assert.Contains(t, got, "/-/issues/7")
 	assert.Contains(t, got, "STUB_ENV CI_MERGE_REQUEST_IID=UNSET")
+	assert.Contains(t, got, "STUB_ENV FULLSEND_NOTE_TARGET=issues")
 }

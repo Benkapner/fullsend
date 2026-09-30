@@ -427,7 +427,9 @@ func TestPinCIJobIdentity_UnsetsProxyEnvInParentShellOnSuccess(t *testing.T) {
 			"echo POST_PIN_HTTP_PROXY=\"${HTTP_PROXY:-UNSET}\"; "+
 			"echo POST_PIN_HTTPS_PROXY=\"${HTTPS_PROXY:-UNSET}\"; "+
 			"echo POST_PIN_http_proxy=\"${http_proxy:-UNSET}\"; "+
-			"echo POST_PIN_https_proxy=\"${https_proxy:-UNSET}\"")
+			"echo POST_PIN_https_proxy=\"${https_proxy:-UNSET}\"; "+
+			"echo POST_PIN_ALL_PROXY=\"${ALL_PROXY:-UNSET}\"; "+
+			"echo POST_PIN_all_proxy=\"${all_proxy:-UNSET}\"")
 	cmd.Env = append([]string{
 		"SCRIPT=" + script,
 		"PATH=" + os.Getenv("PATH"),
@@ -440,6 +442,8 @@ func TestPinCIJobIdentity_UnsetsProxyEnvInParentShellOnSuccess(t *testing.T) {
 		"HTTPS_PROXY=http://attacker.example:8080",
 		"http_proxy=http://attacker.example:8080",
 		"https_proxy=http://attacker.example:8080",
+		"ALL_PROXY=http://attacker.example:8080",
+		"all_proxy=http://attacker.example:8080",
 	}, pinTLSEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "stdout/stderr: %s", out)
@@ -449,6 +453,8 @@ func TestPinCIJobIdentity_UnsetsProxyEnvInParentShellOnSuccess(t *testing.T) {
 	assert.Contains(t, got, "POST_PIN_HTTPS_PROXY=UNSET")
 	assert.Contains(t, got, "POST_PIN_http_proxy=UNSET")
 	assert.Contains(t, got, "POST_PIN_https_proxy=UNSET")
+	assert.Contains(t, got, "POST_PIN_ALL_PROXY=UNSET")
+	assert.Contains(t, got, "POST_PIN_all_proxy=UNSET")
 }
 
 // TestPinCIJobIdentity_AuthHeaderNotOnCurlArgv verifies that
