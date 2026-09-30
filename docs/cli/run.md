@@ -57,7 +57,8 @@ agents in one repository can use different providers. On GitHub Actions, a Verte
 Google credentials before the harness pre-script:
 
 - When `FULLSEND_GCP_PROJECT_ID` and `FULLSEND_GCP_WIF_PROVIDER` are both set, the run prepares
-  Google WIF credentials and points `GOOGLE_APPLICATION_CREDENTIALS` at them.
+  Google WIF credentials and points `GOOGLE_APPLICATION_CREDENTIALS` at them. This replaces any
+  credential file an earlier step prepared, including one that impersonates a service account.
 - When neither is set, the run uses the credential file that `GOOGLE_APPLICATION_CREDENTIALS`
   already names. An `external_account` file must read its token from `credential_source.file`.
 - When only one is set, the run fails.
@@ -66,8 +67,9 @@ The run prints which source it used. For local and GitLab Vertex runs, point
 `GOOGLE_APPLICATION_CREDENTIALS` at a non-empty credential file when the harness mounts it.
 An OpenAI run uses the [OpenAI credential path](#openai-credentials-on-pi-and-codex). When both GCP
 inputs are set, an OpenAI run on GitHub Actions also prepares Google WIF credentials for Vertex
-sub-agents; a failure there is a warning. The `dummy` and `dummy-playback` runtimes need no GCP
-inputs.
+sub-agents; a failure there is a warning. The `dummy` and `dummy-playback` runtimes skip Google
+credential setup. A run whose parent does not use Vertex ignores a `GOOGLE_APPLICATION_CREDENTIALS`
+file that fails these checks, so the harness cannot mount it.
 
 ```bash
 # try a repo's triage on pi with Gemini Flash, without touching its config

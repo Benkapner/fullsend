@@ -1036,7 +1036,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Prepare credentials before env validation and expansion, so harness
 	// references to GOOGLE_APPLICATION_CREDENTIALS resolve to the prepared file.
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		cleanup, err := setupActionsVertexCredentials(ctx, provider == runProviderVertex, printer, setFlagEnv)
+		cleanup, err := setupActionsVertexCredentials(ctx, provider, printer, setFlagEnv)
 		if err != nil {
 			printer.StepFail("Vertex credential setup failed")
 			return err
@@ -4115,10 +4115,11 @@ func runInferenceProvider(runtimeName string, needsOpenAI bool) string {
 // Actions run. With both GCP inputs set it prepares WIF credentials and
 // overrides GOOGLE_APPLICATION_CREDENTIALS; with neither set it keeps an
 // existing credential file from an earlier workflow step; one input alone is
-// an error. When required is false (the parent agent does not use Vertex),
-// credentials are still prepared for Vertex sub-agents if both inputs are
-// set, and any failure is a warning. The returned cleanup is never nil.
-func setupActionsVertexCredentials(ctx context.Context, required bool, printer *ui.Printer, setEnv func(key, value string)) (func(), error) {
+// an error. For an OpenAI parent, credentials are still prepared for Vertex
+// sub-agents if both inputs are set, and any failure is a warning. A run
+// whose parent does not use Vertex never mounts an existing credential file
+// that fails validation. The returned cleanup is never nil.
+func setupActionsVertexCredentials(ctx context.Context, provider string, printer *ui.Printer, setEnv func(key, value string)) (func(), error) {
 	noop := func() {}
 	projectID := strings.TrimSpace(os.Getenv(vertexinference.SecretProjectID))
 	wifProvider := strings.TrimSpace(os.Getenv(vertexinference.SecretWIFProvider))
@@ -4127,19 +4128,21 @@ func setupActionsVertexCredentials(ctx context.Context, required bool, printer *
 	partialErr := fmt.Errorf("Vertex inference requires both %s and %s; only one is set",
 		vertexinference.SecretProjectID, vertexinference.SecretWIFProvider)
 
-	if !required {
-		switch {
-		case partial:
-			printer.StepWarn("Vertex credentials for sub-agents skipped: " + partialErr.Error())
-		case inputsSet:
-			cleanup, err := prepareActionsWIF(ctx, projectID, wifProvider, setEnv)
-			if err != nil {
+	if provider != runProviderVertex {
+		if provider == runProviderOpenAI {
+			switch {
+			case partial:
+				printer.StepWarn("Vertex credentials for sub-agents skipped: " + partialErr.Error())
+			case inputsSet:
+				cleanup, err := prepareActionsWIF(ctx, projectID, wifProvider, setEnv)
+				if err == nil {
+					printer.StepDone("Vertex credentials: prepared GitHub WIF (for Vertex sub-agents)")
+					return cleanup, nil
+				}
 				printer.StepWarn("Vertex credentials for sub-agents unavailable: " + err.Error())
-				return noop, nil
 			}
-			printer.StepDone("Vertex credentials: prepared GitHub WIF (for Vertex sub-agents)")
-			return cleanup, nil
 		}
+		dropUnusableCredentialFile(printer, setEnv)
 		return noop, nil
 	}
 
@@ -4186,6 +4189,20 @@ func prepareActionsWIF(ctx context.Context, projectID, wifProvider string, setEn
 	return cleanup, nil
 }
 
+// dropUnusableCredentialFile clears GOOGLE_APPLICATION_CREDENTIALS when the
+// file it names fails validation, so an optional mount cannot copy it into
+// the sandbox.
+func dropUnusableCredentialFile(printer *ui.Printer, setEnv func(key, value string)) {
+	path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	if path == "" {
+		return
+	}
+	if err := validateExistingGCPCredentialFile(path); err != nil {
+		printer.StepWarn("Ignoring GOOGLE_APPLICATION_CREDENTIALS: " + err.Error())
+		setEnv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	}
+}
+
 // maskActionsValue asks GitHub Actions to mask a secret in the job log.
 func maskActionsValue(value string) {
 	if value != "" && os.Getenv("GITHUB_ACTIONS") == "true" {
@@ -4203,23 +4220,40 @@ func validateExistingGCPCredentialFile(path string) error {
 	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 		return fmt.Errorf("GOOGLE_APPLICATION_CREDENTIALS must point to a non-empty credential file")
 	}
+	if info.Size() > maxGCPCredentialFileBytes {
+		return fmt.Errorf("the GOOGLE_APPLICATION_CREDENTIALS file exceeds %d bytes", maxGCPCredentialFileBytes)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("reading the GOOGLE_APPLICATION_CREDENTIALS file failed")
 	}
-	var creds struct {
-		Type             string `json:"type"`
-		CredentialSource *struct {
-			File    string          `json:"file"`
-			URL     string          `json:"url"`
-			Headers json.RawMessage `json:"headers"`
-		} `json:"credential_source"`
-	}
+	var creds gcpCredentialFile
 	if err := json.Unmarshal(data, &creds); err != nil {
 		return fmt.Errorf("the GOOGLE_APPLICATION_CREDENTIALS file is not valid credential JSON")
 	}
+	return creds.check()
+}
+
+const maxGCPCredentialFileBytes = 64 << 10
+
+// gcpCredentialFile is the part of a Google credential file the runner
+// checks. Impersonation files nest their source in source_credentials.
+type gcpCredentialFile struct {
+	Type             string `json:"type"`
+	CredentialSource *struct {
+		File    string          `json:"file"`
+		URL     string          `json:"url"`
+		Headers json.RawMessage `json:"headers"`
+	} `json:"credential_source"`
+	SourceCredentials *gcpCredentialFile `json:"source_credentials"`
+}
+
+func (creds *gcpCredentialFile) check() error {
 	if strings.TrimSpace(creds.Type) == "" {
 		return fmt.Errorf("the GOOGLE_APPLICATION_CREDENTIALS file has no credential type")
+	}
+	if creds.SourceCredentials != nil {
+		return creds.SourceCredentials.check()
 	}
 	if creds.Type != "external_account" {
 		return nil

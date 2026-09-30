@@ -303,6 +303,9 @@ func TestValidateExistingGCPCredentialFile(t *testing.T) {
 		{name: "file source", content: `{"type":"external_account","credential_source":{"file":"/tmp/token"}}`},
 		{name: "null headers", content: `{"type":"external_account","credential_source":{"file":"/tmp/token","headers":null}}`},
 		{name: "empty file name", content: `{"type":"external_account","credential_source":{"file":""}}`, wantErr: "credential_source.file"},
+		{name: "impersonation over file source", content: `{"type":"impersonated_service_account","source_credentials":{"type":"external_account","credential_source":{"file":"/tmp/token"}}}`},
+		{name: "impersonation over url source", content: `{"type":"impersonated_service_account","source_credentials":{"type":"external_account","credential_source":{"url":"https://example.invalid","headers":{"Authorization":"Bearer x"}}}}`, wantErr: "credential_source.url or headers"},
+		{name: "oversized file", content: `{"type":"service_account","pad":"` + strings.Repeat("x", maxGCPCredentialFileBytes) + `"}`, wantErr: "exceeds"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "credentials.json")
@@ -474,13 +477,56 @@ func TestRunAgent_OpenAIParentVertexSubAgentCredentials(t *testing.T) {
 	}
 }
 
+// A parent that does not use Vertex never mounts a credential file that
+// fails validation: a URL source would copy the runner's request token into
+// the sandbox.
+func TestRunAgent_NonVertexParentDropsUnusableCredentialFile(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		content  string
+		wantKept bool
+	}{
+		{name: "url source", content: `{"type":"external_account","credential_source":{"url":"https://example.invalid","headers":{"Authorization":"Bearer x"}}}`},
+		{name: "file source", content: `{"type":"external_account","credential_source":{"file":"/tmp/token"}}`, wantKept: true},
+	} {
+		for _, runtimeName := range []string{"codex", "dummy"} {
+			t.Run(tc.name+"/"+runtimeName, func(t *testing.T) {
+				usePreScriptStub(t)
+				setActionsGCPEnv(t, runtimeName, "", "")
+				creds := filepath.Join(t.TempDir(), "credentials.json")
+				require.NoError(t, os.WriteFile(creds, []byte(tc.content), 0o600))
+				t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", creds)
+				record := filepath.Join(t.TempDir(), "pre-script-env")
+				dir := newSkipHarnessDir(t, `printf '%s' "${GOOGLE_APPLICATION_CREDENTIALS:-}" > `+record+"\n")
+				var out strings.Builder
+
+				_ = runSkipHarnessAgent(t, dir, ui.New(&out))
+				seen, err := os.ReadFile(record)
+				require.NoError(t, err, "pre-script must run")
+				if tc.wantKept {
+					assert.Equal(t, creds, string(seen))
+				} else {
+					assert.Empty(t, string(seen))
+					assert.Contains(t, out.String(), "Ignoring GOOGLE_APPLICATION_CREDENTIALS")
+				}
+				assert.Equal(t, creds, os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), "the run restores the environment")
+			})
+		}
+	}
+}
+
 // dummy runtimes do no inference, so a GitHub Actions run without GCP
-// inputs must not fail on Vertex setup.
+// inputs must not fail on Vertex setup, and one with inputs skips WIF.
 func TestRunAgent_DummyRuntimeNeedsNoGCPInputs(t *testing.T) {
-	for _, runtimeName := range []string{"dummy", "dummy-playback"} {
-		t.Run(runtimeName, func(t *testing.T) {
+	for _, tc := range []struct{ runtimeName, projectID, provider string }{
+		{runtimeName: "dummy"},
+		{runtimeName: "dummy-playback"},
+		{runtimeName: "dummy", projectID: "test-project", provider: testGCPWIFProvider},
+	} {
+		runtimeName := tc.runtimeName
+		t.Run(runtimeName+"/"+tc.projectID, func(t *testing.T) {
 			usePreScriptStub(t)
-			setActionsGCPEnv(t, runtimeName, "", "")
+			setActionsGCPEnv(t, runtimeName, tc.projectID, tc.provider)
 			stub := stubPrepareGitHubWIF(t, nil)
 			marker := filepath.Join(t.TempDir(), "pre-script-ran")
 			dir := newSkipHarnessDir(t, "touch "+marker+"\n")
