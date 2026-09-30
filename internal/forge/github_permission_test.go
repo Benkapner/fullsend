@@ -2,11 +2,48 @@ package forge
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type githubPermissionFixture struct {
+	Name      string          `json:"name"`
+	Payload   json.RawMessage `json:"payload"`
+	Want      string          `json:"want"`
+	WantError bool            `json:"want_error"`
+}
+
+func loadGitHubPermissionFixtures(t *testing.T) []githubPermissionFixture {
+	t.Helper()
+	data, err := os.ReadFile("testdata/github_permission_cases.json")
+	require.NoError(t, err)
+	var fixtures []githubPermissionFixture
+	require.NoError(t, json.Unmarshal(data, &fixtures))
+	return fixtures
+}
+
+func TestResolveGitHubCollaboratorPermission_SharedFixtures(t *testing.T) {
+	for _, fixture := range loadGitHubPermissionFixtures(t) {
+		t.Run(fixture.Name, func(t *testing.T) {
+			var permission GitHubCollaboratorPermission
+			decodeErr := json.Unmarshal(fixture.Payload, &permission)
+			if fixture.WantError && decodeErr != nil {
+				return
+			}
+			require.NoError(t, decodeErr)
+			got, err := ResolveGitHubCollaboratorPermission(permission)
+			if fixture.WantError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, fixture.Want, got)
+		})
+	}
+}
 
 func TestGitHubPermissionUserUnmarshalJSON(t *testing.T) {
 	tests := []struct {

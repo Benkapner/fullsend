@@ -1,8 +1,15 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const { resolveGitHubPermission } = require('./github-permission.cjs');
+
+const sharedCases = JSON.parse(fs.readFileSync(
+  path.resolve(__dirname, '../../internal/forge/testdata/github_permission_cases.json'),
+  'utf8'
+));
 
 const maintainFlags = {
   admin: false,
@@ -11,6 +18,16 @@ const maintainFlags = {
   triage: true,
   pull: true,
 };
+
+for (const fixture of sharedCases) {
+  test(`shared fixture: ${fixture.name}`, () => {
+    if (fixture.want_error) {
+      assert.throws(() => resolveGitHubPermission(fixture.payload));
+    } else {
+      assert.equal(resolveGitHubPermission(fixture.payload), fixture.want);
+    }
+  });
+}
 
 test('keeps built-in roles', () => {
   assert.equal(resolveGitHubPermission({ role_name: 'write' }), 'write');

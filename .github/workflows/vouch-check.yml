@@ -17,6 +17,8 @@ jobs:
       - name: Check out trusted workflow helpers
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # pull_request_target must load the trusted base helper, never PR-head code.
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Check if contributor is vouched
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0

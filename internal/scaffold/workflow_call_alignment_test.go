@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,10 +11,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
+
+type permissionParityFixture struct {
+	Name      string          `json:"name"`
+	Payload   json.RawMessage `json:"payload"`
+	Want      string          `json:"want"`
+	WantError bool            `json:"want_error"`
+}
 
 // reusableWorkflow represents the workflow_call interface of a reusable workflow.
 type reusableWorkflow struct {
@@ -1041,6 +1050,69 @@ func TestDispatchEffectivePermissionRuntime(t *testing.T) {
 					}
 				})
 			}
+		})
+	}
+}
+
+func TestGitHubPermissionResolverParity(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not available")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not available")
+	}
+
+	fixtureData := loadRepoFile("internal/forge/testdata/github_permission_cases.json")(t)
+	var fixtures []permissionParityFixture
+	require.NoError(t, json.Unmarshal(fixtureData, &fixtures))
+
+	workflow := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+	resolverPattern := regexp.MustCompile(`(?s)_resolve_github_permission\(\) \{ jq -er '\n(.*?)\n\s*'; \}`)
+	match := resolverPattern.FindStringSubmatch(workflow)
+	require.Len(t, match, 2, "extract the jq resolver from the real dispatch workflow")
+	jqResolver := match[1]
+
+	jsResolver, err := filepath.Abs(filepath.Join("..", "..", ".github", "scripts", "github-permission.cjs"))
+	require.NoError(t, err)
+	const nodeProgram = `
+const { resolveGitHubPermission } = require(process.argv[1]);
+try {
+  process.stdout.write(resolveGitHubPermission(JSON.parse(process.argv[2])));
+} catch (error) {
+  process.stderr.write(error.message);
+  process.exit(2);
+}`
+
+	for _, fixture := range fixtures {
+		t.Run(fixture.Name, func(t *testing.T) {
+			var permission forge.GitHubCollaboratorPermission
+			decodeErr := json.Unmarshal(fixture.Payload, &permission)
+			var goRole string
+			goErr := decodeErr
+			if goErr == nil {
+				goRole, goErr = forge.ResolveGitHubCollaboratorPermission(permission)
+			}
+
+			nodeCmd := exec.Command("node", "-e", nodeProgram, jsResolver, string(fixture.Payload))
+			nodeOutput, nodeErr := nodeCmd.CombinedOutput()
+
+			jqCmd := exec.Command("jq", "-er", jqResolver)
+			jqCmd.Stdin = strings.NewReader(string(fixture.Payload))
+			jqOutput, jqErr := jqCmd.CombinedOutput()
+
+			if fixture.WantError {
+				require.Error(t, goErr, "Go resolver must reject fixture")
+				require.Error(t, nodeErr, "JS resolver must reject fixture; output: %s", nodeOutput)
+				require.Error(t, jqErr, "jq resolver must reject fixture; output: %s", jqOutput)
+				return
+			}
+
+			require.NoError(t, goErr)
+			require.NoError(t, nodeErr, "%s", nodeOutput)
+			require.NoError(t, jqErr, "%s", jqOutput)
+			assert.Equal(t, fixture.Want, goRole)
+			assert.Equal(t, fixture.Want, strings.TrimSpace(string(nodeOutput)))
+			assert.Equal(t, fixture.Want, strings.TrimSpace(string(jqOutput)))
 		})
 	}
 }
