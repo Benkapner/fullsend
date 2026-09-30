@@ -135,5 +135,3 @@ within your GitHub organization.
 * Read the [Agents](../../agents/README.md) section to learn about the default agents Fullsend
 ships with.
 * Explore other sections of this documentation for more information.
-
-Assisted-by: Codex

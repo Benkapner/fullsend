@@ -705,5 +705,3 @@ commands.
 - [Per-Org Mode](org-mode.md) — Organization-mode installation (planned deprecation)
 - [CLI Reference: fullsend repos](../../cli/repos.md) — Full flag and subcommand reference
 - [Mint administration](../infrastructure/mint-administration.md) — Token mint deployment and management
-
-Assisted-by: Codex

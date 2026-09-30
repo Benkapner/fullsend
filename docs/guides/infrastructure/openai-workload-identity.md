@@ -474,5 +474,3 @@ agent starts and names the rule.
 - [Running agents locally](../user/running-agents-locally.md)
 - [ADR 0092](../../ADRs/0092-openai-wif-credential-delivery.md) — design and accepted risks
 - [OpenAI: Workload identity federation for GitHub Actions](https://developers.openai.com/api/docs/guides/workload-identity-federation/github-actions)
-
-Assisted-by: Codex

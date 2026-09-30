@@ -802,5 +802,3 @@ configure WIF. If agent jobs fail token exchange, confirm the
   GitLab CI status-notification variables.
 * Read the [Agents](../../agents/README.md) section to learn about the
   default agents Fullsend ships with.
-
-Assisted-by: Codex
