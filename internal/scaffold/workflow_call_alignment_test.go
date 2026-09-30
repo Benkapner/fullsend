@@ -946,6 +946,22 @@ func TestDispatchEffectivePermissionRuntime(t *testing.T) {
 			wantStage:  "",
 			wantOutput: "Invalid permission response",
 		},
+		{
+			name:       "explicit null flags fail closed",
+			command:    "/fs-review",
+			isPR:       "true",
+			payload:    `{"permission":"write","role_name":"Custom","user":{"permissions":null}}`,
+			wantStage:  "",
+			wantOutput: "Invalid permission response",
+		},
+		{
+			name:       "malformed user fails closed",
+			command:    "/fs-review",
+			isPR:       "true",
+			payload:    `{"permission":"write","role_name":"Custom","user":null}`,
+			wantStage:  "",
+			wantOutput: "Invalid permission response",
+		},
 	}
 
 	for _, workflow := range workflows {

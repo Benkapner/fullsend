@@ -1,6 +1,8 @@
 package forge
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -19,7 +21,38 @@ type GitHubPermissionFlags struct {
 // GitHubPermissionUser is the user portion of GitHub's collaborator
 // permission response.
 type GitHubPermissionUser struct {
-	Permissions *GitHubPermissionFlags `json:"permissions"`
+	Permissions        *GitHubPermissionFlags `json:"permissions,omitempty"`
+	permissionsPresent bool
+}
+
+// UnmarshalJSON preserves whether permissions was absent or explicitly null.
+// GitHub may omit the field, which permits conservative legacy fallback, but
+// a present null value is malformed and must fail closed.
+func (u *GitHubPermissionUser) UnmarshalJSON(data []byte) error {
+	*u = GitHubPermissionUser{}
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return fmt.Errorf("user must be an object")
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("decode user: %w", err)
+	}
+	raw, ok := fields["permissions"]
+	if !ok {
+		return nil
+	}
+	u.permissionsPresent = true
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil
+	}
+
+	var permissions GitHubPermissionFlags
+	if err := json.Unmarshal(raw, &permissions); err != nil {
+		return fmt.Errorf("decode user.permissions: %w", err)
+	}
+	u.Permissions = &permissions
+	return nil
 }
 
 // GitHubCollaboratorPermission is GitHub's calculated repository permission
@@ -46,11 +79,16 @@ func ResolveGitHubCollaboratorPermission(p GitHubCollaboratorPermission) (string
 		return "", fmt.Errorf("unknown legacy permission %q", p.Permission)
 	}
 
+	permissionsPresent := p.User.permissionsPresent || p.User.Permissions != nil
+	if permissionsPresent && p.User.Permissions == nil {
+		return "", fmt.Errorf("user.permissions is missing required boolean fields")
+	}
+
 	if isGitHubBaseRole(roleName) {
 		if legacy != "" && !githubPermissionSignalsCompatible(roleName, legacy) {
 			return "", fmt.Errorf("role_name %q conflicts with permission %q", p.RoleName, p.Permission)
 		}
-		if p.User.Permissions != nil {
+		if permissionsPresent {
 			flagsRole, err := resolveGitHubPermissionFlags(p.User.Permissions)
 			if err != nil {
 				return "", err
@@ -65,7 +103,7 @@ func ResolveGitHubCollaboratorPermission(p GitHubCollaboratorPermission) (string
 	if legacy == "" {
 		return "", fmt.Errorf("custom role_name %q has no effective permission", p.RoleName)
 	}
-	if p.User.Permissions == nil {
+	if !permissionsPresent {
 		return legacy, nil
 	}
 

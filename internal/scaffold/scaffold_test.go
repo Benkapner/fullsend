@@ -371,6 +371,20 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 				assert.Contains(t, out, "Invalid permission response")
 			})
 
+			t.Run("explicit null permissions fail closed", func(t *testing.T) {
+				payload := `{"permission":"write","role_name":"Custom","user":{"permissions":null}}`
+				out, labeled := runScenario(t, script, "bob", "alice", payload)
+				assert.False(t, labeled, "explicit null permissions must be denied")
+				assert.Contains(t, out, "Invalid permission response")
+			})
+
+			t.Run("malformed user fails closed", func(t *testing.T) {
+				payload := `{"permission":"write","role_name":"Custom","user":null}`
+				out, labeled := runScenario(t, script, "bob", "alice", payload)
+				assert.False(t, labeled, "malformed user must be denied")
+				assert.Contains(t, out, "Invalid permission response")
+			})
+
 			t.Run("api failure fails closed", func(t *testing.T) {
 				out, labeled := runScenario(t, script, "bob", "alice", "FAIL")
 				assert.False(t, labeled, "API failure must fail closed (deny)")

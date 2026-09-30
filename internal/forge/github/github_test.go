@@ -218,6 +218,30 @@ func TestDeleteBranch(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, forge.IsNotFound(err))
 	})
+
+	t.Run("explicit null permissions fail closed", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"permission":"write","role_name":"Custom","user":{"permissions":null}}`)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		permission, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "alice")
+		require.NoError(t, err)
+		_, err = forge.ResolveGitHubCollaboratorPermission(permission)
+		require.ErrorContains(t, err, "missing required boolean fields")
+	})
+
+	t.Run("malformed user fails closed while decoding", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"permission":"write","role_name":"Custom","user":null}`)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "alice")
+		require.ErrorContains(t, err, "user must be an object")
+	})
 }
 
 func TestFindExistingFork(t *testing.T) {

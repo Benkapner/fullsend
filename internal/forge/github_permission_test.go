@@ -122,6 +122,17 @@ func TestResolveGitHubCollaboratorPermission(t *testing.T) {
 			wantErr: "missing required boolean fields",
 		},
 		{
+			name: "explicit null flags fail closed",
+			input: GitHubCollaboratorPermission{
+				RoleName:   "Custom",
+				Permission: "write",
+				User: GitHubPermissionUser{
+					permissionsPresent: true,
+				},
+			},
+			wantErr: "missing required boolean fields",
+		},
+		{
 			name: "contradictory hierarchy fails closed",
 			input: GitHubCollaboratorPermission{
 				RoleName:   "Custom",
