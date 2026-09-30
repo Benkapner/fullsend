@@ -373,6 +373,7 @@ func (e *repoEnsurer) awaitDeletion(ctx context.Context, org, repoName, target s
 func (e *repoEnsurer) ensureRepoExists(ctx context.Context, org, repoName, target string) error {
 	e.logf("[ensure] creating %s (auto_init provides initial commit)", target)
 	var lastErr error
+	delay := resetRetryDelay
 	for attempt := 1; attempt <= resetMaxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("context cancelled while creating %s: %w", target, err)
@@ -395,6 +396,20 @@ func (e *repoEnsurer) ensureRepoExists(ctx context.Context, org, repoName, targe
 			if err := e.deleteBlockingRepo(ctx, org, repoName, target); err != nil {
 				return err
 			}
+			// deleteBlockingRepo's awaitDeletion can return immediately when
+			// GetRepo already 404s, even though CreateRepo can keep
+			// rejecting the name as taken for a few seconds afterward — a
+			// GetRepo 404 is not proof the name is free for CreateRepo any
+			// more than a GetRepo success is proof it's still taken (#7839's
+			// mirror case). Back off explicitly so this retry never fires
+			// back-to-back with the previous one.
+			e.logf("[ensure] %s still taken after delete, backing off %v before retrying create", target, delay)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled while creating %s: %w", target, ctx.Err())
+			case <-time.After(delay):
+			}
+			delay *= 2
 		}
 	}
 	return fmt.Errorf("creating repo %s: name still taken after %d attempts following reset: %w", target, resetMaxAttempts, lastErr)

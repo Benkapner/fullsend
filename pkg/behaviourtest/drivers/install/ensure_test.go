@@ -1291,6 +1291,36 @@ func TestEnsureRepoExists_AlreadyExistsDeletesForkToo(t *testing.T) {
 	assert.Equal(t, int32(2), sc.createRepoCalled.Load())
 }
 
+// TestEnsureRepoExists_AlreadyExistsBacksOffEvenWhenGetRepoAlready404s pins
+// the fix for the mirror-image race of #7839: deleteBlockingRepo's
+// awaitDeletion can return immediately when GetRepo already 404s right
+// after DeleteRepo (stubClient's default, non-stale behaviour), yet
+// CreateRepo can keep rejecting the name as taken for a few seconds
+// afterward. Without an explicit backoff in ensureRepoExists itself, the
+// retry loop would fire back-to-back with no delay at all and could
+// exhaust resetMaxAttempts well under the window the retry is meant to
+// cover. blockedByExistingRepo exercises exactly this instant-404 path
+// (staleGetAfterDelete is false), so the only source of elapsed time here
+// is the explicit backoff — a regression to no backoff makes this test
+// fail rather than pass vacuously.
+func TestEnsureRepoExists_AlreadyExistsBacksOffEvenWhenGetRepoAlready404s(t *testing.T) {
+	orig := resetRetryDelay
+	resetRetryDelay = 40 * time.Millisecond
+	t.Cleanup(func() { resetRetryDelay = orig })
+
+	sc := &stubClient{blockedByExistingRepo: true}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	start := time.Now()
+	err := e.ensureRepoExists(context.Background(), "org", "repo", "org/repo")
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), sc.createRepoCalled.Load())
+	assert.GreaterOrEqual(t, elapsed, resetRetryDelay,
+		"already-exists retry must back off even when GetRepo already 404s")
+}
+
 func TestEnsureRepoExists_CreateRepoError(t *testing.T) {
 	sc := &stubClient{createRepoErr: fmt.Errorf("permission denied")}
 	e := &repoEnsurer{client: sc, logf: t.Logf}
