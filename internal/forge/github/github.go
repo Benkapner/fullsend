@@ -943,6 +943,14 @@ func (c *LiveClient) putFileWithRetry(ctx context.Context, apiPath string, paylo
 // by do(). It uses linear backoff (2s between attempts) and up to 5
 // attempts (~10s total).
 func (c *LiveClient) retryOnRepoRace(ctx context.Context, label string, fn func() error) error {
+	return c.retryOnRepoRaceIf(ctx, label, func(apiErr *APIError) bool {
+		return isTransientStatus(apiErr.StatusCode)
+	}, fn)
+}
+
+// retryOnRepoRaceIf is retryOnRepoRace with a caller-chosen test for
+// which API errors are transient.
+func (c *LiveClient) retryOnRepoRaceIf(ctx context.Context, label string, transient func(*APIError) bool, fn func() error) error {
 	const attempts = 5
 	const delay = 2 * time.Second
 
@@ -953,12 +961,10 @@ func (c *LiveClient) retryOnRepoRace(ctx context.Context, label string, fn func(
 			return nil
 		}
 
-		// Retry on transient errors:
-		// - 404: repo not ready (async init)
-		// - 409: branch ref conflict
-		// - 500/502/503/504: transient server-side errors
+		// Retry only the API errors the caller's predicate marks as
+		// transient; anything else, including non-API errors, fails now.
 		var apiErr *APIError
-		if !errors.As(lastErr, &apiErr) || !isTransientStatus(apiErr.StatusCode) {
+		if !errors.As(lastErr, &apiErr) || !transient(apiErr) {
 			return lastErr
 		}
 
@@ -987,6 +993,61 @@ func isTransientStatus(code int) bool {
 	}
 }
 
+// getRepoObjectWithRetry GETs a repo, commit or tree for a Git Data
+// write or listing and decodes it into v, retrying GitHub's
+// read-after-create lag (#7861) as classified by isGitDataReadLag: the
+// transient 404/409s plus the "Invalid object requested" 422. Callers here always
+// expect the object to exist, so a genuinely missing one costs the full
+// retry budget (about 8s) before the error is returned. GetRepo itself is
+// not retried: callers use its 404 to test for existence.
+func (c *LiveClient) getRepoObjectWithRetry(ctx context.Context, label, decodeLabel, path string, v any) error {
+	return c.retryOnRepoRaceIf(ctx, label, isGitDataReadLag, func() error {
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
+		if err := decodeJSON(resp, v); err != nil {
+			return fmt.Errorf("%s: %w", decodeLabel, err)
+		}
+		return nil
+	})
+}
+
+// isGitDataReadLag reports whether a Git Data read failed on GitHub's
+// read-after-create lag: the usual transient statuses, plus the 422
+// "Invalid object requested. SHA must identify a commit or a tree"
+// that GitHub returns for a commit or tree SHA that another read just
+// returned but this replica has not seen yet. Other 422s are real
+// validation errors and are not retried.
+func isGitDataReadLag(apiErr *APIError) bool {
+	if isTransientStatus(apiErr.StatusCode) {
+		return true
+	}
+	if apiErr.StatusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	msg := strings.ToLower(apiErr.Message)
+	for _, d := range apiErr.Errors {
+		msg += " " + strings.ToLower(d.Message)
+	}
+	return strings.Contains(msg, "invalid object requested")
+}
+
+// getCommitTreeSHA returns the tree SHA of commitSHA, retrying replica
+// lag on a freshly created repo (see getRepoObjectWithRetry).
+func (c *LiveClient) getCommitTreeSHA(ctx context.Context, owner, repo, commitSHA string) (string, error) {
+	var commitObj struct {
+		Tree struct {
+			SHA string `json:"sha"`
+		} `json:"tree"`
+	}
+	if err := c.getRepoObjectWithRetry(ctx, "get commit", "decode commit",
+		fmt.Sprintf("/repos/%s/%s/git/commits/%s", owner, repo, commitSHA), &commitObj); err != nil {
+		return "", err
+	}
+	return commitObj.Tree.SHA, nil
+}
+
 // CommitFiles atomically commits multiple files to the default branch
 // using the Git Trees/Blobs/Commits API. Returns (false, nil) when
 // all files already match the current tree (idempotent).
@@ -1001,15 +1062,12 @@ func (c *LiveClient) CommitFiles(ctx context.Context, owner, repo, message strin
 	}
 
 	// Get default branch name.
-	repoResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
-	if err != nil {
-		return false, fmt.Errorf("get repo: %w", err)
-	}
 	var repoInfo struct {
 		DefaultBranch string `json:"default_branch"`
 	}
-	if err := decodeJSON(repoResp, &repoInfo); err != nil {
-		return false, fmt.Errorf("decode repo info: %w", err)
+	if err := c.getRepoObjectWithRetry(ctx, "get repo", "decode repo info",
+		fmt.Sprintf("/repos/%s/%s", owner, repo), &repoInfo); err != nil {
+		return false, err
 	}
 
 	return c.commitFilesWithRetry(ctx, owner, repo, repoInfo.DefaultBranch, message, files)
@@ -1073,26 +1131,15 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		return false, err
 	}
 
-	// 2. Get the current commit to find its tree SHA.
-	cResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/commits/%s", owner, repo, commitSHA))
+	// 2. Get the current commit to find its tree SHA. Retried because
+	// GitHub's auto_init can make the branch ref readable while the
+	// commit object is still propagating (#7861).
+	baseTreeSHA, err := c.getCommitTreeSHA(ctx, owner, repo, commitSHA)
 	if err != nil {
-		return false, fmt.Errorf("get commit: %w", err)
+		return false, err
 	}
-	var commitObj struct {
-		Tree struct {
-			SHA string `json:"sha"`
-		} `json:"tree"`
-	}
-	if err := decodeJSON(cResp, &commitObj); err != nil {
-		return false, fmt.Errorf("decode commit: %w", err)
-	}
-	baseTreeSHA := commitObj.Tree.SHA
 
 	// 3. Get the full recursive tree to compare existing blobs.
-	treeResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, baseTreeSHA))
-	if err != nil {
-		return false, fmt.Errorf("get tree: %w", err)
-	}
 	var existingTree struct {
 		Tree []struct {
 			Path string `json:"path"`
@@ -1101,8 +1148,9 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		} `json:"tree"`
 		Truncated bool `json:"truncated"`
 	}
-	if err := decodeJSON(treeResp, &existingTree); err != nil {
-		return false, fmt.Errorf("decode tree: %w", err)
+	if err := c.getRepoObjectWithRetry(ctx, "get tree", "decode tree",
+		fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, baseTreeSHA), &existingTree); err != nil {
+		return false, err
 	}
 	if existingTree.Truncated {
 		return false, fmt.Errorf("tree too large (truncated); cannot diff")
@@ -1243,15 +1291,12 @@ func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message strin
 		return 0, nil
 	}
 
-	repoResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
-	if err != nil {
-		return 0, fmt.Errorf("get repo: %w", err)
-	}
 	var repoInfo struct {
 		DefaultBranch string `json:"default_branch"`
 	}
-	if err := decodeJSON(repoResp, &repoInfo); err != nil {
-		return 0, fmt.Errorf("decode repo info: %w", err)
+	if err := c.getRepoObjectWithRetry(ctx, "get repo", "decode repo info",
+		fmt.Sprintf("/repos/%s/%s", owner, repo), &repoInfo); err != nil {
+		return 0, err
 	}
 
 	var commitSHA string
@@ -1274,24 +1319,11 @@ func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message strin
 		return 0, err
 	}
 
-	cResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/commits/%s", owner, repo, commitSHA))
+	baseTreeSHA, err := c.getCommitTreeSHA(ctx, owner, repo, commitSHA)
 	if err != nil {
-		return 0, fmt.Errorf("get commit: %w", err)
+		return 0, err
 	}
-	var commitObj struct {
-		Tree struct {
-			SHA string `json:"sha"`
-		} `json:"tree"`
-	}
-	if err := decodeJSON(cResp, &commitObj); err != nil {
-		return 0, fmt.Errorf("decode commit: %w", err)
-	}
-	baseTreeSHA := commitObj.Tree.SHA
 
-	treeResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, baseTreeSHA))
-	if err != nil {
-		return 0, fmt.Errorf("get tree: %w", err)
-	}
 	var existingTree struct {
 		Tree []struct {
 			Path string `json:"path"`
@@ -1299,8 +1331,9 @@ func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message strin
 		} `json:"tree"`
 		Truncated bool `json:"truncated"`
 	}
-	if err := decodeJSON(treeResp, &existingTree); err != nil {
-		return 0, fmt.Errorf("decode tree: %w", err)
+	if err := c.getRepoObjectWithRetry(ctx, "get tree", "decode tree",
+		fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, baseTreeSHA), &existingTree); err != nil {
+		return 0, err
 	}
 	if existingTree.Truncated {
 		return 0, fmt.Errorf("tree too large (truncated); cannot delete")
@@ -1598,15 +1631,12 @@ func (c *LiveClient) listDirContents(ctx context.Context, owner, repo, path, ref
 // the Git Trees API (single recursive call).
 func (c *LiveClient) ListRepositoryFiles(ctx context.Context, owner, repo string) ([]string, error) {
 	// 1. Get default branch.
-	repoResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
-	if err != nil {
-		return nil, fmt.Errorf("get repo: %w", err)
-	}
 	var repoInfo struct {
 		DefaultBranch string `json:"default_branch"`
 	}
-	if err := decodeJSON(repoResp, &repoInfo); err != nil {
-		return nil, fmt.Errorf("decode repo info: %w", err)
+	if err := c.getRepoObjectWithRetry(ctx, "get repo", "decode repo info",
+		fmt.Sprintf("/repos/%s/%s", owner, repo), &repoInfo); err != nil {
+		return nil, err
 	}
 
 	// 2. Get branch ref → commit SHA.
@@ -1631,24 +1661,12 @@ func (c *LiveClient) ListRepositoryFiles(ctx context.Context, owner, repo string
 	}
 
 	// 3. Get commit → tree SHA.
-	cResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/commits/%s", owner, repo, commitSHA))
+	treeSHA, err := c.getCommitTreeSHA(ctx, owner, repo, commitSHA)
 	if err != nil {
-		return nil, fmt.Errorf("get commit: %w", err)
-	}
-	var commitObj struct {
-		Tree struct {
-			SHA string `json:"sha"`
-		} `json:"tree"`
-	}
-	if err := decodeJSON(cResp, &commitObj); err != nil {
-		return nil, fmt.Errorf("decode commit: %w", err)
+		return nil, err
 	}
 
 	// 4. Get recursive tree → file paths.
-	treeResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, commitObj.Tree.SHA))
-	if err != nil {
-		return nil, fmt.Errorf("get tree: %w", err)
-	}
 	var tree struct {
 		Tree []struct {
 			Path string `json:"path"`
@@ -1656,8 +1674,9 @@ func (c *LiveClient) ListRepositoryFiles(ctx context.Context, owner, repo string
 		} `json:"tree"`
 		Truncated bool `json:"truncated"`
 	}
-	if err := decodeJSON(treeResp, &tree); err != nil {
-		return nil, fmt.Errorf("decode tree: %w", err)
+	if err := c.getRepoObjectWithRetry(ctx, "get tree", "decode tree",
+		fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, treeSHA), &tree); err != nil {
+		return nil, err
 	}
 	if tree.Truncated {
 		return nil, fmt.Errorf("repository tree too large: %w", forge.ErrTreeTruncated)
