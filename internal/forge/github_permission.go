@@ -100,10 +100,10 @@ func ResolveGitHubCollaboratorPermission(p GitHubCollaboratorPermission) (string
 		return roleName, nil
 	}
 
-	if legacy == "" {
-		return "", fmt.Errorf("custom role_name %q has no effective permission", p.RoleName)
-	}
 	if !permissionsPresent {
+		if legacy == "" {
+			return "", fmt.Errorf("custom role_name %q has no effective permission", p.RoleName)
+		}
 		return legacy, nil
 	}
 
@@ -111,7 +111,7 @@ func ResolveGitHubCollaboratorPermission(p GitHubCollaboratorPermission) (string
 	if err != nil {
 		return "", err
 	}
-	if !githubPermissionSignalsCompatible(flagsRole, legacy) {
+	if legacy != "" && !githubPermissionSignalsCompatible(flagsRole, legacy) {
 		return "", fmt.Errorf("user.permissions role %q conflicts with permission %q", flagsRole, p.Permission)
 	}
 	return flagsRole, nil

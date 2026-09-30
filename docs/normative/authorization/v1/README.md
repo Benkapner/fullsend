@@ -135,7 +135,7 @@ describe behavior currently implemented by `fullsend dispatch` or
 | Condition | Outcome |
 |-----------|---------|
 | Custom `role_name` with compatible effective permission fields | Resolved to the corresponding built-in base role |
-| Custom `role_name` without a valid top-level `permission` | Denied |
+| Custom `role_name` without either a valid top-level `permission` or a complete `user.permissions` object | Denied |
 | `permission: read` without precise `user.permissions` | Conservatively mapped to `read`; does not satisfy the `triage` threshold |
 | `user.permissions` is present but incomplete, non-boolean, or internally contradictory | Denied |
 | `role_name`, `permission`, and `user.permissions` signals are incompatible after GitHub's documented Maintain/Write and Triage/Read collapsing | Denied |

@@ -358,6 +358,12 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 				assert.True(t, labeled, "custom role with effective maintain access must be authorized")
 			})
 
+			t.Run("custom maintain role with precise signals only authorized", func(t *testing.T) {
+				payload := `{"role_name":"ODH Repo Maintainer","user":{"permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true}}}`
+				_, labeled := runScenario(t, script, "bob", "alice", payload)
+				assert.True(t, labeled, "complete capability flags must authorize without the legacy field")
+			})
+
 			t.Run("read collaborator denied", func(t *testing.T) {
 				out, labeled := runScenario(t, script, "bob", "alice", `{"role_name":"read"}`)
 				assert.False(t, labeled, "read-only collaborator must be denied")

@@ -911,6 +911,13 @@ func TestDispatchEffectivePermissionRuntime(t *testing.T) {
 			wantStage: "review",
 		},
 		{
+			name:      "custom maintain role with precise signals only can review",
+			command:   "/fs-review",
+			isPR:      "true",
+			payload:   `{"role_name":"ODH Repo Maintainer","user":{"permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true}}}`,
+			wantStage: "review",
+		},
+		{
 			name:      "custom triage role can review",
 			command:   "/fs-review",
 			isPR:      "true",

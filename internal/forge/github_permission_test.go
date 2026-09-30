@@ -79,6 +79,16 @@ func TestResolveGitHubCollaboratorPermission(t *testing.T) {
 			want: "maintain",
 		},
 		{
+			name: "custom maintain role from precise signals alone",
+			input: GitHubCollaboratorPermission{
+				RoleName: "ODH Repo Maintainer",
+				User: GitHubPermissionUser{
+					Permissions: permissionFlags(false, true, true, true, true),
+				},
+			},
+			want: "maintain",
+		},
+		{
 			name: "custom triage role",
 			input: GitHubCollaboratorPermission{
 				RoleName:   "Support Triage",
