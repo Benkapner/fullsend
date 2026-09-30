@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,6 +20,17 @@ import (
 )
 
 const testWIFProvider = "projects/123456789/locations/global/workloadIdentityPools/fullsend/providers/github"
+
+// providerAllowedAudiences mirrors the allowedAudiences that
+// internal/dispatch/gcf provisions on a provider: iamAudience() plus the
+// mint audience. Google STS accepts a GitHub OIDC token only for these.
+func providerAllowedAudiences(projectNumber, poolID, providerID string) []string {
+	return []string{
+		fmt.Sprintf("https://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
+			projectNumber, poolID, providerID),
+		"fullsend-mint",
+	}
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -30,11 +43,17 @@ func TestPrepareGitHubWIF(t *testing.T) {
 		requestToken = "runner-request-secret"
 		subjectToken = "github-oidc-secret"
 	)
+	allowed := providerAllowedAudiences("123456789", "fullsend", "github")
 	var oidcCalled, stsCalled bool
 	oidc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		oidcCalled = true
 		assert.Equal(t, "Bearer "+requestToken, r.Header.Get("Authorization"))
-		assert.Equal(t, "//iam.googleapis.com/"+testWIFProvider, r.URL.Query().Get("audience"))
+		// A token minted for any other audience would be refused by STS, so
+		// the fake refuses to mint it.
+		if !slices.Contains(allowed, r.URL.Query().Get("audience")) {
+			http.Error(w, "audience not allowed by provider", http.StatusForbidden)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"value":"`+subjectToken+`"}`)
 	}))
@@ -53,15 +72,18 @@ func TestPrepareGitHubWIF(t *testing.T) {
 	}))
 	t.Cleanup(sts.Close)
 
+	var seenTokens []string
 	env, cleanup, err := prepareGitHubWIF(context.Background(), Config{
 		ProjectID:                "example-project",
 		WorkloadIdentityProvider: testWIFProvider,
 		OIDCRequestURL:           oidc.URL + "?api-version=2.0",
 		OIDCRequestToken:         requestToken,
 		TempDir:                  t.TempDir(),
+		OnSubjectToken:           func(token string) { seenTokens = append(seenTokens, token) },
 	}, prepareOptions{stsEndpoint: sts.URL, httpClient: oidc.Client()})
 	require.NoError(t, err)
 	require.NotNil(t, cleanup)
+	assert.Equal(t, []string{subjectToken}, seenTokens)
 	assert.True(t, oidcCalled)
 	assert.True(t, stsCalled)
 
@@ -77,9 +99,12 @@ func TestPrepareGitHubWIF(t *testing.T) {
 		assert.Equal(t, "example-project", env[key], key)
 	}
 
+	// The refresh loop re-requests with this URL, so it must carry an
+	// audience the provider accepts.
 	oidcURL, err := url.Parse(env["FULLSEND_GCP_OIDC_URL"])
 	require.NoError(t, err)
-	assert.Equal(t, "//iam.googleapis.com/"+testWIFProvider, oidcURL.Query().Get("audience"))
+	assert.Equal(t, "https://iam.googleapis.com/"+testWIFProvider, oidcURL.Query().Get("audience"))
+	assert.Contains(t, allowed, oidcURL.Query().Get("audience"))
 
 	for _, path := range []string{credentialsPath, tokenPath, authPath} {
 		info, statErr := os.Stat(path)
@@ -194,7 +219,7 @@ func TestFetchOIDCTokenRejectsInvalidResponses(t *testing.T) {
 					Header:     make(http.Header),
 				}, nil
 			})}
-			_, err := fetchOIDCToken(context.Background(), client, "https://token.actions.githubusercontent.com/token", "request-secret")
+			_, _, err := fetchOIDCToken(context.Background(), client, "https://token.actions.githubusercontent.com/token", "request-secret")
 			require.ErrorContains(t, err, tt.wantErr)
 			assert.NotContains(t, err.Error(), "secret body")
 			assert.NotContains(t, err.Error(), "request-secret")

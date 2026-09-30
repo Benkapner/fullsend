@@ -42,6 +42,9 @@ type Config struct {
 	OIDCRequestURL           string
 	OIDCRequestToken         string
 	TempDir                  string
+	// OnSubjectToken, when set, receives the fetched GitHub OIDC token so
+	// the caller can mask it in its log before the token is used.
+	OnSubjectToken func(token string)
 }
 
 type prepareOptions struct {
@@ -111,14 +114,20 @@ func prepareGitHubWIF(ctx context.Context, cfg Config, opts prepareOptions) (map
 		}
 	}
 
+	// The OIDC token's aud claim must match the provider's allowedAudiences,
+	// which list the https form; STS takes the scheme-relative resource name.
+	oidcAudience := "https://iam.googleapis.com/" + cfg.WorkloadIdentityProvider
 	audience := "//iam.googleapis.com/" + cfg.WorkloadIdentityProvider
-	oidcURL, err := addAudience(cfg.OIDCRequestURL, audience)
+	oidcURL, err := addAudience(cfg.OIDCRequestURL, oidcAudience)
 	if err != nil {
 		return nil, nil, fmt.Errorf("preparing GitHub OIDC request: %w", err)
 	}
-	tokenJSON, err := fetchOIDCToken(ctx, client, oidcURL, cfg.OIDCRequestToken)
+	subjectToken, tokenJSON, err := fetchOIDCToken(ctx, client, oidcURL, cfg.OIDCRequestToken)
 	if err != nil {
 		return nil, nil, err
+	}
+	if cfg.OnSubjectToken != nil {
+		cfg.OnSubjectToken(subjectToken)
 	}
 
 	tempBase := cfg.TempDir
@@ -241,34 +250,34 @@ func requireGitHubOIDCURL(raw string) error {
 	return nil
 }
 
-func fetchOIDCToken(ctx context.Context, client *http.Client, endpoint, requestToken string) ([]byte, error) {
+func fetchOIDCToken(ctx context.Context, client *http.Client, endpoint, requestToken string) (string, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, fmt.Errorf("creating GitHub OIDC request: %w", err)
+		return "", nil, fmt.Errorf("creating GitHub OIDC request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+requestToken)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("requesting GitHub OIDC token failed")
+		return "", nil, fmt.Errorf("requesting GitHub OIDC token failed")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub OIDC endpoint returned HTTP %d", resp.StatusCode)
+		return "", nil, fmt.Errorf("GitHub OIDC endpoint returned HTTP %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("reading GitHub OIDC response failed")
+		return "", nil, fmt.Errorf("reading GitHub OIDC response failed")
 	}
 	if len(body) > maxResponseBytes {
-		return nil, fmt.Errorf("GitHub OIDC response exceeds %d bytes", maxResponseBytes)
+		return "", nil, fmt.Errorf("GitHub OIDC response exceeds %d bytes", maxResponseBytes)
 	}
 	var response oidcResponse
 	if err := json.Unmarshal(body, &response); err != nil || response.Value == "" {
-		return nil, fmt.Errorf("GitHub OIDC endpoint returned an invalid token response")
+		return "", nil, fmt.Errorf("GitHub OIDC endpoint returned an invalid token response")
 	}
 	tokenJSON, err := json.Marshal(response)
 	if err != nil {
-		return nil, fmt.Errorf("encoding temporary OIDC token failed")
+		return "", nil, fmt.Errorf("encoding temporary OIDC token failed")
 	}
-	return tokenJSON, nil
+	return response.Value, tokenJSON, nil
 }
