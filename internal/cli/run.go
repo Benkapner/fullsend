@@ -1130,7 +1130,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		provider = runProviderOpenAI
 	}
 	if provider == runProviderVertex {
-		if os.Getenv("GITHUB_ACTIONS") == "true" {
+		if os.Getenv("GITHUB_ACTIONS") == "true" && !hasExistingGCPCredentials() {
 			vertexEnv, cleanup, err := vertexauth.PrepareGitHubWIF(ctx, vertexauth.Config{
 				ProjectID:                os.Getenv(vertexinference.SecretProjectID),
 				WorkloadIdentityProvider: os.Getenv(vertexinference.SecretWIFProvider),
@@ -4112,6 +4112,17 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 		SpanKind:        spanKind,
 		PropagatedFlags: propagatedFlags,
 	}
+}
+
+// hasExistingGCPCredentials preserves credentials prepared by an earlier
+// workflow step, including service-account impersonation configurations.
+func hasExistingGCPCredentials() bool {
+	path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // validateVertexGCPCredentials fails a Vertex run before its pre-script can

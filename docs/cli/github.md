@@ -40,9 +40,6 @@ fullsend github setup <owner/repo> \
   --inference-wif-provider "<WIF_PROVIDER>"
 ```
 
-The GCP inference flags are optional for per-repo setup. Omit both for an
-OpenAI-only installation; a Vertex agent run still requires the pair.
-
 **Re-running per-repo setup** (for example after a fullsend upgrade) refreshes the managed
 workflow files but never rewrites an existing `.fullsend/config.yaml` on its own: `agents:` entries and
 their per-agent settings, allowlists and hand-written comments stay as they are, the runtime prompt is skipped,

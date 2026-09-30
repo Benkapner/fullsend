@@ -279,9 +279,9 @@ and the secret is unused.
 
 1. If the repository's workflow files predate OpenAI credential forwarding, update them before
    running the agent. Re-running `fullsend github setup <owner/repo>` (or `fullsend repos install`
-   for a manifest-managed repository) can sync them when the repository already has the GCP
-   project and WIF provider pair; those setup commands still require the pair. The caller shim must
-   forward `FULLSEND_OPENAI_API_KEY` before setting the secret has an effect.
+   for a manifest-managed repository) can sync them without GCP credentials. A Vertex run still
+   needs credentials; the caller shim must forward `FULLSEND_OPENAI_API_KEY` before setting the
+   secret has an effect.
 2. Create an API key in the OpenAI project the runs should be billed to.
 3. Set it on the repository:
    ```bash

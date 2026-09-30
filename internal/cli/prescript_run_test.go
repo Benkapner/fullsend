@@ -144,6 +144,7 @@ func TestRunAgent_VertexMissingGCPInputsFailsBeforePreScript(t *testing.T) {
 	usePreScriptStub(t)
 	t.Setenv("FULLSEND_RUNTIME", "claude")
 	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 	t.Setenv("FULLSEND_GCP_PROJECT_ID", "")
 	t.Setenv("FULLSEND_GCP_WIF_PROVIDER", "")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
@@ -156,6 +157,39 @@ func TestRunAgent_VertexMissingGCPInputsFailsBeforePreScript(t *testing.T) {
 		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
 	require.ErrorContains(t, err, "FULLSEND_GCP_PROJECT_ID")
 	assert.NoFileExists(t, marker)
+}
+
+func TestRunAgent_VertexPreservesExistingGCPCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		projectID string
+		provider  string
+	}{
+		{name: "legacy workflow without GCP inputs"},
+		{name: "impersonated credentials with GCP inputs", projectID: "test-project", provider: "test-provider"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usePreScriptStub(t)
+			t.Setenv("FULLSEND_RUNTIME", "claude")
+			t.Setenv("GITHUB_ACTIONS", "true")
+			t.Setenv("FULLSEND_GCP_PROJECT_ID", tc.projectID)
+			t.Setenv("FULLSEND_GCP_WIF_PROVIDER", tc.provider)
+			t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+			t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+			credentials := filepath.Join(t.TempDir(), "credentials.json")
+			require.NoError(t, os.WriteFile(credentials, []byte(`{"type":"external_account","service_account_impersonation_url":"https://example.invalid/impersonate"}`), 0o600))
+			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credentials)
+			marker := filepath.Join(t.TempDir(), "pre-script-ran")
+			dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+
+			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+				statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+			require.ErrorContains(t, err, "creating sandbox")
+			assert.FileExists(t, marker)
+			assert.Equal(t, credentials, os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+		})
+	}
 }
 
 func TestValidateVertexGCPCredentials(t *testing.T) {
@@ -660,6 +694,7 @@ func TestParseGHAErrorLine(t *testing.T) {
 // retry backoff does not add real delays (see #6060).
 func usePreScriptStub(t *testing.T) {
 	t.Helper()
+	t.Setenv("GITHUB_ACTIONS", "false")
 	stubDir, err := filepath.Abs(filepath.Join("testdata", "prescript-stub"))
 	require.NoError(t, err)
 	t.Setenv("PATH", stubDir+string(filepath.ListSeparator)+os.Getenv("PATH"))

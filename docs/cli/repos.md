@@ -119,9 +119,6 @@ fullsend repos install acme/new-repo --forge github --direct
 
 When repos are specified as positional arguments, only those repos are processed. Glob patterns (e.g. `acme/*`) are matched against manifest entries. When no repos are specified, all manifest repos are converged. Credentials are required only for the forges of the selected repos: a GitLab-only selection does not need `GH_TOKEN`, and a GitHub-only selection does not need `GITLAB_TOKEN`. An unfiltered run still requires credentials for every forge present in the manifest.
 
-GCP inference flags are optional. Omit them to install without Vertex credentials;
-provide the complete GCP set when Vertex agents will run.
-
 ### Flags
 
 | Flag | Default | Description |

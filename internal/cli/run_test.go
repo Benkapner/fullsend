@@ -188,6 +188,7 @@ func neutralizeAgentsRepoFallback(t *testing.T) {
 // fallback from bypassing local fixtures (#5569).
 func useFakeOpenshell(t *testing.T) {
 	t.Helper()
+	t.Setenv("GITHUB_ACTIONS", "false")
 	neutralizeAgentsRepoFallback(t)
 	testdataDir, err := filepath.Abs("testdata")
 	require.NoError(t, err)
@@ -201,6 +202,7 @@ func useFakeOpenshell(t *testing.T) {
 // ambient GitHub credentials (#5569).
 func useFakeOpenshellProviders(t *testing.T) {
 	t.Helper()
+	t.Setenv("GITHUB_ACTIONS", "false")
 	neutralizeAgentsRepoFallback(t)
 	// ImportProfileVerified keeps a per-id content cache under os.TempDir()
 	// and the providers-stub records imported ids there; isolate both.
