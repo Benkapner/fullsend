@@ -3,6 +3,7 @@ package install
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -423,12 +424,60 @@ func (e *repoEnsurer) awaitCreation(ctx context.Context, org, repoName, target s
 // installFullsend resolves the inference WIF provider (when a GCP
 // project is configured) and runs fullsend github setup for the target
 // repo.
+//
+// awaitCreation confirms the repo through the suite's GetRepo, but
+// github setup is a separate CLI process whose first GetRepo (in
+// applyPerRepoScaffold) can still 404 on GitHub's read-after-create
+// lag. Retry only that specific failure, using the same bounded
+// backoff as awaitCreation. Any other setup error is a single attempt.
 func (e *repoEnsurer) installFullsend(ctx context.Context, _, _, target string) error {
 	opts := e.setupOpts
 	opts.ResolveWIFProvider = func(target, project string) (string, error) {
 		return e.resolveWIFProvider(ctx, target, project)
 	}
-	return common.RunGitHubSetupWithOpts(e.binary, e.token, target, e.e2eCfg.MintURL, e.e2eCfg.GCPProjectID, opts, e.runCLI, e.logf)
+
+	delay := resetRetryDelay
+	var lastErr error
+	for attempt := 1; attempt <= resetMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("context cancelled while running github setup for %s: %w", target, err)
+		}
+
+		err := common.RunGitHubSetupWithOpts(e.binary, e.token, target, e.e2eCfg.MintURL, e.e2eCfg.GCPProjectID, opts, e.runCLI, e.logf)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isGitHubSetupRepoInfo404(err) {
+			return err
+		}
+		if attempt == resetMaxAttempts {
+			break
+		}
+		e.logf("[ensure] github setup 404 for %s, attempt %d/%d — backing off %v", target, attempt, resetMaxAttempts, delay)
+		if ctx.Err() != nil {
+			return fmt.Errorf("context cancelled while retrying github setup for %s: %w", target, ctx.Err())
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled while retrying github setup for %s: %w", target, ctx.Err())
+		case <-time.After(delay):
+		}
+		delay *= 2
+	}
+	return lastErr
+}
+
+// isGitHubSetupRepoInfo404 reports whether err is github setup's
+// read-after-create GetRepo 404 ("getting repo info: … 404 Not Found").
+// Matching both substrings keeps every other setup failure as a single
+// attempt. The CLI error is text from a subprocess, not forge.ErrNotFound.
+func isGitHubSetupRepoInfo404(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "getting repo info:") && strings.Contains(msg, "404 Not Found")
 }
 
 // resolveWIFProvider returns the inference WIF provider for target. A
