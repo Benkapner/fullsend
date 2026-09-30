@@ -1,10 +1,24 @@
 package agentnew
 
 import (
+	"bytes"
+	_ "embed"
 	"fmt"
 
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
+
+// BasePolicy returns the base sandbox policy a generated agent's harness
+// names: filesystem, landlock and process rules with no network section, so
+// egress comes only from the harness's providers (ADR 0065). The behaviour
+// suite commits it for scenario harnesses, because OpenShell 0.1 refuses a
+// sandbox with no policy and a policy file that declares no fields.
+func BasePolicy() []byte {
+	return bytes.Clone(basePolicy)
+}
+
+//go:embed templates/policies/base.yaml
+var basePolicy []byte
 
 // sharedAssets returns the scaffold files a generated agent depends on but
 // does not own: the sandbox policy, the role's providers and profiles, and
@@ -22,11 +36,7 @@ import (
 func sharedAssets(role Role, validationLoop bool) ([]File, error) {
 	files := []File{}
 
-	policy, err := templates.ReadFile("templates/policies/base.yaml")
-	if err != nil {
-		return nil, fmt.Errorf("reading base policy: %w", err)
-	}
-	files = append(files, File{Path: "policies/base.yaml", Data: policy, Mode: 0o644, Shared: true})
+	files = append(files, File{Path: "policies/base.yaml", Data: BasePolicy(), Mode: 0o644, Shared: true})
 
 	// Providers and profiles are referenced by path rather than by bare
 	// name. A bare name with no definition on disk does not fail loudly: the

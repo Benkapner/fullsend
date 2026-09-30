@@ -230,6 +230,18 @@ func TestAdminInstallUninstall(t *testing.T) {
 	t.Log("=== E2E test complete ===")
 }
 
+// isConcurrentHeadUpdate reports the GitHub 422 returned when another actor
+// moves a PR head while update-branch is processing it. The onboarding
+// reconciler legitimately rewrites fullsend/onboard, so the next merge
+// attempt must re-read the PR state instead of failing the E2E run.
+func isConcurrentHeadUpdate(err error) bool {
+	var apiErr *gh.APIError
+	return errors.As(err, &apiErr) &&
+		apiErr.StatusCode == http.StatusUnprocessableEntity &&
+		strings.Contains(strings.ToLower(apiErr.Message), "expected head sha") &&
+		strings.Contains(strings.ToLower(apiErr.Message), "current head ref")
+}
+
 // mergeEnrollmentPR finds and merges the enrollment PR for test-repo so the
 // shim workflow is active on the default branch.
 // In PR-based install mode, enrollment is deferred: repo-maintenance triggers
@@ -289,8 +301,16 @@ func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 		}
 
 		var apiErr *gh.APIError
-		if !errors.As(mergeErr, &apiErr) || apiErr.StatusCode != http.StatusConflict {
-			break // not a 409, fail immediately
+		if !errors.As(mergeErr, &apiErr) {
+			break // not a retryable GitHub API error
+		}
+		if apiErr.StatusCode == http.StatusUnprocessableEntity && isConcurrentHeadUpdate(mergeErr) {
+			t.Logf("Merge attempt %d: PR head changed during update-branch (422), retrying", attempt+1)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		if apiErr.StatusCode != http.StatusConflict {
+			break // not a retryable merge conflict
 		}
 
 		t.Logf("Merge attempt %d: 409 conflict, updating PR branch and retrying", attempt+1)

@@ -33,11 +33,24 @@ const (
 // Overridden in tests to avoid slow retry loops.
 var resetRetryDelay = time.Second
 
+// provisionGate serialises "inference provision" across every ensurer in
+// the process. A cold pool (or one whose providers were removed) would
+// otherwise send one provision per slot at once and hit GCP IAM 429s.
+// Status reads do not take the gate.
+var provisionGate = make(chan struct{}, 1)
+
 // ensurer lazily creates and installs repos on demand for behaviour
 // scenarios. Successful ensures are cached by org/repo key for the
 // duration of a lease so duplicate EnsureRepo calls skip redundant
 // work. DeleteRepo invalidates that cache so the next lease recreates
 // the repo from scratch and cannot inherit leftover state.
+//
+// The resolved inference WIF provider is cached separately and survives
+// DeleteRepo. Everything a per-repo provider depends on is keyed by the
+// repo name, not its ID: the provider ID (mintcore.BuildRepoProviderID),
+// its attribute condition (assertion.repository == 'org/repo') and the
+// Vertex AI grant (attribute.repository/org/repo). A recreated repo
+// therefore reuses the provider resolved for its name.
 //
 // This is an unexported interface used internally by composedDriver.
 // The suite does not construct or reference it directly.
@@ -51,7 +64,7 @@ type ensurer interface {
 	// If the repo already exists it is deleted and recreated so the
 	// scenario starts from a clean base (the forge's auto_init provides
 	// the initial commit). Then the per-repo install flow runs
-	// (inference provision + github setup).
+	// (inference WIF resolution + github setup).
 	EnsureRepo(ctx context.Context, org, repoName string) error
 
 	// DeleteRepo removes org/repoName (and a leftover org/repoName-fork
@@ -79,8 +92,12 @@ type repoEnsurer struct {
 	actorGrants   []actorGrant
 	outsiderLogin string
 
-	mu           sync.Mutex
-	ensured      map[string]struct{} // keyed by org/repo; only successful results cached
+	mu      sync.Mutex
+	ensured map[string]struct{} // keyed by org/repo; only successful results cached
+	// wifProviders caches the resolved inference WIF provider by org/repo.
+	// Unlike ensured, DeleteRepo does not clear it (see ensurer).
+	// Lazily initialised under mu.
+	wifProviders map[string]string
 	verifiedOrgs map[string]struct{} // keyed by org; org-level actor access already checked
 	inflight     singleflight.Group
 }
@@ -175,7 +192,8 @@ func (e *repoEnsurer) EnsureRepo(ctx context.Context, org, repoName string) erro
 // a scenario so the next lessee cannot inherit labels, branches, PRs,
 // workflow runs, or config drift. The ensure cache is invalidated
 // before the delete so a failed delete still forces the next
-// EnsureRepo to reset+recreate.
+// EnsureRepo to reset+recreate. The WIF provider cache is kept: the
+// provider is keyed by repo name, so the recreated repo reuses it.
 func (e *repoEnsurer) DeleteRepo(ctx context.Context, org, repoName string) error {
 	key := org + "/" + repoName
 	e.mu.Lock()
@@ -402,10 +420,80 @@ func (e *repoEnsurer) awaitCreation(ctx context.Context, org, repoName, target s
 	return fmt.Errorf("repo %s not visible after %d attempts following creation", target, resetMaxAttempts)
 }
 
-// installFullsend runs inference provision (when a GCP project is
-// configured) and fullsend github setup for the target repo.
-func (e *repoEnsurer) installFullsend(_ context.Context, _, _, target string) error {
-	return common.RunGitHubSetupWithOpts(e.binary, e.token, target, e.e2eCfg.MintURL, e.e2eCfg.GCPProjectID, e.setupOpts, e.runCLI, e.logf)
+// installFullsend resolves the inference WIF provider (when a GCP
+// project is configured) and runs fullsend github setup for the target
+// repo.
+func (e *repoEnsurer) installFullsend(ctx context.Context, _, _, target string) error {
+	opts := e.setupOpts
+	opts.ResolveWIFProvider = func(target, project string) (string, error) {
+		return e.resolveWIFProvider(ctx, target, project)
+	}
+	return common.RunGitHubSetupWithOpts(e.binary, e.token, target, e.e2eCfg.MintURL, e.e2eCfg.GCPProjectID, opts, e.runCLI, e.logf)
+}
+
+// resolveWIFProvider returns the inference WIF provider for target. A
+// cached value is returned without any CLI call. On a miss it reads
+// "inference status"; only when that is not healthy does it run
+// "inference provision" (then status again), holding provisionGate so at
+// most one provision runs in the process at a time.
+func (e *repoEnsurer) resolveWIFProvider(ctx context.Context, target, project string) (string, error) {
+	e.mu.Lock()
+	cached, ok := e.wifProviders[target]
+	e.mu.Unlock()
+	if ok {
+		e.logf("[ensure] reusing cached WIF provider for %s: %s", target, cached)
+		return cached, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("resolving inference WIF provider for %s: %w", target, err)
+	}
+
+	wifProvider, err := common.InferenceStatusWIFProvider(e.binary, e.token, target, project, e.runCLI, e.logf)
+	if err != nil {
+		e.logf("[ensure] no healthy WIF provider for %s, provisioning: %v", target, err)
+		return e.provisionWIFProvider(ctx, target, project)
+	}
+
+	e.cacheWIFProvider(target, wifProvider)
+	return wifProvider, nil
+}
+
+// provisionWIFProvider runs "inference provision" for target while
+// holding provisionGate. The cache is re-checked once the gate is held,
+// and a successful result is cached before the gate is released, so a
+// caller that waited behind a provision for the same name reuses it.
+func (e *repoEnsurer) provisionWIFProvider(ctx context.Context, target, project string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("waiting to provision inference for %s: %w", target, err)
+	}
+	select {
+	case provisionGate <- struct{}{}:
+	case <-ctx.Done():
+		return "", fmt.Errorf("waiting to provision inference for %s: %w", target, ctx.Err())
+	}
+	defer func() { <-provisionGate }()
+
+	e.mu.Lock()
+	cached, ok := e.wifProviders[target]
+	e.mu.Unlock()
+	if ok {
+		return cached, nil
+	}
+	wifProvider, err := common.ProvisionInference(e.binary, e.token, target, project, e.runCLI, e.logf)
+	if err != nil {
+		return "", err
+	}
+	e.cacheWIFProvider(target, wifProvider)
+	return wifProvider, nil
+}
+
+func (e *repoEnsurer) cacheWIFProvider(target, wifProvider string) {
+	e.mu.Lock()
+	if e.wifProviders == nil {
+		e.wifProviders = make(map[string]string)
+	}
+	e.wifProviders[target] = wifProvider
+	e.mu.Unlock()
 }
 
 // awaitWorkflowReady polls the forge's GetWorkflow API until the given
