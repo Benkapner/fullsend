@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -149,4 +150,65 @@ type fakeDebugCI struct {
 
 func (f *fakeDebugCI) GetRunLogs(context.Context, string, string, int) (string, error) {
 	return f.logs, f.logsErr
+}
+
+// fakeHarnessWaitCI answers WaitForHarnessAgent with a fixed run and
+// error, and GetRunLogs with fixed logs.
+type fakeHarnessWaitCI struct {
+	fakeDebugCI
+	run *forge.WorkflowRun
+	err error
+}
+
+func (f *fakeHarnessWaitCI) WaitForHarnessAgent(context.Context, string, string, string, time.Time) (*forge.WorkflowRun, error) {
+	return f.run, f.err
+}
+
+// TestThenHarnessWorkflowCompletes_SavesFailedRunLogs checks that a
+// harness run that concluded with a failure leaves its logs in the
+// artifact dir: the pool repo, and with it the run's logs, is deleted
+// when the lease ends.
+func TestThenHarnessWorkflowCompletes_SavesFailedRunLogs(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	w := &world.World{
+		Org:           "org",
+		RepoName:      "repo",
+		ScenarioStart: time.Now(),
+		CI: &fakeHarnessWaitCI{
+			fakeDebugCI: fakeDebugCI{logs: "=== pi-smoke failed run ==="},
+			run:         &forge.WorkflowRun{ID: 77, Conclusion: "failure"},
+			err:         fmt.Errorf(`harness agent "pi-smoke": workflow run 77 concluded with "failure" before producing artifact`),
+		},
+		Logf: func(string, ...any) {},
+	}
+
+	err := thenHarnessWorkflowCompletes(w, "pi-smoke")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "before producing artifact")
+
+	data, readErr := os.ReadFile(filepath.Join(artifactDir, "debug-pi-smoke-run-77", "workflow-logs.txt"))
+	require.NoError(t, readErr, "the failed run's logs must be saved")
+	assert.Equal(t, "=== pi-smoke failed run ===", string(data))
+}
+
+// TestThenHarnessWorkflowCompletes_TimeoutWithoutRun keeps the timeout
+// path (no run) an error with nothing saved.
+func TestThenHarnessWorkflowCompletes_TimeoutWithoutRun(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	w := &world.World{
+		Org:           "org",
+		RepoName:      "repo",
+		ScenarioStart: time.Now(),
+		CI:            &fakeHarnessWaitCI{err: fmt.Errorf(`harness agent "pi-smoke" did not complete successfully`)},
+		Logf:          func(string, ...any) {},
+	}
+
+	require.Error(t, thenHarnessWorkflowCompletes(w, "pi-smoke"))
+	entries, err := os.ReadDir(artifactDir)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
 }
