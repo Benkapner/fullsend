@@ -506,6 +506,15 @@ func TestIsNameCollisionError_NotFork(t *testing.T) {
 	assert.False(t, isNameCollisionError(err))
 }
 
+func TestIsNameCollisionError_NotForkWithNameSuffix(t *testing.T) {
+	// If forkName itself ends in "name" (e.g. "foo-name"), the wrapped
+	// ErrNotFork message ("repo org/foo-name already exists and is not
+	// a fork") contains the substring "name already exists". This must
+	// still be classified as a permanent, non-retryable collision.
+	err := fmt.Errorf("repo org/foo-name already exists and is not a fork: %w", forge.ErrNotFork)
+	assert.False(t, isNameCollisionError(err))
+}
+
 func TestIsNameCollisionError_Unrelated(t *testing.T) {
 	assert.False(t, isNameCollisionError(fmt.Errorf("permission denied")))
 }

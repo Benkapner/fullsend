@@ -8,6 +8,7 @@ import (
 
 	"github.com/cucumber/godog"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -198,10 +199,17 @@ func resolveForkName(w *world.World, logicalName string) string {
 // itself must retry this class of error.
 //
 // ErrNotFork ("already exists and is not a fork") is a real collision
-// with a different repo and is not retried: that message does not
-// contain "name already exists".
+// with a different repo and is not retried, even if forkName itself
+// ends in "name" (e.g. "foo-name"), which would otherwise make the
+// wrapped ErrNotFork message ("repo org/foo-name already exists and
+// is not a fork") match the substring check below. forge.IsNotFork is
+// checked first, before the substring heuristic, to avoid that false
+// positive.
 func isNameCollisionError(err error) bool {
 	if err == nil {
+		return false
+	}
+	if forge.IsNotFork(err) {
 		return false
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "name already exists")
