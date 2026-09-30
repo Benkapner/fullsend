@@ -943,6 +943,14 @@ func (c *LiveClient) putFileWithRetry(ctx context.Context, apiPath string, paylo
 // by do(). It uses linear backoff (2s between attempts) and up to 5
 // attempts (~10s total).
 func (c *LiveClient) retryOnRepoRace(ctx context.Context, label string, fn func() error) error {
+	return c.retryOnRepoRaceIf(ctx, label, func(apiErr *APIError) bool {
+		return isTransientStatus(apiErr.StatusCode)
+	}, fn)
+}
+
+// retryOnRepoRaceIf is retryOnRepoRace with a caller-chosen test for
+// which API errors are transient.
+func (c *LiveClient) retryOnRepoRaceIf(ctx context.Context, label string, transient func(*APIError) bool, fn func() error) error {
 	const attempts = 5
 	const delay = 2 * time.Second
 
@@ -953,12 +961,10 @@ func (c *LiveClient) retryOnRepoRace(ctx context.Context, label string, fn func(
 			return nil
 		}
 
-		// Retry on transient errors:
-		// - 404: repo not ready (async init)
-		// - 409: branch ref conflict
-		// - 500/502/503/504: transient server-side errors
+		// Retry only the API errors the caller's predicate marks as
+		// transient; anything else, including non-API errors, fails now.
 		var apiErr *APIError
-		if !errors.As(lastErr, &apiErr) || !isTransientStatus(apiErr.StatusCode) {
+		if !errors.As(lastErr, &apiErr) || !transient(apiErr) {
 			return lastErr
 		}
 
@@ -988,14 +994,14 @@ func isTransientStatus(code int) bool {
 }
 
 // getRepoObjectWithRetry GETs a repo, commit or tree for a Git Data
-// write or listing and decodes it into v, retrying transient 404/409s via
-// retryOnRepoRace. On a freshly created repo each of these reads can 404
-// briefly on GitHub's read-after-create lag (#7861). Callers here always
+// write or listing and decodes it into v, retrying GitHub's
+// read-after-create lag (#7861) as classified by isGitDataReadLag: the
+// transient 404/409s plus the "Invalid object requested" 422. Callers here always
 // expect the object to exist, so a genuinely missing one costs the full
 // retry budget (about 8s) before the error is returned. GetRepo itself is
 // not retried: callers use its 404 to test for existence.
 func (c *LiveClient) getRepoObjectWithRetry(ctx context.Context, label, decodeLabel, path string, v any) error {
-	return c.retryOnRepoRace(ctx, label, func() error {
+	return c.retryOnRepoRaceIf(ctx, label, isGitDataReadLag, func() error {
 		resp, err := c.get(ctx, path)
 		if err != nil {
 			return fmt.Errorf("%s: %w", label, err)
@@ -1005,6 +1011,26 @@ func (c *LiveClient) getRepoObjectWithRetry(ctx context.Context, label, decodeLa
 		}
 		return nil
 	})
+}
+
+// isGitDataReadLag reports whether a Git Data read failed on GitHub's
+// read-after-create lag: the usual transient statuses, plus the 422
+// "Invalid object requested. SHA must identify a commit or a tree"
+// that GitHub returns for a commit or tree SHA that another read just
+// returned but this replica has not seen yet. Other 422s are real
+// validation errors and are not retried.
+func isGitDataReadLag(apiErr *APIError) bool {
+	if isTransientStatus(apiErr.StatusCode) {
+		return true
+	}
+	if apiErr.StatusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	msg := strings.ToLower(apiErr.Message)
+	for _, d := range apiErr.Errors {
+		msg += " " + strings.ToLower(d.Message)
+	}
+	return strings.Contains(msg, "invalid object requested")
 }
 
 // getCommitTreeSHA returns the tree SHA of commitSHA, retrying replica

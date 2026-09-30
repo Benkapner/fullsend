@@ -4993,3 +4993,111 @@ func TestGitDataReads_RetryTransientGetRepo404(t *testing.T) {
 		})
 	}
 }
+
+// treeStatusServer serves the Git Data reads and writes for org/repo;
+// the first tree read answers with status and message, later reads
+// succeed.
+func treeStatusServer(t *testing.T, status int, message string, treeGets *int) *httptest.Server {
+	t.Helper()
+	return treeStatusServerBody(t, status, map[string]any{"message": message}, treeGets)
+}
+
+// treeStatusServerBody is treeStatusServer with a caller-supplied error
+// body for the first tree read.
+func treeStatusServerBody(t *testing.T, status int, body map[string]any, treeGets *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			*treeGets++
+			if *treeGets == 1 {
+				w.WriteHeader(status)
+				json.NewEncoder(w).Encode(body)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"tree":      []map[string]string{{"path": "README.md", "mode": "100644", "type": "blob", "sha": "r1"}},
+				"truncated": false,
+			})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func TestListRepositoryFiles_RetriesInvalidObject422(t *testing.T) {
+	treeGets := 0
+	srv := treeStatusServer(t, http.StatusUnprocessableEntity,
+		"Invalid object requested. SHA must identify a commit or a tree.", &treeGets)
+	defer srv.Close()
+
+	files, err := newTestClient(t, srv).ListRepositoryFiles(context.Background(), "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"README.md"}, files)
+	assert.Equal(t, 2, treeGets, "a replica-lag 422 on a just-returned SHA is retried")
+}
+
+func TestListRepositoryFiles_OtherValidation422NotRetried(t *testing.T) {
+	treeGets := 0
+	srv := treeStatusServer(t, http.StatusUnprocessableEntity, "Validation Failed", &treeGets)
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).ListRepositoryFiles(context.Background(), "org", "repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Validation Failed")
+	assert.Equal(t, 1, treeGets, "any other 422 is a real error")
+}
+
+// TestCommitFiles_RetriesInvalidObject422 pins the production path: the
+// scaffold commit in github setup failed with this 422 on the tree read.
+func TestCommitFiles_RetriesInvalidObject422(t *testing.T) {
+	treeGets := 0
+	srv := treeStatusServer(t, http.StatusUnprocessableEntity,
+		"Invalid object requested. SHA must identify a commit or a tree.", &treeGets)
+	defer srv.Close()
+
+	committed, err := newTestClient(t, srv).CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+	})
+	require.NoError(t, err)
+	assert.True(t, committed)
+	assert.Equal(t, 2, treeGets)
+}
+
+func TestIsGitDataReadLag(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *APIError
+		want bool
+	}{
+		{"404", &APIError{StatusCode: http.StatusNotFound}, true},
+		{"409", &APIError{StatusCode: http.StatusConflict}, true},
+		{"422 invalid object", &APIError{StatusCode: 422, Message: "Invalid object requested. SHA must identify a commit or a tree."}, true},
+		{"422 other case", &APIError{StatusCode: 422, Message: "invalid OBJECT requested"}, true},
+		{"422 in errors envelope", &APIError{StatusCode: 422, Message: "Validation Failed",
+			Errors: []APIErrorDetail{{Message: "Invalid object requested. SHA must identify a commit or a tree."}}}, true},
+		{"422 validation", &APIError{StatusCode: 422, Message: "Validation Failed"}, false},
+		{"invalid object on 400", &APIError{StatusCode: http.StatusBadRequest, Message: "Invalid object requested"}, false},
+		{"403", &APIError{StatusCode: http.StatusForbidden}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isGitDataReadLag(tc.err))
+		})
+	}
+}
