@@ -171,23 +171,6 @@ func TestDeleteRef(t *testing.T) {
 		assert.True(t, forge.IsNotFound(err))
 	})
 
-	t.Run("malformed permission flags", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			json.NewEncoder(w).Encode(map[string]any{
-				"permission": "write",
-				"role_name":  "Custom",
-				"user": map[string]any{
-					"permissions": map[string]any{"admin": "yes"},
-				},
-			})
-		}))
-		defer srv.Close()
-
-		client := newTestClient(t, srv)
-		_, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "alice")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "decode collaborator permission")
-	})
 }
 
 func TestDeleteBranch(t *testing.T) {
@@ -219,29 +202,6 @@ func TestDeleteBranch(t *testing.T) {
 		assert.True(t, forge.IsNotFound(err))
 	})
 
-	t.Run("explicit null permissions fail closed", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, `{"permission":"write","role_name":"Custom","user":{"permissions":null}}`)
-		}))
-		defer srv.Close()
-
-		client := newTestClient(t, srv)
-		permission, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "alice")
-		require.NoError(t, err)
-		_, err = forge.ResolveGitHubCollaboratorPermission(permission)
-		require.ErrorContains(t, err, "missing required boolean fields")
-	})
-
-	t.Run("malformed user fails closed while decoding", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, `{"permission":"write","role_name":"Custom","user":null}`)
-		}))
-		defer srv.Close()
-
-		client := newTestClient(t, srv)
-		_, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "alice")
-		require.ErrorContains(t, err, "user must be an object")
-	})
 }
 
 func TestFindExistingFork(t *testing.T) {
@@ -4293,6 +4253,59 @@ func TestGetCollaboratorPermission(t *testing.T) {
 		_, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "nobody")
 		require.Error(t, err)
 		assert.True(t, forge.IsNotFound(err))
+	})
+
+	t.Run("missing role name", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"permission":"none","user":{}}`)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "nobody")
+		require.Error(t, err)
+		assert.True(t, forge.IsNotFound(err))
+	})
+
+	t.Run("malformed permission flags", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{
+				"permission": "write",
+				"role_name":  "Custom",
+				"user": map[string]any{
+					"permissions": map[string]any{"admin": "yes"},
+				},
+			})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "alice")
+		require.ErrorContains(t, err, "decode collaborator permission")
+	})
+
+	t.Run("explicit null permissions fail closed", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"permission":"write","role_name":"Custom","user":{"permissions":null}}`)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		permission, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "alice")
+		require.NoError(t, err)
+		_, err = forge.ResolveGitHubCollaboratorPermission(permission)
+		require.ErrorContains(t, err, "missing required boolean fields")
+	})
+
+	t.Run("malformed user fails closed while decoding", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"permission":"write","role_name":"Custom","user":null}`)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "alice")
+		require.ErrorContains(t, err, "user must be an object")
 	})
 }
 

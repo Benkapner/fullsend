@@ -1,11 +1,49 @@
 package forge
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGitHubPermissionUserUnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name               string
+		payload            string
+		wantErr            string
+		wantPresent        bool
+		wantPermissionsNil bool
+	}{
+		{name: "empty object", payload: `{}`, wantPermissionsNil: true},
+		{name: "null user", payload: `null`, wantErr: "user must be an object", wantPermissionsNil: true},
+		{name: "non-object user", payload: `"alice"`, wantErr: "decode user", wantPermissionsNil: true},
+		{name: "absent permissions", payload: `{"login":"alice"}`, wantPermissionsNil: true},
+		{name: "null permissions", payload: `{"permissions":null}`, wantPresent: true, wantPermissionsNil: true},
+		{name: "malformed permissions", payload: `{"permissions":"write"}`, wantErr: "decode user.permissions", wantPresent: true, wantPermissionsNil: true},
+		{name: "valid permissions", payload: `{"permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true}}`, wantPresent: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var user GitHubPermissionUser
+			err := json.Unmarshal([]byte(tt.payload), &user)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.wantPresent, user.permissionsPresent)
+			if tt.wantPermissionsNil {
+				assert.Nil(t, user.Permissions)
+			} else {
+				require.NotNil(t, user.Permissions)
+				assert.True(t, *user.Permissions.Maintain)
+			}
+		})
+	}
+}
 
 func permissionFlags(admin, maintain, push, triage, pull bool) *GitHubPermissionFlags {
 	return &GitHubPermissionFlags{
@@ -94,6 +132,17 @@ func TestResolveGitHubCollaboratorPermission(t *testing.T) {
 				},
 			},
 			want: "maintain",
+		},
+		{
+			name: "built-in role and precise flags conflict",
+			input: GitHubCollaboratorPermission{
+				RoleName:   "write",
+				Permission: "write",
+				User: GitHubPermissionUser{
+					Permissions: permissionFlags(false, true, true, true, true),
+				},
+			},
+			wantErr: "conflicts with user.permissions",
 		},
 		{
 			name:  "custom role falls back to conservative legacy write",
