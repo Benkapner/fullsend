@@ -10,6 +10,12 @@ ever holds a placeholder that the OpenShell gateway swaps for the real token on 
 Setting it up is one visit to the OpenAI console — yours, or your IT administrator's — and one
 command per repository. No key is created, downloaded or rotated.
 
+For an **already installed** repository, `fullsend run` selects inference credentials from each
+agent's effective runtime and model. An agent using an OpenAI model runs without GCP credentials;
+another agent in the same repository can still use Vertex. Repository enrollment is separate:
+`fullsend github setup` and `fullsend repos install` still require the GCP project and WIF provider
+pair, even when the agents will use OpenAI. This guide does not provide a GCP-free initial install.
+
 > **GitHub Actions only** for Workload Identity Federation. The exchange needs the job's OIDC
 > endpoint. If you cannot enrol a WIF provider, [Route C](#c-static-key-as-a-repository-secret) uses
 > a repository secret. For GitLab CI and for runs on your own machine, use an API key in the runner
@@ -272,10 +278,11 @@ runner uses it only when the three `FULLSEND_OPENAI_*` WIF identifiers are unset
 errors — a typo cannot fall through to the key. When the trio and the secret are both set, WIF wins
 and the secret is unused.
 
-1. If the repository was installed or its workflow files were last synced before this feature shipped,
-   re-run `fullsend github setup <owner/repo>` (or `fullsend repos install` for a manifest-managed
-   repository) first — the reusable workflow's caller shim has to forward the secret before setting it
-   does anything.
+1. If the repository's workflow files predate OpenAI credential forwarding, update them before
+   running the agent. Re-running `fullsend github setup <owner/repo>` (or `fullsend repos install`
+   for a manifest-managed repository) can sync them when the repository already has the GCP
+   project and WIF provider pair; those setup commands still require the pair. The caller shim must
+   forward `FULLSEND_OPENAI_API_KEY` before setting the secret has an effect.
 2. Create an API key in the OpenAI project the runs should be billed to.
 3. Set it on the repository:
    ```bash
@@ -302,17 +309,17 @@ injects CI variables into the job environment, so no extra forwarding is require
 > repository variables instead. See
 > [`fullsend inference openai import`](../../cli/inference.md#inference-openai-import).
 
-Re-run the setup command you enrolled the repository with, adding the three values:
+For an existing installation, import the values into the local `.fullsend/config.yaml`:
 
 ```bash
-fullsend github setup <your-github-org>/<repo> \
-  --openai-audience "<the provider's audience>" \
-  --openai-identity-provider-id "<identity provider ID>" \
-  --openai-service-account-id "<service account ID>"
+fullsend inference openai import \
+  --audience "<the provider's audience>" \
+  --identity-provider-id "<identity provider ID>" \
+  --service-account-id "<service account ID>"
 ```
 
-It writes them into the repository's `.fullsend/config.yaml`, the same way it records the Vertex
-project and provider:
+This writes only the OpenAI identifiers; it does not re-run repository setup or require GCP
+credentials. The resulting block is:
 
 ```yaml
 inference:
@@ -322,7 +329,8 @@ inference:
     service_account_id: <service account ID>
 ```
 
-Commit that change (setup opens a pull request for it unless you pass `--direct`). A base
+Commit the config change so CI can read it. If you use `fullsend github setup --openai-*` instead,
+it still requires the GCP pair and opens a pull request unless you pass `--direct`. A base
 configuration (`config.base.yaml`, or a vendor preset) can carry the block for many repositories,
 and a repository can restate any one of the three — with a centrally managed provider, the audience
 and the provider ID are typically the same for every repository and only the service account differs.

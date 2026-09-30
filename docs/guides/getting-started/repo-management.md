@@ -27,6 +27,10 @@ The remaining prerequisites are forge-specific:
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
 - **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) must be completed separately before running `repos install`. For self-managed mints, mint enrollment (`fullsend mint enroll`) is also required. The hosted community mint needs no enrollment — install the shared Apps and use the CLI defaults. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
 
+This prerequisite applies to installation even if every agent will use OpenAI. Once installed,
+an OpenAI agent can run without GCP credentials; see
+[OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
+
 **GitLab:**
 
 GitLab does not use `gh`, `fullsend inference provision`, or mint

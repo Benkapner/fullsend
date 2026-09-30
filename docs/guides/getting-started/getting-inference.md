@@ -14,7 +14,11 @@ For GitHub, this requires an OIDC token signed by GitHub with its origin (org, r
 other details). For GitLab, the OIDC token is signed by GitLab's built-in `id_tokens` mechanism.
 If the WIF finds the request valid, it provides a short-lived token.
 
-GPT models on the pi or codex runtime use OpenAI Workload Identity Federation instead — no GCP involved and no stored key on the recommended path; see [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md). If you cannot enrol a WIF provider, that guide's Route C uses a `FULLSEND_OPENAI_API_KEY` repository secret.
+GPT models on the pi or codex runtime use OpenAI Workload Identity Federation instead, so an
+OpenAI agent run needs no GCP credentials and stores no key on the recommended path; see
+[OpenAI Workload Identity](../infrastructure/openai-workload-identity.md). Initial repository
+setup still requires the GCP project and WIF provider pair. If you cannot enrol an OpenAI WIF
+provider, that guide's Route C uses a `FULLSEND_OPENAI_API_KEY` repository secret.
 
 For **GitLab repos**, inference credentials are configured via `repos install --inference-project`
 rather than the steps below. See [Configuring GitLab](configuring-gitlab.md#inference-setup).
