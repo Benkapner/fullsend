@@ -4284,6 +4284,17 @@ func TestGetCollaboratorPermission(t *testing.T) {
 		require.ErrorContains(t, err, "decode collaborator permission")
 	})
 
+	t.Run("non-string legacy permission", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"permission":false,"role_name":"write"}`)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "alice")
+		require.ErrorContains(t, err, "decode collaborator permission")
+	})
+
 	t.Run("explicit null permissions fail closed", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, `{"permission":"write","role_name":"Custom","user":{"permissions":null}}`)

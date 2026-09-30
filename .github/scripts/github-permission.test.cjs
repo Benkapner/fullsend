@@ -54,3 +54,9 @@ for (const [name, payload] of [
     assert.throws(() => resolveGitHubPermission(payload));
   });
 }
+
+for (const permission of [42, false, true, {}, []]) {
+  test(`rejects non-string permission ${JSON.stringify(permission)}`, () => {
+    assert.throws(() => resolveGitHubPermission({ role_name: 'write', permission }));
+  });
+}

@@ -378,6 +378,11 @@ write_pr "NONE" '[]'
 : >"${GH_LOG}"
 run_case "conflicting custom role author denied" "false" "unauthorized" "false"
 
+echo '{"permission":false,"role_name":"write"}' >"${COLLAB_ROLE}"
+write_pr "NONE" '[]'
+: >"${GH_LOG}"
+run_case "non-string legacy permission author denied" "false" "unauthorized" "false"
+
 # Collaborator API says read — should NOT authorize
 echo "read" >"${COLLAB_ROLE}"
 write_pr "NONE" '[]'

@@ -43,6 +43,11 @@ function resolveGitHubPermission(response) {
     throw new Error('permission response must be an object');
   }
 
+  if (Object.prototype.hasOwnProperty.call(response, 'permission') &&
+      response.permission !== null && typeof response.permission !== 'string') {
+    throw new Error('permission is malformed');
+  }
+
   const role = normalize(response.role_name);
   if (!role) throw new Error('missing role_name');
 

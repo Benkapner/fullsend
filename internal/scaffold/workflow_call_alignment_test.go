@@ -969,6 +969,14 @@ func TestDispatchEffectivePermissionRuntime(t *testing.T) {
 			wantStage:  "",
 			wantOutput: "Invalid permission response",
 		},
+		{
+			name:       "non-string legacy permission fails closed",
+			command:    "/fs-review",
+			isPR:       "true",
+			payload:    `{"permission":false,"role_name":"write"}`,
+			wantStage:  "",
+			wantOutput: "Invalid permission response",
+		},
 	}
 
 	for _, workflow := range workflows {

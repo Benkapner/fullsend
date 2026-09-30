@@ -391,6 +391,13 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 				assert.Contains(t, out, "Invalid permission response")
 			})
 
+			t.Run("non-string legacy permission fails closed", func(t *testing.T) {
+				payload := `{"permission":false,"role_name":"write"}`
+				out, labeled := runScenario(t, script, "bob", "alice", payload)
+				assert.False(t, labeled, "non-string legacy permission must be denied")
+				assert.Contains(t, out, "Invalid permission response")
+			})
+
 			t.Run("api failure fails closed", func(t *testing.T) {
 				out, labeled := runScenario(t, script, "bob", "alice", "FAIL")
 				assert.False(t, labeled, "API failure must fail closed (deny)")
