@@ -541,7 +541,9 @@ The `dummy` runtime executes a YAML script of operations inside the real sandbox
 ## Dummy-playback runtime
 
 The `dummy-playback` runtime replays canned agent results from an ordered
-playlist without LLM inference (behaviour tests only). It reads
+playlist without LLM inference (behaviour tests only). The architectural
+decision is recorded in [ADR 0116](../ADRs/0116-dummy-playback-runtime.md).
+It reads
 `.fullsend/results/playlist.yaml`, serves the current entry's `result.json`
 to the sandbox output directory, copies companion files, and advances the
 playlist position.

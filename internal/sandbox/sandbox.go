@@ -533,9 +533,10 @@ func ensureProviderArgs(ctx context.Context, name string, args, updateArgs, extr
 
 // isTransientProviderErr reports whether err is one of the openshell
 // errors produced by concurrent runs racing on the same gateway: a missing
-// or not-yet-reimported profile, or an optimistic-concurrency rejection of
-// a provider update ("provider was modified concurrently (current
-// resource_version: N)").
+// or not-yet-reimported profile (OpenShell 0.0.x: "unsupported provider type
+// or profile"; 0.1.x: "provider profile '<id>' not found; import a matching
+// profile"), or an optimistic-concurrency rejection of a provider update
+// ("provider was modified concurrently (current resource_version: N)").
 //
 // NOTE: This matches literal text from the openshell CLI's stderr output.
 // If openshell changes its error wording in a future version, this check
@@ -547,8 +548,14 @@ func isTransientProviderErr(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "unsupported provider type or profile") ||
+		providerProfileNotFoundRe.MatchString(msg) ||
 		providerModifiedConcurrentlyRe.MatchString(msg)
 }
+
+// providerProfileNotFoundRe matches OpenShell 0.1.x's error for a provider
+// whose profile is not (yet) registered, which a concurrent run's
+// ImportProfile delete+reimport produces. \W+ spans the CLI's line wrap.
+var providerProfileNotFoundRe = regexp.MustCompile(`provider\W+profile\W+'[^']+'\W+not\W+found`)
 
 // providerModifiedConcurrentlyRe matches openshell's optimistic-concurrency
 // error. The CLI wraps the message across lines with a box-drawing gutter

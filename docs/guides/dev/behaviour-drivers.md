@@ -20,7 +20,7 @@ v1 reference implementations:
 - `pkg/behaviourtest/drivers/install/repopool_cfmint_previews.go` (RepoPoolCFMintPreviews)
 - `pkg/behaviourtest/drivers/install/repopool_cfmint_stage.go` (RepoPoolCFMintStage)
 - `pkg/behaviourtest/drivers/install/repopool_external_mint.go` (RepoPoolExternalMint)
-- `pkg/behaviourtest/drivers/install/common/setup.go` (shared helpers: `RunGitHubSetup`, `ProvisionInference`)
+- `pkg/behaviourtest/drivers/install/common/setup.go` (shared helpers: `RunGitHubSetup`, `ResolveInferenceWIFProvider`, `InferenceStatusWIFProvider`, `ProvisionInference`)
 
 ## Runner configuration
 
@@ -100,7 +100,7 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
    the same package (e.g., `repopool_cfmint_previews.go`,
    `repopool_external_mint.go`) behind the shared `install.Driver`
    interface. Place common helpers shared across drivers in
-   `install/common/` (e.g., `RunGitHubSetup`, `ProvisionInference`).
+   `install/common/` (e.g., `RunGitHubSetup`, `ResolveInferenceWIFProvider`).
 5. **Register the driver** in `behaviourtest.RunSuite` (`installFactoryFor`
    in `pkg/behaviourtest/select.go`). Install driver selection is keyed by
    `ENVIRONMENT`, not `BEHAVIOUR_INSTALL_MODE`.

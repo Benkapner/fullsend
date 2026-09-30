@@ -364,7 +364,7 @@ func TestGivenCustomHarness_CommitsAgentAndPolicy(t *testing.T) {
 
 	policyData := scm.files["test-org/test-repo/.fullsend/policies/test.md"]
 	require.NotNil(t, policyData, "policy resource should be committed")
-	assert.Contains(t, string(policyData), "Minimal policy")
+	assertBasePolicy(t, policyData)
 }
 
 func TestGivenCustomHarness_SkipsAbsoluteAgentPath(t *testing.T) {
