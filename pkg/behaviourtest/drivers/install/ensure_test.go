@@ -464,6 +464,16 @@ func isInferenceCall(args []string, sub string) bool {
 	return len(args) >= 2 && args[0] == "inference" && args[1] == sub
 }
 
+func isGitHubSetupCall(args []string) bool {
+	return len(args) >= 2 && args[0] == "github" && args[1] == "setup"
+}
+
+// githubSetupRepoInfo404Err matches the CLI error from applyPerRepoScaffold
+// when GetRepo 404s on a just-created repo.
+func githubSetupRepoInfo404Err(target string) error {
+	return fmt.Errorf("[cli] fullsend github setup %s failed: exit 1\nError: getting repo info: get repo %s: github api: 404 Not Found", target, target)
+}
+
 func TestEnsurer_WIFProvider_NotHealthy_ProvisionsOnce(t *testing.T) {
 	speedUpValidateRetries(t)
 	sc := &stubClient{installed: true}
@@ -858,6 +868,249 @@ func TestEnsurer_InstallCLIError_Propagated(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "github setup")
 	assert.Contains(t, err.Error(), "cli exploded")
+}
+
+func TestEnsurer_GitHubSetup_RepoInfo404_RetriesThenSucceeds(t *testing.T) {
+	speedUpValidateRetries(t)
+	speedUpResetRetries(t)
+	sc := &stubClient{installed: false}
+	var setupCalls atomic.Int32
+	const target = "org/test-repo-setup-404"
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			if isGitHubSetupCall(args) {
+				n := setupCalls.Add(1)
+				if n == 1 {
+					return "", githubSetupRepoInfo404Err(target)
+				}
+				sc.installed = true
+			}
+			return "", nil
+		},
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-setup-404")
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), setupCalls.Load(), "github setup should retry once after a repo-info 404")
+}
+
+func TestEnsurer_GitHubSetup_OtherError_NoRetry(t *testing.T) {
+	speedUpValidateRetries(t)
+	speedUpResetRetries(t)
+	sc := &stubClient{installed: false}
+	var setupCalls atomic.Int32
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			if isGitHubSetupCall(args) {
+				setupCalls.Add(1)
+				return "", fmt.Errorf("cli exploded")
+			}
+			return "", nil
+		},
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-setup-err")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "github setup")
+	assert.Contains(t, err.Error(), "cli exploded")
+	assert.Equal(t, int32(1), setupCalls.Load(), "non-404 github setup errors must not be retried")
+}
+
+func TestEnsurer_GitHubSetup_RepoInfo404_ContextCancelledDuringBackoff(t *testing.T) {
+	speedUpValidateRetries(t)
+	orig := resetRetryDelay
+	resetRetryDelay = 5 * time.Second
+	t.Cleanup(func() { resetRetryDelay = orig })
+
+	sc := &stubClient{installed: false}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	firstSetup := make(chan struct{})
+	var setupCalls atomic.Int32
+	const target = "org/test-repo-setup-404-cancel"
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			if isGitHubSetupCall(args) {
+				n := setupCalls.Add(1)
+				if n == 1 {
+					close(firstSetup)
+					return "", githubSetupRepoInfo404Err(target)
+				}
+				return "", fmt.Errorf("unexpected extra github setup call")
+			}
+			return "", nil
+		},
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- e.EnsureRepo(ctx, "org", "test-repo-setup-404-cancel")
+	}()
+
+	select {
+	case <-firstSetup:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the first github setup call")
+	}
+	cancel()
+
+	select {
+	case err := <-errCh:
+		require.Error(t, err)
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Contains(t, err.Error(), "github setup")
+		assert.Equal(t, int32(1), setupCalls.Load(), "cancellation during backoff must not start another github setup")
+	case <-time.After(2 * time.Second):
+		t.Fatal("EnsureRepo did not return after context cancellation during github setup backoff")
+	}
+}
+
+func TestEnsurer_GitHubSetup_RepoInfo404_GivesUpAfterMaxAttempts(t *testing.T) {
+	speedUpValidateRetries(t)
+	speedUpResetRetries(t)
+	sc := &stubClient{installed: false}
+	var setupCalls atomic.Int32
+	const target = "org/test-repo-setup-404-max"
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			if isGitHubSetupCall(args) {
+				setupCalls.Add(1)
+				return "", githubSetupRepoInfo404Err(target)
+			}
+			return "", nil
+		},
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-setup-404-max")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "getting repo info:")
+	assert.Contains(t, err.Error(), "404 Not Found")
+	assert.Equal(t, int32(resetMaxAttempts), setupCalls.Load(), "repo-info 404 retries must stop at resetMaxAttempts")
+	assert.Contains(t, err.Error(), fmt.Sprintf("after %d attempts", resetMaxAttempts))
+}
+
+func TestIsGitHubSetupRepoInfo404(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{
+			name: "cli 404",
+			err:  githubSetupRepoInfo404Err("org/repo"),
+			want: true,
+		},
+		{
+			name: "wrapped 404",
+			err:  fmt.Errorf("github setup org/repo: %w", githubSetupRepoInfo404Err("org/repo")),
+			want: true,
+		},
+		{
+			name: "getting repo info on a different read",
+			err:  fmt.Errorf("getting repo info: list variables: github api: 404 Not Found"),
+			want: false,
+		},
+		{
+			name: "404 without getting repo info",
+			err:  fmt.Errorf("github setup org/repo: workflow not found: 404 Not Found"),
+			want: false,
+		},
+		{
+			name: "getting repo info without 404",
+			err:  fmt.Errorf("getting repo info: get repo org/repo: github api: 403 Forbidden"),
+			want: false,
+		},
+		{
+			name: "other error",
+			err:  fmt.Errorf("cli exploded"),
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isGitHubSetupRepoInfo404(tt.err))
+		})
+	}
+}
+
+// TestEnsurer_GitHubSetup_RepoInfo404_DoesNotReprovisionWIF checks that a
+// setup retry reuses the cached inference WIF provider: one status read,
+// no provision, and the same provider on both setup attempts.
+func TestEnsurer_GitHubSetup_RepoInfo404_DoesNotReprovisionWIF(t *testing.T) {
+	speedUpValidateRetries(t)
+	speedUpResetRetries(t)
+	sc := &stubClient{installed: false}
+	var setupCalls, statusCalls, provisionCalls atomic.Int32
+	var setupArgs [][]string
+	const target = "org/test-repo-setup-404-wif"
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test", GCPProjectID: "test-project"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			switch {
+			case isInferenceCall(args, "status"):
+				statusCalls.Add(1)
+				return healthyStatusJSON, nil
+			case isInferenceCall(args, "provision"):
+				provisionCalls.Add(1)
+			case isGitHubSetupCall(args):
+				setupArgs = append(setupArgs, append([]string(nil), args...))
+				if setupCalls.Add(1) == 1 {
+					return "", githubSetupRepoInfo404Err(target)
+				}
+				sc.installed = true
+			}
+			return "", nil
+		},
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	require.NoError(t, e.EnsureRepo(context.Background(), "org", "test-repo-setup-404-wif"))
+	assert.Equal(t, int32(2), setupCalls.Load())
+	assert.Equal(t, int32(1), statusCalls.Load(), "the retry must reuse the cached provider")
+	assert.Zero(t, provisionCalls.Load())
+	require.Len(t, setupArgs, 2)
+	assert.Contains(t, setupArgs[0], testWIFProvider)
+	assert.Contains(t, setupArgs[1], testWIFProvider)
 }
 
 func TestEnsurer_ProvisionInferenceError_Propagated(t *testing.T) {
