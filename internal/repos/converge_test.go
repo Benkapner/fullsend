@@ -3254,6 +3254,13 @@ workflow:
 	}
 }
 
+// TestConverge_GitLab_NoObsoleteWorkflowRuleNoAction covers a repo that has
+// no obsolete merge_request_event rule but is still missing the
+// CI_DEBUG_TRACE deny-before-admit rule (ADR 0125) — the state of a repo
+// enrolled via the merge path before that rule existed. convergeGitLabRootCIFiles
+// must backfill it via MergeMissingGitLabDebugTraceRule, since the install
+// merge path only reruns when HasFullsendEntries is false and the periodic
+// converge path otherwise never touches workflow:rules.
 func TestConverge_GitLab_NoObsoleteWorkflowRuleNoAction(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
@@ -3271,7 +3278,9 @@ func TestConverge_GitLab_NoObsoleteWorkflowRuleNoAction(t *testing.T) {
 		{ID: 1, Description: "fullsend slash poll", Active: true},
 		{ID: 2, Description: "fullsend event poll", Active: true},
 	}
-	// Already migrated — no obsolete rule present.
+	// No obsolete merge_request_event rule, but also no CI_DEBUG_TRACE
+	// rule — this repo enrolled via the merge path before ADR 0125 added
+	// that guard.
 	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
 include:
   - local: '.gitlab/ci/fullsend-pipeline.yml'
@@ -3281,6 +3290,185 @@ workflow:
   auto_cancel:
     on_new_commit: none
   rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	cfg := ConvergeConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+	}
+
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
+	}
+
+	found := false
+	for _, a := range result.Results[0].Actions {
+		if a.Component == "gitlab-ci-rules" && a.Action == "update" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a gitlab-ci-rules update action backfilling the debug-trace rule, got %+v", result.Results[0].Actions)
+	}
+
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	var updated []byte
+	for _, f := range sc.files {
+		if f.Path == ".gitlab-ci.yml" {
+			updated = f.Content
+		}
+	}
+	if updated == nil {
+		t.Fatalf("expected .gitlab-ci.yml to be committed, got files: %+v", sc.files)
+	}
+	s := string(updated)
+	debugIdx := strings.Index(s, debugTraceDenyRuleIf)
+	if debugIdx == -1 {
+		t.Fatalf("expected debug-trace deny rule to be inserted, got:\n%s", s)
+	}
+	scheduleIdx := strings.Index(s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	if scheduleIdx == -1 {
+		t.Fatalf("expected schedule admit rule to be preserved, got:\n%s", s)
+	}
+	if debugIdx >= scheduleIdx {
+		t.Errorf("expected debug-trace deny rule to precede the schedule admit rule, got:\n%s", s)
+	}
+	if !strings.Contains(s, `$CI_PIPELINE_SOURCE == "api"`) {
+		t.Errorf("expected current api rule to be preserved, got:\n%s", s)
+	}
+}
+
+// TestConverge_GitLab_DebugTraceRuleBackfillDryRun is the DryRun
+// counterpart of TestConverge_GitLab_NoObsoleteWorkflowRuleNoAction: the
+// missing CI_DEBUG_TRACE rule is reported as a would-be update, but
+// nothing is actually committed.
+func TestConverge_GitLab_DebugTraceRuleBackfillDryRun(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	cfg := ConvergeConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+		DryRun:                 true,
+	}
+
+	sc := &fakeScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
+	}
+
+	var detail string
+	for _, a := range result.Results[0].Actions {
+		if a.Component == "gitlab-ci-rules" && a.Action == "update" {
+			detail = a.Detail
+		}
+	}
+	if !strings.Contains(detail, "would add") {
+		t.Errorf("expected a dry-run gitlab-ci-rules update action, got %+v", result.Results[0].Actions)
+	}
+	if sc.called {
+		t.Error("scaffold commit should not be called in dry-run mode")
+	}
+}
+
+// TestConverge_GitLab_FullyMigratedNoAction covers a repo that already has
+// both fullsend's current workflow rules and the CI_DEBUG_TRACE
+// deny-before-admit rule — convergeGitLabRootCIFiles must not report any
+// gitlab-ci-rules action for it.
+func TestConverge_GitLab_FullyMigratedNoAction(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+	// Fully migrated — no obsolete rule, and the debug-trace rule is
+	// already present.
+	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: ` + debugTraceDenyRuleIf + `
+      when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
     - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
 `)
@@ -4749,6 +4937,7 @@ func gitlabRequiredScaffoldPaths() []string {
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/scripts/trust-ci-server-ca.sh",
+		".gitlab/ci/scripts/pin-ci-job-identity.sh",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
 		".gitlab/ci/scripts/install-fullsend-cli.sh",
 		".gitlab/ci/scripts/run-poll-job.sh",

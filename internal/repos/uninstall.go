@@ -71,6 +71,7 @@ var gitlabScaffoldPaths = []string{
 	fullsendDispatchInclude,
 	".gitlab/ci/fullsend-poll.yml",
 	".gitlab/ci/scripts/trust-ci-server-ca.sh",
+	".gitlab/ci/scripts/pin-ci-job-identity.sh",
 	".gitlab/ci/scripts/select-gitlab-role-token.sh",
 	".gitlab/ci/scripts/install-fullsend-cli.sh",
 	".gitlab/ci/scripts/run-poll-job.sh",
@@ -88,6 +89,8 @@ var gitlabRetiredScaffoldPaths = []string{
 
 const gitlabTrustScriptPath = ".gitlab/ci/scripts/trust-ci-server-ca.sh"
 
+const gitlabPinCIJobIdentityScriptPath = ".gitlab/ci/scripts/pin-ci-job-identity.sh"
+
 const gitlabRoleTokenScriptPath = ".gitlab/ci/scripts/select-gitlab-role-token.sh"
 
 const gitlabInstallCLIScriptPath = ".gitlab/ci/scripts/install-fullsend-cli.sh"
@@ -104,6 +107,7 @@ const gitlabCheckoutMRSourceScriptPath = ".gitlab/ci/scripts/checkout-mr-source.
 func gitlabAuxiliaryScriptPaths() []string {
 	return []string{
 		gitlabTrustScriptPath,
+		gitlabPinCIJobIdentityScriptPath,
 		gitlabRoleTokenScriptPath,
 		gitlabInstallCLIScriptPath,
 		gitlabPollJobScriptPath,

@@ -649,6 +649,7 @@ func TestUninstall_GitLabExtractedJobScripts_Deleted(t *testing.T) {
 	}
 	for _, path := range []string{
 		gitlabInstallCLIScriptPath,
+		gitlabPinCIJobIdentityScriptPath,
 		gitlabPollJobScriptPath,
 		gitlabAgentJobScriptPath,
 		gitlabCheckoutMRSourceScriptPath,

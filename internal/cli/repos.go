@@ -1181,6 +1181,16 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					roleFailInstalledCount++
 				}
 				roleFailedRepos = append(roleFailedRepos, item.r)
+				continue
+			}
+			if err := ensureGitLabPipelineVariableOverrideRole(ctx, fc.Client, printer, item.r.Owner, item.r.Repo, opts.dryRun); err != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab pipeline-variable override role failed: %v", item.r.Owner, item.r.Repo, err))
+				roleFail++
+				item.r.Error = err
+				if item.fresh {
+					roleFailInstalledCount++
+				}
+				roleFailedRepos = append(roleFailedRepos, item.r)
 			}
 		}
 	}

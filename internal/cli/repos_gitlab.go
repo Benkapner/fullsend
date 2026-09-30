@@ -253,6 +253,35 @@ func ensureGitLabPollerPipelineAccess(ctx context.Context, client forge.Client, 
 	return nil
 }
 
+// ensureGitLabPipelineVariableOverrideRole converges a GitLab project's
+// ci_pipeline_variables_minimum_override_role toward owner (#7769). It
+// is called for both fresh installs and converge/repair of
+// already-installed repos, and is idempotent: an already-owner project
+// reports Action "none" every time. Enforcement itself defaults to off
+// (see repos.GitLabPipelineVarRestrictionEnforced) pending the poller
+// credential follow-up tracked in #7769, so this is safe to call
+// unconditionally today — it currently only reports drift. Action
+// "report-only" (not-owner, enforcement disabled) is surfaced via
+// StepWarn rather than StepDone so a skimming operator does not mistake
+// "control not yet applied" for "control applied".
+func ensureGitLabPipelineVariableOverrideRole(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, dryRun bool) error {
+	repoFullName := owner + "/" + repo
+	res, err := repos.EnsureGitLabPipelineVariableOverrideRole(ctx, client, owner, repo, dryRun)
+	if err != nil {
+		printer.StepFail(fmt.Sprintf("[%s] GitLab pipeline-variable override role: %v", repoFullName, err))
+		return err
+	}
+	if res.Detail != "" {
+		msg := fmt.Sprintf("[%s] %s", repoFullName, res.Detail)
+		if res.Action == "report-only" {
+			printer.StepWarn(msg)
+		} else {
+			printer.StepDone(msg)
+		}
+	}
+	return nil
+}
+
 type gitlabTokenAdapter struct {
 	c *gitlab.LiveClient
 }
