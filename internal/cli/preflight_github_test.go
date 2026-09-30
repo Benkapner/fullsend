@@ -195,6 +195,23 @@ func TestCheckSandboxGitHubConnectivity_RetriesOnEOF(t *testing.T) {
 	assert.Equal(t, []time.Duration{2 * time.Second}, *slept)
 }
 
+func TestCheckSandboxGitHubConnectivity_FailsAfterMaxRetriesOnPersistentEOF(t *testing.T) {
+	slept := useNoSleepPreflightGitHub(t)
+	eof := `Get "https://api.github.com/rate_limit": EOF`
+	usePreflightGitHubExec(t, connectivityExec(t, []fakeExecResult{
+		{stderr: eof, exitCode: 1},
+		{stderr: eof, exitCode: 1},
+		{stderr: eof, exitCode: 1},
+	}))
+	result, err := checkSandboxGitHubConnectivity("sb", nil)
+
+	require.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "failed after 3 attempts")
+	assert.Contains(t, err.Error(), "connection closed before a response")
+	assert.Equal(t, []time.Duration{2 * time.Second, 5 * time.Second}, *slept)
+}
+
 func TestCheckSandboxGitHubConnectivity_RetriesOnConnectionReset(t *testing.T) {
 	slept := useNoSleepPreflightGitHub(t)
 	usePreflightGitHubExec(t, connectivityExec(t, []fakeExecResult{
@@ -308,6 +325,9 @@ func TestIsRetryablePreflightGitHubFailure(t *testing.T) {
 		{name: "observed rate_limit EOF", output: `Get "https://api.github.com/rate_limit": EOF`, want: true},
 		{name: "connection reset by peer", output: "connection reset by peer", want: true},
 		{name: "Connection reset by peer", output: "Connection reset by peer", want: true},
+		{name: "401 wins over EOF", output: "HTTP 401 Unauthorized: EOF", want: false},
+		{name: "unrelated unexpected EOF is not a connection EOF", exitCode: 1, output: "yaml: line 1: unexpected EOF", want: false},
+		{name: "EOF letters inside a word", exitCode: 1, output: "GEOFENCE policy rejected", want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -337,6 +357,14 @@ func TestDiagnosePreflightGitHubFailure(t *testing.T) {
 	err = diagnosePreflightGitHubFailure(1, nil, "Connection timed out")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "connection failed")
+
+	err = diagnosePreflightGitHubFailure(1, nil, `Get "https://api.github.com/rate_limit": EOF`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "connection closed before a response")
+
+	err = diagnosePreflightGitHubFailure(1, nil, "read: connection reset by peer")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "connection closed before a response")
 
 	err = diagnosePreflightGitHubFailure(2, nil, "mystery")
 	require.Error(t, err)

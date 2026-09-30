@@ -152,6 +152,15 @@ func diagnosePreflightGitHubFailure(exitCode int, err error, output string) erro
 			output)
 	}
 
+	if isPreflightConnClosed(output) {
+		return fmt.Errorf(
+			"GitHub API unreachable from sandbox (connection closed before a response):\n%s\n\n"+
+				"The connection to api.github.com was closed on every attempt. "+
+				"Check that the GitHub provider is attached and that the OpenShell gateway "+
+				"network policy allows api.github.com",
+			output)
+	}
+
 	return fmt.Errorf("GitHub API connectivity check failed (exit %d):\n%s", exitCode, output)
 }
 
@@ -188,13 +197,23 @@ func isRetryablePreflightGitHubFailure(exitCode int, err error, output string) b
 	// OpenShell 0.1 policy DNS can drop the first request to an unmapped
 	// host with a bare EOF or connection reset instead of a clean denial.
 	// A retry re-resolves through the map. See #7862.
-	if strings.Contains(combined, "EOF") {
-		return true
-	}
-	if strings.Contains(combined, "connection reset by peer") || strings.Contains(combined, "Connection reset by peer") {
+	if isPreflightConnClosed(combined) {
 		return true
 	}
 	return false
+}
+
+// preflightConnEOFPattern matches a connection-level EOF as the HTTP client
+// reports it (`Get "https://api.github.com/rate_limit": EOF`), not an
+// unrelated `unexpected EOF` from, say, a truncated config file.
+var preflightConnEOFPattern = regexp.MustCompile(`:\s*EOF\b`)
+
+// isPreflightConnClosed reports whether output shows the connection to the
+// GitHub API being closed before a response: a connection-level EOF or a
+// connection reset.
+func isPreflightConnClosed(output string) bool {
+	return preflightConnEOFPattern.MatchString(output) ||
+		strings.Contains(strings.ToLower(output), "connection reset by peer")
 }
 
 // preflightGitHubRetryReason is a short label for the retry log line.
@@ -210,9 +229,9 @@ func preflightGitHubRetryReason(exitCode int, err error, output string) string {
 		return "connection refused"
 	case exitCode == 124 || strings.Contains(combined, "timed out") || strings.Contains(combined, "Connection timed out"):
 		return "timeout"
-	case strings.Contains(combined, "EOF"):
+	case preflightConnEOFPattern.MatchString(combined):
 		return "EOF"
-	case strings.Contains(combined, "connection reset by peer") || strings.Contains(combined, "Connection reset by peer"):
+	case strings.Contains(strings.ToLower(combined), "connection reset by peer"):
 		return "connection reset"
 	default:
 		return "transient network error"
