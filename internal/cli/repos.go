@@ -1553,12 +1553,18 @@ type gcpInferenceProvisioner struct {
 	project string
 }
 
+// inferenceGCFClientFactory creates GCF clients for gcpInferenceProvisioner.
+// Overridden in tests.
+var inferenceGCFClientFactory = func(projectID string) gcf.GCFClient {
+	return gcf.NewLiveGCFClient(projectID)
+}
+
 func newGCPInferenceProvisioner(project string) *gcpInferenceProvisioner {
 	return &gcpInferenceProvisioner{project: project}
 }
 
 func (p *gcpInferenceProvisioner) Status(ctx context.Context, owner, repo string) (string, error) {
-	gcpClient := gcf.NewLiveGCFClient(p.project)
+	gcpClient := inferenceGCFClientFactory(p.project)
 	providerID := mintcore.BuildRepoProviderID(owner, repo)
 
 	projectNumber, err := gcpClient.GetProjectNumber(ctx, p.project)
@@ -1570,7 +1576,10 @@ func (p *gcpInferenceProvisioner) Status(ctx context.Context, owner, repo string
 	if err != nil {
 		return "", fmt.Errorf("checking WIF provider: %w", err)
 	}
-	if providerInfo == nil {
+	// A soft-deleted or disabled provider is still returned by
+	// providers.get but cannot exchange tokens; report it as not
+	// provisioned so the caller runs Provision, which restores it.
+	if providerInfo == nil || !providerInfo.Usable() {
 		return "", nil
 	}
 
@@ -1580,7 +1589,7 @@ func (p *gcpInferenceProvisioner) Status(ctx context.Context, owner, repo string
 }
 
 func (p *gcpInferenceProvisioner) Provision(ctx context.Context, owner, repo string) (string, error) {
-	gcpClient := gcf.NewLiveGCFClient(p.project)
+	gcpClient := inferenceGCFClientFactory(p.project)
 	provisioner := gcf.NewProvisioner(gcf.Config{
 		ProjectID:   p.project,
 		GitHubOrgs:  []string{owner},

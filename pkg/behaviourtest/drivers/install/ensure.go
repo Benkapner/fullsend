@@ -3,6 +3,7 @@ package install
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,10 +22,11 @@ const (
 	// settlePoll is the delay between GetWorkflow polls.
 	settlePoll = 5 * time.Second
 
-	// resetMaxAttempts is the number of GetRepo polls to confirm
-	// deletion propagation or creation availability after a repo
-	// reset cycle. With exponential backoff (2×) and a 1s initial
-	// delay, 5 attempts cover up to ~1+2+4+8 = 15s of API lag.
+	// resetMaxAttempts bounds the read-after-write retries around a
+	// repo reset: GetRepo polls confirming deletion or creation, and
+	// github setup re-runs after its first read 404s on a just-created
+	// repo. With exponential backoff (2×) and a 1s initial delay, 5
+	// attempts cover up to ~1+2+4+8 = 15s of API lag.
 	resetMaxAttempts = 5
 )
 
@@ -423,12 +425,68 @@ func (e *repoEnsurer) awaitCreation(ctx context.Context, org, repoName, target s
 // installFullsend resolves the inference WIF provider (when a GCP
 // project is configured) and runs fullsend github setup for the target
 // repo.
+//
+// awaitCreation confirms the repo through the suite's GetRepo, but
+// github setup is a separate CLI process whose first GetRepo (in
+// applyPerRepoScaffold) can still 404 on GitHub's read-after-create
+// lag. Retry only that specific failure, using the same bounded
+// backoff as awaitCreation. Any other setup error is a single attempt.
+//
+// Retrying is safe only because setup makes no writes before that
+// GetRepo on any path the driver uses (vendored, --fullsend-ref,
+// --config, STAGE); the calls before it are reads such as the existing
+// config and token scopes. If setup ever writes before that read, this
+// retry must be revisited.
+// The WIF resolver runs inside each attempt but hits the per-name cache
+// after the first, so a retry adds no inference CLI calls.
 func (e *repoEnsurer) installFullsend(ctx context.Context, _, _, target string) error {
 	opts := e.setupOpts
 	opts.ResolveWIFProvider = func(target, project string) (string, error) {
 		return e.resolveWIFProvider(ctx, target, project)
 	}
-	return common.RunGitHubSetupWithOpts(e.binary, e.token, target, e.e2eCfg.MintURL, e.e2eCfg.GCPProjectID, opts, e.runCLI, e.logf)
+
+	delay := resetRetryDelay
+	var lastErr error
+	for attempt := 1; attempt <= resetMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("context cancelled while running github setup for %s: %w", target, err)
+		}
+
+		err := common.RunGitHubSetupWithOpts(e.binary, e.token, target, e.e2eCfg.MintURL, e.e2eCfg.GCPProjectID, opts, e.runCLI, e.logf)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isGitHubSetupRepoInfo404(err) {
+			return err
+		}
+		if attempt == resetMaxAttempts {
+			break
+		}
+		e.logf("[ensure] github setup for %s hit the read-after-create 404, attempt %d/%d — re-running setup after %v", target, attempt, resetMaxAttempts, delay)
+		if ctx.Err() != nil {
+			return fmt.Errorf("context cancelled while retrying github setup for %s: %w", target, ctx.Err())
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled while retrying github setup for %s: %w", target, ctx.Err())
+		case <-time.After(delay):
+		}
+		delay *= 2
+	}
+	return fmt.Errorf("github setup for %s still hit the read-after-create 404 after %d attempts: %w", target, resetMaxAttempts, lastErr)
+}
+
+// isGitHubSetupRepoInfo404 reports whether err is github setup's
+// read-after-create GetRepo 404 ("getting repo info: get repo …: 404 Not Found").
+// Matching both substrings keeps every other setup failure as a single
+// attempt. The CLI error is text from a subprocess, not forge.ErrNotFound.
+func isGitHubSetupRepoInfo404(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "getting repo info: get repo ") && strings.Contains(msg, "404 Not Found")
 }
 
 // resolveWIFProvider returns the inference WIF provider for target. A
