@@ -18,7 +18,8 @@ under `ADR`/`ADRs` directories (including this repository's `docs/ADRs/`),
 reads each matching file at the PR head, and reports:
 
 - a linked `PR #N` in the same format as `/nextwork`;
-- the most likely human ADR author and the evidence source for that inference;
+- the most likely human ADR author; JSON output also includes the evidence
+  source and all attribution candidates used for that inference;
 - one row per newly added ADR, with a compact decision-oriented summary;
 - when a PR has no newly added ADRs, one row per updated ADR instead;
 - up to four human discussion excerpts, prioritizing questions, concerns,

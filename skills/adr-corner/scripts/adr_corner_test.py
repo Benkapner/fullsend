@@ -57,10 +57,13 @@ class TestAttribution(unittest.TestCase):
         pr = {
             "author": {"login": "fullsend-ai-coder[bot]", "__typename": "Bot"},
             "commits": {"nodes": [{"commit": {"author": {"user": {"login": "alice"}}}}]},
-            "assignees": {"nodes": [{"login": "bob"}]},
+            "assignees": {"nodes": [{"login": "bob", "__typename": "User"}]},
             "closingIssuesReferences": {
                 "nodes": [
-                    {"assignees": {"nodes": [{"login": "carol"}]}, "author": {"login": "dave"}}
+                    {
+                        "assignees": {"nodes": [{"login": "carol", "__typename": "User"}]},
+                        "author": {"login": "dave"},
+                    }
                 ]
             },
         }
@@ -130,6 +133,22 @@ class TestDiscussion(unittest.TestCase):
         self.assertEqual(len(points), 1)
         self.assertIn("Why should this be global?", points[0])
 
+    def test_preserves_path_like_leading_slashes(self):
+        pr = {
+            "comments": {
+                "nodes": [
+                    {
+                        "author": {"login": "alice"},
+                        "body": "/docs/ADRs/0125.md should use the new heading",
+                        "createdAt": "2026-01-02T00:00:00Z",
+                    }
+                ]
+            },
+            "reviews": {"nodes": []},
+            "reviewThreads": {"nodes": []},
+        }
+        self.assertEqual(len(discussion_points(pr)), 1)
+
     def test_contention_is_prioritized_over_newer_routine_comments(self):
         comments = [
             {
@@ -174,6 +193,9 @@ class TestDiscussion(unittest.TestCase):
 class TestDates(unittest.TestCase):
     def test_human_friendly_utc(self):
         self.assertEqual(friendly_datetime("2026-09-30T12:34:56Z"), "30 Sep 2026, 12:34 UTC")
+
+    def test_human_friendly_utc_is_portable_for_single_digit_days(self):
+        self.assertEqual(friendly_datetime("2026-09-01T12:34:56Z"), "1 Sep 2026, 12:34 UTC")
 
 
 class TestGraphqlFlags(unittest.TestCase):

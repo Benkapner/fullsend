@@ -24,6 +24,7 @@ DISCUSSION_HINT_RE = re.compile(
     r"change|agree|disagree|trade[- ]?off|must|need|open question|risk)\b",
     re.IGNORECASE,
 )
+SLASH_COMMAND_RE = re.compile(r"^/[A-Za-z0-9_-]+(?:\s|$)")
 MARKDOWN_LINK_RE = re.compile(r"!?\[([^\]]+)\]\([^)]*\)")
 WHITESPACE_RE = re.compile(r"\s+")
 
@@ -45,7 +46,7 @@ query($owner: String!, $name: String!, $cursor: String) {
         updatedAt
         headRefOid
         author { login __typename }
-        assignees(first: 20) { nodes { login } }
+        assignees(first: 20) { nodes { login __typename } }
         files(first: 100) {
           pageInfo { hasNextPage endCursor }
           nodes { path changeType }
@@ -62,7 +63,7 @@ query($owner: String!, $name: String!, $number: Int!) {
     pullRequest(number: $number) {
       body
       author { login __typename }
-      assignees(first: 20) { nodes { login } }
+      assignees(first: 20) { nodes { login __typename } }
       closingIssuesReferences(first: 20) {
         nodes {
           number
@@ -70,7 +71,7 @@ query($owner: String!, $name: String!, $number: Int!) {
           url
           state
           author { login __typename }
-          assignees(first: 20) { nodes { login } }
+          assignees(first: 20) { nodes { login __typename } }
         }
       }
     }
@@ -286,10 +287,10 @@ def infer_adr_authors(pr: dict[str, Any]) -> list[dict[str, str]]:
             if login:
                 candidates.append((login, source))
     for node in (pr.get("assignees") or {}).get("nodes", []):
-        candidates.append((node.get("login"), "PR assignee"))
+        candidates.append((_human_login(node), "PR assignee"))
     for issue in (pr.get("closingIssuesReferences") or {}).get("nodes", []):
         for node in (issue.get("assignees") or {}).get("nodes", []):
-            candidates.append((node.get("login"), "linked issue assignee"))
+            candidates.append((_human_login(node), "linked issue assignee"))
     for issue in (pr.get("closingIssuesReferences") or {}).get("nodes", []):
         candidates.append((_human_login(issue.get("author")), "linked issue creator"))
     return _unique_humans(candidates)
@@ -311,7 +312,7 @@ def _comment_record(
 ) -> dict[str, Any] | None:
     body = normalize_text(body or "")
     login = _actor_login(actor)
-    if not body or body.startswith("/"):
+    if not body or SLASH_COMMAND_RE.match(body):
         return None
     return {
         "author": login or "unknown",
@@ -381,7 +382,8 @@ def friendly_datetime(value: str | None) -> str:
     parsed = parse_iso(value)
     if parsed is None:
         return "unknown"
-    return parsed.astimezone(UTC).strftime("%-d %b %Y, %H:%M UTC")
+    parsed = parsed.astimezone(UTC)
+    return f"{parsed.day} {parsed.strftime('%b %Y, %H:%M UTC')}"
 
 
 def sort_rows_oldest_first(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
