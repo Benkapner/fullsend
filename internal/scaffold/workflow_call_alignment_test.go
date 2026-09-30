@@ -1663,7 +1663,9 @@ func TestGCPSetupOccursInsideSingleRun(t *testing.T) {
 			}
 		}
 		require.NotNil(t, runEnv, "Run functional tests step not found")
-		assert.Equal(t, "${{ secrets.E2E_GCP_WIF_PROVIDER }}", runEnv["FULLSEND_GCP_WIF_PROVIDER"])
-		assert.Equal(t, "${{ secrets.E2E_GCP_PROJECT_ID }}", runEnv["FULLSEND_GCP_PROJECT_ID"])
+		// Functional tests authenticate in an earlier step; GCP inputs here
+		// would make the run replace that credential file with direct WIF.
+		assert.NotContains(t, runEnv, "FULLSEND_GCP_WIF_PROVIDER")
+		assert.NotContains(t, runEnv, "FULLSEND_GCP_PROJECT_ID")
 	})
 }
