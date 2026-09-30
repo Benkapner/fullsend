@@ -13,6 +13,11 @@ files. Use the deterministic helper for GitHub discovery and formatting:
 python3 skills/adr-corner/scripts/adr_corner.py $ARGUMENTS
 ```
 
+## Slash command
+
+Portable `/adr-corner` is defined in
+[commands/adr-corner.md](../../commands/adr-corner.md).
+
 The helper scans open PRs, follows file pagination, recognizes Markdown files
 under `ADR`/`ADRs` directories (including this repository's `docs/ADRs/`),
 reads each matching file at the PR head, and reports:

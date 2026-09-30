@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 ADR_DIRECTORY_RE = re.compile(r"(?:^|/)(?:adr|adrs)(?:/|$)", re.IGNORECASE)
-ADR_FILENAME_RE = re.compile(r"(?:^|/)(?:adr[-_ ]?\d+|adr[-_ ].+)\.md$", re.IGNORECASE)
+ADR_FILENAME_RE = re.compile(r"(?:^|/)adr[-_ ]?\d+\.md$", re.IGNORECASE)
 BOT_LOGIN_RE = re.compile(r"(?:\[bot\]|(?:^|[-_])bot(?:$|[-_]))", re.IGNORECASE)
 DISCUSSION_HINT_RE = re.compile(
     r"\b(?:but|however|concern|question|why|should|suggest|request|block|"

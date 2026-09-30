@@ -32,6 +32,7 @@ class TestAdrPaths(unittest.TestCase):
         self.assertTrue(is_adr_path("docs/ADRs/0125-gitlab.md"))
         self.assertTrue(is_adr_path("architecture/adr/decision.md"))
         self.assertTrue(is_adr_path("ADR-001.md"))
+        self.assertFalse(is_adr_path("commands/adr-corner.md"))
         self.assertFalse(is_adr_path("docs/guides/architecture.md"))
         self.assertFalse(is_adr_path("docs/ADRs/README.txt"))
         self.assertFalse(is_adr_path("docs/ADRs/README.md"))
