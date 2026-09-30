@@ -1,5 +1,5 @@
 ---
-title: "126. Runner-owned policy for native Codex children"
+title: "126. Fullsend-owned mechanism for Codex sub-agents"
 status: Accepted
 relates_to:
   - agent-architecture
@@ -10,7 +10,7 @@ topics:
   - security
 ---
 
-# 126. Runner-owned policy for native Codex children
+# 126. Fullsend-owned mechanism for Codex sub-agents
 
 Date: 2026-09-29
 

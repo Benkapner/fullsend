@@ -18,7 +18,7 @@ Date: 2026-09-05
 Accepted
 
 Codex child model resolution and native role dispatch are defined in
-[ADR 0126](0126-runner-owned-codex-child-policy.md).
+[ADR 0126](0126-fullsend-owned-codex-subagents.md).
 
 ## Context
 
