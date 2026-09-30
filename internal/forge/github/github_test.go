@@ -4818,3 +4818,178 @@ func TestDo_ServerErrorExhaustedIsNotARateLimit(t *testing.T) {
 	assert.NotContains(t, err.Error(), "rate limit:")
 	assert.Contains(t, err.Error(), "retryable error after 5 attempts")
 }
+
+// gitDataRaceServer serves the read side of the Git Data API for org/repo
+// and returns 404 for the first commitFails commit reads and the first
+// treeFails tree reads, the replica lag seen on a freshly auto_init'd
+// repo (#7861). Write endpoints used by CommitFiles succeed.
+func gitDataRaceServer(t *testing.T, commitFails, treeFails int, commitGets, treeGets *int) *httptest.Server {
+	t.Helper()
+	var repoGets int
+	return gitDataRaceServerWithRepo(t, 0, &repoGets, commitFails, treeFails, commitGets, treeGets)
+}
+
+// gitDataRaceServerWithRepo is gitDataRaceServer that also 404s the first
+// repoFails repo reads.
+func gitDataRaceServerWithRepo(t *testing.T, repoFails int, repoGets *int, commitFails, treeFails int, commitGets, treeGets *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			*repoGets++
+			if *repoGets <= repoFails {
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			*commitGets++
+			if *commitGets <= commitFails {
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			*treeGets++
+			if *treeGets <= treeFails {
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"tree":      []map[string]string{{"path": "README.md", "mode": "100644", "type": "blob", "sha": "r1"}},
+				"truncated": false,
+			})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func TestCommitFiles_GetCommit404ExhaustsRetryBudget(t *testing.T) {
+	var commitGets, treeGets int
+	srv := gitDataRaceServer(t, 100, 0, &commitGets, &treeGets)
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "after 5 attempts")
+	assert.Equal(t, 5, commitGets, "a persistent 404 stops after the retry budget")
+	assert.Zero(t, treeGets)
+}
+
+func TestCommitFiles_RetriesTransientGetTree404(t *testing.T) {
+	var commitGets, treeGets int
+	srv := gitDataRaceServer(t, 0, 2, &commitGets, &treeGets)
+	defer srv.Close()
+
+	committed, err := newTestClient(t, srv).CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+	})
+	require.NoError(t, err)
+	assert.True(t, committed)
+	assert.Equal(t, 3, treeGets, "get tree should retry the transient 404s then succeed")
+}
+
+func TestDeleteFiles_RetriesTransientGitData404(t *testing.T) {
+	var commitGets, treeGets int
+	srv := gitDataRaceServer(t, 1, 1, &commitGets, &treeGets)
+	defer srv.Close()
+
+	// No listed path exists in the tree, so DeleteFiles returns after the reads.
+	deleted, err := newTestClient(t, srv).DeleteFiles(context.Background(), "org", "repo", "msg", []string{"missing.txt"})
+	require.NoError(t, err)
+	assert.Zero(t, deleted)
+	assert.Equal(t, 2, commitGets)
+	assert.Equal(t, 2, treeGets)
+}
+
+func TestListRepositoryFiles_RetriesTransientGitData404(t *testing.T) {
+	var commitGets, treeGets int
+	srv := gitDataRaceServer(t, 1, 1, &commitGets, &treeGets)
+	defer srv.Close()
+
+	files, err := newTestClient(t, srv).ListRepositoryFiles(context.Background(), "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"README.md"}, files)
+	assert.Equal(t, 2, commitGets)
+	assert.Equal(t, 2, treeGets)
+}
+
+func TestDeleteFiles_GetTree404ExhaustsRetryBudget(t *testing.T) {
+	var commitGets, treeGets int
+	srv := gitDataRaceServer(t, 0, 100, &commitGets, &treeGets)
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).DeleteFiles(context.Background(), "org", "repo", "msg", []string{"missing.txt"})
+	require.Error(t, err)
+	assert.Equal(t, 5, treeGets, "a persistent tree 404 stops after the retry budget")
+	assert.Contains(t, err.Error(), "after 5 attempts")
+	assert.NotContains(t, err.Error(), "decode tree", "a GET failure must not be reported as a decode error")
+}
+
+func TestGetCommitTreeSHA_DecodeErrorIsNotRetried(t *testing.T) {
+	commitGets := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/org/repo/git/commits/abc123" {
+			commitGets++
+			w.Write([]byte("not-json"))
+			return
+		}
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).getCommitTreeSHA(context.Background(), "org", "repo", "abc123")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode commit")
+	assert.NotContains(t, err.Error(), "after 5 attempts")
+	assert.Equal(t, 1, commitGets, "a decode error is not a replica-lag race")
+}
+
+// TestGitDataReads_RetryTransientGetRepo404 covers the repo read that
+// starts CommitFiles, DeleteFiles and ListRepositoryFiles: the "get repo:
+// 404" seen when committing to a just-created harness-hosting repo.
+func TestGitDataReads_RetryTransientGetRepo404(t *testing.T) {
+	calls := map[string]func(*LiveClient) error{
+		"CommitFiles": func(c *LiveClient) error {
+			_, err := c.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+				{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+			})
+			return err
+		},
+		"DeleteFiles": func(c *LiveClient) error {
+			_, err := c.DeleteFiles(context.Background(), "org", "repo", "msg", []string{"missing.txt"})
+			return err
+		},
+		"ListRepositoryFiles": func(c *LiveClient) error {
+			_, err := c.ListRepositoryFiles(context.Background(), "org", "repo")
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			var repoGets, commitGets, treeGets int
+			srv := gitDataRaceServerWithRepo(t, 2, &repoGets, 0, 0, &commitGets, &treeGets)
+			defer srv.Close()
+
+			require.NoError(t, call(newTestClient(t, srv)))
+			assert.Equal(t, 3, repoGets, "get repo should retry the transient 404s then succeed")
+		})
+	}
+}
