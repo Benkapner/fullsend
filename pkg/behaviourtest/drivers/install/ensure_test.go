@@ -1017,6 +1017,7 @@ func TestEnsurer_GitHubSetup_RepoInfo404_GivesUpAfterMaxAttempts(t *testing.T) {
 	assert.Contains(t, err.Error(), "getting repo info:")
 	assert.Contains(t, err.Error(), "404 Not Found")
 	assert.Equal(t, int32(resetMaxAttempts), setupCalls.Load(), "repo-info 404 retries must stop at resetMaxAttempts")
+	assert.Contains(t, err.Error(), fmt.Sprintf("after %d attempts", resetMaxAttempts))
 }
 
 func TestIsGitHubSetupRepoInfo404(t *testing.T) {
@@ -1036,6 +1037,11 @@ func TestIsGitHubSetupRepoInfo404(t *testing.T) {
 			name: "wrapped 404",
 			err:  fmt.Errorf("github setup org/repo: %w", githubSetupRepoInfo404Err("org/repo")),
 			want: true,
+		},
+		{
+			name: "getting repo info on a different read",
+			err:  fmt.Errorf("getting repo info: list variables: github api: 404 Not Found"),
+			want: false,
 		},
 		{
 			name: "404 without getting repo info",
@@ -1059,6 +1065,52 @@ func TestIsGitHubSetupRepoInfo404(t *testing.T) {
 			assert.Equal(t, tt.want, isGitHubSetupRepoInfo404(tt.err))
 		})
 	}
+}
+
+// TestEnsurer_GitHubSetup_RepoInfo404_DoesNotReprovisionWIF checks that a
+// setup retry reuses the cached inference WIF provider: one status read,
+// no provision, and the same provider on both setup attempts.
+func TestEnsurer_GitHubSetup_RepoInfo404_DoesNotReprovisionWIF(t *testing.T) {
+	speedUpValidateRetries(t)
+	speedUpResetRetries(t)
+	sc := &stubClient{installed: false}
+	var setupCalls, statusCalls, provisionCalls atomic.Int32
+	var setupArgs [][]string
+	const target = "org/test-repo-setup-404-wif"
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test", GCPProjectID: "test-project"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			switch {
+			case isInferenceCall(args, "status"):
+				statusCalls.Add(1)
+				return healthyStatusJSON, nil
+			case isInferenceCall(args, "provision"):
+				provisionCalls.Add(1)
+			case isGitHubSetupCall(args):
+				setupArgs = append(setupArgs, append([]string(nil), args...))
+				if setupCalls.Add(1) == 1 {
+					return "", githubSetupRepoInfo404Err(target)
+				}
+				sc.installed = true
+			}
+			return "", nil
+		},
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	require.NoError(t, e.EnsureRepo(context.Background(), "org", "test-repo-setup-404-wif"))
+	assert.Equal(t, int32(2), setupCalls.Load())
+	assert.Equal(t, int32(1), statusCalls.Load(), "the retry must reuse the cached provider")
+	assert.Zero(t, provisionCalls.Load())
+	require.Len(t, setupArgs, 2)
+	assert.Contains(t, setupArgs[0], testWIFProvider)
+	assert.Contains(t, setupArgs[1], testWIFProvider)
 }
 
 func TestEnsurer_ProvisionInferenceError_Propagated(t *testing.T) {
