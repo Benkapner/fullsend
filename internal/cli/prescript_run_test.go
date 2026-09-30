@@ -305,6 +305,7 @@ func TestValidateExistingGCPCredentialFile(t *testing.T) {
 		{name: "empty file name", content: `{"type":"external_account","credential_source":{"file":""}}`, wantErr: "credential_source.file"},
 		{name: "impersonation over file source", content: `{"type":"impersonated_service_account","source_credentials":{"type":"external_account","credential_source":{"file":"/tmp/token"}}}`},
 		{name: "impersonation over url source", content: `{"type":"impersonated_service_account","source_credentials":{"type":"external_account","credential_source":{"url":"https://example.invalid","headers":{"Authorization":"Bearer x"}}}}`, wantErr: "credential_source.url or headers"},
+		{name: "url source beside source_credentials", content: `{"type":"external_account","credential_source":{"url":"https://example.invalid"},"source_credentials":{"type":"service_account"}}`, wantErr: "credential_source.url or headers"},
 		{name: "oversized file", content: `{"type":"service_account","pad":"` + strings.Repeat("x", maxGCPCredentialFileBytes) + `"}`, wantErr: "exceeds"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -513,6 +514,27 @@ func TestRunAgent_NonVertexParentDropsUnusableCredentialFile(t *testing.T) {
 			})
 		}
 	}
+}
+
+// A required GCP mount on a non-Vertex run fails before the pre-script once
+// its credential file has been dropped.
+func TestRunAgent_NonVertexRequiredGCPHostFileFailsBeforePreScript(t *testing.T) {
+	usePreScriptStub(t)
+	setActionsGCPEnv(t, "codex", "", "")
+	creds := filepath.Join(t.TempDir(), "credentials.json")
+	require.NoError(t, os.WriteFile(creds, []byte(`{"type":"external_account","credential_source":{"url":"https://example.invalid"}}`), 0o600))
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", creds)
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+	f, err := os.OpenFile(filepath.Join(dir, "harness", "code.yaml"), os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteString("host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	err = runSkipHarnessAgent(t, dir, ui.New(io.Discard))
+	require.ErrorContains(t, err, "GOOGLE_APPLICATION_CREDENTIALS is empty")
+	assert.NoFileExists(t, marker)
 }
 
 // dummy runtimes do no inference, so a GitHub Actions run without GCP

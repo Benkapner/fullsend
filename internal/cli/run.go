@@ -1048,6 +1048,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepFail("Inference credential validation failed")
 			return err
 		}
+	} else if err := validateRequiredGCPHostFile(h); err != nil {
+		printer.StepFail("Inference credential validation failed")
+		return err
 	}
 
 	// Expand env vars in runner_env values. FULLSEND_DIR is injected so
@@ -4252,7 +4255,7 @@ func (creds *gcpCredentialFile) check() error {
 	if strings.TrimSpace(creds.Type) == "" {
 		return fmt.Errorf("the GOOGLE_APPLICATION_CREDENTIALS file has no credential type")
 	}
-	if creds.SourceCredentials != nil {
+	if creds.Type == "impersonated_service_account" && creds.SourceCredentials != nil {
 		return creds.SourceCredentials.check()
 	}
 	if creds.Type != "external_account" {
@@ -4264,6 +4267,18 @@ func (creds *gcpCredentialFile) check() error {
 	}
 	if src == nil || src.File == "" {
 		return fmt.Errorf("the GOOGLE_APPLICATION_CREDENTIALS file has no credential_source.file")
+	}
+	return nil
+}
+
+// validateRequiredGCPHostFile fails a non-Vertex run before its pre-script
+// when a required GCP host-file mount has no credential file, for example
+// after dropUnusableCredentialFile cleared it.
+func validateRequiredGCPHostFile(h *harness.Harness) error {
+	for i, hf := range h.HostFiles {
+		if !hf.Optional && hf.Src == "${GOOGLE_APPLICATION_CREDENTIALS}" && os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") == "" {
+			return fmt.Errorf("host_files[%d]: GOOGLE_APPLICATION_CREDENTIALS is empty; mark the mount optional or provide a credential file", i)
+		}
 	}
 	return nil
 }

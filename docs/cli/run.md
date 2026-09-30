@@ -68,8 +68,9 @@ The run prints which source it used. For local and GitLab Vertex runs, point
 An OpenAI run uses the [OpenAI credential path](#openai-credentials-on-pi-and-codex). When both GCP
 inputs are set, an OpenAI run on GitHub Actions also prepares Google WIF credentials for Vertex
 sub-agents; a failure there is a warning. The `dummy` and `dummy-playback` runtimes skip Google
-credential setup. A run whose parent does not use Vertex ignores a `GOOGLE_APPLICATION_CREDENTIALS`
-file that fails these checks, so the harness cannot mount it.
+credential setup. On GitHub Actions, a run whose parent does not use Vertex clears a
+`GOOGLE_APPLICATION_CREDENTIALS` file that fails these checks, so the pre-script, the sandbox and
+the post-script do not get it.
 
 ```bash
 # try a repo's triage on pi with Gemini Flash, without touching its config
