@@ -538,12 +538,16 @@ func TestRunAgent_NonVertexRequiredGCPHostFileFailsBeforePreScript(t *testing.T)
 }
 
 // dummy runtimes do no inference, so a GitHub Actions run without GCP
-// inputs must not fail on Vertex setup, and one with inputs skips WIF.
+// inputs must not fail on Vertex setup. With inputs set they still get WIF:
+// behaviour tests run dummy agents on fleet harnesses that require the file.
 func TestRunAgent_DummyRuntimeNeedsNoGCPInputs(t *testing.T) {
-	for _, tc := range []struct{ runtimeName, projectID, provider string }{
+	for _, tc := range []struct {
+		runtimeName, projectID, provider string
+		requiredMount                    bool
+	}{
 		{runtimeName: "dummy"},
 		{runtimeName: "dummy-playback"},
-		{runtimeName: "dummy", projectID: "test-project", provider: testGCPWIFProvider},
+		{runtimeName: "dummy", projectID: "test-project", provider: testGCPWIFProvider, requiredMount: true},
 	} {
 		runtimeName := tc.runtimeName
 		t.Run(runtimeName+"/"+tc.projectID, func(t *testing.T) {
@@ -552,13 +556,24 @@ func TestRunAgent_DummyRuntimeNeedsNoGCPInputs(t *testing.T) {
 			stub := stubPrepareGitHubWIF(t, nil)
 			marker := filepath.Join(t.TempDir(), "pre-script-ran")
 			dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+			if tc.requiredMount {
+				f, err := os.OpenFile(filepath.Join(dir, "harness", "code.yaml"), os.O_APPEND|os.O_WRONLY, 0)
+				require.NoError(t, err)
+				_, err = f.WriteString("host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n")
+				require.NoError(t, err)
+				require.NoError(t, f.Close())
+			}
 
 			err := runSkipHarnessAgent(t, dir, ui.New(io.Discard))
 			if err != nil {
 				assert.NotContains(t, err.Error(), "FULLSEND_GCP_PROJECT_ID")
 				assert.NotContains(t, err.Error(), "GOOGLE_APPLICATION_CREDENTIALS")
 			}
-			assert.Zero(t, stub.calls)
+			if tc.projectID != "" {
+				assert.Equal(t, 1, stub.calls)
+			} else {
+				assert.Zero(t, stub.calls)
+			}
 			assert.FileExists(t, marker)
 		})
 	}

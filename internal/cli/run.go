@@ -4118,8 +4118,9 @@ func runInferenceProvider(runtimeName string, needsOpenAI bool) string {
 // Actions run. With both GCP inputs set it prepares WIF credentials and
 // overrides GOOGLE_APPLICATION_CREDENTIALS; with neither set it keeps an
 // existing credential file from an earlier workflow step; one input alone is
-// an error. For an OpenAI parent, credentials are still prepared for Vertex
-// sub-agents if both inputs are set, and any failure is a warning. A run
+// an error. For a parent that does not use Vertex, credentials are still
+// prepared if both inputs are set (Vertex sub-agents, and fleet harnesses
+// that mount the file), and any failure is a warning. A run
 // whose parent does not use Vertex never mounts an existing credential file
 // that fails validation. The returned cleanup is never nil.
 func setupActionsVertexCredentials(ctx context.Context, provider string, printer *ui.Printer, setEnv func(key, value string)) (func(), error) {
@@ -4132,18 +4133,16 @@ func setupActionsVertexCredentials(ctx context.Context, provider string, printer
 		vertexinference.SecretProjectID, vertexinference.SecretWIFProvider)
 
 	if provider != runProviderVertex {
-		if provider == runProviderOpenAI {
-			switch {
-			case partial:
-				printer.StepWarn("Vertex credentials for sub-agents skipped: " + partialErr.Error())
-			case inputsSet:
-				cleanup, err := prepareActionsWIF(ctx, projectID, wifProvider, setEnv)
-				if err == nil {
-					printer.StepDone("Vertex credentials: prepared GitHub WIF (for Vertex sub-agents)")
-					return cleanup, nil
-				}
-				printer.StepWarn("Vertex credentials for sub-agents unavailable: " + err.Error())
+		switch {
+		case partial:
+			printer.StepWarn("Vertex credentials for sub-agents skipped: " + partialErr.Error())
+		case inputsSet:
+			cleanup, err := prepareActionsWIF(ctx, projectID, wifProvider, setEnv)
+			if err == nil {
+				printer.StepDone("Vertex credentials: prepared GitHub WIF (for Vertex sub-agents)")
+				return cleanup, nil
 			}
+			printer.StepWarn("Vertex credentials for sub-agents unavailable: " + err.Error())
 		}
 		dropUnusableCredentialFile(printer, setEnv)
 		return noop, nil
