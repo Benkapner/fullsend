@@ -609,9 +609,8 @@ func installVarsForForge(cfg InstallConfig, mintURL string) (map[string]string, 
 }
 
 // installSecretsForForge returns the inference secrets to write.
-// Returns nil when InferenceProject is not set (the convergence
-// layer validates that InferenceProject is provided for repos
-// without existing secrets).
+// Returns nil when InferenceProject is not set; repositories without
+// Vertex inference credentials do not write GCP secrets.
 func installSecretsForForge(cfg InstallConfig, wifProvider string) map[string]string {
 	if cfg.InferenceProject == "" {
 		return nil
@@ -630,9 +629,9 @@ func installSecretsForForge(cfg InstallConfig, wifProvider string) map[string]st
 // checkInstallComponents, and uninstall.
 var requiredVariables = []string{forge.VarMintURL}
 
-// requiredSecrets lists the per-repo secrets that must exist for a
-// complete installation. Shared by install, checkInstallComponents,
-// and uninstall.
+// requiredSecrets lists the managed GCP inference secrets. Both may be
+// absent from an installation; probe checks pair consistency. Shared by
+// install, checkInstallComponents, and uninstall.
 var requiredSecrets = []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider}
 
 // gitlabRetiredLegacyVars is the set of GitLab poller CI/CD variables

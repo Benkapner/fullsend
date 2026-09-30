@@ -139,19 +139,19 @@ func TestProbeComponents_MissingWorkflow(t *testing.T) {
 	t.Error("workflow component not found in probe results")
 }
 
-func TestProbeComponents_MissingSecret(t *testing.T) {
+func TestProbeComponents_NoGCPSecretsIsCurrent(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
 	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
-	// No secrets.
+	// A repository without Vertex credentials is a valid installation.
 
 	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
 	if err != nil {
 		t.Fatalf("ProbeComponents() error = %v", err)
 	}
-	if AllMatch(components) {
-		t.Error("expected AllMatch=false when secrets are missing")
+	if !AllMatch(components) {
+		t.Error("expected AllMatch=true when both optional GCP secrets are absent")
 	}
 
 	missing := 0
@@ -161,7 +161,23 @@ func TestProbeComponents_MissingSecret(t *testing.T) {
 		}
 	}
 	if missing != 2 {
-		t.Errorf("expected 2 missing secrets, got %d", missing)
+		t.Errorf("expected both GCP secrets to remain observable, got %d", missing)
+	}
+}
+
+func TestProbeComponents_PartialGCPSecretsDrift(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
+	addThinCallerFiles(fc, "acme", "api")
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
+	if err != nil {
+		t.Fatalf("ProbeComponents() error: %v", err)
+	}
+	if AllMatch(components) {
+		t.Error("expected a missing WIF secret to remain drift when GCP is partially configured")
 	}
 }
 

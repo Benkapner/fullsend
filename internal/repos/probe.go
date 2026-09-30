@@ -33,8 +33,8 @@ type ComponentStatus struct {
 	// when the component is not present or its value is opaque.
 	Actual string
 
-	// Match is true when the component is present and either no value
-	// check applies or the actual value equals the expected value.
+	// Match is true when the component meets its requirement. Both GCP
+	// secrets absent is also a match because Vertex is optional at install.
 	Match bool
 }
 
@@ -254,6 +254,22 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 			Present: exists,
 			Match:   exists,
 		})
+	}
+	// Installation does not select an agent's inference route. Keep both
+	// GCP components visible so a partial pair remains
+	// detectable and convergence can repair it when values are supplied.
+	var projectIndex, wifIndex = -1, -1
+	for i := range results {
+		switch results[i].Name {
+		case "secret:" + forge.SecretGCPProjectID:
+			projectIndex = i
+		case "secret:" + forge.SecretGCPWIFProvider:
+			wifIndex = i
+		}
+	}
+	if projectIndex >= 0 && wifIndex >= 0 && !results[projectIndex].Present && !results[wifIndex].Present {
+		results[projectIndex].Match = true
+		results[wifIndex].Match = true
 	}
 
 	return results, nil

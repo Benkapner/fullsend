@@ -10,11 +10,10 @@ ever holds a placeholder that the OpenShell gateway swaps for the real token on 
 Setting it up is one visit to the OpenAI console — yours, or your IT administrator's — and one
 command per repository. No key is created, downloaded or rotated.
 
-For an **already installed** repository, `fullsend run` selects inference credentials from each
-agent's effective runtime and model. An agent using an OpenAI model runs without GCP credentials;
-another agent in the same repository can still use Vertex. Repository enrollment is separate:
-`fullsend github setup` and `fullsend repos install` still require the GCP project and WIF provider
-pair, even when the agents will use OpenAI. This guide does not provide a GCP-free initial install.
+`fullsend run` selects inference credentials from each agent's effective runtime and model.
+An agent using an OpenAI model runs without GCP credentials; another agent in the same
+repository can still use Vertex. Initial `fullsend github setup` and `fullsend repos install`
+can omit GCP inference flags. A later Vertex run still requires usable GCP credentials.
 
 > **GitHub Actions only** for Workload Identity Federation. The exchange needs the job's OIDC
 > endpoint. If you cannot enrol a WIF provider, [Route C](#c-static-key-as-a-repository-secret) uses
@@ -330,7 +329,7 @@ inference:
 ```
 
 Commit the config change so CI can read it. If you use `fullsend github setup --openai-*` instead,
-it still requires the GCP pair and opens a pull request unless you pass `--direct`. A base
+the GCP pair is optional and setup opens a pull request unless you pass `--direct`. A base
 configuration (`config.base.yaml`, or a vendor preset) can carry the block for many repositories,
 and a repository can restate any one of the three — with a centrally managed provider, the audience
 and the provider ID are typically the same for every repository and only the service account differs.
@@ -475,3 +474,5 @@ agent starts and names the rule.
 - [Running agents locally](../user/running-agents-locally.md)
 - [ADR 0092](../../ADRs/0092-openai-wif-credential-delivery.md) — design and accepted risks
 - [OpenAI: Workload identity federation for GitHub Actions](https://developers.openai.com/api/docs/guides/workload-identity-federation/github-actions)
+
+Assisted-by: Codex

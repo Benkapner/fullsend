@@ -246,7 +246,7 @@ func hasComponent(components []ComponentStatus, name string) bool {
 	return false
 }
 
-// secretsPresent returns true when both required inference secrets are present.
+// secretsPresent returns true when both optional GCP inference secrets are present.
 func secretsPresent(components []ComponentStatus) bool {
 	return hasComponent(components, "secret:"+forge.SecretGCPProjectID) &&
 		hasComponent(components, "secret:"+forge.SecretGCPWIFProvider)
@@ -587,17 +587,6 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			case d.resolved.Forge == ForgeGitLab && cfg.InferenceProject != "" && cfg.InferenceProjectNumber != "":
 				wif = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/gitlab-oidc",
 					cfg.InferenceProjectNumber, mintcore.DefaultInferencePool)
-			}
-
-			// Validate inference flags for repos without existing secrets.
-			if cfg.InferenceProject == "" && cfg.WIFProvider == "" {
-				repoFullName := d.repo.Owner + "/" + d.repo.Repo
-				result.Results[i] = ConvergeResult{
-					Owner: d.repo.Owner,
-					Repo:  d.repo.Repo,
-					Error: fmt.Errorf("--inference-project is required for %s (inference secrets are always needed)", repoFullName),
-				}
-				continue
 			}
 		}
 		candidates[i] = candidateInfo{discovery: d, wifProvider: wif}

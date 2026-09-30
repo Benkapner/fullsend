@@ -119,6 +119,9 @@ fullsend repos install acme/new-repo --forge github --direct
 
 When repos are specified as positional arguments, only those repos are processed. Glob patterns (e.g. `acme/*`) are matched against manifest entries. When no repos are specified, all manifest repos are converged. Credentials are required only for the forges of the selected repos: a GitLab-only selection does not need `GH_TOKEN`, and a GitHub-only selection does not need `GITLAB_TOKEN`. An unfiltered run still requires credentials for every forge present in the manifest.
 
+GCP inference flags are optional. Omit them to install without Vertex credentials;
+provide the complete GCP set when Vertex agents will run.
+
 ### Flags
 
 | Flag | Default | Description |
@@ -128,7 +131,7 @@ When repos are specified as positional arguments, only those repos are processed
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--roles` | `triage,coder,review,fix,retro,prioritize` | Agent roles to install. On a fresh install of a repo with a declared configuration preset, the preset's own roles take effect instead of this default unless `--roles` is explicitly passed on the command line. |
 | `--direct` | `false` | Push scaffold directly to default branch (skip PR) |
-| `--inference-project` | | GCP project ID for inference (written as `FULLSEND_GCP_PROJECT_ID` secret) |
+| `--inference-project` | | Optional GCP project ID for Vertex inference (written as `FULLSEND_GCP_PROJECT_ID` secret) |
 | `--inference-wif-provider` | | Full WIF provider resource name (`projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}`); uses this provider for all repos instead of deriving per-repo providers. Project number is embedded in the path, so no auto-derivation is needed. |
 | `--forge` | | Forge type for new repos (`github` or `gitlab`). Required when adding repos not already in the manifest; inferred from existing platform sections when unambiguous. |
 | `--force` | `false` | Allow scaffold ref downgrades |
@@ -444,3 +447,5 @@ fullsend repos set-default gitlab.url https://gitlab.example.com
 - [Configuring GitLab](../guides/getting-started/configuring-gitlab.md) — GitLab getting-started guide
 - [Operations](../guides/getting-started/operations.md) — Day-2 administration
 - [CLI Internals](../guides/dev/cli-internals.md) — Command structure and implementation details
+
+Assisted-by: Codex

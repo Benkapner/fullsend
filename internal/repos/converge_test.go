@@ -88,6 +88,28 @@ func TestConverge_AllFresh(t *testing.T) {
 	}
 }
 
+func TestConverge_FreshInstallWithoutGCP(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	cfg := convergeCfgWithDefaults(newConvergeManifest("acme/api"))
+	cfg.InferenceProject = ""
+	cfg.InferenceProjectNumber = ""
+	cfg.InferenceRegion = ""
+	sc := &fakeScaffoldCommit{}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Installed()) != 1 || len(result.Failed()) != 0 {
+		t.Fatalf("want one installed repo and no failures, got installed=%d failed=%v", len(result.Installed()), result.Failed())
+	}
+	for _, secret := range fc.CreatedSecrets {
+		if strings.HasPrefix(secret.Name, "FULLSEND_GCP_") {
+			t.Errorf("unexpected GCP secret %s", secret.Name)
+		}
+	}
+}
+
 func TestConverge_AlreadyInstalledNoChange(t *testing.T) {
 	repoNames := []string{"acme/api"}
 	fc := newFakeClientForBatch(repoNames...)
@@ -353,33 +375,6 @@ func TestConverge_InvalidConcurrency(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "concurrency") {
 		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestConverge_InferenceProjectRequired(t *testing.T) {
-	repoNames := []string{"acme/api"}
-	fc := newFakeClientForBatch(repoNames...)
-	m := newConvergeManifest(repoNames...)
-
-	sc := &fakeScaffoldCommit{}
-	cfg := ConvergeConfig{
-		Manifest:       m,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
-
-	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("Converge() unexpected batch error: %v", err)
-	}
-
-	failed := result.Failed()
-	if len(failed) != 1 {
-		t.Fatalf("expected 1 failed (missing inference-project), got %d", len(failed))
-	}
-	if !strings.Contains(failed[0].Error.Error(), "--inference-project is required") {
-		t.Errorf("unexpected error message: %v", failed[0].Error)
 	}
 }
 
@@ -1887,6 +1882,28 @@ func gitlabConvergeCfg(repo string) ConvergeConfig {
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
 		InferenceRegion:        "us-central1",
+	}
+}
+
+func TestConverge_GitLabFreshInstallWithoutGCP(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	cfg := gitlabConvergeCfg("acme/api")
+	cfg.InferenceProject = ""
+	cfg.InferenceProjectNumber = ""
+	cfg.InferenceRegion = ""
+	sc := &fakeScaffoldCommit{}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Installed()) != 1 || len(result.Failed()) != 0 {
+		t.Fatalf("want one installed repo and no failures, got installed=%d failed=%v", len(result.Installed()), result.Failed())
+	}
+	for _, secret := range fc.CreatedSecrets {
+		if strings.HasPrefix(secret.Name, "FULLSEND_GCP_") {
+			t.Errorf("unexpected GCP secret %s", secret.Name)
+		}
 	}
 }
 

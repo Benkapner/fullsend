@@ -10,7 +10,7 @@ See [Configuring GitLab](configuring-gitlab.md) for that flow.
 
 ## Prerequisites
 
-* You have your WIF provider URL from [Getting Inference](getting-inference.md).
+* For Vertex agents, you have your WIF provider URL from [Getting Inference](getting-inference.md). OpenAI-only setup does not need it.
 * Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
 * Download the latest [gh](https://cli.github.com/) CLI and authenticate with it.
 
@@ -70,7 +70,12 @@ Where `<org>/<repo>` refers to the GitHub organization and repository you want t
 for, `<gcp-project>` is your GCP project name, and `<wif-provider-url>` is the WIF Provider URL
 created at [Getting Inference](getting-inference.md).
 
-The command creates files, secrets and variables in your repository.
+The command creates files, secrets and variables in your repository. If you
+will use only OpenAI agents, omit both `--inference-project` and
+`--inference-wif-provider`. Setup then writes no GCP inference secrets;
+a later Vertex run requires both credentials.
+Configure each enabled agent's runtime and model for OpenAI before it runs.
+For OpenAI credentials, see [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
 
 ### Enabling a subset of agents
 
@@ -130,3 +135,5 @@ within your GitHub organization.
 * Read the [Agents](../../agents/README.md) section to learn about the default agents Fullsend
 ships with.
 * Explore other sections of this documentation for more information.
+
+Assisted-by: Codex

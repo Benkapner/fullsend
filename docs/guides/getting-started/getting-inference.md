@@ -4,9 +4,9 @@ sidebar_position: 2
 
 # Getting Inference For Fullsend
 
-The goal of this document is that you acquire a WIF provider URL to pass to the next step
-of the process ([Configuring GitHub](configuring-github.md)). GitLab repositories skip
-this provision command — see [Configuring GitLab](configuring-gitlab.md#inference-setup).
+This document explains how to acquire a GCP WIF provider URL for Vertex inference.
+Skip it if your agents use only OpenAI; both [GitHub setup](configuring-github.md)
+and [GitLab install](configuring-gitlab.md) accept no GCP inference inputs.
 
 Fullsend supports GCP Vertex AI inference using Workload Identity Federation (WIF) on both
 GitHub and GitLab. WIF grants short-lived tokens to requesters that meet certain requirements.
@@ -17,7 +17,7 @@ If the WIF finds the request valid, it provides a short-lived token.
 GPT models on the pi or codex runtime use OpenAI Workload Identity Federation instead, so an
 OpenAI agent run needs no GCP credentials and stores no key on the recommended path; see
 [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md). Initial repository
-setup still requires the GCP project and WIF provider pair. If you cannot enrol an OpenAI WIF
+setup can omit the GCP project and WIF provider pair. If you cannot enrol an OpenAI WIF
 provider, that guide's Route C uses a `FULLSEND_OPENAI_API_KEY` repository secret.
 
 For **GitLab repos**, inference credentials are configured via `repos install --inference-project`
@@ -95,3 +95,5 @@ Head over to [Configuring GitHub](configuring-github.md) to use your WIF provide
 For GitLab repositories, skip this provision output and follow
 [Configuring GitLab](configuring-gitlab.md) instead — GitLab inference credentials
 are written by `repos install --inference-project`, not by this command.
+
+Assisted-by: Codex

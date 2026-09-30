@@ -40,6 +40,9 @@ fullsend github setup <owner/repo> \
   --inference-wif-provider "<WIF_PROVIDER>"
 ```
 
+The GCP inference flags are optional for per-repo setup. Omit both for an
+OpenAI-only installation; a Vertex agent run still requires the pair.
+
 **Re-running per-repo setup** (for example after a fullsend upgrade) refreshes the managed
 workflow files but never rewrites an existing `.fullsend/config.yaml` on its own: `agents:` entries and
 their per-agent settings, allowlists and hand-written comments stay as they are, the runtime prompt is skipped,
@@ -58,8 +61,8 @@ than being regenerated.
 |------|---------|-------------|
 | `--mint-url` | | HTTPS endpoint of the token mint service |
 | `--inference-provider` | | Inference provider; resolved to `vertex` if unset |
-| `--inference-project` | | GCP project ID for Agent Platform |
-| `--inference-wif-provider` | | Full WIF provider resource name |
+| `--inference-project` | | GCP project ID for Vertex inference; optional for per-repo setup |
+| `--inference-wif-provider` | | Full WIF provider resource name; optional for per-repo setup |
 | `--openai-audience` | | OpenAI Workload Identity audience for GPT on pi or codex; with the two flags below, written to `inference.openai` in `config.yaml` (all three or none) |
 | `--openai-identity-provider-id` | | OpenAI Workload Identity provider ID |
 | `--openai-service-account-id` | | OpenAI service account ID the provider maps this repository to |
@@ -154,3 +157,5 @@ fullsend github uninstall <org> [--yolo] [--app-set <name>]
 - [Configuring GitHub for fullsend](../guides/getting-started/configuring-github.md) — getting started guide
 - [Advanced setup](../guides/infrastructure/advanced-setup.md) — non-standard installation paths and setup flags
 - [Operations](../guides/getting-started/operations.md) — day-2 administration (enrollment, status, uninstall)
+
+Assisted-by: Codex
