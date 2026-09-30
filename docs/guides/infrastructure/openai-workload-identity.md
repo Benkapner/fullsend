@@ -11,9 +11,10 @@ Setting it up is one visit to the OpenAI console — yours, or your IT administr
 command per repository. No key is created, downloaded or rotated.
 
 `fullsend run` selects inference credentials from each agent's effective runtime and model.
-An agent using an OpenAI model runs without GCP credentials; another agent in the same
+An agent using an OpenAI model does not require GCP credentials; another agent in the same
 repository can still use Vertex. Initial `fullsend github setup` and `fullsend repos install`
-can omit GCP inference flags. A later Vertex run still requires usable GCP credentials.
+can omit GCP inference flags. A later Vertex run still requires usable GCP credentials. When the
+repository has the GCP secrets, an OpenAI run also gets Vertex credentials for Vertex sub-agents.
 
 > **GitHub Actions only** for Workload Identity Federation. The exchange needs the job's OIDC
 > endpoint. If you cannot enrol a WIF provider, [Route C](#c-static-key-as-a-repository-secret) uses
