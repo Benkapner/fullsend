@@ -183,6 +183,30 @@ func TestCheckSandboxGitHubConnectivity_RetriesOnConnectionRefused(t *testing.T)
 	assert.Equal(t, []time.Duration{2 * time.Second}, *slept)
 }
 
+func TestCheckSandboxGitHubConnectivity_RetriesOnEOF(t *testing.T) {
+	slept := useNoSleepPreflightGitHub(t)
+	usePreflightGitHubExec(t, connectivityExec(t, []fakeExecResult{
+		{stderr: `Get "https://api.github.com/rate_limit": EOF`, exitCode: 1},
+		{},
+	}))
+	result, err := checkSandboxGitHubConnectivity("sb", nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, []time.Duration{2 * time.Second}, *slept)
+}
+
+func TestCheckSandboxGitHubConnectivity_RetriesOnConnectionReset(t *testing.T) {
+	slept := useNoSleepPreflightGitHub(t)
+	usePreflightGitHubExec(t, connectivityExec(t, []fakeExecResult{
+		{stderr: "read: connection reset by peer", exitCode: 1},
+		{},
+	}))
+	result, err := checkSandboxGitHubConnectivity("sb", nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, []time.Duration{2 * time.Second}, *slept)
+}
+
 func TestCheckSandboxGitHubConnectivity_RetriesOnTimeout(t *testing.T) {
 	slept := useNoSleepPreflightGitHub(t)
 	timeoutErr := fmt.Errorf("command timed out after %s", preflightGitHubTimeout)
@@ -281,6 +305,9 @@ func TestIsRetryablePreflightGitHubFailure(t *testing.T) {
 		{name: "generic", exitCode: 1, output: "something else went wrong", want: false},
 		{name: "401 wins over 403 substring", output: "HTTP 401 Unauthorized (proxy also returned 403 earlier)", want: false},
 		{name: "403 body with unrelated digits resembling 401/404", output: "HTTP 403 Forbidden (ref 40199, trace 40404)", want: true},
+		{name: "observed rate_limit EOF", output: `Get "https://api.github.com/rate_limit": EOF`, want: true},
+		{name: "connection reset by peer", output: "connection reset by peer", want: true},
+		{name: "Connection reset by peer", output: "Connection reset by peer", want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -327,5 +354,8 @@ func TestPreflightGitHubRetryReason(t *testing.T) {
 	assert.Equal(t, "connection refused", preflightGitHubRetryReason(1, nil, "Connection refused"))
 	assert.Equal(t, "timeout", preflightGitHubRetryReason(124, errors.New("command timed out after 30s"), ""))
 	assert.Equal(t, "timeout", preflightGitHubRetryReason(1, nil, "Connection timed out"))
+	assert.Equal(t, "EOF", preflightGitHubRetryReason(1, nil, `Get "https://api.github.com/rate_limit": EOF`))
+	assert.Equal(t, "connection reset", preflightGitHubRetryReason(1, nil, "connection reset by peer"))
+	assert.Equal(t, "connection reset", preflightGitHubRetryReason(1, nil, "Connection reset by peer"))
 	assert.Equal(t, "transient network error", preflightGitHubRetryReason(1, nil, "other"))
 }
