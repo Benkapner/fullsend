@@ -5316,7 +5316,7 @@ func TestGetCached_InvalidJSONNotCached(t *testing.T) {
 	client := newTestClient(t, srv)
 	_, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "decode workflow runs")
+	assert.Contains(t, err.Error(), "list workflow runs: decode /repos/org/repo/actions/workflows/fullsend.yaml/runs")
 	runs, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
 	require.NoError(t, err)
 	assert.Equal(t, "in_progress", runs[0].Status)
@@ -5463,6 +5463,10 @@ func TestEtagCache_ReplaceAdjustsBytes(t *testing.T) {
 // body, so mutating a fetched body cannot corrupt it.
 func TestGetCached_CachedBodyNotAliased(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 		w.Header().Set("ETag", `"v1"`)
 		json.NewEncoder(w).Encode(runsBody("in_progress"))
 	}))
@@ -5479,6 +5483,18 @@ func TestGetCached_CachedBodyNotAliased(t *testing.T) {
 	cached := client.etagCache[client.baseURL+path].Value.(*etagEntry).body
 	client.etagMu.Unlock()
 	assert.True(t, json.Valid(cached), "the cached body must not alias the returned one")
+
+	// A 304 returns the cached body; mutating that result must not reach
+	// the cache either.
+	notModified, err := client.fetchConditional(context.Background(), client.baseURL+path, path)
+	require.NoError(t, err)
+	for i := range notModified.body {
+		notModified.body[i] = 'X'
+	}
+	client.etagMu.Lock()
+	cached = client.etagCache[client.baseURL+path].Value.(*etagEntry).body
+	client.etagMu.Unlock()
+	assert.True(t, json.Valid(cached), "the 304 result must not alias the cache")
 }
 
 // TestGetCached_ReadErrorNamesPath: a body read failure says which
@@ -5661,9 +5677,9 @@ func TestFetchConditional_304WithoutEntryIsAnError(t *testing.T) {
 	assert.Contains(t, err.Error(), "304 Not Modified without a cached entry")
 }
 
-// TestGetCachedJSON_CancelledCallerStartsNoFetch: a caller whose context
+// TestGetCached_CancelledCallerStartsNoFetch: a caller whose context
 // is already done returns at once without starting a request.
-func TestGetCachedJSON_CancelledCallerStartsNoFetch(t *testing.T) {
+func TestGetCached_CancelledCallerStartsNoFetch(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
