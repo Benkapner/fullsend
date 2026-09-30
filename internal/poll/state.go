@@ -39,7 +39,17 @@ const (
 var (
 	errDispatchSecretUnset = errors.New("FULLSEND_DISPATCH_SECRET is not set: refusing to load or write unsigned poll state (re-run repos install/converge to provision it)")
 	errPollStateTampered   = errors.New("poll state signature missing or invalid (tampered, or written without FULLSEND_DISPATCH_SECRET)")
+	// errPollStateCASExhausted is returned when persistWithCAS could not
+	// land a conflict-detecting persist after maxPollStateCASAttempts.
+	// Fail closed rather than overwrite a concurrent writer's keys.
+	errPollStateCASExhausted = errors.New("poll state persist exhausted CAS retries")
 )
+
+// maxPollStateCASAttempts bounds the read-merge-write loop in
+// persistWithCAS. Attempt 1 is the uncontended write; later attempts
+// reload, re-apply this writer's deltas, and recommit. Exhaustion
+// fails closed so a concurrent writer cannot silently drop keys.
+const maxPollStateCASAttempts = 5
 
 // persistedPollState is the JSON document stored at state.json on a
 // poll-state branch. Slash and events polls persist disjoint field
@@ -129,7 +139,20 @@ func computeStateHMAC(secret, domain string, state persistedPollState) (string, 
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
+// loadPollState loads and verifies the poll-state document at the current
+// branch tip. See loadPollStateAtRef for the SHA-pinned variant
+// persistWithCAS uses.
 func (p *Poller) loadPollState(ctx context.Context, owner, repo string) (persistedPollState, error) {
+	return p.loadPollStateAtRef(ctx, owner, repo, p.stateBranch())
+}
+
+// loadPollStateAtRef is loadPollState pinned to a specific ref (a branch
+// name, or a commit SHA) instead of always resolving the branch tip at
+// read time. persistWithCAS uses this to pin its content read to the same
+// SHA its own GetBranchRef snapshot returned, so the two reads cannot
+// observe two different commits if another writer's commit lands on the
+// branch between them.
+func (p *Poller) loadPollStateAtRef(ctx context.Context, owner, repo, ref string) (persistedPollState, error) {
 	// Fail closed when no secret is configured, before touching the
 	// branch. Poll state lives on a Developer-writable branch, so an
 	// unsigned document cannot be trusted; aborting here stops the
@@ -138,7 +161,7 @@ func (p *Poller) loadPollState(ctx context.Context, owner, repo string) (persist
 		return persistedPollState{}, errDispatchSecretUnset
 	}
 	branch := p.stateBranch()
-	data, err := p.client.GetFileContentAtRef(ctx, owner, repo, PollStateFileName, branch)
+	data, err := p.client.GetFileContentAtRef(ctx, owner, repo, PollStateFileName, ref)
 	if err != nil {
 		if errors.Is(err, forge.ErrNotFound) {
 			// Missing branch/file is not tampering: start from a
@@ -175,7 +198,18 @@ func (p *Poller) discardPollState(ctx context.Context, owner, repo, branch strin
 	return nil
 }
 
-func (p *Poller) savePollState(ctx context.Context, owner, repo string, state persistedPollState) error {
+// persistDeltas is the set of mutations this writer wants to land. On a
+// CAS conflict, persistWithCAS reloads the latest document and re-applies
+// these deltas so concurrent writers union rather than overwrite.
+type persistDeltas struct {
+	dispatched map[string]int64
+	pruneCut   time.Time // cutoff for dispatched-key prune; zero keeps all ts>=0
+	watermark  *time.Time
+	failed     map[string]int
+	labels     LabelState
+}
+
+func (p *Poller) commitPollState(ctx context.Context, owner, repo string, state persistedPollState, expectedSHA string) error {
 	if p.opts.DispatchSecret == "" {
 		return errDispatchSecretUnset
 	}
@@ -190,7 +224,42 @@ func (p *Poller) savePollState(ctx context.Context, owner, repo string, state pe
 		return err
 	}
 	branch := p.stateBranch()
-	return p.client.ForceCommitFileToBranch(ctx, owner, repo, branch, PollStateFileName, "fullsend: persist poll state", data)
+	return p.client.CommitFileToBranch(ctx, owner, repo, branch, PollStateFileName, "fullsend: persist poll state", data, expectedSHA)
+}
+
+// applyPersistDeltas applies this writer's deltas onto state, which was
+// just (re)loaded fresh in persistWithCAS's loop. Every field is merged
+// against that freshly loaded document on every attempt, not only after a
+// detected 409: "uncontended" only means no other commit landed between
+// this writer's own GetBranchRef and its commit, not that the reloaded
+// document is free of a concurrent writer's disjoint update that raced
+// this writer's in-flight cycle (a concurrent writer's commit that this
+// writer's own commit still fast-forwards past never triggers a 409, so a
+// wholesale replace on the "uncontended" first attempt could silently
+// drop it).
+//
+// Deletions this writer intentionally made this cycle — a failed-key
+// count cleared by a successful dispatch, a label entry cleared by a
+// closed issue or a label removal — are carried as tombstones so a merge
+// against a stale existing value cannot resurrect what this writer
+// explicitly cleared: a failed-key count of exactly 0 (see
+// unionFailedKeys), or a present-but-empty label slice (see
+// mergeLabelState). A field this writer has no opinion on this cycle is
+// simply absent from the delta/map and is left untouched by the merge.
+func (p *Poller) applyPersistDeltas(state persistedPollState, deltas persistDeltas) persistedPollState {
+	if deltas.dispatched != nil {
+		unionDispatchedKeys(&state, p.slashCommandsOnly, deltas.dispatched, deltas.pruneCut)
+	}
+	if deltas.failed != nil {
+		unionFailedKeys(&state, p.slashCommandsOnly, deltas.failed)
+	}
+	if deltas.watermark != nil {
+		p.applyWatermark(&state, *deltas.watermark)
+	}
+	if deltas.labels != nil {
+		state.LabelState = mergeLabelState(state.LabelState, deltas.labels)
+	}
+	return state
 }
 
 // readWatermark reads the last-polled timestamp from poller state.
@@ -219,32 +288,69 @@ func (p *Poller) updateWatermark(ctx context.Context, owner, repo string, t time
 	return p.persistCycleState(ctx, owner, repo, nil, &t, nil, nil)
 }
 
-// persistCycleState loads poll state once, applies the provided mutations,
-// and writes a single commit. Nil dispatched / watermark / failed / labels
-// leave the corresponding stored fields unchanged. One poll cycle therefore
-// produces one poll-state commit instead of one commit per field.
+// persistCycleState loads poll state, applies the provided mutations, and
+// writes a single commit under a conflict-detecting CAS loop. Nil dispatched
+// / watermark / failed / labels leave the corresponding stored fields
+// unchanged. One poll cycle therefore produces one poll-state commit instead
+// of one commit per field. On ErrNonFastForward the latest document is
+// reloaded and this writer's deltas are re-applied so concurrent writers
+// union rather than overwrite.
 func (p *Poller) persistCycleState(ctx context.Context, owner, repo string, dispatched map[string]int64, watermark *time.Time, failed map[string]int, labels LabelState) error {
-	state, err := p.loadPollState(ctx, owner, repo)
-	if err != nil {
-		return err
-	}
-	if dispatched != nil {
-		cut := time.Time{}
-		if watermark != nil {
-			cut = *watermark
-		}
-		p.applyDispatchedKeys(&state, dispatched, cut)
-	}
-	if failed != nil {
-		p.applyFailedKeys(&state, failed)
+	deltas := persistDeltas{
+		dispatched: dispatched,
+		watermark:  watermark,
+		failed:     failed,
+		labels:     labels,
 	}
 	if watermark != nil {
-		p.applyWatermark(&state, *watermark)
+		deltas.pruneCut = *watermark
 	}
-	if labels != nil {
-		state.LabelState = labels
+	return p.persistWithCAS(ctx, owner, repo, deltas)
+}
+
+func (p *Poller) persistWithCAS(ctx context.Context, owner, repo string, deltas persistDeltas) error {
+	if p.opts.DispatchSecret == "" {
+		return errDispatchSecretUnset
 	}
-	return p.savePollState(ctx, owner, repo, state)
+	branch := p.stateBranch()
+	var lastErr error
+	for attempt := 1; attempt <= maxPollStateCASAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		expectedSHA, err := p.client.GetBranchRef(ctx, owner, repo, branch)
+		if err != nil {
+			if !forge.IsNotFound(err) {
+				return err
+			}
+			expectedSHA = ""
+		}
+		// Pin the content read to the exact SHA GetBranchRef just
+		// returned (falling back to the branch name when the branch was
+		// observed missing) so the two reads cannot diverge if another
+		// commit lands on the branch between them.
+		ref := branch
+		if expectedSHA != "" {
+			ref = expectedSHA
+		}
+		state, err := p.loadPollStateAtRef(ctx, owner, repo, ref)
+		if err != nil {
+			return err
+		}
+		state = p.applyPersistDeltas(state, deltas)
+		err = p.commitPollState(ctx, owner, repo, state, expectedSHA)
+		if err == nil {
+			return nil
+		}
+		if !forge.IsNonFastForward(err) {
+			return err
+		}
+		lastErr = err
+		log.Printf("poll state CAS conflict on %s (attempt %d/%d): %v", branch, attempt, maxPollStateCASAttempts, err)
+	}
+	return fmt.Errorf("%w after %d attempts: %w", errPollStateCASExhausted, maxPollStateCASAttempts, lastErr)
 }
 
 func pruneDispatchedKeys(keys map[string]int64, watermark time.Time) map[string]int64 {
@@ -268,25 +374,118 @@ func pruneFailedKeys(keys map[string]int) map[string]int {
 	return pruned
 }
 
-func (p *Poller) applyDispatchedKeys(state *persistedPollState, keys map[string]int64, watermark time.Time) {
-	pruned := pruneDispatchedKeys(keys, watermark)
-	if p.slashCommandsOnly {
+// unionDispatchedKeys merges this writer's keys into the loaded document
+// (max timestamp wins per key) then prunes by watermark. Used on every
+// persistWithCAS attempt so a concurrent writer's keys survive.
+func unionDispatchedKeys(state *persistedPollState, slash bool, keys map[string]int64, watermark time.Time) {
+	existing := state.DispatchedKeysFull
+	if slash {
+		existing = state.DispatchedKeysFast
+	}
+	merged := make(map[string]int64, len(existing)+len(keys))
+	for k, ts := range existing {
+		merged[k] = ts
+	}
+	for k, ts := range keys {
+		if prev, ok := merged[k]; !ok || ts > prev {
+			merged[k] = ts
+		}
+	}
+	pruned := pruneDispatchedKeys(merged, watermark)
+	if slash {
 		state.DispatchedKeysFast = pruned
 	} else {
 		state.DispatchedKeysFull = pruned
 	}
 }
 
-func (p *Poller) applyFailedKeys(state *persistedPollState, keys map[string]int) {
-	pruned := pruneFailedKeys(keys)
-	if p.slashCommandsOnly {
+// unionFailedKeys merges this writer's failed-key retry counts into the
+// loaded document (max count per key survives) then prunes via
+// pruneFailedKeys, mirroring unionDispatchedKeys. Used on every
+// persistWithCAS attempt (not only a detected 409) so a concurrent
+// writer's disjoint failed-key counts survive even when this writer's own
+// commit lands as a clean fast-forward.
+//
+// A key present in keys with a count of exactly 0 is a tombstone: this
+// writer intentionally resolved it this cycle (e.g. a successful dispatch
+// cleared its retry count via poll.go's `delete` becoming a 0-count
+// entry before persisting), and that deletion wins over whatever count
+// the freshly reloaded document still carries for it. A plain max-count
+// union would otherwise resurrect a pre-cycle failure count that this
+// writer explicitly cleared, letting a later failure exhaust
+// maxEventRetries one successful dispatch too early. Real failure counts
+// are always >= 1 (recordEventFailure only increments), so 0 is
+// unambiguous as a tombstone. pruneFailedKeys already strips any
+// remaining <= 0 entries, so a tombstone never reaches the persisted
+// document.
+func unionFailedKeys(state *persistedPollState, slash bool, keys map[string]int) {
+	existing := state.FailedKeysFull
+	if slash {
+		existing = state.FailedKeysFast
+	}
+	merged := make(map[string]int, len(existing)+len(keys))
+	for k, c := range existing {
+		merged[k] = c
+	}
+	for k, c := range keys {
+		if c <= 0 {
+			delete(merged, k)
+			continue
+		}
+		if prev, ok := merged[k]; !ok || c > prev {
+			merged[k] = c
+		}
+	}
+	pruned := pruneFailedKeys(merged)
+	if slash {
 		state.FailedKeysFast = pruned
 	} else {
 		state.FailedKeysFull = pruned
 	}
 }
 
+// mergeLabelState merges this writer's computed label-state snapshot
+// (incoming) with the freshly reloaded document (existing) so entries for
+// issues this writer did not itself observe — most likely a concurrent
+// writer's update recorded during a CAS retry window, or simply not
+// re-derived on an uncontended attempt — survive instead of being dropped
+// by a wholesale replace. incoming wins per issue IID it is present for.
+//
+// An IID present in incoming with an empty (but non-nil) label slice is a
+// tombstone: this writer observed the issue lose its routable labels, or
+// close, this cycle (see detectNewLabels and discoverAllEvents), and that
+// deletion wins over whatever the reloaded document still carries for it.
+// An IID absent from incoming entirely is left untouched by the merge —
+// this writer has no opinion on it this cycle.
+func mergeLabelState(existing, incoming LabelState) LabelState {
+	merged := make(LabelState, len(existing)+len(incoming))
+	for iid, labels := range existing {
+		merged[iid] = labels
+	}
+	for iid, labels := range incoming {
+		if len(labels) == 0 {
+			delete(merged, iid)
+			continue
+		}
+		merged[iid] = labels
+	}
+	return merged
+}
+
+// applyWatermark advances the stored watermark to the later of the newly
+// observed timestamp and whatever is already on the (freshly loaded)
+// document, so a CAS retry cannot roll the watermark backward if a
+// concurrent writer already advanced it further.
 func (p *Poller) applyWatermark(state *persistedPollState, t time.Time) {
+	current := state.LastPollAtFull
+	if p.slashCommandsOnly {
+		current = state.LastPollAtFast
+	}
+	if current != "" {
+		if parsed, err := time.Parse(time.RFC3339, current); err == nil && parsed.After(t) {
+			t = parsed
+		}
+	}
 	formatted := t.Format(time.RFC3339)
 	if p.slashCommandsOnly {
 		state.LastPollAtFast = formatted
@@ -343,7 +542,12 @@ func (p *Poller) detectNewLabels(ctx context.Context, owner, repo string, issues
 		if len(currentRoutable) > 0 {
 			state[iss.IID] = currentRoutable
 		} else {
-			delete(state, iss.IID)
+			// Tombstone (present, empty), not delete: this writer
+			// observed the issue currently has no routable labels, and
+			// mergeLabelState must apply that deletion even against a
+			// freshly reloaded document that still carries an older
+			// entry for this IID (see mergeLabelState).
+			state[iss.IID] = []string{}
 		}
 	}
 
@@ -353,7 +557,8 @@ func (p *Poller) detectNewLabels(ctx context.Context, owner, repo string, issues
 			continue
 		}
 		if p.isIssueClosed(ctx, owner, repo, iid) {
-			delete(state, iid)
+			// Tombstone rather than delete; see the comment above.
+			state[iid] = []string{}
 		}
 	}
 
@@ -397,12 +602,10 @@ func (p *Poller) readDispatchedKeys(ctx context.Context, owner, repo string) (ma
 // persistDispatchedKeys writes the dispatched keys map, pruning entries
 // older than the given watermark. The stored watermark is not updated.
 func (p *Poller) persistDispatchedKeys(ctx context.Context, owner, repo string, keys map[string]int64, watermark time.Time) error {
-	state, err := p.loadPollState(ctx, owner, repo)
-	if err != nil {
-		return err
-	}
-	p.applyDispatchedKeys(&state, keys, watermark)
-	return p.savePollState(ctx, owner, repo, state)
+	return p.persistWithCAS(ctx, owner, repo, persistDeltas{
+		dispatched: keys,
+		pruneCut:   watermark,
+	})
 }
 
 // readFailedKeys reads the map of event keys to failure counts.

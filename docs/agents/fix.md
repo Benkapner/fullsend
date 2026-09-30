@@ -27,7 +27,7 @@ The fix agent has two operating modes with different primary inputs:
 |-------|--------|-------------------|
 | Review body | Latest `CHANGES_REQUESTED` review from a review bot | Pre-fetched on the runner before the sandbox starts, injected as `review-body.txt` |
 | PR diff | `gh pr diff` inside the sandbox | Agent calls this to understand what code changed |
-| Repository checkout | Full repo at PR HEAD | Checked out on the runner, mounted into the sandbox |
+| Repository checkout | Full repo at PR/MR HEAD | Checked out on the runner, mounted into the sandbox |
 | Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Read from the checkout inside the sandbox |
 
 **Human-triggered** (`/fs-fix [instruction]`):
@@ -42,6 +42,14 @@ The fix agent has two operating modes with different primary inputs:
 
 When a human instruction is present, it supersedes the review body as the
 primary directive.
+
+On GitLab, dispatch pipelines run from the repository default branch, so
+the fix job fetches the MR source SHA into `target-repo/` and points
+`--target-repo` there before `fullsend run`. Trusted `.fullsend/` config
+continues to be read from the default-branch working tree. Fetching the
+source branch without checking it out is not sufficient: the sandbox
+inherits the runner checkout, and the agent cannot recover the reviewed
+revision from inside the sandbox.
 
 ### What the agent does not read
 

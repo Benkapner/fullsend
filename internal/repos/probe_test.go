@@ -306,9 +306,10 @@ func TestProbeComponents_GitLab_MissingExtractedJobScripts(t *testing.T) {
 		t.Fatalf("ProbeComponents() error = %v", err)
 	}
 	wanted := map[string]bool{
-		"scaffold:" + gitlabInstallCLIScriptPath: false,
-		"scaffold:" + gitlabPollJobScriptPath:    false,
-		"scaffold:" + gitlabAgentJobScriptPath:   false,
+		"scaffold:" + gitlabInstallCLIScriptPath:       false,
+		"scaffold:" + gitlabPollJobScriptPath:          false,
+		"scaffold:" + gitlabAgentJobScriptPath:         false,
+		"scaffold:" + gitlabCheckoutMRSourceScriptPath: false,
 	}
 	for _, c := range components {
 		if _, ok := wanted[c.Name]; !ok {

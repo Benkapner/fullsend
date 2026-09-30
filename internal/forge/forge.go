@@ -74,6 +74,16 @@ const (
 	// signing is on by default; see poll.EnsureDispatchSecret.
 	SecretDispatch = "FULLSEND_DISPATCH_SECRET"
 
+	// SecretTriggerToken is the GitLab pipeline trigger token used by
+	// the webhook fast-path dispatcher. Provisioned as a masked,
+	// protected CI/CD variable. Never logged.
+	SecretTriggerToken = "FULLSEND_TRIGGER_TOKEN"
+
+	// SecretWebhookSecret is the GitLab project-webhook secret
+	// (X-Gitlab-Token) used by the webhook fast-path. Provisioned as a
+	// masked, protected CI/CD variable. Never logged.
+	SecretWebhookSecret = "FULLSEND_WEBHOOK_SECRET"
+
 	// Opt-in OpenAI static-key secret (ADR 0092), GitHub only: never part
 	// of requiredSecrets/requiredSecretsForForge — a repository with no
 	// OpenAI WIF and no static key configured is not unhealthy. Uninstall
@@ -100,11 +110,9 @@ const (
 	VarPollMode       = "FULLSEND_POLL_MODE"
 	VarGitLabBotToken = "FULLSEND_GITLAB_BOT_TOKEN"
 
-	// VarGitLabRoleMigration is the GitLab role-identity gate. Absent or
-	// empty means disabled: leftover shared-token jobs use only
-	// FULLSEND_FORGE_TOKEN until ordinary repos install converges them.
-	// Operator-settable values are enforced and rollback. Leftover
-	// disabled and migrating values remain parseable. See
+	// VarGitLabRoleMigration is leftover GitLab role-identity-gate state.
+	// Runtime, install, and status ignore it. Uninstall still deletes it
+	// so older repositories do not retain the variable. See
 	// internal/gitlabroles.
 	VarGitLabRoleMigration = "FULLSEND_GITLAB_ROLE_MIGRATION"
 
@@ -120,6 +128,43 @@ const (
 	// never stores token values. See internal/gitlabroles and #7500.
 	VarGitLabRoleRotation = "FULLSEND_GITLAB_ROLE_ROTATION"
 )
+
+// GitLab CI pipeline-variable minimum-override roles.
+//
+// These are the documented values of GitLab's
+// ci_pipeline_variables_minimum_override_role project setting
+// (GitLab >= 17.1). The setting is a minimum-role gate: only identities
+// at that role or above may pass user-defined variables on pipeline
+// create/trigger. GitHub has no equivalent; its client returns
+// ErrNotSupported.
+const (
+	// PipelineVarOverrideNoOneAllowed rejects every user-defined pipeline
+	// variable, including those sent by an Owner PAT via CreatePipeline.
+	PipelineVarOverrideNoOneAllowed = "no_one_allowed"
+	PipelineVarOverrideDeveloper    = "developer"
+	PipelineVarOverrideMaintainer   = "maintainer"
+	PipelineVarOverrideOwner        = "owner"
+)
+
+// ErrInvalidPipelineVarOverrideRole indicates that a caller supplied a
+// value for ci_pipeline_variables_minimum_override_role that is not one of
+// the four documented roles.
+var ErrInvalidPipelineVarOverrideRole = errors.New("invalid pipeline variable override role")
+
+// ValidatePipelineVarOverrideRole reports an error if role is not one of
+// the documented ci_pipeline_variables_minimum_override_role values
+// (PipelineVarOverrideNoOneAllowed, PipelineVarOverrideDeveloper,
+// PipelineVarOverrideMaintainer, PipelineVarOverrideOwner). Shared by the
+// GitLab LiveClient and FakeClient so both reject typos and unknown values
+// the same way before persisting or sending them.
+func ValidatePipelineVarOverrideRole(role string) error {
+	switch role {
+	case PipelineVarOverrideNoOneAllowed, PipelineVarOverrideDeveloper, PipelineVarOverrideMaintainer, PipelineVarOverrideOwner:
+		return nil
+	default:
+		return fmt.Errorf("%w: %q", ErrInvalidPipelineVarOverrideRole, role)
+	}
+}
 
 // ErrNotFound indicates a requested resource was not found on the forge.
 var ErrNotFound = errors.New("not found")
@@ -638,8 +683,9 @@ type Client interface {
 	// each call leaves the branch at base + 1 commit. The commit message
 	// is suffixed with [skip ci] if not already present.
 	//
-	// This is used for GitLab poller state persistence on Developer-writable
-	// unprotected branches. GitHub returns ErrNotSupported.
+	// This is used for GitLab poll-state branch seeding on Developer-writable
+	// unprotected branches. Runtime persist uses a conflict-detecting commit
+	// (poll.GitLabClient.CommitFileToBranch). GitHub returns ErrNotSupported.
 	ForceCommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
 
 	// Ref operations
@@ -906,6 +952,54 @@ type Client interface {
 	// Values are visible in pipeline logs; use CreateRepoSecret for credentials.
 	CreateProtectedCIVariable(ctx context.Context, owner, repo, name, value string) error
 
+	// GitLab pipeline trigger tokens and project webhooks power the
+	// webhook fast-path dispatcher. GitHub returns ErrNotSupported.
+
+	// CreatePipelineTriggerToken mints a pipeline trigger token on
+	// owner/repo. The token value is only returned at creation time.
+	CreatePipelineTriggerToken(ctx context.Context, owner, repo, description string) (*PipelineTriggerToken, error)
+	// ListPipelineTriggerTokens lists pipeline trigger tokens.
+	// Token values are omitted after creation.
+	ListPipelineTriggerTokens(ctx context.Context, owner, repo string) ([]PipelineTriggerToken, error)
+	// RevokePipelineTriggerToken deletes a trigger token by ID.
+	// Returns ErrNotFound if the token does not exist.
+	RevokePipelineTriggerToken(ctx context.Context, owner, repo string, tokenID int64) error
+
+	// CreateProjectHook creates a project webhook with the given URL,
+	// secret token, and event filters.
+	CreateProjectHook(ctx context.Context, owner, repo string, hook ProjectHook) (*ProjectHook, error)
+	// ListProjectHooks lists project webhooks. The secret token is
+	// never returned.
+	ListProjectHooks(ctx context.Context, owner, repo string) ([]ProjectHook, error)
+	// UpdateProjectHook replaces an existing project webhook's full
+	// configuration. It is not a partial update: every event-flag field
+	// on hook is sent as given, including zero values, so any flag the
+	// caller omits is cleared. Returns ErrNotFound if the hook does not
+	// exist.
+	UpdateProjectHook(ctx context.Context, owner, repo string, hookID int64, hook ProjectHook) (*ProjectHook, error)
+	// DeleteProjectHook deletes a project webhook by ID.
+	// Returns ErrNotFound if the hook does not exist.
+	DeleteProjectHook(ctx context.Context, owner, repo string, hookID int64) error
+
+	// GetPipelineVariablesMinimumOverrideRole returns the GitLab project
+	// setting that gates who may pass user-defined variables when creating
+	// or triggering a pipeline (ci_pipeline_variables_minimum_override_role).
+	// Valid values are no_one_allowed, developer, maintainer, and owner.
+	// Returns ("", nil) if the field is absent from GitLab's response
+	// (e.g. an older GitLab instance or an edition that doesn't expose the
+	// setting) — callers cannot distinguish that case from a project whose
+	// role was explicitly read as empty, since GitLab never returns an
+	// empty string for a populated field. Returns ErrNotFound if the
+	// project does not exist. GitHub returns ErrNotSupported.
+	GetPipelineVariablesMinimumOverrideRole(ctx context.Context, owner, repo string) (string, error)
+	// SetPipelineVariablesMinimumOverrideRole updates that setting via
+	// PUT /projects/:id. role must be one of the documented GitLab values
+	// (see ValidatePipelineVarOverrideRole); implementations reject any
+	// other value, including empty string, without making a request.
+	// Returns ErrNotFound if the project does not exist. GitHub returns
+	// ErrNotSupported.
+	SetPipelineVariablesMinimumOverrideRole(ctx context.Context, owner, repo, role string) error
+
 	// Commit comparison
 	// CompareCommits compares two commits and returns their relationship
 	// status: "ahead" (head is ahead of base), "behind" (head is behind
@@ -948,6 +1042,43 @@ type PipelineSchedule struct {
 	CronTimezone string
 	Active       bool
 	Variables    map[string]string // schedule-level pipeline variables
+}
+
+// PipelineTriggerToken is a GitLab pipeline trigger token.
+// Token is populated only in the CreatePipelineTriggerToken response;
+// list responses omit it.
+type PipelineTriggerToken struct {
+	ID          int64
+	Description string
+	Token       string
+}
+
+// ProjectHook is a GitLab project webhook. Token is write-only:
+// GitLab never returns the secret on list or update responses.
+// URL is the destination, typically a pipeline-trigger URL of the
+// form /api/v4/projects/:id/ref/:ref/trigger/pipeline.
+type ProjectHook struct {
+	ID                       int64
+	URL                      string
+	Name                     string
+	Description              string
+	Token                    string
+	PushEvents               bool
+	IssuesEvents             bool
+	ConfidentialIssuesEvents bool
+	MergeRequestsEvents      bool
+	TagPushEvents            bool
+	NoteEvents               bool
+	ConfidentialNoteEvents   bool
+	JobEvents                bool
+	PipelineEvents           bool
+	WikiPageEvents           bool
+	DeploymentEvents         bool
+	ReleasesEvents           bool
+	// EnableSSLVerification reflects GitLab's reported state on read.
+	// On write, the GitLab client always enforces true regardless of
+	// this field's value: Fullsend never disables TLS verification.
+	EnableSSLVerification bool
 }
 
 // OrgMembership is a user's membership in a GitHub organization.

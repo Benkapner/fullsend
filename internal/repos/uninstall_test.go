@@ -651,6 +651,7 @@ func TestUninstall_GitLabExtractedJobScripts_Deleted(t *testing.T) {
 		gitlabInstallCLIScriptPath,
 		gitlabPollJobScriptPath,
 		gitlabAgentJobScriptPath,
+		gitlabCheckoutMRSourceScriptPath,
 	} {
 		if !deleted[path] {
 			t.Errorf("%s was not deleted on GitLab uninstall", path)

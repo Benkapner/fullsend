@@ -17,8 +17,8 @@ import (
 // not allow two methods with the same name and different return types on
 // a single struct, so PollClient shadows GetIssue with the poll-specific
 // version and inherits the remaining methods (ForceCommitFileToBranch,
-// GetFileContentAtRef, DeleteRef, GetAuthenticatedUser) from the
-// embedded LiveClient.
+// CommitFileToBranch, GetBranchRef, GetFileContentAtRef, DeleteRef,
+// GetAuthenticatedUser) from the embedded LiveClient.
 type PollClient struct {
 	*LiveClient
 }

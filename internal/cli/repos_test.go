@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
@@ -2191,6 +2192,7 @@ func assertGitLabInitMRComplete(t *testing.T, fc *forge.FakeClient) {
 		".gitlab/ci/scripts/install-fullsend-cli.sh",
 		".gitlab/ci/scripts/run-poll-job.sh",
 		".gitlab/ci/scripts/run-agent-job.sh",
+		".gitlab/ci/scripts/checkout-mr-source.sh",
 		".fullsend/config.yaml",
 		".gitlab-ci.yml",
 	} {
@@ -2901,4 +2903,33 @@ func TestRunReposUninstall_GitLabFilterDoesNotRequestGitHub(t *testing.T) {
 	}, []string{"group/project"})
 	require.NoError(t, err)
 	assert.False(t, factory.requested(repos.ForgeGitHub))
+}
+
+func TestGCPInferenceProvisionerStatus_UnusableProviderIsNotProvisioned(t *testing.T) {
+	tests := []struct {
+		name string
+		info *gcf.WIFProviderInfo
+		want string
+	}{
+		{name: "missing", info: nil, want: ""},
+		{name: "soft-deleted", info: &gcf.WIFProviderInfo{State: "DELETED"}, want: ""},
+		{name: "disabled", info: &gcf.WIFProviderInfo{State: gcf.WIFProviderStateActive, Disabled: true}, want: ""},
+		{
+			name: "active",
+			info: &gcf.WIFProviderInfo{State: gcf.WIFProviderStateActive},
+			want: "projects/123456789/locations/global/workloadIdentityPools/fullsend-inference/providers/gh-acme-widget",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := gcf.NewFakeGCFClient(gcf.WithFakeWIFProvider(tt.info))
+			old := inferenceGCFClientFactory
+			inferenceGCFClientFactory = func(string) gcf.GCFClient { return client }
+			t.Cleanup(func() { inferenceGCFClientFactory = old })
+
+			got, err := newGCPInferenceProvisioner("my-project").Status(context.Background(), "acme", "widget")
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

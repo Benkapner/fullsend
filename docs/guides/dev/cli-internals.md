@@ -80,14 +80,10 @@ fullsend
 │   │   ├── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
 │   │   ├── --vendor                         #   Vendor binary and content into each repo for offline CI
 │   │   ├── --gitlab-url <url>               #   GitLab instance URL; sets gitlab.url in the manifest
-│   │   ├── --gitlab-bot-token <token>       #   GitLab bot PAT for free-tier instances
-│   │   ├── --gitlab-role-migration <mode>   #   GitLab role-credential gate (enforced|rollback); ordinary install auto-enforces
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON
 │   │   ├── --gitlab-role-token role=token   #   Administrator-provided GitLab role PAT (repeatable)
 │   │   ├── --rotate-gitlab-roles            #   Force-rotate GitLab role credentials
 │   │   ├── --rotate-gitlab-role <name>      #   Rotate a specific GitLab role (repeatable)
-│   │   ├── --gitlab-role-cutover            #   Verify roles, enforce routing, and retire the shared credential
-│   │   └── --gitlab-role-cutover-drained    #   Confirm in-flight shared-token jobs have drained
 │   ├── uninstall    <repos...>              # Tear down fullsend from repos and remove from manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
@@ -181,6 +177,11 @@ fullsend
 │   ├── --fullsend-dir <path>                #   .fullsend dir (local manifest override + fetch cache)
 │   ├── --offline                            #   Reject network fetches (local manifest only)
 │   └── --out-dir <path>                     #   Output dir (default: telemetry directory)
+├── resolve-mr-source                        # Resolve a GitLab MR's source branch, SHA, and project path
+│   ├── --project <path>                     #   GitLab project path (default: $CI_PROJECT_PATH)
+│   ├── --mr-iid <int>                       #   Merge request IID (required)
+│   ├── --gitlab-url <url>                   #   GitLab instance URL (default: https://gitlab.com)
+│   └── --token <string>                     #   GitLab token (default: $GITLAB_TOKEN)
 └── reconcile-status                         # Finalize orphaned status comments
     ├── --repo <owner/repo>                  #   Repository in owner/repo format (required for GitHub/GitLab)
     ├── --number <int>                       #   Issue/PR number (required for GitHub/GitLab; derived from entity.key for Jira)

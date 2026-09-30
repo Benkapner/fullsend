@@ -40,6 +40,8 @@ func canonicalForgeEnvVars() map[string]struct{} {
 		forge.SecretGitLabAnalystToken,
 		forge.SecretGitLabCoderToken,
 		forge.SecretDispatch,
+		forge.SecretTriggerToken,
+		forge.SecretWebhookSecret,
 		forge.SecretOpenAIAPIKey,
 		forge.VarLegacyBotTokenSecret,
 		forge.VarLegacySA,
@@ -179,6 +181,7 @@ func TestGitLabCIScaffoldEnvVarsAreCanonical(t *testing.T) {
 	assert.Contains(t, scanned, ".gitlab/ci/scripts/install-fullsend-cli.sh")
 	assert.Contains(t, scanned, ".gitlab/ci/scripts/run-poll-job.sh")
 	assert.Contains(t, scanned, ".gitlab/ci/scripts/run-agent-job.sh")
+	assert.Contains(t, scanned, ".gitlab/ci/scripts/checkout-mr-source.sh")
 	if len(failures) > 0 {
 		t.Errorf("scaffold FULLSEND_* names absent from forge.Secret*/Var* constants and the script-local allowlist:\n  %s",
 			strings.Join(failures, "\n  "))
@@ -216,6 +219,8 @@ func TestCanonicalForgeEnvVars_UsesExportedConstants(t *testing.T) {
 	assert.Contains(t, got, forge.SecretGitLabPollerToken)
 	assert.Contains(t, got, forge.SecretGitLabAnalystToken)
 	assert.Contains(t, got, forge.SecretGitLabCoderToken)
+	assert.Contains(t, got, forge.SecretTriggerToken)
+	assert.Contains(t, got, forge.SecretWebhookSecret)
 	assert.Contains(t, got, forge.VarGitLabRoleMigration)
 	assert.NotContains(t, got, "FULLSEND_JOB_TOKEN")
 }

@@ -358,11 +358,13 @@ Secrets and variables are deployed at different scopes depending on the installa
 **Target repo CI/CD variables (protected):**
 - `FULLSEND_FORGE_TOKEN` — Project access token for bot identity at Developer (30) access (stored as protected CI/CD variable). Reduced from Maintainer (40) once poller state moved onto unprotected poll-state branches (#7381).
 
-Ordinary unflagged `repos install` retires the shared token once role credentials are ready; after successful cutover, `FULLSEND_FORGE_TOKEN` is deleted and missing role credentials are drift while the gate is `migrating` or `enforced`. [`--gitlab-role-cutover --gitlab-role-cutover-drained`](../../cli/repos.md#gitlab-role-cutover) remains an explicit fail-closed retry.
+Ordinary unflagged `repos install` provisions role credentials and removes the legacy shared token once all registered roles are ready. Missing role credentials are drift; runtime selection never consults the legacy migration gate.
 - `FULLSEND_DISPATCH_SECRET` — Shared HMAC secret for signing dispatch variables and poll-state documents. Auto-provisioned by `repos install` (on both fresh installs and re-run/convergence of already-enrolled repos) as a masked, protected CI/CD variable.
+- `FULLSEND_TRIGGER_TOKEN` — GitLab pipeline trigger token for the webhook fast-path dispatcher. Stored as a masked, protected CI/CD variable when the fast-path is enabled. Never logged.
+- `FULLSEND_WEBHOOK_SECRET` — GitLab project-webhook secret (`X-Gitlab-Token`) for the webhook fast-path. Stored as a masked, protected CI/CD variable when the fast-path is enabled. Never logged.
 - `FULLSEND_POLL_MODE` — Pipeline schedule variable (`"slash"` or `"events"`); set automatically per schedule during install, not a project-level CI/CD variable
-- `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` — masked, protected role PATs provisioned by `repos install` ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)). Fresh and existing shared-token installs create the three built-in tokens; ordinary unflagged install then retires `FULLSEND_FORGE_TOKEN` once every registered role is ready. When the gate is `migrating` or `enforced`, GitLab CI poll/agent jobs (`select-gitlab-role-token.sh`) and `fullsend poll` / `fullsend run` authenticate with the matching role token and fail closed if it is missing. Absence is not a health failure while the gate is leftover `disabled` or `rollback`; `repos status` reports missing role secrets as drift in `migrating` and `enforced`. Custom `own` roles use `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN`; `reuse` roles share another registered credential.
-- `FULLSEND_GITLAB_ROLE_MIGRATION`, `FULLSEND_GITLAB_ROLE_REGISTRY` — protected, unmasked gate and administrator registry JSON (policy and credential references, never secret values). Written by `repos install`; not repository or merge-request content.
+- `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` — masked, protected role PATs provisioned by `repos install` ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)). Fresh installs provision these role tokens directly, with no shared token to retire. Existing pre-migration installs that still have the shared token provision the role tokens and then retire `FULLSEND_FORGE_TOKEN` once every registered role is ready. GitLab CI poll/agent jobs (`select-gitlab-role-token.sh`) and `fullsend poll` / `fullsend run` authenticate with the matching role token and fail closed if it is missing. Custom `own` roles use `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN`; `reuse` roles share another registered credential.
+- `FULLSEND_GITLAB_ROLE_REGISTRY` — protected, unmasked administrator registry JSON (policy and credential references, never secret values). Written by `repos install`; not repository or merge-request content. The legacy migration variable is removed during uninstall and ignored at runtime.
 - `FULLSEND_GITLAB_ROLE_ROTATION` — protected, unmasked per-role rotation state (lock, token IDs, expiry dates, phase; never secret values). Written when `repos install` rotates a role credential ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)).
 
 **Poll-state branches:** `repos install` (on both fresh installs and
@@ -376,9 +378,15 @@ branches via `DeleteRef` (a missing branch is ignored).
 
 Each poll cycle performs a single save of that mode's `state.json`
 (dispatched keys, failed-key retry counts, watermark, and label state
-together). Every save force-re-roots the mode's branch on the
-repository's root commit (`force: true` + `start_sha`), so the branch
-stays at base + 1 commit and history never grows. The poller **fails closed** when
+together). Runtime persist is conflict-detecting (compare-and-swap):
+the write is parented at the branch tip observed at load (`start_sha`),
+and a 409 / non-fast-forward triggers reload → re-apply this writer's
+dedup/watermark deltas → recommit. Retries are bounded; exhaustion fails
+closed rather than last-writer-wins overwrite, so a concurrent webhook
+dispatcher and the cron poller cannot drop each other's dispatched keys.
+Install-time seeding still force-re-roots (`force: true` + `start_sha` =
+repository root) so a missing branch is created at base + 1 commit. The
+poller **fails closed** when
 `FULLSEND_DISPATCH_SECRET` is unset (refuse load/write) or when a
 present `state.json` has a missing/invalid HMAC (discard the branch and
 fail that cycle). A missing branch or file is **not** tampering: the

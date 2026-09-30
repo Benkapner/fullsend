@@ -37,14 +37,19 @@ The compute and orchestration layer that runs agent workloads. Responsible for p
 
 This is the "where do agents physically run" question — whether that's a managed platform, internal Kubernetes, CI runners repurposed for agent work, or something purpose-built.
 
-Infrastructure platform choice and configuration live in each target
-repository's **`.fullsend/`** directory. Per-repo installation is the sole
-supported deployment model ([ADR 0033](ADRs/0033-per-repo-installation-mode.md));
-the dedicated org-level `<org>/.fullsend` config repo is deprecated
+Forge-native infrastructure platform choice and configuration live in each
+target repository's **`.fullsend/`** directory. Per-repo installation is the
+sole supported installation model
+([ADR 0033](ADRs/0033-per-repo-installation-mode.md)); the dedicated org-level
+`<org>/.fullsend` config repo is deprecated
 ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)).
 
 **Decided:**
 
+- Tenant configuration for a possible centrally managed service reuses the
+  existing `repos.yaml` v1 format directly through `repos.Manifest`. Whether
+  to offer the service, its source of truth, and its delivery mechanism remain
+  open ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md)).
 - Forge abstraction: all forge operations go through the `forge.Client` interface, keeping the rest of the codebase forge-agnostic ([ADR 0005](ADRs/0005-forge-abstraction-layer.md)).
 - Conversation surface: agents participate in GitHub Discussions and later other chat systems through a narrow `conversation.Client` (parallel to `tracker.Client` for issue content), not by extending `forge.Client` ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)). A **conversation** is the container (Discussion / Slack channel) with exactly one category and optional M:M labels; a **thread** is the top-level message plus replies that share its `parent_id` (`parent_id == id` on the root message).
 - Event-source routing for status notifications: the notification destination for run-status comments and reactions is dynamically determined by event provenance — a Jira-triggered run posts status to Jira, a GitHub-triggered run posts to GitHub — rather than being hardwired to the code-output forge. Status notifications route through `tracker.Client`; reactions are an optional `tracker.Reactor` capability (Jira Cloud supports comment reactions but not issue reactions, so `Reactor` is not implemented for Jira currently) ([ADR 0093](ADRs/0093-tracker-routed-status-notifications.md)).
@@ -59,11 +64,11 @@ the dedicated org-level `<org>/.fullsend` config repo is deprecated
 - Declarative managed repository configuration: `defaults.config` opts every repository into a canonical managed `.fullsend/config.yaml`, while a per-repository `config` block opts in only that repository; repositories with neither declaration remain unmanaged. Every managed write compares the candidate and current effective configuration through the runtime accessor chain and rejects an implicit relaxation ([ADR 0122](ADRs/0122-declarative-repo-configuration.md)).
 - Dispatch version-skew resolution: per-repo `reusable-dispatch.yml` inlines stage workflow jobs directly, eliminating `@v0` references to `reusable-{stage}.yml` ([ADR 0062](ADRs/0062-dispatch-version-skew.md)).
 - Ready-made configuration presets: `fullsend github setup --config <path-or-url>` commits the preset unchanged as `.fullsend/config.base.yaml` and writes any explicitly-passed persistent setup flags (`--runtime`, `--agents`, `--mint-url`, `--inference-*`) into `.fullsend/config.yaml`, overriding matching preset values; a stub overlay is written only when no persistent flags are passed. `fullsend repos install` converges the same preset through `defaults.config_base` / per-repo `config_base` in `repos.yaml` (optional `sha256`, `none` to disable inheritance), replacing `.fullsend/config.base.yaml` wholesale without clobbering `.fullsend/config.yaml`; when a repository is opted into ADR 0122, install separately converges that file from the manifest. Shared-infrastructure presets will reduce per-adopter enrollment (target state): mint via `job_workflow_ref` trust per [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); inference authorization model undecided ([ADR 0069](ADRs/0069-ready-made-configuration-presets.md)); enrollment remains required until follow-on ADRs land.
-- GitLab event dispatch: cron-based polling for all events (issues/comments/labels, MR-open review, MR-merge retro, and closed-unmerged retro). Native `merge_request_event` dispatch was removed ([#7322](https://github.com/fullsend-ai/fullsend/issues/7322)); protected CI/CD variables are unavailable on unprotected MR refs. No external infrastructure (no webhook bridge). Bot PAT is Developer-level and stored as a protected CI/CD variable; poller state lives on dedicated HMAC-signed branches. Per-repo only ([ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
+- GitLab event dispatch: hybrid native webhook fast-path (GitLab "use a webhook" pipeline trigger pinned to the protected default branch) plus the cron-poller as reconciliation backstop ([ADR 0125](ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)); the fast-path is ship-gated and not yet enabled, so the cron-poller remains the implemented dispatch path. Native `merge_request_event` dispatch stays removed ([#7322](https://github.com/fullsend-ai/fullsend/issues/7322)); protected CI/CD variables are unavailable on unprotected MR refs. No external webhook-bridge infrastructure. The bot PAT is Developer-level — the current poller credential per [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md) — and stored as a protected CI/CD variable; the fast-path's variable-restriction control may carry a higher-privilege credential cost that is unresolved and tracked in ADR 0125 Status/Caveats and [#7769](https://github.com/fullsend-ai/fullsend/issues/7769). Poller state lives on dedicated HMAC-signed branches. Per-repo only ([ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 
 **Open questions:**
 
-- Do we adopt a 3rd party platform, use existing internal infrastructure, or build our own? (See [agent-infrastructure.md](problems/agent-infrastructure.md) for the three directions.)
+- Do we adopt a 3rd party platform, use existing internal infrastructure, or build our own? The tenant manifest format is decided, while the source of truth, service, infrastructure, and poller/dispatch/runner boundary remain open ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md); see [agent-infrastructure.md](problems/agent-infrastructure.md)).
 - Can different agent types (short-lived review vs. long-running code) run on different infrastructure?
 - Who in the org owns and operates this, and how does it relate to existing platform or CI ownership?
 - Should model and MCP (or other tool-protocol) traffic from agent runtimes go through a **shared gateway** for authentication, spend limits, allowlists, and telemetry? (See [landscape.md](landscape.md#agent-gateway).)
@@ -241,7 +246,7 @@ flowchart TB
 
 ### Behaviour testing
 
-End-to-end **behaviour tests** use the shared framework in `pkg/behaviourtest/` (with live-test infrastructure in `internal/e2etest/`); the in-repo runner and Gherkin features live under `e2e/behaviour/`. They validate deterministic platform code — dispatch routing, harness loading, sandbox policy, SCM mutations — with the LLM layer removed via the dummy and dummy-playback runtimes. Tests exercise real GitHub (and GitLab) SCM and GitHub Actions CI through pluggable drivers; Gherkin scenarios stay install-mode agnostic while runner env vars select backends. This coverage is **orthogonal** to LLM and instruction testing in [testing-agents.md](problems/testing-agents.md). See [ADR 0066](ADRs/0066-behaviour-tests-with-gherkin-and-drivers.md).
+End-to-end **behaviour tests** use the shared framework in `pkg/behaviourtest/` (with live-test infrastructure in `internal/e2etest/`); the in-repo runner and Gherkin features live under `e2e/behaviour/`. They validate deterministic platform code — dispatch routing, harness loading, sandbox policy, SCM mutations — with the LLM layer removed via the dummy and dummy-playback runtimes. Tests exercise real GitHub (and GitLab) SCM and GitHub Actions CI through pluggable drivers; Gherkin scenarios stay install-mode agnostic while runner env vars select backends. This coverage is **orthogonal** to LLM and instruction testing in [testing-agents.md](problems/testing-agents.md). See [ADR 0066](ADRs/0066-behaviour-tests-with-gherkin-and-drivers.md). The dummy runtime handles single-agent sandbox verification; the dummy-playback runtime replays canned results from an ordered playlist to enable multi-agent sequential scenarios (triage → code → review → fix) without inference ([ADR 0116](ADRs/0116-dummy-playback-runtime.md)).
 
 **Open questions:**
 
@@ -285,7 +290,7 @@ One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer
 - ~~What identity model fits best — separate bot accounts per agent role, a single bot account with role metadata, GitHub App installations, or something else?~~ Decided in [ADR 0007](ADRs/0007-per-role-github-apps.md).
 - How are credentials rotated and revoked, and who has authority to do that?
 - Does the identity provider integrate with existing secrets management, or is it a new system?
-- How will per-role identity work on GitLab and Forgejo, which lack GitHub's app manifest flow? GitLab uses a Developer-level bot PAT stored as a protected CI/CD variable; poller state lives on dedicated HMAC-signed branches rather than Maintainer-only CI/CD variables — see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md). The registered-role credential contract (built-in Poller/Analyst/Coder plus administrator-registered custom roles) is specified in [gitlab-role-credentials.md](contributing/gitlab-role-credentials.md); job routing (#7499) has landed for `fullsend poll`, `fullsend run`, and `fullsend post-review`, selecting the registered role credential when the role-identity gate is `migrating` or `enforced` (failing closed if that secret is missing) and keeping the shared `FULLSEND_FORGE_TOKEN` path for leftover unset/`disabled` and explicit `rollback`.
+- How will per-role identity work on GitLab and Forgejo, which lack GitHub's app manifest flow? GitLab uses per-role Developer-level bot PATs (Poller/Analyst/Coder) stored as protected CI/CD variables; poller state lives on dedicated HMAC-signed branches rather than Maintainer-only CI/CD variables — see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md). The registered-role credential contract (built-in Poller/Analyst/Coder plus administrator-registered custom roles) is specified in [gitlab-role-credentials.md](contributing/gitlab-role-credentials.md); job routing (#7499, and #7782 for runtime authentication) has landed for `fullsend poll`, `fullsend run`, and `fullsend post-review`, selecting the registered role credential unconditionally and failing closed if that secret is missing — there is no shared `FULLSEND_FORGE_TOKEN` fallback.
 - Which agent roles need Discussions (or other chat) write scopes, and how do those scopes map onto named mint privilege levels? Conversation participation requires least-privilege identity deltas per [ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md).
 
 ## Agent Dispatch and Coordination Layer
@@ -327,7 +332,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   existing entity activity or explicit receipts — distinguishes handled work
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md), partially
   superseding [ADR 0063](ADRs/0063-polling-based-work-discovery.md)).
-- GitLab dispatch uses cron-polled scheduled pipelines for all events (issues/comments/labels, MR-open review, MR-merge retro, and closed-unmerged retro). Native `merge_request_event` dispatch was removed in [#7322](https://github.com/fullsend-ai/fullsend/issues/7322). No webhook bridge required (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
+- GitLab dispatch uses a native webhook fast-path for low-latency candidates and the cron-poller as the authoritative reconciliation backstop ([ADR 0125](ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)). Native `merge_request_event` dispatch stays removed ([#7322](https://github.com/fullsend-ai/fullsend/issues/7322)). No external webhook bridge (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md) for the poller, credentials, and in-job gate).
 - Conversation participation: GitHub Discussions (and future chat systems) enter
   dispatch as resolved entities with `entity.kind: conversation`; when a
   prompting event is available, it expresses threading on
@@ -632,43 +637,40 @@ See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the config repo conv
 
 ## Multi-org deployment model
 
-Each organization that adopts fullsend operates independently. There is no shared control plane, no central service, and no relationship between orgs. Each org brings its own inference API keys and runs its own version of fullsend.
+In the self-managed per-repository deployment model, each installation
+operates independently, with no shared control plane between installations.
+If Fullsend offers a centrally managed service, each tenant's repository
+configuration will use the existing `repos.yaml` v1 manifest. The source of
+truth and how service components consume it, along with the service's runtime
+and deployment model, remain open ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md)).
 
 ```
-  ┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
-  │  Org A               │  │  Org B               │  │  Org C               │
-  │                      │  │                      │  │                      │
-  │  .fullsend repo      │  │  .fullsend repo      │  │  .fullsend repo      │
-  │  ┌────────────────┐  │  │  ┌────────────────┐  │  │  ┌────────────────┐  │
-  │  │ config.yaml    │  │  │  │ config.yaml    │  │  │  │ config.yaml    │  │
-  │  │ agents/        │  │  │  │ agents/        │  │  │  │ agents/        │  │
-  │  │ skills/        │  │  │  │ skills/        │  │  │  │ skills/        │  │
-  │  │ harness/       │  │  │  │ harness/       │  │  │  │ harness/       │  │
-  │  └────────────────┘  │  │  └────────────────┘  │  │  └────────────────┘  │
-  │                      │  │                      │  │                      │
-  │  API keys: own       │  │  API keys: own       │  │  API keys: own       │
-  │  Enrolled repos: ... │  │  Enrolled repos: ... │  │  Enrolled repos: ... │
-  │  fullsend v0.2.0     │  │  fullsend v0.4.1     │  │  fullsend v0.2.0     │
-  │                      │  │                      │  │                      │
-  └──────────┬───────────┘  └──────────┬───────────┘  └──────────┬───────────┘
-             │                         │                         │
-             │            no relationship between orgs           │
-             │                         │                         │
-             └─────────────────────────┼─────────────────────────┘
+  Org A                                      Org B
+  ┌─────────────────────────────┐            ┌─────────────────────────────┐
+  │ repo-a1                     │            │ repo-b1                     │
+  │ ├── .fullsend/config.yaml    │            │ ├── .fullsend/config.yaml    │
+  │ ├── .fullsend/agents/        │            │ ├── .fullsend/agents/        │
+  │ └── .fullsend/skills/        │            │ └── .fullsend/skills/        │
+  │                             │            │                             │
+  │ repo-a2                     │            │ repo-b2                     │
+  │ └── .fullsend/              │            │ └── .fullsend/              │
+  └─────────────────────────────┘            └─────────────────────────────┘
+                    │                                        │
+                    └──────── independent installations ────┘
                                        │
                             ┌──────────┴───────────┐
                             │  fullsend-ai/fullsend│
-                            │                      │
-                            │  Open source project │
                             │  CLI, base agents,   │
                             │  skills, scaffold    │
-                            │                      │
-                            │  Orgs pull releases  │
-                            │  at their own pace   │
+                            │  Releases are pulled │
+                            │  independently       │
                             └──────────────────────┘
 ```
 
-Each org is a fully independent instance. They choose when to upgrade. They configure their own agents, skills, plugins, and policies. They use their own model providers and API keys. The only shared element is the upstream fullsend project they all pull from.
+Each self-managed org is a fully independent instance. They choose when to
+upgrade. They configure their own agents, skills, plugins, and policies. They
+use their own model providers and API keys. The only shared element is the
+upstream fullsend project they all pull from.
 
 ## Downstream/upstream federation
 

@@ -14,21 +14,24 @@ var _ GitHubExtensions = (*FakeClient)(nil)
 // NewFakeClient returns a FakeClient with all maps initialised.
 func NewFakeClient() *FakeClient {
 	return &FakeClient{
-		FileContents:          make(map[string][]byte),
-		WorkflowRuns:          make(map[string]*WorkflowRun),
-		Secrets:               make(map[string]bool),
-		VariablesExist:        make(map[string]bool),
-		VariableValues:        make(map[string]string),
-		Errors:                make(map[string]error),
-		DirContents:           make(map[string][]DirectoryEntry),
-		FileContentsRef:       make(map[string][]byte),
-		BranchRefs:            make(map[string]string),
-		ExistingBranches:      make(map[string]bool),
-		Refs:                  make(map[string]string),
-		ProtectedBranches:     make(map[string]bool),
-		ProtectedBranchRules:  make(map[string]*ProtectedBranchRule),
-		PipelineSchedules:     make(map[string][]PipelineSchedule),
-		ForceReachableCommits: make(map[string]int),
+		FileContents:             make(map[string][]byte),
+		WorkflowRuns:             make(map[string]*WorkflowRun),
+		Secrets:                  make(map[string]bool),
+		VariablesExist:           make(map[string]bool),
+		VariableValues:           make(map[string]string),
+		Errors:                   make(map[string]error),
+		DirContents:              make(map[string][]DirectoryEntry),
+		FileContentsRef:          make(map[string][]byte),
+		BranchRefs:               make(map[string]string),
+		ExistingBranches:         make(map[string]bool),
+		Refs:                     make(map[string]string),
+		ProtectedBranches:        make(map[string]bool),
+		ProtectedBranchRules:     make(map[string]*ProtectedBranchRule),
+		PipelineSchedules:        make(map[string][]PipelineSchedule),
+		ForceReachableCommits:    make(map[string]int),
+		PipelineTriggerTokens:    make(map[string][]PipelineTriggerToken),
+		ProjectHooks:             make(map[string][]ProjectHook),
+		PipelineVarOverrideRoles: make(map[string]string),
 	}
 }
 
@@ -232,6 +235,17 @@ type FakeClient struct {
 	// Pipeline schedules for List/Create/Delete/UpdatePipelineSchedule.
 	PipelineSchedules map[string][]PipelineSchedule // key: "owner/repo"
 
+	// PipelineTriggerTokens stores trigger tokens keyed by "owner/repo".
+	PipelineTriggerTokens map[string][]PipelineTriggerToken
+
+	// ProjectHooks stores project webhooks keyed by "owner/repo".
+	ProjectHooks map[string][]ProjectHook
+
+	// PipelineVarOverrideRoles stores the GitLab
+	// ci_pipeline_variables_minimum_override_role setting per project.
+	// Key: "owner/repo". Missing keys round-trip as empty string.
+	PipelineVarOverrideRoles map[string]string
+
 	// Directory listings for ListDirectoryContents.
 	DirContents map[string][]DirectoryEntry // key: "owner/repo/path@ref"
 
@@ -356,6 +370,11 @@ type FakeClient struct {
 	UpdatedScheduleIDs      []int64
 	UpdatedVariables        []VariableRecord
 	CreatedProtectedVars    []VariableRecord
+	CreatedTriggerTokens    []PipelineTriggerToken
+	RevokedTriggerTokenIDs  []int64
+	CreatedProjectHooks     []ProjectHook
+	UpdatedProjectHooks     []ProjectHook
+	DeletedProjectHookIDs   []int64
 
 	// CommitAncestry maps "owner/repo/base/head" to a comparison status
 	// string ("ahead", "behind", "identical", "diverged") for CompareCommits.
@@ -367,6 +386,8 @@ type FakeClient struct {
 	issueCounter    int
 	reactionCounter int64
 	forceCommitSeq  int
+	triggerTokenSeq int64
+	projectHookSeq  int64
 }
 
 // err checks for an injected error for the given method name.
@@ -2473,6 +2494,33 @@ func (f *FakeClient) CreateProtectedCIVariable(_ context.Context, owner, repo, n
 	return nil
 }
 
+func (f *FakeClient) GetPipelineVariablesMinimumOverrideRole(_ context.Context, owner, repo string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetPipelineVariablesMinimumOverrideRole"); e != nil {
+		return "", e
+	}
+	return f.PipelineVarOverrideRoles[owner+"/"+repo], nil
+}
+
+func (f *FakeClient) SetPipelineVariablesMinimumOverrideRole(_ context.Context, owner, repo, role string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("SetPipelineVariablesMinimumOverrideRole"); e != nil {
+		return e
+	}
+	if err := ValidatePipelineVarOverrideRole(role); err != nil {
+		return err
+	}
+	if f.PipelineVarOverrideRoles == nil {
+		f.PipelineVarOverrideRoles = make(map[string]string)
+	}
+	f.PipelineVarOverrideRoles[owner+"/"+repo] = role
+	return nil
+}
+
 func (f *FakeClient) CompareCommits(_ context.Context, owner, repo, base, head string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2488,4 +2536,163 @@ func (f *FakeClient) CompareCommits(_ context.Context, owner, repo, base, head s
 		}
 	}
 	return "", fmt.Errorf("%w: no comparison data for %s/%s %s...%s", ErrNotFound, owner, repo, base, head)
+}
+
+func (f *FakeClient) CreatePipelineTriggerToken(_ context.Context, owner, repo, description string) (*PipelineTriggerToken, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreatePipelineTriggerToken"); e != nil {
+		return nil, e
+	}
+
+	f.triggerTokenSeq++
+	tok := PipelineTriggerToken{
+		ID:          f.triggerTokenSeq,
+		Description: description,
+		Token:       fmt.Sprintf("glptt-fake-%d", f.triggerTokenSeq),
+	}
+	f.CreatedTriggerTokens = append(f.CreatedTriggerTokens, tok)
+	key := owner + "/" + repo
+	if f.PipelineTriggerTokens == nil {
+		f.PipelineTriggerTokens = make(map[string][]PipelineTriggerToken)
+	}
+	stored := tok
+	stored.Token = "" // GitLab omits the secret after creation.
+	f.PipelineTriggerTokens[key] = append(f.PipelineTriggerTokens[key], stored)
+	return &tok, nil
+}
+
+func (f *FakeClient) ListPipelineTriggerTokens(_ context.Context, owner, repo string) ([]PipelineTriggerToken, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListPipelineTriggerTokens"); e != nil {
+		return nil, e
+	}
+	if f.PipelineTriggerTokens == nil {
+		return nil, nil
+	}
+	src := f.PipelineTriggerTokens[owner+"/"+repo]
+	out := make([]PipelineTriggerToken, len(src))
+	copy(out, src)
+	return out, nil
+}
+
+func (f *FakeClient) RevokePipelineTriggerToken(_ context.Context, owner, repo string, tokenID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("RevokePipelineTriggerToken"); e != nil {
+		return e
+	}
+
+	f.RevokedTriggerTokenIDs = append(f.RevokedTriggerTokenIDs, tokenID)
+	key := owner + "/" + repo
+	tokens := f.PipelineTriggerTokens[key]
+	filtered := tokens[:0]
+	found := false
+	for _, tok := range tokens {
+		if tok.ID == tokenID {
+			found = true
+			continue
+		}
+		filtered = append(filtered, tok)
+	}
+	if !found {
+		return fmt.Errorf("%w: pipeline trigger token %d", ErrNotFound, tokenID)
+	}
+	f.PipelineTriggerTokens[key] = filtered
+	return nil
+}
+
+func (f *FakeClient) CreateProjectHook(_ context.Context, owner, repo string, hook ProjectHook) (*ProjectHook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreateProjectHook"); e != nil {
+		return nil, e
+	}
+
+	f.projectHookSeq++
+	created := hook
+	created.ID = f.projectHookSeq
+	f.CreatedProjectHooks = append(f.CreatedProjectHooks, created)
+	key := owner + "/" + repo
+	if f.ProjectHooks == nil {
+		f.ProjectHooks = make(map[string][]ProjectHook)
+	}
+	stored := created
+	stored.Token = "" // GitLab never returns the webhook secret.
+	f.ProjectHooks[key] = append(f.ProjectHooks[key], stored)
+	return &stored, nil
+}
+
+func (f *FakeClient) ListProjectHooks(_ context.Context, owner, repo string) ([]ProjectHook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListProjectHooks"); e != nil {
+		return nil, e
+	}
+	if f.ProjectHooks == nil {
+		return nil, nil
+	}
+	src := f.ProjectHooks[owner+"/"+repo]
+	out := make([]ProjectHook, len(src))
+	copy(out, src)
+	return out, nil
+}
+
+func (f *FakeClient) UpdateProjectHook(_ context.Context, owner, repo string, hookID int64, hook ProjectHook) (*ProjectHook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("UpdateProjectHook"); e != nil {
+		return nil, e
+	}
+
+	key := owner + "/" + repo
+	hooks := f.ProjectHooks[key]
+	for i, existing := range hooks {
+		if existing.ID != hookID {
+			continue
+		}
+		updated := hook
+		updated.ID = hookID
+		f.UpdatedProjectHooks = append(f.UpdatedProjectHooks, updated)
+		stored := updated
+		stored.Token = "" // GitLab never returns the webhook secret.
+		hooks[i] = stored
+		f.ProjectHooks[key] = hooks
+		return &stored, nil
+	}
+	return nil, fmt.Errorf("%w: project hook %d", ErrNotFound, hookID)
+}
+
+func (f *FakeClient) DeleteProjectHook(_ context.Context, owner, repo string, hookID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeleteProjectHook"); e != nil {
+		return e
+	}
+
+	f.DeletedProjectHookIDs = append(f.DeletedProjectHookIDs, hookID)
+	key := owner + "/" + repo
+	hooks := f.ProjectHooks[key]
+	filtered := hooks[:0]
+	found := false
+	for _, h := range hooks {
+		if h.ID == hookID {
+			found = true
+			continue
+		}
+		filtered = append(filtered, h)
+	}
+	if !found {
+		return fmt.Errorf("%w: project hook %d", ErrNotFound, hookID)
+	}
+	f.ProjectHooks[key] = filtered
+	return nil
 }

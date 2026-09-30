@@ -33,15 +33,36 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forge
 	}
 
 	// Check required components — these distinguish per-repo from per-org.
-	// GitHub uses FULLSEND_MINT_URL. GitLab poller state no longer lives
-	// in CI/CD variables, so install evidence is the bot token or a poll
-	// schedule. Poll-state branch presence alone is deliberately not
+	// GitHub uses FULLSEND_MINT_URL. GitLab install evidence is its workflow
+	// carrier, legacy shared token, or a poll schedule. Poll-state branch
+	// presence alone is deliberately not
 	// treated as install evidence: uninstall deletes the bot token and
 	// pipeline schedules but does not yet delete the poll-state branches
 	// (deferred to #7381), so a leftover branch from a prior install
 	// would otherwise misclassify an uninstalled repo as installed.
 	hasRequiredComponent := false
 	state := RepoState{}
+	roleSecretPresent := false
+	if forgeName == ForgeGitLab {
+		// Keep legacy shared-token installations discoverable while requiring
+		// role-only installations to present a workflow or schedule carrier.
+		exists, err := client.RepoSecretExists(ctx, owner, repo, forge.SecretForgeToken)
+		if err != nil {
+			return RepoState{}, fmt.Errorf("checking secret %s: %w", forge.SecretForgeToken, err)
+		}
+		hasRequiredComponent = exists
+		for _, name := range []string{
+			forge.SecretGitLabPollerToken,
+			forge.SecretGitLabAnalystToken,
+			forge.SecretGitLabCoderToken,
+		} {
+			exists, err := client.RepoSecretExists(ctx, owner, repo, name)
+			if err != nil {
+				return RepoState{}, fmt.Errorf("checking secret %s: %w", name, err)
+			}
+			roleSecretPresent = roleSecretPresent || exists
+		}
+	}
 	for _, c := range components {
 		// Capture the version marker even when the current carrier is
 		// missing: GitLab repos enrolled before #7707 still host it in
@@ -55,6 +76,8 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forge
 			continue
 		}
 		switch {
+		case forgeName == ForgeGitLab && c.Name == "workflow" && roleSecretPresent:
+			hasRequiredComponent = true
 		case c.Name == "var:"+forge.VarMintURL:
 			hasRequiredComponent = true
 			state.MintURL = c.Actual
@@ -102,7 +125,6 @@ type RepoStatus struct {
 	Error           string  `json:"error,omitempty"`
 
 	// GitLab role-credential status. Names only; never token values.
-	GitLabRoleMode        string   `json:"gitlab_role_mode,omitempty"`
 	GitLabRolesReady      bool     `json:"gitlab_roles_ready,omitempty"`
 	GitLabRolesPartial    bool     `json:"gitlab_roles_partial,omitempty"`
 	GitLabRoleDiagnostics []string `json:"gitlab_role_diagnostics,omitempty"`
@@ -356,26 +378,20 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 }
 
 func appendGitLabRoleStatus(ctx context.Context, client forge.Client, owner, repo string, status *RepoStatus) {
-	mode, reg, present, err := LoadGitLabRoleState(ctx, client, owner, repo)
+	reg, present, err := LoadGitLabRoleState(ctx, client, owner, repo)
 	if err != nil {
 		switch {
 		case errors.Is(err, gitlabroles.ErrInvalidRegistry):
 			status.GitLabRoleDiagnostics = []string{"invalid GitLab role registry"}
-		case errors.Is(err, gitlabroles.ErrInvalidMode):
-			status.GitLabRoleDiagnostics = []string{"invalid GitLab role migration mode"}
 		default:
 			status.GitLabRoleDiagnostics = []string{"could not read GitLab role credential state"}
 		}
 		return
 	}
-	rep := gitlabroles.Diagnose(mode, present, reg)
-	status.GitLabRoleMode = string(rep.Mode)
+	rep := gitlabroles.Diagnose(present, reg)
 	status.GitLabRolesReady = rep.Ready
 	status.GitLabRolesPartial = rep.Partial
 	status.GitLabRoleDiagnostics = rep.Diagnostics
-	if !gitLabRoleReadinessRequired(mode) {
-		return
-	}
 	builtin := appendBuiltinRoleReadiness(status, present, reg, nil)
 	registered := appendRegisteredRoleReadiness(status, present, reg, nil)
 	status.GitLabRolesReady = status.GitLabRolesReady && builtin.Ready && registered.Ready
@@ -386,10 +402,6 @@ func appendGitLabRoleStatus(ctx context.Context, client forge.Client, owner, rep
 			Actual:   "missing",
 		})
 	}
-}
-
-func gitLabRoleReadinessRequired(mode gitlabroles.Mode) bool {
-	return mode.RequiresRoleCredentials()
 }
 
 func readWorkflowRef(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (string, error) {

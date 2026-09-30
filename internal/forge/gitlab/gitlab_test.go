@@ -372,6 +372,139 @@ func TestGetRepo_NotFound(t *testing.T) {
 	assert.True(t, forge.IsNotFound(err))
 }
 
+func TestGetPipelineVariablesMinimumOverrideRole(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/mygroup%2Fmyrepo", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 42,
+			"ci_pipeline_variables_minimum_override_role": "developer",
+		})
+	})
+
+	role, err := client.GetPipelineVariablesMinimumOverrideRole(context.Background(), "mygroup", "myrepo")
+	require.NoError(t, err)
+	assert.Equal(t, forge.PipelineVarOverrideDeveloper, role)
+}
+
+func TestGetPipelineVariablesMinimumOverrideRole_NotFound(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Fgone", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"404 Project Not Found"}`)
+	})
+
+	_, err := client.GetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "gone")
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+}
+
+func TestGetPipelineVariablesMinimumOverrideRole_Forbidden(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"message":"403 Forbidden"}`)
+	})
+
+	_, err := client.GetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "repo")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrForbidden)
+}
+
+func TestGetPipelineVariablesMinimumOverrideRole_ServerError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"message":"500 Internal Server Error"}`)
+	})
+
+	_, err := client.GetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "repo")
+	require.Error(t, err)
+	var apiErr *APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, http.StatusInternalServerError, apiErr.StatusCode)
+}
+
+func TestGetPipelineVariablesMinimumOverrideRole_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not-json"))
+	})
+
+	_, err := client.GetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode pipeline variables minimum override role")
+}
+
+func TestSetPipelineVariablesMinimumOverrideRole(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/mygroup%2Fmyrepo", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		var body map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, forge.PipelineVarOverrideOwner, body["ci_pipeline_variables_minimum_override_role"])
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 42,
+			"ci_pipeline_variables_minimum_override_role": forge.PipelineVarOverrideOwner,
+		})
+	})
+
+	err := client.SetPipelineVariablesMinimumOverrideRole(ctx, "mygroup", "myrepo", forge.PipelineVarOverrideOwner)
+	require.NoError(t, err)
+}
+
+func TestSetPipelineVariablesMinimumOverrideRole_InvalidRole(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("unexpected request for an invalid role; validation must reject before issuing it")
+	})
+
+	err := client.SetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "repo", "admin")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrInvalidPipelineVarOverrideRole)
+}
+
+func TestSetPipelineVariablesMinimumOverrideRole_NotFound(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Fgone", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"404 Project Not Found"}`)
+	})
+
+	err := client.SetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "gone", forge.PipelineVarOverrideOwner)
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+}
+
+func TestSetPipelineVariablesMinimumOverrideRole_Forbidden(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"message":"403 Forbidden"}`)
+	})
+
+	err := client.SetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "repo", forge.PipelineVarOverrideOwner)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrForbidden)
+}
+
+func TestSetPipelineVariablesMinimumOverrideRole_ServerError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"message":"500 Internal Server Error"}`)
+	})
+
+	err := client.SetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "repo", forge.PipelineVarOverrideOwner)
+	require.Error(t, err)
+	var apiErr *APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, http.StatusInternalServerError, apiErr.StatusCode)
+}
+
 func TestListOrgRepos(t *testing.T) {
 	client, mux := setupTest(t)
 
@@ -1894,6 +2027,254 @@ func TestForceCommitFileToBranch_EmptyCommitID(t *testing.T) {
 	err := client.ForceCommitFileToBranch(context.Background(), "owner", "repo", "b", "f", "m", []byte("x"))
 	require.Error(t, err)
 	assert.ErrorIs(t, err, forge.ErrNotFound)
+}
+
+func TestCommitFileToBranch_EmptyExpectedSHAUsesRootNoForce(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+
+	var treeRef string
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		treeRef = r.URL.Query().Get("ref")
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	var commitPayload map[string]any
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode([]map[string]any{{"id": "root-sha"}})
+		case http.MethodPost:
+			body, _ := io.ReadAll(r.Body)
+			require.NoError(t, json.Unmarshal(body, &commitPayload))
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": "new-commit"})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist poll state", []byte(`{"n":1}`), "")
+	require.NoError(t, err)
+	assert.Equal(t, "root-sha", treeRef, "actions must be diffed against the root tree, not the target branch")
+	_, hasForce := commitPayload["force"]
+	assert.False(t, hasForce, "an empty-expectedSHA create must not force-re-root, so a concurrent first writer surfaces a conflict instead of being overwritten")
+	assert.Equal(t, "root-sha", commitPayload["start_sha"])
+	assert.Equal(t, "persist poll state [skip ci]", commitPayload["commit_message"])
+}
+
+// TestCommitFileToBranch_EmptyExpectedSHAConcurrentFirstWriterIsNonFastForward
+// covers the missing-branch race: two writers both observe the branch as
+// absent (expectedSHA == "") and race to create it. GitLab reports the
+// loser's create as already-exists; that must surface as
+// forge.ErrNonFastForward so persistWithCAS reloads the winner's document,
+// unions this writer's dispatched keys, and retries — instead of the loser
+// force-overwriting the winner's HMAC-signed state.
+func TestCommitFileToBranch_EmptyExpectedSHAConcurrentFirstWriterIsNonFastForward(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode([]map[string]any{{"id": "root-sha"}})
+		case http.MethodPost:
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{
+				"message": "A branch named 'state-branch' already exists",
+			})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist", []byte(`{"n":1}`), "")
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
+}
+
+func TestCommitFileToBranch_PinsStartSHAWithoutForce(t *testing.T) {
+	client, mux := setupTest(t)
+
+	var treeRef string
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		treeRef = r.URL.Query().Get("ref")
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": "oldblob", "path": "state.json", "type": "blob", "mode": "100644"},
+		})
+	})
+
+	var commitPayload map[string]any
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		body, _ := io.ReadAll(r.Body)
+		require.NoError(t, json.Unmarshal(body, &commitPayload))
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{"id": "new-commit"})
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist poll state", []byte(`{"n":2}`), "loaded-sha")
+	require.NoError(t, err)
+	assert.Equal(t, "loaded-sha", treeRef, "actions must apply to the CAS parent tree")
+	assert.Equal(t, "state-branch", commitPayload["branch"])
+	assert.Equal(t, "loaded-sha", commitPayload["start_sha"])
+	_, hasForce := commitPayload["force"]
+	assert.False(t, hasForce, "CAS persist must not set force")
+	assert.Equal(t, "persist poll state [skip ci]", commitPayload["commit_message"])
+}
+
+// TestCommitFileToBranch_NoOpDiffStaleStartSHAIsNonFastForward covers the
+// CAS write path's no-op-diff gap: when the merged payload happens to
+// byte-for-byte match what's already stored at opts.startSHA's tree,
+// commitFilesImpl computes zero actions and, before this fix, returned
+// success without ever POSTing — so GitLab's server-side fast-forward
+// check (which only runs on an actual commit POST) never fired, and a
+// stale start_sha (the branch has since advanced) would be silently
+// reported as CAS success. CommitFileToBranch must now re-check the live
+// branch tip in that case and surface forge.ErrNonFastForward when it no
+// longer matches start_sha.
+func TestCommitFileToBranch_NoOpDiffStaleStartSHAIsNonFastForward(t *testing.T) {
+	client, mux := setupTest(t)
+
+	content := []byte(`{"n":1}`)
+	fileSHA := blobSHA(content)
+
+	// Tree at the (stale) start_sha already matches the payload, so the
+	// diff yields zero actions.
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "stale-sha", r.URL.Query().Get("ref"))
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": fileSHA, "path": "state.json", "type": "blob", "mode": "100644"},
+		})
+	})
+
+	// The branch has since advanced past stale-sha.
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches/state-branch", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"commit": map[string]any{"id": "new-tip-sha"},
+		})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("commits endpoint should not be called for a zero-action diff")
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist poll state", content, "stale-sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward for a stale start_sha on a no-op diff, got: %v", err)
+}
+
+// TestCommitFileToBranch_NoOpDiffFreshStartSHASucceeds is the mirror image
+// of TestCommitFileToBranch_NoOpDiffStaleStartSHAIsNonFastForward: when the
+// live branch tip still matches start_sha, a zero-action diff is a
+// legitimate no-op and must succeed without POSTing a commit.
+func TestCommitFileToBranch_NoOpDiffFreshStartSHASucceeds(t *testing.T) {
+	client, mux := setupTest(t)
+
+	content := []byte(`{"n":1}`)
+	fileSHA := blobSHA(content)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": fileSHA, "path": "state.json", "type": "blob", "mode": "100644"},
+		})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches/state-branch", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"commit": map[string]any{"id": "fresh-sha"},
+		})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("commits endpoint should not be called for a zero-action diff")
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist poll state", content, "fresh-sha")
+	require.NoError(t, err)
+}
+
+func TestCommitFileToBranch_NonFastForward(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "Could not update refs/heads/state-branch. Please refresh and try again.",
+		})
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist", []byte(`{"n":1}`), "stale-sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
+}
+
+func TestCommitFileToBranch_AlreadyExistsIsNonFastForward(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "A branch named 'state-branch' already exists",
+		})
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist", []byte(`{"n":1}`), "loaded-sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
+}
+
+func TestCommitFileToBranch_CommitError(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"message": "start_sha is invalid"})
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist", []byte(`{"n":1}`), "loaded-sha")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "commit state.json to state-branch")
+	assert.False(t, forge.IsNonFastForward(err))
+}
+
+func TestCommitFileToBranch_RequiredArgs(t *testing.T) {
+	client, _ := setupTest(t)
+	ctx := context.Background()
+
+	err := client.CommitFileToBranch(ctx, "owner", "repo", "", "f", "m", []byte("x"), "sha")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "branch and path are required")
+
+	err = client.CommitFileToBranch(ctx, "owner", "repo", "b", "", "m", []byte("x"), "sha")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "branch and path are required")
 }
 
 func TestUpdateIssueComment_FoundInClosedIssues(t *testing.T) {

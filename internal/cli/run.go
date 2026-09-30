@@ -38,7 +38,6 @@ import (
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
-	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	vertexinference "github.com/fullsend-ai/fullsend/internal/inference/vertex"
 	"github.com/fullsend-ai/fullsend/internal/inference/vertexauth"
@@ -916,8 +915,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// (#7231) so a full-budget run does not hand it an expired token.
 	// Minting is GitHub-only. On GitLab, select the registered role
 	// credential (Poller/Analyst/Coder or a custom role) and export
-	// GITLAB_TOKEN / PUSH_TOKEN from that CI/CD variable. Disabled and
-	// rollback keep the shared FULLSEND_FORGE_TOKEN path. #6865 #7499.
+	// GITLAB_TOKEN / PUSH_TOKEN from that CI/CD variable. Missing role
+	// credentials fail closed; there is no shared-token fallback. #6865 #7499.
 	mintURL := sOpts.mintURL
 	if mintURL == "" {
 		mintURL = os.Getenv("FULLSEND_MINT_URL")
@@ -928,19 +927,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if forgePlatform == "gitlab" {
 		mintCleanup = func() {}
 		if roleErr := applyGitLabAgentCredentials(agentName, h.Role, os.Getenv, setFlagEnv, printer); roleErr != nil {
-			// Pre-PR, `fullsend run --forge gitlab` was a no-op here and left
-			// GITLAB_TOKEN/PUSH_TOKEN exactly as the surrounding process
-			// environment set them. Preserve that fallback when the shared
-			// credential path is the active one (disabled/rollback) and the
-			// only problem is FULLSEND_FORGE_TOKEN being unprovisioned, so a
-			// directly-set GITLAB_TOKEN — the documented local-run workflow —
-			// keeps working. Migrating/enforced modes, and any other error,
-			// still fail closed (see review on PR #7510).
-			mode, modeErr := gitlabroles.ModeFrom(os.Getenv)
-			if modeErr != nil || !mode.UsesSharedOnly() || !errors.Is(roleErr, gitlabroles.ErrSharedUnconfigured) {
-				return roleErr
-			}
-			printer.StepWarn("GitLab shared credential FULLSEND_FORGE_TOKEN is not set; leaving GITLAB_TOKEN/PUSH_TOKEN as provided by the environment")
+			return roleErr
 		}
 	} else {
 		var mintErr error
@@ -2184,7 +2171,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	{
 		preflightStart := time.Now()
 		printer.StepStart("Checking GitHub API connectivity from sandbox")
-		result, connectErr := checkSandboxGitHubConnectivity(sandboxName)
+		result, connectErr := checkSandboxGitHubConnectivity(sandboxName, printer)
 		if connectErr != nil {
 			printer.StepFail("GitHub API unreachable from sandbox")
 			return fmt.Errorf("pre-flight connectivity check: %w", connectErr)
@@ -4504,7 +4491,7 @@ func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 
 // gitlabRoleRoutingKeyPrefix is the env var prefix used by the GitLab
 // role-credential contract's diagnostic and credential vars (#7499):
-// FULLSEND_GITLAB_ROLE, FULLSEND_GITLAB_ROLE_MIGRATION,
+// FULLSEND_GITLAB_ROLE,
 // FULLSEND_GITLAB_ROLE_REGISTRY, FULLSEND_GITLAB_ROLE_SECRET,
 // FULLSEND_GITLAB_ROLE_SOURCE, the built-in FULLSEND_GITLAB_{POLLER,
 // ANALYST,CODER}_TOKEN secrets, and custom FULLSEND_GITLAB_ROLE_<NAME>_TOKEN

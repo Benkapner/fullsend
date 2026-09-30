@@ -12,9 +12,9 @@ if [ "${CI_DEBUG_TRACE:-}" = "true" ]; then
   exit 1
 fi
 
-# Bot token from the registered Poller credential when the
-# migration gate is migrating/enforced; otherwise the shared
-# FULLSEND_FORGE_TOKEN (ADR-0067 / gitlab-role-credentials.md).
+# Bot token from the registered Poller credential — required in
+# every gate mode; there is no shared FULLSEND_FORGE_TOKEN fallback
+# (ADR-0067 / gitlab-role-credentials.md).
 # shellcheck disable=SC2034  # consumed by sourced select-gitlab-role-token.sh
 FULLSEND_JOB_KIND=poller
 . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/select-gitlab-role-token.sh"
@@ -32,17 +32,18 @@ FULLSEND_JOB_KIND=poller
 # select-gitlab-role-token.sh itself is left unchanged: the agent
 # template still needs these siblings present until its own HMAC
 # reselect and the STAGE=fix analyst-identity lookup.
-_fs_poll_mode=$(printf '%s' "${FULLSEND_GITLAB_ROLE_MIGRATION:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
-case "${_fs_poll_mode}" in
-  migrating|enforced)
-    for _fs_sibling in $(compgen -v | grep -E '^FULLSEND_(GITLAB_(ANALYST|CODER|POLLER|ROLE_[A-Z0-9_]+)_TOKEN|FORGE_TOKEN)$' || true); do
-      if [ "${_fs_sibling}" != "${FULLSEND_JOB_TOKEN_NAME:-}" ]; then
-        unset "${_fs_sibling}"
-      fi
-    done
-    ;;
-esac
-unset _fs_poll_mode _fs_sibling
+#
+# Unconditional in every gate mode: select-gitlab-role-token.sh no
+# longer has a disabled/rollback shared-token path where every role
+# resolves to the same value, so a sibling secret is a real
+# higher-privileged credential in every mode now, not only
+# migrating/enforced.
+for _fs_sibling in $(compgen -v | grep -E '^FULLSEND_(GITLAB_(ANALYST|CODER|POLLER|ROLE_[A-Z0-9_]+)_TOKEN|FORGE_TOKEN)$' || true); do
+  if [ "${_fs_sibling}" != "${FULLSEND_JOB_TOKEN_NAME:-}" ]; then
+    unset "${_fs_sibling}"
+  fi
+done
+unset _fs_sibling
 
 # Validate FULLSEND_POLL_MODE before use in URLs and commands.
 case "${FULLSEND_POLL_MODE:-events}" in

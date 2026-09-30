@@ -137,19 +137,13 @@ case "${PIPELINE_SOURCE}" in
     ;;
 esac
 
-# Gate mode — determines whether the STAGE-derived re-select below
-# would actually hand out a more-privileged credential than the
-# poller bootstrap token used above. In disabled/rollback every
-# role resolves to the same shared FULLSEND_FORGE_TOKEN
-# (select-gitlab-role-token.sh), so re-selecting by an unverified
-# STAGE grants no extra privilege there. In migrating/enforced,
-# analyst/coder tokens are meaningfully more privileged, so STAGE
-# must be verified before the re-select is allowed to use it.
-GITLAB_ROLE_MODE=$(printf '%s' "${FULLSEND_GITLAB_ROLE_MIGRATION:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
-case "${GITLAB_ROLE_MODE}" in
-  migrating|enforced) ROLE_AWARE=true ;;
-  *) ROLE_AWARE=false ;;
-esac
+# Gate mode — every mode is role-aware now: select-gitlab-role-token.sh
+# no longer has a shared-token path for disabled/rollback (it always
+# resolves the registered per-role secret, matching gitlabroles.Resolve
+# on the Go side — see internal/gitlabroles/gitlabroles.go). There is
+# no mode left where the STAGE-derived re-select below is safe to trust
+# without verification, so STAGE must always be cryptographically
+# verified before it is allowed to select a role-specific credential.
 
 # HMAC dispatch signature verification (#5572 mitigation #2) —
 # verifies the dispatch variables were signed by the poller using
@@ -161,17 +155,17 @@ esac
 # Only applies to API-triggered pipelines; parent_pipeline (MR
 # dispatch) variables are set by the trusted parent job and have no
 # HMAC to check — DISPATCH_VERIFIED stays false for that path, so
-# the job fails closed below in migrating/enforced mode (see that
-# gate further down) instead of continuing.
+# the job fails closed below in every gate mode (see that gate
+# further down) instead of continuing.
 #
 # IMPORTANT: FULLSEND_DISPATCH_SECRET MUST be configured as a
 # protected, masked CI/CD variable. Pipeline variables can be
 # overridden by API-triggered pipelines — a protected variable
 # prevents override by non-Maintainer callers, and masking
 # prevents exposure in job logs. `repos install` auto-provisions
-# this secret, so in migrating/enforced mode its absence now fails
-# closed instead of silently skipping verification — an unsigned
-# dispatch must never be trusted with a role-specific credential.
+# this secret, so its absence now fails closed in every gate mode
+# instead of silently skipping verification — an unsigned dispatch
+# must never be trusted with a role-specific credential.
 DISPATCH_VERIFIED=false
 if [ "${PIPELINE_SOURCE}" = "api" ]; then
   if [ -n "${FULLSEND_DISPATCH_SECRET:-}" ]; then
@@ -186,19 +180,16 @@ if [ "${PIPELINE_SOURCE}" = "api" ]; then
       echo "ERROR: HMAC verification failed — dispatch variables may be forged (fail-closed)" >&2
       exit 1
     fi
-  elif [ "${ROLE_AWARE}" = "true" ]; then
-    echo "ERROR: FULLSEND_DISPATCH_SECRET is not configured — required in migrating/enforced mode to authenticate STAGE before a role-specific credential can be selected (fail-closed)" >&2
-    exit 1
   else
-    echo "WARNING: FULLSEND_DISPATCH_SECRET not configured — dispatch variables unsigned (tolerated in disabled/rollback mode, where every role shares one token so an unverified STAGE grants no extra privilege)"
+    echo "ERROR: FULLSEND_DISPATCH_SECRET is not configured — required in every gate mode to authenticate STAGE before a role-specific credential can be selected (fail-closed)" >&2
+    exit 1
   fi
 fi
 
 # Fail closed for the rest of the job when STAGE has not actually
-# been authenticated and the gate mode makes the distinction matter
-# (migrating/enforced). Do not treat a skipped or impossible check
-# as a pass: a parent_pipeline dispatch (not HMAC-signed) or a
-# missing dispatch secret (already fail-closed above) both leave
+# been authenticated. Do not treat a skipped or impossible check as
+# a pass: a parent_pipeline dispatch (not HMAC-signed) or a missing
+# dispatch secret (already fail-closed above) both leave
 # DISPATCH_VERIFIED false.
 #
 # An earlier revision of this template continued the job on the
@@ -216,8 +207,8 @@ fi
 # STAGE-derived analyst/coder token anyway. Exiting here, before any
 # of that later code runs, is the only way to keep an unverified
 # STAGE from ever reaching a role-specific credential.
-if [ "${ROLE_AWARE}" = "true" ] && [ "${DISPATCH_VERIFIED}" != "true" ]; then
-  echo "ERROR: STAGE could not be cryptographically verified — refusing to continue in role-aware mode rather than risk a role-specific credential being used downstream" >&2
+if [ "${DISPATCH_VERIFIED}" != "true" ]; then
+  echo "ERROR: STAGE could not be cryptographically verified — refusing to continue rather than risk a role-specific credential being used downstream" >&2
   exit 1
 fi
 
@@ -225,10 +216,11 @@ fi
 # replacing the poller bootstrap identity used for the
 # pre-verification calls above. Reachable only when STAGE has
 # actually been authenticated (DISPATCH_VERIFIED, set only by a
-# successful HMAC check above) or when the gate mode makes the
-# distinction moot (disabled/rollback) — the fail-closed exit above
-# already handles every other case.
-if [ "${DISPATCH_VERIFIED}" = "true" ] || [ "${ROLE_AWARE}" = "false" ]; then
+# successful HMAC check above) — the fail-closed exit above already
+# handles every other case, so this condition is always true here;
+# it is kept explicit as a second, independent guard against a
+# role-specific credential ever being selected on an unverified STAGE.
+if [ "${DISPATCH_VERIFIED}" = "true" ]; then
   # shellcheck disable=SC2034  # consumed by sourced select-gitlab-role-token.sh
   FULLSEND_JOB_KIND=agent
   FULLSEND_JOB_AGENT="${STAGE:-}"
@@ -505,10 +497,33 @@ if [ "${STAGE}" = "code" ] || [ "${STAGE}" = "fix" ] || [ "${STAGE}" = "review" 
   GIT_BOT_EMAIL="${_BOT_USERNAME:-fullsend-${STAGE}}@noreply.${CI_SERVER_HOST:-gitlab.com}"
   export GIT_BOT_EMAIL
 
-  # MR identity — used by forge.gitlab env config and by the
-  # fix post-script for pushing and commenting. REPO_FULL_NAME
-  # is set by run.go from --status-repo (#6865).
-  MR_IID="${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"
+  # MR identity — used by forge.gitlab env config, by the fix
+  # post-script for pushing and commenting, and (for the fix stage)
+  # to key the merge-request API call in checkout-mr-source.sh that
+  # selects which MR's source gets fetched into --target-repo.
+  # STATUS_IID is part of the HMAC-signed dispatch message (see
+  # HMAC_MESSAGE above); CI_MERGE_REQUEST_IID is not, and an
+  # ordinary project/group CI/CD variable can define it. Prefer the
+  # signed value and fail closed if a non-empty CI_MERGE_REQUEST_IID
+  # disagrees with a non-zero STATUS_IID, rather than letting an
+  # unverified CI variable pick which merge request's source is
+  # checked out — mirroring the fail-closed cross-checks already
+  # applied to CI_MERGE_REQUEST_SOURCE_* in checkout-mr-source.sh.
+  case "${CI_MERGE_REQUEST_IID:-}" in
+    ''|*[!0-9]*) _FS_CI_MR_IID="" ;;
+    *) _FS_CI_MR_IID="${CI_MERGE_REQUEST_IID}" ;;
+  esac
+  if [ -n "${STATUS_IID:-}" ] && [ "${STATUS_IID}" != "0" ]; then
+    if [ -n "${_FS_CI_MR_IID}" ] && [ "${_FS_CI_MR_IID}" != "${STATUS_IID}" ]; then
+      echo "ERROR: CI_MERGE_REQUEST_IID '${_FS_CI_MR_IID}' does not match the signed dispatch STATUS_IID '${STATUS_IID}' — refusing to trust an unverified CI variable to select the merge request" >&2
+      unset _FS_CI_MR_IID
+      exit 1
+    fi
+    MR_IID="${STATUS_IID}"
+  else
+    MR_IID="${_FS_CI_MR_IID:-0}"
+  fi
+  unset _FS_CI_MR_IID
   export MR_NUMBER="${MR_IID}"
   if [ "${MR_IID}" != "0" ]; then
     export GITLAB_MR_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/merge_requests/${MR_IID}"
@@ -740,9 +755,21 @@ if [ "${STAGE}" = "fix" ]; then
   echo "Fix iteration: ${FIX_ITERATION} (${FIX_COMMITS} previous fix commits)"
   export FIX_ITERATION
 
-  # Pre-agent HEAD — record before the agent modifies the tree.
-  # The post-script uses this to detect whether the agent committed.
-  PRE_AGENT_HEAD=$(git rev-parse HEAD)
+  # Check out the MR source revision into a subdirectory before the
+  # sandbox is created. Dispatch pipelines run from the default branch;
+  # TARGET_BRANCH is the MR *base* and is not the reviewed head. The
+  # subdirectory keeps trusted .fullsend/ config on the default-branch
+  # working tree (read above via DEFAULT_BRANCH_SHA) while --target-repo
+  # hands the sandbox the exact source SHA. Fetching without checking
+  # out the working tree is not enough.
+  FIX_TARGET_REPO=""
+  . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/checkout-mr-source.sh"
+
+  # Pre-agent HEAD — record the MR source SHA before the agent
+  # modifies the tree. The post-script uses this to detect whether
+  # the agent committed, then pushes that commit back to the MR
+  # source branch (and still rejects unsafe target branches).
+  PRE_AGENT_HEAD=$(git -C "${FIX_TARGET_REPO}" rev-parse HEAD)
   export PRE_AGENT_HEAD
 fi
 
@@ -765,16 +792,28 @@ fi
 # ephemeral tmp path). BREAKING CHANGE vs older scaffolds: default
 # --output-dir now lives inside the project dir (artifact retention
 # + top-level output/ sandbox exclude). Re-sync adopts the new layout.
+#
+# Fix stage: --target-repo is the MR source checkout. Other stages
+# keep the dispatch-ref working tree. --fullsend-dir stays the
+# default-branch .fullsend/ so untrusted MR config is not used.
+_FS_TARGET_REPO="."
+if [ "${STAGE}" = "fix" ]; then
+  if [ -z "${FIX_TARGET_REPO:-}" ] || [ ! -d "${FIX_TARGET_REPO}/.git" ]; then
+    echo "ERROR: MR source checkout is missing — refusing to run the fix agent against the dispatch ref" >&2
+    exit 1
+  fi
+  _FS_TARGET_REPO="${FIX_TARGET_REPO}"
+fi
 mkdir -p "${CI_PROJECT_DIR}/output"
 set +e
 fullsend run "${STAGE}" \
   --fullsend-dir .fullsend \
-  --target-repo . \
+  --target-repo "${_FS_TARGET_REPO}" \
   --output-dir "${CI_PROJECT_DIR}/output" \
   --forge gitlab \
   --run-url "${CI_PIPELINE_URL}" \
   --status-repo "${CI_PROJECT_PATH}" \
-  --status-number "${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"
+  --status-number "${MR_NUMBER:-${STATUS_IID:-${CI_MERGE_REQUEST_IID:-0}}}"
 RUN_STATUS=$?
 set -e
 

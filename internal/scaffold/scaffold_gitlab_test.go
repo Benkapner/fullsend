@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	gitlabInstallCLIScriptPath  = ".gitlab/ci/scripts/install-fullsend-cli.sh"
-	gitlabRunPollJobScriptPath  = ".gitlab/ci/scripts/run-poll-job.sh"
-	gitlabRunAgentJobScriptPath = ".gitlab/ci/scripts/run-agent-job.sh"
+	gitlabInstallCLIScriptPath       = ".gitlab/ci/scripts/install-fullsend-cli.sh"
+	gitlabRunPollJobScriptPath       = ".gitlab/ci/scripts/run-poll-job.sh"
+	gitlabRunAgentJobScriptPath      = ".gitlab/ci/scripts/run-agent-job.sh"
+	gitlabCheckoutMRSourceScriptPath = ".gitlab/ci/scripts/checkout-mr-source.sh"
 )
 
 func gitlabPerRepoText(t *testing.T, path string) string {
@@ -67,6 +68,7 @@ func TestGitLabPerRepoFilesExist(t *testing.T) {
 		gitlabInstallCLIScriptPath,
 		gitlabRunPollJobScriptPath,
 		gitlabRunAgentJobScriptPath,
+		gitlabCheckoutMRSourceScriptPath,
 	}
 
 	for _, path := range expected {
@@ -354,22 +356,23 @@ func TestGitLabAgentTemplateStageReselectRequiresVerifiedDispatch(t *testing.T) 
 	assert.Greater(t, stageReselectIdx, reselectGateIdx,
 		"STAGE-derived reselect must come after the DISPATCH_VERIFIED gate")
 
-	// A missing FULLSEND_DISPATCH_SECRET in migrating/enforced mode must
-	// fail closed, not silently skip verification (the pre-fix behavior).
-	assert.Contains(t, s, "ROLE_AWARE")
-	assert.Contains(t, s, "FULLSEND_GITLAB_ROLE_MIGRATION")
+	// A missing FULLSEND_DISPATCH_SECRET must fail closed in every gate
+	// mode, not silently skip verification (the pre-fix behavior).
 	assert.Contains(t, s, "FULLSEND_DISPATCH_SECRET is not configured")
 	assert.NotContains(t, s, "verification is skipped (backward compat during migration)")
+	assert.NotContains(t, s, "ROLE_AWARE",
+		"credential selection is role-aware in every gate mode now; there is no mode-dependent flag left")
 
-	// An unverified STAGE in role-aware mode must abort the job outright
-	// (fail closed) rather than merely continuing on the poller bootstrap
-	// token — the CLI's own role selection (gitlabroles.SelectAgent) reads
-	// STAGE straight from the process environment and does not consult the
-	// shell-local DISPATCH_VERIFIED flag, so continuing on the poller
-	// credential at the shell level does not stop a later STAGE-derived
-	// re-select from happening anyway.
-	abortConditionIdx := strings.Index(s, `if [ "${ROLE_AWARE}" = "true" ] && [ "${DISPATCH_VERIFIED}" != "true" ]`)
-	require.NotEqual(t, -1, abortConditionIdx, "fail-closed abort must check both ROLE_AWARE and DISPATCH_VERIFIED")
+	// An unverified STAGE must abort the job outright (fail closed) in
+	// every gate mode, rather than merely continuing on the poller
+	// bootstrap token — the CLI's own role selection
+	// (gitlabroles.SelectAgent) reads STAGE straight from the process
+	// environment and does not consult the shell-local DISPATCH_VERIFIED
+	// flag, so continuing on the poller credential at the shell level
+	// does not stop a later STAGE-derived re-select from happening
+	// anyway.
+	abortConditionIdx := strings.Index(s, `if [ "${DISPATCH_VERIFIED}" != "true" ]`)
+	require.NotEqual(t, -1, abortConditionIdx, "fail-closed abort must check DISPATCH_VERIFIED unconditionally")
 	assert.Greater(t, abortConditionIdx, verifiedIdx,
 		"fail-closed abort must be checked after DISPATCH_VERIFIED has been computed")
 
@@ -427,8 +430,11 @@ func TestGitLabAgentTemplateFixReviewBodyPreFetch(t *testing.T) {
 	// Fix iteration counts prior fix-agent commits
 	assert.Contains(t, s, "fullsend-fix")
 	assert.Contains(t, s, "author_name")
-	// Pre-agent HEAD recorded before agent runs
-	assert.Contains(t, s, "git rev-parse HEAD")
+	// Pre-agent HEAD recorded from the MR source checkout, not the
+	// dispatch-ref working tree. The checkout helper must run first.
+	assert.Contains(t, s, gitlabCheckoutMRSourceScriptPath)
+	assert.Contains(t, s, `git -C "${FIX_TARGET_REPO}" rev-parse HEAD`)
+	assert.NotContains(t, s, "PRE_AGENT_HEAD=$(git rev-parse HEAD)")
 	// Forge.gitlab env vars for fix post-script — REPO_FULL_NAME is now
 	// set by run.go from --status-repo (#6865); PUSH_TOKEN, PUSH_TOKEN_SOURCE,
 	// GIT_BOT_EMAIL, MR_NUMBER, and GITLAB_MR_URL are in the shared
@@ -487,6 +493,52 @@ func TestGitLabAgentTemplateFixStageReviewNoteUsesAnalystIdentity(t *testing.T) 
 	require.NotEqual(t, -1, targetBranchIdx, "TARGET_BRANCH lookup not found in fix block")
 	assert.Greater(t, targetBranchIdx, restoreIdx,
 		"TARGET_BRANCH lookup must run after the coder token is restored")
+
+	// MR source checkout uses FULLSEND_JOB_TOKEN and must run after the
+	// coder token is restored, after TARGET_BRANCH is resolved, and
+	// before PRE_AGENT_HEAD is recorded from that checkout.
+	checkoutIdx := strings.Index(fixBlock, gitlabCheckoutMRSourceScriptPath)
+	require.NotEqual(t, -1, checkoutIdx, "fix stage must source checkout-mr-source.sh")
+	assert.Greater(t, checkoutIdx, restoreIdx,
+		"MR source checkout must run after the coder token is restored")
+	assert.Greater(t, checkoutIdx, targetBranchIdx,
+		"MR source checkout must run after TARGET_BRANCH is resolved")
+	preHeadIdx := strings.Index(fixBlock, `git -C "${FIX_TARGET_REPO}" rev-parse HEAD`)
+	require.NotEqual(t, -1, preHeadIdx, "PRE_AGENT_HEAD must be recorded from the MR source checkout")
+	assert.Greater(t, preHeadIdx, checkoutIdx,
+		"PRE_AGENT_HEAD must be recorded after the MR source checkout")
+}
+
+// TestGitLabAgentTemplateFixChecksOutMRSourceBeforeSandbox guards the
+// GitLab fix-agent handoff: dispatch pipelines run from the default
+// branch, so the job must fetch and check out the MR source revision
+// into target-repo before fullsend run, keep --fullsend-dir on the
+// trusted default-branch tree, and preserve post-fix TARGET_BRANCH
+// / allowed-target-branch safety.
+func TestGitLabAgentTemplateFixChecksOutMRSourceBeforeSandbox(t *testing.T) {
+	s := gitlabAgentScaffold(t)
+	agentJob := gitlabPerRepoText(t, gitlabRunAgentJobScriptPath)
+
+	assert.Contains(t, agentJob, gitlabCheckoutMRSourceScriptPath)
+	assert.Contains(t, agentJob, `--target-repo "${_FS_TARGET_REPO}"`)
+	assert.Contains(t, agentJob, `export TARGET_BRANCH`)
+	assert.Contains(t, s, "CODE_ALLOWED_TARGET_BRANCHES")
+	assert.Contains(t, agentJob, `export PRE_AGENT_HEAD`)
+	assert.Contains(t, agentJob, `--fullsend-dir .fullsend`)
+	assert.Contains(t, agentJob, `FIX_TARGET_REPO`)
+	assert.Contains(t, agentJob, "refusing to run the fix agent against the dispatch ref")
+
+	// Trusted config still comes from the default-branch SHA, not the
+	// MR working tree, even after the source checkout.
+	assert.Contains(t, s, "DEFAULT_BRANCH_SHA")
+	assert.Contains(t, s, `git show "${DEFAULT_BRANCH_SHA}:.fullsend/config.yaml"`)
+	assert.Contains(t, s, `git show "${DEFAULT_BRANCH_SHA}:.fullsend/eval/measurements/${STAGE}.yaml"`)
+
+	// Fork MRs still cannot run the fix stage; the checkout helper
+	// itself also fails closed on any cross-project source mismatch
+	// (see TestCheckoutMRSource_CrossProjectSourceRejected) — there is
+	// no cross-project fetch path in this implementation.
+	assert.Contains(t, s, "Fork MR detected")
 }
 
 // TestGitLabAgentTemplateSharedCodeFixEnvVars verifies that PUSH_TOKEN,
@@ -526,6 +578,33 @@ func TestGitLabAgentTemplateSharedCodeFixEnvVars(t *testing.T) {
 			t.Error("REPO_FULL_NAME should not be exported in the scaffold — run.go sets it from --status-repo")
 		}
 	}
+}
+
+// TestGitLabAgentTemplateMRIIDPrefersSignedStatusIID guards the
+// fix-agent identity-spoofing fix: MR_IID (which keys the
+// checkout-mr-source.sh merge-request API call that selects which
+// MR's source gets fetched into --target-repo) must prefer the
+// HMAC-signed STATUS_IID over the unsigned CI_MERGE_REQUEST_IID, and
+// fail closed rather than trust a CI_MERGE_REQUEST_IID that disagrees
+// with a non-zero STATUS_IID.
+func TestGitLabAgentTemplateMRIIDPrefersSignedStatusIID(t *testing.T) {
+	s := gitlabAgentScaffold(t)
+
+	sharedIdx := strings.Index(s, `"${STAGE}" = "code"`)
+	require.NotEqual(t, -1, sharedIdx, "shared code|fix|review block marker not found")
+	shared := s[sharedIdx:]
+	mrNumberIdx := strings.Index(shared, "export MR_NUMBER")
+	require.NotEqual(t, -1, mrNumberIdx, "export MR_NUMBER not found in shared block")
+	shared = shared[:mrNumberIdx]
+
+	// STATUS_IID is preferred when present and non-zero.
+	assert.Contains(t, shared, `MR_IID="${STATUS_IID}"`)
+	// A disagreeing CI_MERGE_REQUEST_IID fails closed instead of being trusted.
+	assert.Contains(t, shared, "does not match the signed dispatch STATUS_IID")
+	assert.Contains(t, shared, "exit 1")
+	// CI_MERGE_REQUEST_IID is validated as numeric before use, like the
+	// other untrusted CI identity variables in this file.
+	assert.Contains(t, shared, `*[!0-9]*) _FS_CI_MR_IID=""`)
 }
 
 func TestGitLabAgentTemplateKillSwitch(t *testing.T) {
@@ -666,9 +745,12 @@ func TestGitLabPollBlanksSiblingRoleSecrets(t *testing.T) {
 	assert.Less(t, selectIdx, unsetIdx, "sibling secrets must be blanked after role selection")
 	assert.Less(t, unsetIdx, pollIdx, "sibling secrets must be blanked before running fullsend poll")
 
-	// Only unset for migrating/enforced; disabled/rollback share one token
-	// across every role so there is nothing to blank.
-	assert.Contains(t, s, "migrating|enforced")
+	// Unconditional in every gate mode now: select-gitlab-role-token.sh
+	// no longer has a disabled/rollback shared-token path where every
+	// role resolves to the same value, so a sibling secret is a real
+	// higher-privileged credential in every mode.
+	assert.NotContains(t, s, "migrating|enforced",
+		"sibling-secret blanking must not be gated on gate mode")
 	// Covers the builtin roles, any custom registered role, and the
 	// shared fallback token — but never the credential this job selected.
 	assert.Contains(t, s, "FULLSEND_(GITLAB_(ANALYST|CODER|POLLER|ROLE_[A-Z0-9_]+)_TOKEN|FORGE_TOKEN)")
@@ -1051,6 +1133,8 @@ func TestGitLabJobsSourceExtractedScripts(t *testing.T) {
 	assert.Contains(t, gitlabPerRepoText(t, gitlabInstallCLIScriptPath), "__FULLSEND_VERSION__")
 	assert.Contains(t, gitlabPerRepoText(t, gitlabRunPollJobScriptPath), "fullsend poll")
 	assert.Contains(t, gitlabPerRepoText(t, gitlabRunAgentJobScriptPath), `fullsend run "${STAGE}"`)
+	assert.Contains(t, gitlabPerRepoText(t, gitlabRunAgentJobScriptPath), gitlabCheckoutMRSourceScriptPath)
+	assert.Contains(t, gitlabPerRepoText(t, gitlabRunAgentJobScriptPath), `--target-repo "${_FS_TARGET_REPO}"`)
 }
 
 func TestCollectGitLabPerRepoInstallFiles_IncludesExtractedJobScripts(t *testing.T) {
@@ -1064,6 +1148,7 @@ func TestCollectGitLabPerRepoInstallFiles_IncludesExtractedJobScripts(t *testing
 		gitlabInstallCLIScriptPath,
 		gitlabRunPollJobScriptPath,
 		gitlabRunAgentJobScriptPath,
+		gitlabCheckoutMRSourceScriptPath,
 	} {
 		assert.True(t, found[path], "install files must include %s", path)
 	}

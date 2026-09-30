@@ -2,7 +2,7 @@ package repos
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -12,242 +12,199 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func seedCutoverState(t *testing.T, fc *forge.FakeClient) {
-	t.Helper()
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "migrating"
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
-	for _, name := range []string{
-		forge.SecretGitLabPollerToken,
-		forge.SecretGitLabAnalystToken,
-		forge.SecretGitLabCoderToken,
-	} {
-		fc.Secrets["group/project/"+name] = true
-	}
-}
-
-func cutoverTokenInventory() *fakeTokens {
-	tokens := &fakeTokens{}
-	for id, name := range map[int]string{
-		1: gitlabroles.PollerTokenName,
-		2: gitlabroles.AnalystTokenName,
-		3: gitlabroles.CoderTokenName,
-		4: gitlabroles.SharedTokenName,
-	} {
-		tokens.seed(ProjectAccessToken{ID: id, Name: name, Active: true, ExpiresAt: "2027-01-01"})
-	}
-	return tokens
-}
-
-func TestCutoverGitLabRoleCredentialsRetiresSharedSecret(t *testing.T) {
-	t.Parallel()
+func TestCutoverGitLabRoleCredentialsRetiresSharedCredential(t *testing.T) {
 	fc := provisionClient(t)
 	seedCutoverState(t, fc)
+	fc.Secrets["group/project/"+forge.SecretForgeToken] = true
 	tokens := cutoverTokenInventory()
 
 	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens, DrainConfirmed: true,
+		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens,
 	})
 	require.NoError(t, err)
-	assert.True(t, result.Enforced)
 	assert.True(t, result.SharedRetired)
-	assert.False(t, result.RolledBack)
-	assert.Equal(t, "enforced", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
 	assert.False(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
-	assert.Equal(t, []int{4}, tokens.revoked)
+	assert.Contains(t, tokens.revoked, 4)
 }
 
-func TestCutoverGitLabRoleCredentialsRefusesMissingRole(t *testing.T) {
-	t.Parallel()
+func TestCutoverGitLabRoleCredentialsDefersWhenRoleMissing(t *testing.T) {
 	fc := provisionClient(t)
-	seedCutoverState(t, fc)
-	delete(fc.Secrets, "group/project/"+forge.SecretGitLabCoderToken)
-
+	fc.Secrets["group/project/"+forge.SecretForgeToken] = true
 	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc, TokenInventory: cutoverTokenInventory(), DrainConfirmed: true,
+		Owner: "group", Repo: "project", Client: fc, TokenInventory: cutoverTokenInventory(),
 	})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrGitLabRoleCutoverNotReady)
-	assert.True(t, IsGitLabRoleCutoverDeferred(err))
-	assert.False(t, result.Enforced)
-	assert.Equal(t, "migrating", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.False(t, result.SharedRetired)
 	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
 }
 
-func TestCutoverGitLabRoleCredentialsRollsBackRetirementFailure(t *testing.T) {
-	t.Parallel()
+func TestCutoverGitLabRoleCredentialsRequiresInventory(t *testing.T) {
 	fc := provisionClient(t)
-	seedCutoverState(t, fc)
-	fc.Errors["DeleteRepoSecret"] = errors.New("permission denied")
-
-	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc, TokenInventory: cutoverTokenInventory(), DrainConfirmed: true,
+	_, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
+		Owner: "group", Repo: "project", Client: fc,
 	})
 	require.Error(t, err)
-	assert.True(t, result.RolledBack)
-	assert.False(t, result.Enforced)
-	assert.Equal(t, "migrating", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
-	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
 }
 
-func TestCutoverGitLabRoleCredentialsRollsBackSharedTokenRevocationFailure(t *testing.T) {
-	t.Parallel()
+func TestCutoverGitLabRoleCredentialsRetiresWithoutDrainFlag(t *testing.T) {
 	fc := provisionClient(t)
 	seedCutoverState(t, fc)
+	fc.Secrets["group/project/"+forge.SecretForgeToken] = true
 	tokens := cutoverTokenInventory()
-	tokens.failRevoke = errors.New("permission denied")
-
 	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens, DrainConfirmed: true,
+		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens,
 	})
-	require.Error(t, err)
-	assert.False(t, result.RolledBack)
-	assert.True(t, result.Enforced)
-	assert.Equal(t, "enforced", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	require.NoError(t, err)
+	assert.True(t, result.SharedRetired)
 	assert.False(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
 }
 
-func TestCutoverGitLabRoleCredentialsAcceptsAdministratorEnrollment(t *testing.T) {
-	t.Parallel()
+func TestCutoverGitLabRoleCredentialsDryRunDoesNotRetire(t *testing.T) {
 	fc := provisionClient(t)
 	seedCutoverState(t, fc)
+	fc.Secrets["group/project/"+forge.SecretForgeToken] = true
+	tokens := cutoverTokenInventory()
+
+	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
+		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens, DryRun: true,
+	})
+	require.NoError(t, err)
+	assert.True(t, result.DryRun)
+	assert.True(t, result.SharedRetired, "dry-run reports what would be retired without acting")
+	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken], "dry-run must not delete the shared secret")
+	assert.Empty(t, tokens.revoked, "dry-run must not revoke any token")
+}
+
+// TestCutoverGitLabRoleCredentialsRetryAfterRevokeFailureStillRevokes is a
+// regression test for the retry hole in maybeRetireGitLabSharedCredential
+// (internal/cli/repos_gitlab.go): if secret deletion succeeds but revoking
+// the shared fullsend-bot project access token fails, a retry must not
+// treat "secret already gone" as "nothing left to do" — the leftover
+// Developer-scope PAT must still get revoked.
+func TestCutoverGitLabRoleCredentialsRetryAfterRevokeFailureStillRevokes(t *testing.T) {
+	fc := provisionClient(t)
+	seedCutoverState(t, fc)
+	fc.Secrets["group/project/"+forge.SecretForgeToken] = true
+	tokens := cutoverTokenInventory()
+	tokens.failRevoke = fmt.Errorf("revoke transiently failed")
+
+	_, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
+		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens,
+	})
+	require.Error(t, err, "revoke failure must surface as an error, not a silent partial success")
+	assert.False(t, fc.Secrets["group/project/"+forge.SecretForgeToken], "the secret is already deleted before revoke runs")
+	assert.Empty(t, tokens.revoked, "the shared token is still active after the failed revoke")
+
+	// Retry: the secret is gone, but the shared token is still active in
+	// the inventory. CutoverGitLabRoleCredentials must still be called (the
+	// caller must not skip it merely because the secret is absent) so the
+	// leftover token actually gets revoked this time.
+	tokens.failRevoke = nil
+	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
+		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens,
+	})
+	require.NoError(t, err)
+	assert.True(t, result.SharedRetired)
+	assert.Contains(t, tokens.revoked, 4, "the leftover shared PAT must be revoked on retry")
+}
+
+// TestCutoverGitLabRoleCredentialsSupportsCustomOwnRole is a registered
+// custom own-role with an agent mapping: it must be reported ready and must
+// not block retirement of the shared credential.
+func TestCutoverGitLabRoleCredentialsSupportsCustomOwnRole(t *testing.T) {
+	fc := provisionClient(t)
+	seedCutoverState(t, fc)
+	fc.Secrets["group/project/"+forge.SecretForgeToken] = true
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[{"name":"scanner","responsibility":"scan","credential":"own","capabilities":["read_issues"],"agents":["scanner"]}]}`
+	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
+	fc.Secrets["group/project/"+gitlabroles.CustomSecretName("scanner")] = true
+	tokens := cutoverTokenInventory()
+	tokens.seed(ProjectAccessToken{ID: 5, Name: gitlabroles.CustomTokenName("scanner"), Active: true, ExpiresAt: "2027-01-01"})
+
+	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
+		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens,
+	})
+	require.NoError(t, err)
+	assert.True(t, result.Registered.Ready)
+	assert.True(t, result.SharedRetired)
+	assert.False(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
+}
+
+// TestCutoverGitLabRoleCredentialsRejectsCustomRoleWithoutMapping is a
+// registered custom role with no agent mapping: it is never cutover-ready
+// regardless of built-in readiness, and the shared secret must stay in place.
+func TestCutoverGitLabRoleCredentialsRejectsCustomRoleWithoutMapping(t *testing.T) {
+	fc := provisionClient(t)
+	seedCutoverState(t, fc)
+	fc.Secrets["group/project/"+forge.SecretForgeToken] = true
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[{"name":"scanner","responsibility":"scan","credential":"own","capabilities":["read_issues"],"agents":[]}]}`
+	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
+	fc.Secrets["group/project/"+gitlabroles.CustomSecretName("scanner")] = true
+	tokens := cutoverTokenInventory()
+	tokens.seed(ProjectAccessToken{ID: 5, Name: gitlabroles.CustomTokenName("scanner"), Active: true, ExpiresAt: "2027-01-01"})
+
+	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
+		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens,
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrGitLabRoleCutoverNotReady)
+	assert.False(t, result.Registered.Ready)
+	require.Greater(t, len(result.Registered.Diagnostics), 3)
+	assert.Contains(t, result.Registered.Diagnostics[3], "no agent mapping")
+	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
+}
+
+// TestCutoverGitLabRoleCredentialsRejectsUnverifiedWithoutEnrollmentProof is a
+// present role secret with no matching project access token and no
+// administrator enrollment proof in rotation state: the role is unverified
+// and cutover must refuse to retire the shared credential.
+func TestCutoverGitLabRoleCredentialsRejectsUnverifiedWithoutEnrollmentProof(t *testing.T) {
+	fc := provisionClient(t)
+	seedCutoverState(t, fc)
+	fc.Secrets["group/project/"+forge.SecretForgeToken] = true
+
+	_, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
+		Owner: "group", Repo: "project", Client: fc, TokenInventory: &fakeTokens{},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrGitLabRoleCutoverNotReady)
+	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
+}
+
+// TestCutoverGitLabRoleCredentialsAcceptsAdministratorEnrollment is the
+// GitLab Free/CE path: the project-token list has no matching PAT for any
+// built-in role (list access is restricted), but administrator-recorded
+// idle+DistributedAt rotation state proves the credential was distributed,
+// so cutover must still retire the shared credential.
+func TestCutoverGitLabRoleCredentialsAcceptsAdministratorEnrollment(t *testing.T) {
+	fc := provisionClient(t)
+	seedCutoverState(t, fc)
+	fc.Secrets["group/project/"+forge.SecretForgeToken] = true
 	fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = `{"roles":{
 "poller":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"},
 "analyst":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"},
 "coder":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"}
 }}`
 	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRotation] = true
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[{"name":"deployer","credential":"reuse","reuse":"coder","capabilities":["write_repository"],"agents":["deploy"]}]}`
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
 	tokens := &fakeTokens{}
 
 	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens, DrainConfirmed: true,
+		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens,
 	})
 	require.NoError(t, err)
-	assert.True(t, result.Enforced)
 	assert.True(t, result.SharedRetired)
 	assert.Empty(t, tokens.revoked)
 	assert.Contains(t, strings.Join(result.Diagnostics, "\n"), "must be revoked manually")
 }
 
-func TestCutoverGitLabRoleCredentialsRejectsUnverifiedWithoutEnrollmentProof(t *testing.T) {
-	t.Parallel()
-	fc := provisionClient(t)
-	seedCutoverState(t, fc)
-
-	_, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc, TokenInventory: &fakeTokens{}, DrainConfirmed: true,
-	})
-	require.Error(t, err)
-	assert.Equal(t, "migrating", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
-	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
-}
-
-func TestCutoverGitLabRoleCredentialsDryRunDoesNotWrite(t *testing.T) {
-	t.Parallel()
-	fc := provisionClient(t)
-	seedCutoverState(t, fc)
-
-	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc, TokenInventory: cutoverTokenInventory(), DrainConfirmed: true, DryRun: true,
-	})
-	require.NoError(t, err)
-	assert.True(t, result.Enforced)
-	assert.True(t, result.SharedRetired)
-	assert.Equal(t, "migrating", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
-	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
-}
-
-func TestCutoverGitLabRoleCredentialsGateWriteFailure(t *testing.T) {
-	t.Parallel()
-	fc := provisionClient(t)
-	seedCutoverState(t, fc)
-	fc.Errors["UpdateCIVariable"] = errors.New("permission denied")
-
-	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc, TokenInventory: cutoverTokenInventory(), DrainConfirmed: true,
-	})
-	require.Error(t, err)
-	assert.False(t, result.Enforced)
-	assert.False(t, result.SharedRetired)
-	assert.False(t, result.RolledBack)
-}
-
-func TestCutoverGitLabRoleCredentialsAlreadyEnforcedWithoutSharedSecret(t *testing.T) {
-	t.Parallel()
-	fc := provisionClient(t)
-	seedCutoverState(t, fc)
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "enforced"
-	delete(fc.Secrets, "group/project/"+forge.SecretForgeToken)
-
-	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc, TokenInventory: cutoverTokenInventory(), DrainConfirmed: true,
-	})
-	require.NoError(t, err)
-	assert.True(t, result.Enforced)
-	assert.True(t, result.SharedRetired)
-}
-
-func TestCutoverGitLabRoleCredentialsAlreadyEnforcedRetirementFailureRemainsEnforced(t *testing.T) {
-	t.Parallel()
-	fc := provisionClient(t)
-	seedCutoverState(t, fc)
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "enforced"
-	fc.Errors["DeleteRepoSecret"] = errors.New("permission denied")
-
-	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc, TokenInventory: cutoverTokenInventory(), DrainConfirmed: true,
-	})
-	require.Error(t, err)
-	assert.True(t, result.Enforced)
-	assert.False(t, result.RolledBack)
-	assert.Equal(t, "enforced", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
-}
-
-func TestCutoverGitLabRoleCredentialsSupportsCustomOwnRole(t *testing.T) {
-	t.Parallel()
-	fc := provisionClient(t)
-	seedCutoverState(t, fc)
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[{"name":"scanner","responsibility":"scan","credential":"own","capabilities":["read_issues"],"agents":["scanner"]}]}`
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
-	fc.Secrets["group/project/"+gitlabroles.CustomSecretName("scanner")] = true
-	tokens := cutoverTokenInventory()
-	tokens.seed(ProjectAccessToken{ID: 4, Name: gitlabroles.CustomTokenName("scanner"), Active: true, ExpiresAt: "2027-01-01"})
-
-	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens,
-		DrainConfirmed: true,
-	})
-	require.NoError(t, err)
-	assert.True(t, result.Registered.Ready)
-	assert.True(t, result.Enforced)
-	assert.True(t, result.SharedRetired)
-}
-
-func TestCutoverGitLabRoleCredentialsRejectsCustomRoleWithoutMapping(t *testing.T) {
-	t.Parallel()
-	fc := provisionClient(t)
-	seedCutoverState(t, fc)
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[{"name":"scanner","responsibility":"scan","credential":"own","capabilities":["read_issues"],"agents":[]}]}`
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
-	fc.Secrets["group/project/"+gitlabroles.CustomSecretName("scanner")] = true
-	tokens := cutoverTokenInventory()
-	tokens.seed(ProjectAccessToken{ID: 4, Name: gitlabroles.CustomTokenName("scanner"), Active: true, ExpiresAt: "2027-01-01"})
-
-	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens,
-		DrainConfirmed: true,
-	})
-	require.Error(t, err)
-	assert.False(t, result.Registered.Ready)
-	assert.Contains(t, result.Registered.Diagnostics[3], "no agent mapping")
-	assert.Equal(t, "migrating", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
-}
-
+// TestCutoverGitLabRoleCredentialsRejectsUnhealthyLifecycle is a built-in
+// role whose current project access token has expired: cutover must refuse
+// to retire the shared credential even though the secret itself is present.
 func TestCutoverGitLabRoleCredentialsRejectsUnhealthyLifecycle(t *testing.T) {
-	t.Parallel()
 	fc := provisionClient(t)
 	seedCutoverState(t, fc)
+	fc.Secrets["group/project/"+forge.SecretForgeToken] = true
 	tokens := cutoverTokenInventory()
 	for i := range tokens.listed {
 		if tokens.listed[i].Name == gitlabroles.PollerTokenName {
@@ -257,113 +214,51 @@ func TestCutoverGitLabRoleCredentialsRejectsUnhealthyLifecycle(t *testing.T) {
 
 	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
 		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens,
-		DrainConfirmed: true,
 	})
 	require.Error(t, err)
-	assert.False(t, result.Enforced)
+	assert.ErrorIs(t, err, ErrGitLabRoleCutoverNotReady)
+	require.NotEmpty(t, result.Readiness.Roles)
 	assert.Contains(t, result.Readiness.Roles[0].Reasons, "credential lifecycle is expired")
-	assert.Equal(t, "migrating", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
 	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
 }
 
-func TestCutoverGitLabRoleCredentialsRequiresDrainConfirmation(t *testing.T) {
-	t.Parallel()
-	fc := provisionClient(t)
-	seedCutoverState(t, fc)
-
-	_, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc,
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "in-flight shared-token jobs are drained")
-	assert.Equal(t, "migrating", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
-}
-
-func TestCutoverGitLabRoleCredentialsRequiresInventory(t *testing.T) {
-	t.Parallel()
-	fc := provisionClient(t)
-	seedCutoverState(t, fc)
-
-	_, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc, DrainConfirmed: true,
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "project-token inventory")
-	assert.Equal(t, "migrating", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
-	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
-}
-
-func TestSecretLeakCutoverRejectsTokenPrefixes(t *testing.T) {
-	t.Parallel()
-
-	assert.Equal(t, "glpat-", secretLeakCutover(GitLabRoleCutoverResult{
-		Diagnostics: []string{"role glpat-leaked is not ready"},
-	}))
-	assert.Empty(t, secretLeakCutover(GitLabRoleCutoverResult{
-		Diagnostics: []string{"role scanner is ready (FULLSEND_GITLAB_SCANNER_TOKEN)"},
-	}))
-}
-
+// cutoverRevalidationClient changes the role registry between the initial
+// readiness check and the pre-cutover revalidation read, simulating an
+// administrator editing FULLSEND_GITLAB_ROLE_REGISTRY mid-verification.
 type cutoverRevalidationClient struct {
 	*forge.FakeClient
-	migrationReads int
+	registryReads int
 }
 
 func (c *cutoverRevalidationClient) GetRepoVariable(ctx context.Context, owner, repo, name string) (string, bool, error) {
-	if name == forge.VarGitLabRoleMigration {
-		c.migrationReads++
-		if c.migrationReads == 2 {
-			c.VariableValues[owner+"/"+repo+"/"+name] = string(gitlabroles.ModeEnforced)
+	if name == forge.VarGitLabRoleRegistry {
+		c.registryReads++
+		if c.registryReads == 2 {
+			c.VariableValues[owner+"/"+repo+"/"+name] = `{"roles":[{"name":"scanner","responsibility":"scan","credential":"own","capabilities":["read_issues"],"agents":["scanner"]}]}`
+			c.VariablesExist[owner+"/"+repo+"/"+name] = true
 		}
 	}
 	return c.FakeClient.GetRepoVariable(ctx, owner, repo, name)
 }
 
-func TestCutoverGitLabRoleCredentialsRevalidatesBeforeWrites(t *testing.T) {
-	t.Parallel()
+// TestCutoverGitLabRoleCredentialsRevalidatesRegistryChange is the
+// check-then-cutover race: the role registry changes after the initial
+// readiness check passes but before the irreversible retirement, so cutover
+// must fail closed with ErrGitLabRoleCutoverStateChanged instead of acting
+// on stale readiness.
+func TestCutoverGitLabRoleCredentialsRevalidatesRegistryChange(t *testing.T) {
 	fc := provisionClient(t)
 	seedCutoverState(t, fc)
+	fc.Secrets["group/project/"+forge.SecretForgeToken] = true
 	client := &cutoverRevalidationClient{FakeClient: fc}
+	tokens := cutoverTokenInventory()
 
 	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: client,
-		TokenInventory: cutoverTokenInventory(), DrainConfirmed: true,
+		Owner: "group", Repo: "project", Client: client, TokenInventory: tokens,
 	})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrGitLabRoleCutoverStateChanged)
 	assert.True(t, IsGitLabRoleCutoverDeferred(err))
-	assert.Contains(t, err.Error(), "state changed")
-	assert.False(t, result.Enforced)
-	assert.Equal(t, "enforced", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.False(t, result.SharedRetired)
 	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
-}
-
-func TestCutoverGitLabRoleCredentialsWrongModeIsDeferred(t *testing.T) {
-	t.Parallel()
-	fc := provisionClient(t)
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "rollback"
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
-	for _, name := range []string{
-		forge.SecretGitLabPollerToken,
-		forge.SecretGitLabAnalystToken,
-		forge.SecretGitLabCoderToken,
-	} {
-		fc.Secrets["group/project/"+name] = true
-	}
-
-	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc,
-		TokenInventory: cutoverTokenInventory(), DrainConfirmed: true,
-	})
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrGitLabRoleCutoverWrongMode)
-	assert.True(t, IsGitLabRoleCutoverDeferred(err))
-	assert.False(t, result.Enforced)
-	assert.Equal(t, "rollback", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
-}
-
-func TestIsGitLabRoleCutoverDeferredIgnoresUnrelatedErrors(t *testing.T) {
-	t.Parallel()
-	assert.False(t, IsGitLabRoleCutoverDeferred(errors.New("permission denied")))
-	assert.False(t, IsGitLabRoleCutoverDeferred(nil))
 }
