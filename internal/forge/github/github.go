@@ -1074,19 +1074,27 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 
 	// 2. Get the current commit to find its tree SHA.
-	cResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/commits/%s", owner, repo, commitSHA))
-	if err != nil {
-		return false, fmt.Errorf("get commit: %w", err)
+	// Wrapped in retryOnRepoRace because GitHub's auto_init can make the
+	// branch ref readable while the commit object is still propagating.
+	var baseTreeSHA string
+	if err := c.retryOnRepoRace(ctx, "get commit", func() error {
+		cResp, getErr := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/commits/%s", owner, repo, commitSHA))
+		if getErr != nil {
+			return fmt.Errorf("get commit: %w", getErr)
+		}
+		var commitObj struct {
+			Tree struct {
+				SHA string `json:"sha"`
+			} `json:"tree"`
+		}
+		if decErr := decodeJSON(cResp, &commitObj); decErr != nil {
+			return fmt.Errorf("decode commit: %w", decErr)
+		}
+		baseTreeSHA = commitObj.Tree.SHA
+		return nil
+	}); err != nil {
+		return false, err
 	}
-	var commitObj struct {
-		Tree struct {
-			SHA string `json:"sha"`
-		} `json:"tree"`
-	}
-	if err := decodeJSON(cResp, &commitObj); err != nil {
-		return false, fmt.Errorf("decode commit: %w", err)
-	}
-	baseTreeSHA := commitObj.Tree.SHA
 
 	// 3. Get the full recursive tree to compare existing blobs.
 	treeResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, baseTreeSHA))

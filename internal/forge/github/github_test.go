@@ -3369,6 +3369,86 @@ func TestCommitFiles_Empty(t *testing.T) {
 	assert.False(t, committed)
 }
 
+func TestCommitFiles_RetriesTransientGetCommit404(t *testing.T) {
+	const failCount = 2
+	commitGets := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{
+				"object": map[string]string{"sha": "abc123"},
+			})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			commitGets++
+			if commitGets <= failCount {
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"tree": map[string]string{"sha": "tree000"},
+			})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			json.NewEncoder(w).Encode(map[string]any{
+				"tree":      []any{},
+				"truncated": false,
+			})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+	})
+	require.NoError(t, err)
+	assert.True(t, committed)
+	assert.Equal(t, failCount+1, commitGets, "get commit should retry the transient 404s then succeed")
+}
+
+func TestCommitFiles_NoRetryOnNonTransientGetCommitError(t *testing.T) {
+	commitGets := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{
+				"object": map[string]string{"sha": "abc123"},
+			})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			commitGets++
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]string{"message": "Validation Failed"})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get commit")
+	assert.Equal(t, 1, commitGets, "non-transient get commit errors must not retry")
+}
+
 func TestListRepositoryFiles_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
