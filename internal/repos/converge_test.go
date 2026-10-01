@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/poll"
@@ -421,6 +422,194 @@ func TestConverge_VariableDriftSync(t *testing.T) {
 	val := fc.VariableValues["acme/api/FULLSEND_MINT_URL"]
 	if val != "https://mint.example.com" {
 		t.Errorf("variable not updated: got %q, want %q", val, "https://mint.example.com")
+	}
+}
+
+func TestConverge_FreshInstallWritesDefaultAppSet(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	m := newConvergeManifest(repoNames...)
+
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	if _, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress); err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	if got := fc.VariableValues["acme/api/FULLSEND_APP_SET"]; got != appsetup.DefaultAppSet {
+		t.Errorf("FULLSEND_APP_SET = %q, want built-in default %q", got, appsetup.DefaultAppSet)
+	}
+}
+
+func TestConverge_FreshInstallWritesManifestAppSet(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	m := newConvergeManifest(repoNames...)
+	m.GitHub.AppSet = "custom-set"
+
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	if _, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress); err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	if got := fc.VariableValues["acme/api/FULLSEND_APP_SET"]; got != "custom-set" {
+		t.Errorf("FULLSEND_APP_SET = %q, want %q", got, "custom-set")
+	}
+}
+
+// TestConverge_PreservesCustomAppSetWhenNotExplicit verifies that a rerun over a
+// repo with a custom FULLSEND_APP_SET does NOT revert it to the built-in default
+// when the manifest does not specify app_set (preserve semantics).
+func TestConverge_PreservesCustomAppSetWhenNotExplicit(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = "custom-set"
+
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflow("v1.0.0")
+	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		fc.FileContents["acme/api/"+tcPath] = makeWorkflow("v1.0.0")
+	}
+
+	m := newConvergeManifest(repoNames...)
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	if _, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress); err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	if got := fc.VariableValues["acme/api/FULLSEND_APP_SET"]; got != "custom-set" {
+		t.Errorf("custom FULLSEND_APP_SET not preserved: got %q, want %q", got, "custom-set")
+	}
+}
+
+// TestConverge_RejectsMalformedExistingAppSet verifies that a malformed
+// FULLSEND_APP_SET value already on the repo (e.g. written outside of
+// fullsend's validated CLI/manifest paths) is not preserved as-is: it fails
+// appsetup.ValidateAppSet and so resolveConvergeAppSet falls back to the
+// built-in default instead of passing the unvalidated value through to
+// review-app slug resolution.
+func TestConverge_RejectsMalformedExistingAppSet(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = "not valid!/app set"
+
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflow("v1.0.0")
+	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		fc.FileContents["acme/api/"+tcPath] = makeWorkflow("v1.0.0")
+	}
+
+	m := newConvergeManifest(repoNames...)
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	if _, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress); err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	if got := fc.VariableValues["acme/api/FULLSEND_APP_SET"]; got != appsetup.DefaultAppSet {
+		t.Errorf("malformed FULLSEND_APP_SET was not rejected: got %q, want built-in default %q", got, appsetup.DefaultAppSet)
+	}
+}
+
+// TestConverge_RepairsAppSetDriftWhenExplicit verifies that when the manifest
+// explicitly sets app_set, a drifted repo variable is repaired to the manifest
+// value.
+func TestConverge_RepairsAppSetDriftWhenExplicit(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = "stale-set"
+
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflow("v1.0.0")
+	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		fc.FileContents["acme/api/"+tcPath] = makeWorkflow("v1.0.0")
+	}
+
+	m := newConvergeManifest(repoNames...)
+	m.GitHub.AppSet = "custom-set"
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	convergedRepos := result.Converged()
+	if len(convergedRepos) != 1 {
+		t.Fatalf("expected 1 converged repo, got %d", len(convergedRepos))
+	}
+	if got := fc.VariableValues["acme/api/FULLSEND_APP_SET"]; got != "custom-set" {
+		t.Errorf("drift not repaired: got %q, want %q", got, "custom-set")
+	}
+}
+
+// TestConverge_RepairsMissingAppSetOnOldInstall verifies that a repo installed
+// before FULLSEND_APP_SET existed gets the built-in default written on rerun,
+// even when the manifest does not specify app_set.
+func TestConverge_RepairsMissingAppSetOnOldInstall(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	delete(fc.VariableValues, "acme/api/FULLSEND_APP_SET")
+
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflow("v1.0.0")
+	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		fc.FileContents["acme/api/"+tcPath] = makeWorkflow("v1.0.0")
+	}
+
+	m := newConvergeManifest(repoNames...)
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	if _, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress); err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	if got := fc.VariableValues["acme/api/FULLSEND_APP_SET"]; got != appsetup.DefaultAppSet {
+		t.Errorf("missing FULLSEND_APP_SET not repaired: got %q, want %q", got, appsetup.DefaultAppSet)
+	}
+}
+
+// TestConverge_PerRepoReviewClientIDTracksAppSet verifies that
+// FULLSEND_REVIEW_CLIENT_ID is resolved per-repo against each repo's
+// effective app set, rather than the run-wide default seeded by the caller.
+// Two repos with distinct per-repo app_set overrides must each receive the
+// review client ID of their own "{app_set}-review" app.
+func TestConverge_PerRepoReviewClientIDTracksAppSet(t *testing.T) {
+	repoNames := []string{"acme/api", "acme/web"}
+	fc := newFakeClientForBatch(repoNames...)
+	fc.AppClientIDs = map[string]string{
+		"team-a-review": "Iv23liTEAMA",
+		"team-b-review": "Iv23liTEAMB",
+	}
+
+	m := newConvergeManifest(repoNames...)
+	m.GitHub.Repos[0].AppSet = "team-a"
+	m.GitHub.Repos[1].AppSet = "team-b"
+
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+	// Caller pre-resolved the default app set's review app; per-repo
+	// overrides must override this, not inherit it.
+	cfg.ReviewAppClientID = "Iv23liDEFAULT"
+	cfg.ReviewAppClientIDAppSet = appsetup.DefaultAppSet
+
+	if _, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress); err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	if got := fc.VariableValues["acme/api/FULLSEND_REVIEW_CLIENT_ID"]; got != "Iv23liTEAMA" {
+		t.Errorf("acme/api FULLSEND_REVIEW_CLIENT_ID = %q, want %q", got, "Iv23liTEAMA")
+	}
+	if got := fc.VariableValues["acme/web/FULLSEND_REVIEW_CLIENT_ID"]; got != "Iv23liTEAMB" {
+		t.Errorf("acme/web FULLSEND_REVIEW_CLIENT_ID = %q, want %q", got, "Iv23liTEAMB")
 	}
 }
 

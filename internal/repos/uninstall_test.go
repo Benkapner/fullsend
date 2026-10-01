@@ -20,9 +20,11 @@ func newInstalledFakeClient(repos ...string) *forge.FakeClient {
 		client.VariableValues[r+"/"+forge.PerRepoGuardVar] = "true"
 		client.VariableValues[r+"/FULLSEND_MINT_URL"] = "https://mint.example.com"
 		client.VariableValues[r+"/FULLSEND_GCP_REGION"] = "us-central1"
+		client.VariableValues[r+"/FULLSEND_APP_SET"] = "fullsend-ai"
 		client.VariablesExist[r+"/"+forge.PerRepoGuardVar] = true
 		client.VariablesExist[r+"/FULLSEND_MINT_URL"] = true
 		client.VariablesExist[r+"/FULLSEND_GCP_REGION"] = true
+		client.VariablesExist[r+"/FULLSEND_APP_SET"] = true
 		client.Secrets[r+"/FULLSEND_GCP_PROJECT_ID"] = true
 		client.Secrets[r+"/FULLSEND_GCP_WIF_PROVIDER"] = true
 		client.FileContents[r+"/.github/workflows/fullsend.yml"] = []byte("name: fullsend\n")
@@ -99,8 +101,8 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 	if !r.WorkflowDeleted {
 		t.Error("WorkflowDeleted = false, want true")
 	}
-	if r.VarsDeleted != 4 {
-		t.Errorf("VarsDeleted = %d, want 4", r.VarsDeleted)
+	if r.VarsDeleted != 5 {
+		t.Errorf("VarsDeleted = %d, want 5", r.VarsDeleted)
 	}
 	// 2 required secrets plus the opt-in FULLSEND_OPENAI_API_KEY, which
 	// uninstall always attempts to delete (idempotent: a 404 for a repo
@@ -126,8 +128,8 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 			t.Errorf("thin caller %s was not in deleted files", tcPath)
 		}
 	}
-	if len(client.DeletedVariables) != 4 {
-		t.Errorf("deleted %d variables, want 4", len(client.DeletedVariables))
+	if len(client.DeletedVariables) != 5 {
+		t.Errorf("deleted %d variables, want 5", len(client.DeletedVariables))
 	}
 	if len(client.DeletedSecrets) != 3 {
 		t.Errorf("deleted %d secrets, want 3", len(client.DeletedSecrets))
