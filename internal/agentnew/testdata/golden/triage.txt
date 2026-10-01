@@ -263,11 +263,6 @@ if (( ${#comment} > MAX_COMMENT_CHARS )); then
   comment="${comment:0:${keep}}${TRUNCATION_MARKER}"
 fi
 
-if [[ "${status}" == "ok" ]]; then
-  echo "post-lint-docs: status=ok, nothing to post" >&2
-  exit 0
-fi
-
 # Derive the repo and number from the work item URL rather than trusting extra
 # environment. The pattern also rejects anything that is not a github.com URL.
 url_re='^https://github[.]com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/(issues|pull)/([0-9]+)$'
@@ -277,6 +272,42 @@ if [[ ! "${ISSUE_URL}" =~ ${url_re} ]]; then
 fi
 REPO="${BASH_REMATCH[1]}"
 NUMBER="${BASH_REMATCH[3]}"
+
+# On ok, post nothing — unless an earlier run left a findings comment on
+# this work item. The harness trigger fires again on later pushes, so a
+# problem the author has since fixed would otherwise stay reported.
+# --only-if-exists makes fullsend replace that comment with the all-clear,
+# and post nothing when there is no earlier comment. It matches only a
+# comment carrying this marker whose author is exactly the login fullsend
+# posts as, so a comment anyone else planted with the marker is never
+# edited. When that login cannot be resolved it exits non-zero without
+# posting; under `set -e` this script, and so the run, then fails
+# visibly — rerun it.
+if [[ "${status}" == "ok" ]]; then
+  if [[ "${POST_LINT_DOCS_DRY_RUN:-}" == "1" ]]; then
+    echo "post-lint-docs: status=ok, nothing to post (dry run: did not check for an earlier findings comment to replace)" >&2
+    exit 0
+  fi
+  # The runner's fullsend may predate --only-if-exists (it is pinned by the
+  # repository's fullsend-ref, not by the CLI that generated this script).
+  # Detect the flag instead of assuming it: on an older CLI, keep the old
+  # behaviour — post nothing — rather than fail the common ok path.
+  # grep reads the whole help text (no -q): an early exit could SIGPIPE
+  # fullsend and, under pipefail, read as "flag missing".
+  if ! fullsend issues post-comment --help 2>&1 | grep -- '--only-if-exists' >/dev/null; then
+    echo "post-lint-docs: status=ok, nothing to post (this fullsend has no --only-if-exists; an earlier findings comment, if any, stays until a later run with findings)" >&2
+    exit 0
+  fi
+  printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
+    | fullsend issues post-comment \
+        --tracker github \
+        --project "${REPO}" \
+        --number "${NUMBER}" \
+        --marker "${MARKER}" \
+        --only-if-exists \
+        --result -
+  exit 0
+fi
 
 if [[ "${POST_LINT_DOCS_DRY_RUN:-}" == "1" ]]; then
   # The preview prints model output. Under GitHub Actions a line starting
@@ -294,8 +325,8 @@ if [[ "${POST_LINT_DOCS_DRY_RUN:-}" == "1" ]]; then
 fi
 
 # fullsend issues post-comment is the repo's sticky-comment primitive: it
-# finds this agent's previous comment by marker and edits it in place, so
-# re-runs do not flood the work item.
+# finds this agent's previous comment by marker and its own author and edits
+# it in place, so re-runs do not flood the work item.
 printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
   | fullsend issues post-comment \
       --tracker github \

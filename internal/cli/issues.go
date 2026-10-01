@@ -170,17 +170,18 @@ func runIssuesGet(ctx context.Context, cfg *issuesGetConfig) error {
 // issuesPostCommentConfig holds the flags and test overrides for
 // "fullsend issues post-comment".
 type issuesPostCommentConfig struct {
-	trackerName string
-	project     string
-	number      int
-	marker      string
-	result      string
-	token       string
-	jiraURL     string
-	jiraEmail   string
-	dryRun      bool
-	keepHistory *bool // nil = resolve from config; non-nil = explicit flag
-	fullsendDir string
+	trackerName  string
+	project      string
+	number       int
+	marker       string
+	result       string
+	token        string
+	jiraURL      string
+	jiraEmail    string
+	dryRun       bool
+	onlyIfExists bool
+	keepHistory  *bool // nil = resolve from config; non-nil = explicit flag
+	fullsendDir  string
 
 	// Test overrides — when non-nil, used instead of creating a real
 	// tracker client. Not set by CLI flag parsing.
@@ -242,6 +243,7 @@ The --result flag accepts a file path or "-" for stdin.`,
 	cmd.Flags().StringVar(&cfg.jiraURL, "jira-url", "", "Jira instance URL (default: $JIRA_BASE_URL)")
 	cmd.Flags().StringVar(&cfg.jiraEmail, "jira-email", "", "Jira user email for Basic auth (default: $JIRA_USER_EMAIL)")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print what would be posted without posting or editing anything")
+	cmd.Flags().BoolVar(&cfg.onlyIfExists, "only-if-exists", false, "update an existing comment with this marker but never create one (for an all-clear that should replace earlier findings)")
 	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "append previous content as collapsed history blocks (set false to replace in-place)")
 	cmd.Flags().StringVar(&cfg.fullsendDir, "fullsend-dir", "", "path to .fullsend config directory (sources defaults from its config.yaml when flags are omitted)")
 	_ = cmd.MarkFlagRequired("project")
@@ -293,9 +295,10 @@ func runIssuesPostComment(ctx context.Context, cfg *issuesPostCommentConfig) err
 	}
 
 	stickyCfg := sticky.Config{
-		Marker:      cfg.marker,
-		DryRun:      cfg.dryRun,
-		KeepHistory: keepHistory,
+		Marker:       cfg.marker,
+		DryRun:       cfg.dryRun,
+		KeepHistory:  keepHistory,
+		OnlyIfExists: cfg.onlyIfExists,
 	}
 	if trackerName == trackerJira {
 		// The Jira write path routes every body through
@@ -383,6 +386,11 @@ func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project 
 		return "", nil // Jira has no stable comment permalink
 	}
 
+	if cfg.OnlyIfExists {
+		printer.StepInfo("No existing comment with this marker; nothing to post (--only-if-exists)")
+		return "", nil
+	}
+
 	printer.StepStart("No existing comment found, creating new one")
 
 	if cfg.DryRun {
@@ -408,7 +416,8 @@ func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project 
 // comment matches only when it carries the marker and its author is
 // exactly the login this client posts as, so a comment anyone could plant
 // with the same marker is ignored. When that login cannot be resolved
-// (after a short retry) it returns an error and posts nothing.
+// (after a short retry) it returns an error and posts nothing, with or
+// without OnlyIfExists.
 func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project string, number int, body string, cfg sticky.Config, printer *ui.Printer) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("comment body is empty")
@@ -449,6 +458,11 @@ func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project st
 		}
 		printer.StepDone("Comment updated")
 		return existing.HTMLURL, nil
+	}
+
+	if cfg.OnlyIfExists {
+		printer.StepInfo("No existing comment with this marker; nothing to post (--only-if-exists)")
+		return "", nil
 	}
 
 	printer.StepStart("No existing comment found, creating new one")

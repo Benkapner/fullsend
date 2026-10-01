@@ -88,6 +88,7 @@ echo "Triage complete. See PR #99." | fullsend issues post-comment \
 | `--jira-email` | Jira only | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
 | `--dry-run` | No | Print what would be posted without posting or editing anything |
 | `--keep-history` | No | Append previous content as collapsed history blocks (default: `true`; set `false` to replace in-place) |
+| `--only-if-exists` | No | Update an existing comment with this marker but never create one. Use it for an all-clear result, so a findings comment from an earlier run is updated in place (the old findings are kept as collapsed history unless `--keep-history=false`) while a clean first run posts nothing. Only a comment whose author is exactly the identity posting matches; if that identity cannot be resolved, the command fails without posting. |
 | `--fullsend-dir` | No | Path to `.fullsend` config directory (sources defaults from its `config.yaml` when flags are omitted) |
 
 ### Jira marker storage
@@ -127,9 +128,9 @@ or a Jira user with Edit All Comments) is still trusted: their edits are
 kept as history when the comment is next updated.
 
 If that identity cannot be resolved after a short retry, the command
-fails with an error naming the cause and posts or edits nothing. Posting
-a new comment instead would leave the earlier one behind with content no
-later run updates. To recover:
+fails with an error naming the cause and posts or edits nothing, with or
+without `--only-if-exists`. Posting a new comment instead would leave the
+earlier one behind with content no later run updates. To recover:
 
 1. Rerun the command. A transient API failure clears on its own.
 2. If it fails again, check that the token can read its own identity:
