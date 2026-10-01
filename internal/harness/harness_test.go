@@ -604,6 +604,23 @@ func TestValidateRunnerEnvWith_ReportsAllMissingVars(t *testing.T) {
 	assert.Less(t, missingDir, missingVar)
 }
 
+func TestValidateRunnerEnvWith_DoesNotPrintFieldValues(t *testing.T) {
+	const databaseUser = "agent-user"
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &EnvConfig{
+			Runner: map[string]string{
+				"DATABASE_URL": "postgres://" + databaseUser + "@${DB_HOST}/agent_state",
+			},
+		},
+	}
+
+	err := h.ValidateRunnerEnvWith(func(string) (string, bool) { return "", false })
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), databaseUser)
+}
+
 func TestValidateRunnerEnvWith_EnvAllSet(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",

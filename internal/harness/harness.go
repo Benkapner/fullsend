@@ -745,7 +745,7 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 		for _, match := range envVarRef.FindAllStringSubmatch(value, -1) {
 			varName := match[1]
 			if _, ok := lookup(varName); !ok {
-				references[varName] = append(references[varName], fmt.Sprintf("%s=%q", source, value))
+				references[varName] = append(references[varName], source)
 			}
 		}
 	}
@@ -780,7 +780,7 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 	lines := make([]string, 0, len(references))
 	for variable, refs := range references {
 		sort.Strings(refs)
-		lines = append(lines, fmt.Sprintf("%s is referenced but not set: %s", variable, strings.Join(refs, ", ")))
+		lines = append(lines, fmt.Sprintf("%s is not set (referenced by %s)", variable, strings.Join(refs, ", ")))
 	}
 	sort.Strings(lines)
 	return fmt.Errorf("%d unresolved host variable(s):\n    %s", len(references), strings.Join(lines, "\n    "))
