@@ -227,8 +227,17 @@ func TestRunAgentJobScript_DebugTraceAborts(t *testing.T) {
 	assert.Contains(t, string(out), "CI_DEBUG_TRACE enabled")
 }
 
+// TestRunAgentJobScript_RejectsUserinfoAPIURL proves that a userinfo-bearing
+// CI_API_V4_URL is rejected before the identity pin trusts it. run-agent-job.sh
+// sources pin-ci-job-identity.sh (gitlabPinCIJobIdentityScriptPath) first, and
+// that helper — not run-agent-job.sh itself — is what validates CI_API_V4_URL,
+// so the fixture must install it (plus trust-ci-server-ca.sh, which it
+// sources) and supply CI_JOB_TOKEN so execution actually reaches that
+// validation instead of failing earlier for unrelated reasons.
 func TestRunAgentJobScript_RejectsUserinfoAPIURL(t *testing.T) {
 	root := t.TempDir()
+	writeGitLabScript(t, root, ".gitlab/ci/scripts/trust-ci-server-ca.sh")
+	writeGitLabScript(t, root, gitlabPinCIJobIdentityScriptPath)
 	writeGitLabScript(t, root, ".gitlab/ci/scripts/select-gitlab-role-token.sh")
 	script := writeGitLabScript(t, root, gitlabRunAgentJobScriptPath)
 
@@ -238,6 +247,7 @@ func TestRunAgentJobScript_RejectsUserinfoAPIURL(t *testing.T) {
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + t.TempDir(),
 		"CI_PROJECT_DIR=" + root,
+		"CI_JOB_TOKEN=job-token",
 		"FULLSEND_FORGE_TOKEN=shared-pat",
 		"CI_SERVER_URL=https://gitlab.example",
 		"CI_SERVER_HOST=gitlab.example",
@@ -250,7 +260,7 @@ func TestRunAgentJobScript_RejectsUserinfoAPIURL(t *testing.T) {
 	}
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err, "stdout/stderr: %s", out)
-	assert.Contains(t, string(out), "invalid GitLab API host")
+	assert.Contains(t, string(out), "CI_API_V4_URL contains characters not permitted in a GitLab API root")
 }
 
 func TestInstallFullsendCLIScript_DebugTraceAborts(t *testing.T) {

@@ -74,6 +74,9 @@ if [ "$1" != "resolve-mr-source" ]; then
   echo "unexpected fullsend subcommand: $1" >&2
   exit 1
 fi
+if [ -n "${RESOLVE_ARGS_FILE:-}" ]; then
+  printf '%s\n' "$@" > "${RESOLVE_ARGS_FILE}"
+fi
 if [ -n "${RESOLVE_ERROR:-}" ]; then
   echo "${RESOLVE_ERROR}" >&2
   exit 1
@@ -91,7 +94,7 @@ exit 1
 // the given branch/sha/source-project-path. checkout-mr-source.sh
 // always resolves through this subcommand (fast-path
 // CI_MERGE_REQUEST_SOURCE_* variables are cross-checked against it or
-// against CI_PROJECT_ID/CI_PROJECT_PATH directly, never trusted
+// against FULLSEND_PINNED_PROJECT_ID/PATH directly, never trusted
 // outright), so any test that sets those fast-path variables also
 // needs a matching stub response or resolution fails first.
 func stubResolveMRSource(t *testing.T, branch, sha, sourceProjectPath string) (extraEnv []string, pathPrefix string) {
@@ -285,19 +288,9 @@ func assertCheckedOutReviewedSource(t *testing.T, env checkoutEnv, out string) {
 func runCheckoutScript(t *testing.T, env checkoutEnv, extra []string, pathPrefix string) (string, error) {
 	t.Helper()
 	serverURL := "https://gitlab.test"
-	serverHost := "gitlab.test"
 	extraEnv := []string{}
 	if strings.HasPrefix(env.serverRoot, "https://") {
 		serverURL = env.serverRoot
-		serverHost = strings.TrimPrefix(serverURL, "https://")
-		serverHost = strings.SplitN(serverHost, "/", 2)[0]
-		// CI_SERVER_HOST is GitLab's predefined hostname without a
-		// port, even when CI_SERVER_URL (here, the test HTTPS server's
-		// URL) runs on a non-default port — mirror that contract so
-		// the validated host comparison exercises the real shape of
-		// these two variables instead of a host:port vs. host:port
-		// comparison GitLab never produces.
-		serverHost = strings.SplitN(serverHost, ":", 2)[0]
 	} else {
 		// fullsend_git_fetch_mr_source's credentialed branch now pins
 		// GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null (in addition to
@@ -310,9 +303,6 @@ func runCheckoutScript(t *testing.T, env checkoutEnv, extra []string, pathPrefix
 		// actual network call.
 		srv := startAuthedGitHTTPSServer(t, env.serverRoot, "oauth2", "***")
 		serverURL = srv.URL
-		serverHost = strings.TrimPrefix(serverURL, "https://")
-		serverHost = strings.SplitN(serverHost, "/", 2)[0]
-		serverHost = strings.SplitN(serverHost, ":", 2)[0]
 		extraEnv = append(extraEnv, "GIT_SSL_CAINFO="+writeServerCAFile(t, srv))
 	}
 	// Tests that poison GIT_DIR/GIT_WORK_TREE/GIT_OBJECT_DIRECTORY/
@@ -321,8 +311,12 @@ func runCheckoutScript(t *testing.T, env checkoutEnv, extra []string, pathPrefix
 	// own post-hoc verification commands below (they run in the same
 	// shell, after sourcing, with no per-invocation env prefix) — unset
 	// them first so the verification reads the real FIX_TARGET_REPO state
-	// regardless of what a given test poisons.
-	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"; unset GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR; echo FIX_TARGET_REPO="$FIX_TARGET_REPO"; echo SOURCE_SHA="$SOURCE_SHA"; echo SOURCE_BRANCH="$SOURCE_BRANCH"; echo SOURCE_PROJECT_PATH="$SOURCE_PROJECT_PATH"; echo HEAD="$(git -C "$FIX_TARGET_REPO" rev-parse HEAD)"; echo BRANCH="$(git -C "$FIX_TARGET_REPO" rev-parse --abbrev-ref HEAD)"`)
+	// regardless of what a given test poisons. The trailing _FS_* echoes
+	// use bash's ${var+yes} "is it set" expansion (not "is it non-empty")
+	// to prove fullsend_checkout_mr_source's RETURN trap unset its own
+	// temporary state (_FS_EMPTY_HOOKS/_FS_GIT_ENV/_FS_GIT_HOOK_ARGS)
+	// instead of leaking it into this sourced shell.
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"; unset GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR; echo FIX_TARGET_REPO="$FIX_TARGET_REPO"; echo SOURCE_SHA="$SOURCE_SHA"; echo SOURCE_BRANCH="$SOURCE_BRANCH"; echo SOURCE_PROJECT_PATH="$SOURCE_PROJECT_PATH"; echo HEAD="$(git -C "$FIX_TARGET_REPO" rev-parse HEAD)"; echo BRANCH="$(git -C "$FIX_TARGET_REPO" rev-parse --abbrev-ref HEAD)"; echo _FS_EMPTY_HOOKS_SET="${_FS_EMPTY_HOOKS+yes}"; echo _FS_GIT_ENV_SET="${_FS_GIT_ENV+yes}"; echo _FS_GIT_HOOK_ARGS_SET="${_FS_GIT_HOOK_ARGS+yes}"`)
 	cmd.Dir = env.projectDir
 	cmd.Env = append(append([]string{
 		"SCRIPT=" + env.script,
@@ -330,9 +324,17 @@ func runCheckoutScript(t *testing.T, env checkoutEnv, extra []string, pathPrefix
 		"HOME=" + t.TempDir(),
 		"CI_PROJECT_DIR=" + env.projectDir,
 		"CI_SERVER_URL=" + serverURL,
-		"CI_SERVER_HOST=" + serverHost,
 		"CI_PROJECT_PATH=" + env.targetProjectPath,
 		"CI_PROJECT_ID=" + env.targetID,
+		// checkout-mr-source.sh resolves and fetches the MR source using
+		// FULLSEND_PINNED_* (verified via the CI_JOB_TOKEN job record),
+		// not CI_PROJECT_PATH/CI_PROJECT_ID/CI_SERVER_URL. In this base
+		// env the pinned values match the CI_* values above; tests
+		// proving the CI_* variables are ignored override these with
+		// distinct, unpinned values instead.
+		"FULLSEND_PINNED_PROJECT_ID=" + env.targetID,
+		"FULLSEND_PINNED_PROJECT_PATH=" + env.targetProjectPath,
+		"FULLSEND_PINNED_GITLAB_URL=" + serverURL,
 		"FULLSEND_JOB_TOKEN=***",
 		"MR_IID=7",
 		"GIT_CONFIG_NOSYSTEM=1",
@@ -468,7 +470,7 @@ func TestCheckoutMRSource_ProjectIDMismatchFailsClosed(t *testing.T) {
 		"CI_MERGE_REQUEST_SOURCE_PROJECT_ID=999999",
 	}, resolveExtra...), pathPrefix)
 	require.Error(t, err, "stdout/stderr: %s", out)
-	assert.Contains(t, out, "does not match this project's CI_PROJECT_ID")
+	assert.Contains(t, out, "does not match this project's FULLSEND_PINNED_PROJECT_ID")
 }
 
 func TestCheckoutMRSource_ForkProjectIDMatchesTargetFailsClosed(t *testing.T) {
@@ -478,7 +480,65 @@ func TestCheckoutMRSource_ForkProjectIDMatchesTargetFailsClosed(t *testing.T) {
 		"CI_MERGE_REQUEST_SOURCE_PROJECT_ID=" + env.targetID,
 	}, resolveExtra...), pathPrefix)
 	require.Error(t, err, "stdout/stderr: %s", out)
-	assert.Contains(t, out, "matches this project's CI_PROJECT_ID")
+	assert.Contains(t, out, "matches this project's FULLSEND_PINNED_PROJECT_ID")
+}
+
+// TestCheckoutMRSource_ResolvesUsingPinnedProjectAndGitLabURLNotUnpinnedCIVars
+// is a regression test for the logic-error/secret-exposure findings:
+// CI_PROJECT_PATH, CI_PROJECT_ID, and CI_SERVER_URL are ordinary,
+// overridable pipeline variables — the same outrankable class ADR 0125
+// already establishes for CI_PROJECT_ID elsewhere. checkout-mr-source.sh
+// must resolve and fetch the MR source using
+// FULLSEND_PINNED_PROJECT_PATH/FULLSEND_PINNED_GITLAB_URL (verified via
+// the CI_JOB_TOKEN job record) even when those CI_* variables point
+// somewhere else entirely — an authenticated dispatch that could
+// override them must not be able to redirect the MR lookup or the
+// credentialed fetch transport.
+func TestCheckoutMRSource_ResolvesUsingPinnedProjectAndGitLabURLNotUnpinnedCIVars(t *testing.T) {
+	env := seedSameProjectOrigin(t)
+	resolveExtra, pathPrefix := stubResolveMRSource(t, env.sourceBranch, env.sourceSHA, env.sourceProjectPath)
+	argsFile := filepath.Join(t.TempDir(), "resolve-args.txt")
+	out, err := runCheckoutScript(t, env, append([]string{
+		"RESOLVE_ARGS_FILE=" + argsFile,
+		"CI_PROJECT_PATH=unpinned/project",
+		"CI_PROJECT_ID=999999",
+		"CI_SERVER_URL=https://unpinned.example",
+	}, resolveExtra...), pathPrefix)
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "SOURCE_SHA="+env.sourceSHA)
+	assert.Contains(t, out, "HEAD="+env.sourceSHA)
+
+	argsRaw, readErr := os.ReadFile(argsFile)
+	require.NoError(t, readErr)
+	args := strings.Split(strings.TrimRight(string(argsRaw), "\n"), "\n")
+	assert.Contains(t, args, env.targetProjectPath)
+	assert.NotContains(t, args, "unpinned/project")
+	assert.NotContains(t, args, "https://unpinned.example")
+}
+
+// TestCheckoutMRSource_MissingPinnedProjectPathFailsClosed and its two
+// siblings below prove the fix fails closed rather than silently falling
+// back to an overridable CI_* variable when the pinned identity
+// (exported by pin-ci-job-identity.sh) is unexpectedly absent.
+func TestCheckoutMRSource_MissingPinnedProjectPathFailsClosed(t *testing.T) {
+	env := seedSameProjectOrigin(t)
+	out, err := runCheckoutScript(t, env, []string{"FULLSEND_PINNED_PROJECT_PATH="}, "")
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "FULLSEND_PINNED_PROJECT_PATH is required")
+}
+
+func TestCheckoutMRSource_MissingPinnedProjectIDFailsClosed(t *testing.T) {
+	env := seedSameProjectOrigin(t)
+	out, err := runCheckoutScript(t, env, []string{"FULLSEND_PINNED_PROJECT_ID="}, "")
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "FULLSEND_PINNED_PROJECT_ID is required")
+}
+
+func TestCheckoutMRSource_MissingPinnedGitLabURLFailsClosed(t *testing.T) {
+	env := seedSameProjectOrigin(t)
+	out, err := runCheckoutScript(t, env, []string{"FULLSEND_PINNED_GITLAB_URL="}, "")
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "FULLSEND_PINNED_GITLAB_URL is required")
 }
 
 func TestCheckoutMRSource_TargetSHANotSubstitutedForFork(t *testing.T) {
@@ -653,12 +713,38 @@ func TestCheckoutMRSource_DebugTraceAborts(t *testing.T) {
 	assert.Contains(t, out, "CI_DEBUG_TRACE enabled")
 }
 
-func TestCheckoutMRSource_RejectsUntrustedServerURL(t *testing.T) {
+// TestCheckoutMRSource_DebugTraceAbortsOnTruthyVariants is the
+// checkout-mr-source.sh counterpart of
+// TestRunAgentJobScript_DebugTraceAbortsOnTruthyVariants: this script is
+// sourced from run-agent-job.sh's fix stage after that broader guard
+// already ran, but its own guard must independently match the full
+// truthy set gitlab-runner accepts for CI_DEBUG_TRACE, not just an
+// exact "true", so it never becomes a weaker leftover check.
+func TestCheckoutMRSource_DebugTraceAbortsOnTruthyVariants(t *testing.T) {
+	for _, v := range []string{"1", "TRUE", "T"} {
+		t.Run(v, func(t *testing.T) {
+			env := seedSameProjectOrigin(t)
+			out, err := runCheckoutScript(t, env, []string{"CI_DEBUG_TRACE=" + v}, "")
+			require.Error(t, err, "stdout/stderr: %s", out)
+			assert.Contains(t, out, "CI_DEBUG_TRACE enabled")
+		})
+	}
+}
+
+// TestCheckoutMRSource_ScopesTemporaryStateAfterReturn guards the fix
+// that scopes _FS_EMPTY_HOOKS/_FS_GIT_ENV/_FS_GIT_HOOK_ARGS (and the
+// RETURN trap that unsets them) to fullsend_checkout_mr_source's own
+// execution. This script is sourced (not executed) into
+// run-agent-job.sh's shell, so leaving these behind would leak into
+// every later command that shell runs after the fix checkout.
+func TestCheckoutMRSource_ScopesTemporaryStateAfterReturn(t *testing.T) {
 	env := seedSameProjectOrigin(t)
 	resolveExtra, pathPrefix := stubResolveMRSource(t, env.sourceBranch, env.sourceSHA, env.sourceProjectPath)
-	out, err := runCheckoutScript(t, env, append(resolveExtra, "CI_SERVER_URL=https://evil.test"), pathPrefix)
-	require.Error(t, err, "stdout/stderr: %s", out)
-	assert.Contains(t, out, "does not match CI_SERVER_HOST")
+	out, err := runCheckoutScript(t, env, resolveExtra, pathPrefix)
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "_FS_EMPTY_HOOKS_SET=\n")
+	assert.Contains(t, out, "_FS_GIT_ENV_SET=\n")
+	assert.Contains(t, out, "_FS_GIT_HOOK_ARGS_SET=\n")
 }
 
 // TestCheckoutMRSource_HTTPSCredentialHelperFetchesWithToken exercises the

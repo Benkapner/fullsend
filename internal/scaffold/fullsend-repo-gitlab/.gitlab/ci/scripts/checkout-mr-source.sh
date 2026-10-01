@@ -19,8 +19,9 @@
 #
 # Same-project, fork, and cross-project MR sources are fetched from
 # the resolved source project path, which may differ from
-# CI_PROJECT_PATH. The fetch URL is CI_SERVER_URL plus that path;
-# credentials stay on the runner and are never passed into the sandbox.
+# FULLSEND_PINNED_PROJECT_PATH. The fetch URL is FULLSEND_PINNED_GITLAB_URL
+# plus that path; credentials stay on the runner and are never passed
+# into the sandbox.
 #
 # Fail closed: missing MR identity, missing source project/branch/SHA,
 # invalid source identity, fetch failures, HEAD/SHA mismatches, and
@@ -34,6 +35,20 @@
 # through the same forge.Client abstraction (internal/forge/gitlab) the
 # rest of fullsend uses, instead of adding another hand-rolled forge API
 # path to this generated scaffold.
+#
+# The --project and --gitlab-url passed to that resolve call are
+# FULLSEND_PINNED_PROJECT_PATH / FULLSEND_PINNED_GITLAB_URL (exported by
+# pin-ci-job-identity.sh, verified via the CI_JOB_TOKEN job record), not
+# the overridable CI_PROJECT_PATH / CI_SERVER_URL pipeline variables —
+# same outrankable class as CI_PROJECT_ID (ADR 0125). An authenticated
+# dispatch that could override CI_PROJECT_PATH or CI_SERVER_URL must not
+# be able to redirect the MR lookup to a different project or a
+# different GitLab endpoint; the pinned project is always the one whose
+# IID namespace MR_IID resolves in (a fork/cross-project MR is still
+# opened against the target project), and the resolved
+# source_project_path is what may legitimately differ for a fork. This
+# script always runs after run-agent-job.sh sources
+# pin-ci-job-identity.sh, so the pinned variables are always set.
 #
 # CI_MERGE_REQUEST_SOURCE_* are an optional consistency check only —
 # resolve-mr-source is the sole source of truth. A fast-path value
@@ -79,33 +94,6 @@ fullsend_validate_mr_source_ref() {
   fi
   unset _fs_kind _fs_name
   return 0
-}
-
-fullsend_validate_gitlab_server_url() {
-  _fs_url=$1
-  _fs_host=${CI_SERVER_HOST:-}
-  case "${_fs_url}" in
-    https://*) ;;
-    *) echo "ERROR: GitLab server URL must use HTTPS" >&2; unset _fs_url _fs_host; return 1 ;;
-  esac
-  _fs_url_host=${_fs_url#https://}
-  _fs_url_host=${_fs_url_host%%/*}
-  case "${_fs_url_host}" in
-    ''|*[!A-Za-z0-9.:-]*|*:*:*) echo "ERROR: invalid GitLab server host" >&2; unset _fs_url _fs_host _fs_url_host; return 1 ;;
-  esac
-  _fs_url_hostname=${_fs_url_host}
-  case "${_fs_url_host}" in
-    *:*) _fs_port=${_fs_url_host##*:}; case "${_fs_port}" in ''|*[!0-9]*) echo "ERROR: invalid GitLab server port" >&2; unset _fs_url _fs_host _fs_url_host _fs_port _fs_url_hostname; return 1 ;; esac; _fs_url_hostname=${_fs_url_host%:*} ;;
-  esac
-  # CI_SERVER_HOST is GitLab's predefined hostname without a port, even
-  # when the URL runs on a non-default HTTPS port — compare the
-  # hostname only, not host:port.
-  if [ -z "${_fs_host}" ] || [ "${_fs_url_hostname}" != "${_fs_host}" ]; then
-    echo "ERROR: GitLab server URL host does not match CI_SERVER_HOST" >&2
-    unset _fs_url _fs_host _fs_url_host _fs_port _fs_url_hostname
-    return 1
-  fi
-  unset _fs_url _fs_host _fs_url_host _fs_port _fs_url_hostname
 }
 
 fullsend_validate_mr_source_sha() {
@@ -262,10 +250,18 @@ fullsend_git_fetch_mr_source() {
 }
 
 fullsend_checkout_mr_source() {
-  if [ "${CI_DEBUG_TRACE:-}" = "true" ]; then
-    echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets" >&2
-    return 1
-  fi
+  # Matches the full truthy set gitlab-runner accepts for this variable
+  # (Go strconv.ParseBool: "1", "t"/"T", "true"/"TRUE"/"True"), not just
+  # an exact "true" — same guard as run-agent-job.sh / run-poll-job.sh.
+  # This script only runs sourced from run-agent-job.sh's fix stage,
+  # after that broader guard already ran, but keeps its own guard in
+  # lockstep so it never becomes a weaker independent check.
+  case "${CI_DEBUG_TRACE:-}" in
+    1|[tT]|[tT][rR][uU][eE])
+      echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets" >&2
+      return 1
+      ;;
+  esac
 
   case "${MR_IID:-}" in
     ''|0|*[!0-9]*)
@@ -279,14 +275,14 @@ fullsend_checkout_mr_source() {
     return 1
   fi
 
-  case "${CI_PROJECT_ID:-}" in
+  case "${FULLSEND_PINNED_PROJECT_ID:-}" in
     ''|*[!0-9]*)
-      echo "ERROR: CI_PROJECT_ID is required to resolve merge request !${MR_IID}" >&2
+      echo "ERROR: FULLSEND_PINNED_PROJECT_ID is required to resolve merge request !${MR_IID}" >&2
       return 1
       ;;
   esac
-  if [ -z "${CI_PROJECT_PATH:-}" ]; then
-    echo "ERROR: CI_PROJECT_PATH is required to resolve merge request !${MR_IID}" >&2
+  if [ -z "${FULLSEND_PINNED_PROJECT_PATH:-}" ]; then
+    echo "ERROR: FULLSEND_PINNED_PROJECT_PATH is required to resolve merge request !${MR_IID}" >&2
     return 1
   fi
   if [ -z "${FULLSEND_JOB_TOKEN:-}" ]; then
@@ -294,13 +290,10 @@ fullsend_checkout_mr_source() {
     return 1
   fi
 
-  _FS_SERVER_URL="${CI_SERVER_URL:-}"
+  _FS_SERVER_URL="${FULLSEND_PINNED_GITLAB_URL:-}"
   _FS_SERVER_URL="${_FS_SERVER_URL%/}"
   if [ -z "${_FS_SERVER_URL}" ]; then
-    echo "ERROR: CI_SERVER_URL is required to fetch the MR source revision" >&2
-    return 1
-  fi
-  if ! fullsend_validate_gitlab_server_url "${_FS_SERVER_URL}"; then
+    echo "ERROR: FULLSEND_PINNED_GITLAB_URL is required to fetch the MR source revision" >&2
     return 1
   fi
 
@@ -313,8 +306,9 @@ fullsend_checkout_mr_source() {
   # truth for the branch, SHA, and source project. A fast-path value
   # that disagrees with the resolved source fails closed instead of
   # being trusted. Project-identity fast-path variables are compared
-  # against the resolved source (not assumed to equal CI_PROJECT_*),
-  # so fork and cross-project MRs can check out their real head.
+  # against the resolved source (not assumed to equal
+  # FULLSEND_PINNED_PROJECT_ID/FULLSEND_PINNED_PROJECT_PATH), so fork
+  # and cross-project MRs can check out their real head.
   _FS_FASTPATH_BRANCH="${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME:-}"
   _FS_FASTPATH_SHA="${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-}"
   _FS_FASTPATH_PROJECT_ID="${CI_MERGE_REQUEST_SOURCE_PROJECT_ID:-}"
@@ -324,9 +318,11 @@ fullsend_checkout_mr_source() {
   # this script is sourced; resolve-mr-source falls back to it via
   # resolveGitLabToken() when --token is omitted. Passing the token as
   # an argv flag would additionally expose it via /proc/<pid>/cmdline,
-  # `ps`, and execve audit logs.
+  # `ps`, and execve audit logs. --project and --gitlab-url are the
+  # pinned, job-token-verified identity (see module comment above), not
+  # the overridable CI_PROJECT_PATH / CI_SERVER_URL.
   if ! _FS_RESOLVED=$(fullsend resolve-mr-source \
-    --project "${CI_PROJECT_PATH}" \
+    --project "${FULLSEND_PINNED_PROJECT_PATH}" \
     --mr-iid "${MR_IID}" \
     --gitlab-url "${_FS_SERVER_URL}"); then
     echo "ERROR: cannot resolve merge request !${MR_IID} — refusing to run the fix agent without the source revision" >&2
@@ -384,14 +380,14 @@ fullsend_checkout_mr_source() {
     return 1
   fi
   if [ -n "${_FS_FASTPATH_PROJECT_ID}" ]; then
-    if [ "${SOURCE_PROJECT_PATH}" = "${CI_PROJECT_PATH}" ]; then
-      if [ "${_FS_FASTPATH_PROJECT_ID}" != "${CI_PROJECT_ID}" ]; then
-        echo "ERROR: CI_MERGE_REQUEST_SOURCE_PROJECT_ID '${_FS_FASTPATH_PROJECT_ID}' does not match this project's CI_PROJECT_ID '${CI_PROJECT_ID}' — refusing to trust unverified CI variables" >&2
+    if [ "${SOURCE_PROJECT_PATH}" = "${FULLSEND_PINNED_PROJECT_PATH}" ]; then
+      if [ "${_FS_FASTPATH_PROJECT_ID}" != "${FULLSEND_PINNED_PROJECT_ID}" ]; then
+        echo "ERROR: CI_MERGE_REQUEST_SOURCE_PROJECT_ID '${_FS_FASTPATH_PROJECT_ID}' does not match this project's FULLSEND_PINNED_PROJECT_ID '${FULLSEND_PINNED_PROJECT_ID}' — refusing to trust unverified CI variables" >&2
         unset _FS_FASTPATH_BRANCH _FS_FASTPATH_SHA _FS_FASTPATH_PROJECT_ID _FS_FASTPATH_PROJECT_PATH
         return 1
       fi
-    elif [ "${_FS_FASTPATH_PROJECT_ID}" = "${CI_PROJECT_ID}" ]; then
-      echo "ERROR: CI_MERGE_REQUEST_SOURCE_PROJECT_ID '${_FS_FASTPATH_PROJECT_ID}' matches this project's CI_PROJECT_ID but the resolved source project is '${SOURCE_PROJECT_PATH}' — refusing to trust unverified CI variables" >&2
+    elif [ "${_FS_FASTPATH_PROJECT_ID}" = "${FULLSEND_PINNED_PROJECT_ID}" ]; then
+      echo "ERROR: CI_MERGE_REQUEST_SOURCE_PROJECT_ID '${_FS_FASTPATH_PROJECT_ID}' matches this project's FULLSEND_PINNED_PROJECT_ID but the resolved source project is '${SOURCE_PROJECT_PATH}' — refusing to trust unverified CI variables" >&2
       unset _FS_FASTPATH_BRANCH _FS_FASTPATH_SHA _FS_FASTPATH_PROJECT_ID _FS_FASTPATH_PROJECT_PATH
       return 1
     fi
@@ -449,7 +445,13 @@ fullsend_checkout_mr_source() {
     -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR \
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null)
   _FS_EMPTY_HOOKS=$(mktemp -d)
-  trap 'rmdir "${_FS_EMPTY_HOOKS}" 2>/dev/null || true' RETURN
+  # The RETURN trap fires on every return from this function — success
+  # or failure alike — so it is also where _FS_EMPTY_HOOKS/_FS_GIT_ENV/
+  # _FS_GIT_HOOK_ARGS are unset and the trap itself is cleared
+  # (`trap - RETURN`). This script is sourced (not executed) into
+  # run-agent-job.sh's shell, so leaving these behind would otherwise
+  # leak into every later command that shell runs.
+  trap 'rmdir "${_FS_EMPTY_HOOKS}" 2>/dev/null || true; unset _FS_EMPTY_HOOKS _FS_GIT_ENV _FS_GIT_HOOK_ARGS; trap - RETURN' RETURN
   _FS_GIT_HOOK_ARGS=(-c "core.hooksPath=${_FS_EMPTY_HOOKS}" -c core.pager=cat -c core.fsmonitor=)
 
   # --template points at the just-created, guaranteed-empty _FS_EMPTY_HOOKS
@@ -471,8 +473,9 @@ fullsend_checkout_mr_source() {
       # the helper via the _FS_CRED_HOST environment variable at fetch
       # invocation time — the same way _FS_GIT_PASSWORD is passed —
       # rather than interpolated into the generated script's source, so
-      # a shell metacharacter (e.g. a stray quote) in CI_SERVER_URL
-      # cannot break out of the helper's source text and execute.
+      # a shell metacharacter (e.g. a stray quote) in
+      # FULLSEND_PINNED_GITLAB_URL cannot break out of the helper's
+      # source text and execute.
       _FS_CRED_HOST="${_FS_SOURCE_FETCH_URL#*://}"
       _FS_CRED_HOST="${_FS_CRED_HOST#*@}"
       _FS_CRED_HOST="${_FS_CRED_HOST%%/*}"
