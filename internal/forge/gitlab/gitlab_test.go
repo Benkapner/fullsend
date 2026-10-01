@@ -2283,11 +2283,57 @@ func TestCommitFileToBranch_AlreadyExistsIsNonFastForward(t *testing.T) {
 	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
 }
 
+// TestCommitFileToBranch_BadRequestAlreadyExistsIsNonFastForward covers a
+// genuine conflict disguised as the self-hosted GitLab EE start_sha quirk
+// (issue #7892): the commits API 400s with "already exists" for an
+// already-known-to-exist branch, but when retryCommitWithoutStartSHA
+// re-checks the live tip it finds the branch really has advanced past
+// start_sha (a concurrent writer got there first), so this must still
+// surface as forge.ErrNonFastForward rather than retrying blindly.
 func TestCommitFileToBranch_BadRequestAlreadyExistsIsNonFastForward(t *testing.T) {
 	client, mux := setupTest(t)
 
 	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches/state-branch", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"commit": map[string]any{"id": "concurrent-writer-sha"},
+		})
+	})
+
+	commitPOSTs := 0
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		commitPOSTs++
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "A branch called 'state-branch' already exists. Switch to that branch in order to make changes",
+		})
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist", []byte(`{"n":1}`), "loaded-sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
+	assert.Equal(t, 1, commitPOSTs, "a genuine conflict must not retry the commit POST")
+}
+
+// TestCommitFileToBranch_ExistingBranchAlreadyExistsBranchDeletedIsNonFastForward
+// covers retryCommitWithoutStartSHA's branch-disappeared case: the branch
+// was known to exist (expectedSHA non-empty) but is gone by the time the
+// live tip is re-checked (e.g. deleted concurrently). That must still
+// surface as forge.ErrNonFastForward so persistWithCAS reloads and
+// retries, rather than treating the lookup failure as unrelated.
+func TestCommitFileToBranch_ExistingBranchAlreadyExistsBranchDeletedIsNonFastForward(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches/state-branch", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"message": "404 Branch Not Found"})
 	})
 
 	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
@@ -2300,6 +2346,56 @@ func TestCommitFileToBranch_BadRequestAlreadyExistsIsNonFastForward(t *testing.T
 	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist", []byte(`{"n":1}`), "loaded-sha")
 	require.Error(t, err)
 	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
+}
+
+// TestCommitFileToBranch_ExistingBranchAlreadyExistsRetriesWithoutStartSHA
+// is the core fix for issue #7892: self-hosted GitLab EE (observed on
+// v19.2.7-ee) unconditionally rejects start_sha on an already-existing
+// branch with 400 "already exists", even when start_sha exactly matches
+// the branch's current tip. Since expectedSHA is non-empty here, the
+// branch was already known to exist, so this 400 can never be a genuine
+// create race. CommitFileToBranch must re-check the live tip, find it
+// unchanged, and retry the commit once without start_sha instead of
+// permanently failing the CAS persist loop.
+func TestCommitFileToBranch_ExistingBranchAlreadyExistsRetriesWithoutStartSHA(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches/state-branch", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"commit": map[string]any{"id": "loaded-sha"},
+		})
+	})
+
+	var payloads []map[string]any
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(body, &payload))
+		payloads = append(payloads, payload)
+
+		if len(payloads) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"message": "A branch called 'state-branch' already exists. Switch to that branch in order to make changes",
+			})
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{"id": "new-commit"})
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist poll state", []byte(`{"n":1}`), "loaded-sha")
+	require.NoError(t, err)
+	require.Len(t, payloads, 2, "expected an initial attempt and one retry")
+	assert.Equal(t, "loaded-sha", payloads[0]["start_sha"], "first attempt must still try start_sha")
+	_, hasStartSHA := payloads[1]["start_sha"]
+	assert.False(t, hasStartSHA, "retry must omit start_sha, which GitLab rejects for an existing branch")
+	assert.Equal(t, "state-branch", payloads[1]["branch"])
+	assert.Equal(t, "persist poll state [skip ci]", payloads[1]["commit_message"])
 }
 
 func TestCommitFileToBranch_CommitError(t *testing.T) {

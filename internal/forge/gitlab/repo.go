@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
@@ -843,6 +844,13 @@ func withSkipCI(message string) string {
 type commitOptions struct {
 	force    bool
 	startSHA string
+	// existingBranch is true when startSHA is the observed tip of a
+	// branch already known to exist (CommitFileToBranch's CAS-update
+	// path), as opposed to a creation base used while racing to create a
+	// branch for the first time (empty expectedSHA). See the "already
+	// exists" handling in commitFilesImpl for why this distinction
+	// matters on self-hosted GitLab EE.
+	existingBranch bool
 }
 
 // CommitFileToBranch commits a single file to branch without force-re-root.
@@ -854,13 +862,19 @@ type commitOptions struct {
 // GitLab creates the branch rather than force-resetting it. If a concurrent
 // writer created the branch first, GitLab reports it as already-exists,
 // which is mapped to forge.ErrNonFastForward below so persistWithCAS reloads
-// the new tip and retries instead of overwriting it. The commit message is
-// suffixed with [skip ci] when not already present.
+// the new tip and retries instead of overwriting it. A non-empty
+// expectedSHA means the branch is already known to exist; some GitLab
+// editions (observed on self-hosted EE v19.2.7, see issue #7892)
+// unconditionally reject start_sha for an already-existing branch even
+// when it matches the current tip, so commitFilesImpl retries that case
+// once without start_sha after confirming the live tip has not moved. The
+// commit message is suffixed with [skip ci] when not already present.
 func (c *LiveClient) CommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte, expectedSHA string) error {
 	if branch == "" || path == "" {
 		return fmt.Errorf("commit file: branch and path are required")
 	}
 	startSHA := expectedSHA
+	existingBranch := expectedSHA != ""
 	if startSHA == "" {
 		root, err := c.resolveRootCommitSHA(ctx, owner, repo)
 		if err != nil {
@@ -870,7 +884,7 @@ func (c *LiveClient) CommitFileToBranch(ctx context.Context, owner, repo, branch
 	}
 	_, err := c.commitFilesImpl(ctx, owner, repo, branch, withSkipCI(message), []forge.TreeFile{
 		{Path: path, Content: content, Mode: "100644"},
-	}, commitOptions{startSHA: startSHA})
+	}, commitOptions{startSHA: startSHA, existingBranch: existingBranch})
 	if err != nil {
 		// A same-named branch created between load and commit (including a
 		// concurrent first writer racing branch creation from an empty
@@ -984,8 +998,11 @@ func (c *LiveClient) CommitFilesToBranch(ctx context.Context, owner, repo, branc
 // cause a 409 Conflict (mapped to ErrNonFastForward) or a 400 Bad Request
 // with "already exists" when start_sha is a non-tip commit used to create
 // a branch that another writer just created (mapped to ErrAlreadyExists so
-// CommitFileToBranch can surface ErrNonFastForward). The GitHub client
-// shares this structural pattern.
+// CommitFileToBranch can surface ErrNonFastForward). A 400 "already exists"
+// on opts.existingBranch instead means this GitLab edition rejects
+// start_sha for a branch that was already known to exist — see
+// retryCommitWithoutStartSHA. The GitHub client shares this structural
+// pattern.
 //
 // When opts.force is set with opts.startSHA, the commit is re-rooted on
 // that SHA and the target branch is force-updated (created if absent).
@@ -1121,10 +1138,61 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 			// to ErrNonFastForward.
 			if apiErr.StatusCode == http.StatusBadRequest &&
 				strings.Contains(msg, "already exists") {
+				if opts.existingBranch {
+					// On self-hosted GitLab EE (observed on v19.2.7-ee,
+					// see issue #7892), the commits API unconditionally
+					// rejects start_sha for an already-existing branch —
+					// even when start_sha exactly matches the branch's
+					// current tip. Unlike the empty-expectedSHA create
+					// race above, opts.existingBranch means the branch
+					// was already known to exist before this POST, so
+					// "already exists" here is never a genuine create
+					// race. Re-check the live tip: if it still matches
+					// start_sha, retry once without start_sha (which
+					// GitLab accepts for existing branches); if it has
+					// moved, a concurrent writer really did get there
+					// first and this is a genuine conflict.
+					return c.retryCommitWithoutStartSHA(ctx, owner, repo, branch, opts.startSHA, payload)
+				}
 				return false, fmt.Errorf("%w: %w", forge.ErrAlreadyExists, err)
 			}
 		}
 		return false, fmt.Errorf("create commit: %w", err)
+	}
+	resp.Body.Close()
+
+	return true, nil
+}
+
+// retryCommitWithoutStartSHA handles the self-hosted GitLab EE quirk
+// documented in commitFilesImpl's "already exists" branch: the commits API
+// rejects start_sha for an already-existing branch, even when it matches
+// the current tip. It re-reads the live branch tip to distinguish that
+// quirk from a genuine conflict: if the tip has moved past startSHA, a
+// concurrent writer got there first and this surfaces as
+// forge.ErrNonFastForward so persistWithCAS reloads and retries. If the
+// tip is unchanged, start_sha was never a real fast-forward guard here, so
+// the commit is retried once without it.
+func (c *LiveClient) retryCommitWithoutStartSHA(ctx context.Context, owner, repo, branch, startSHA string, payload map[string]any) (bool, error) {
+	tip, err := c.GetBranchRef(ctx, owner, repo, branch)
+	if err != nil {
+		if forge.IsNotFound(err) {
+			return false, fmt.Errorf("%w: branch %s no longer exists", forge.ErrNonFastForward, branch)
+		}
+		return false, fmt.Errorf("get branch ref: %w", err)
+	}
+	if tip != startSHA {
+		return false, fmt.Errorf("%w: branch %s advanced past start_sha %s", forge.ErrNonFastForward, branch, startSHA)
+	}
+
+	retryPayload := make(map[string]any, len(payload))
+	maps.Copy(retryPayload, payload)
+	delete(retryPayload, "start_sha")
+
+	proj := projectPath(owner, repo)
+	resp, err := c.post(ctx, fmt.Sprintf("/projects/%s/repository/commits", proj), retryPayload)
+	if err != nil {
+		return false, fmt.Errorf("retry commit to %s without start_sha: %w", branch, err)
 	}
 	resp.Body.Close()
 
