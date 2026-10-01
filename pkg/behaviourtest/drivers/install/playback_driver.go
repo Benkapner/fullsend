@@ -26,13 +26,9 @@ const playbackRuntime = "dummy-playback"
 // AllocateRepo/DeallocateRepo/Finalize/Capacity unchanged to the wrapped
 // Driver. The tracking-issue/comment setup playback installs rely on is
 // provisioned by playbackInstallHooks, attached to the repoEnsurer
-// independently of this wrapper. org and client are retained for the
-// shared playback step definitions (not yet wired in this package).
+// independently of this wrapper.
 type PlaybackDriver struct {
-	base   Driver
-	org    string
-	client forge.Client
-	logf   func(string, ...any)
+	base Driver
 }
 
 // NewPlaybackDriver wraps a standard behaviour Driver for playback tests.
@@ -42,8 +38,8 @@ type PlaybackDriver struct {
 // the playback runtime; playbackInstallHooks (attached to the ensurer by
 // the same factory) provisions the tracking-issue bookkeeping those
 // installs rely on.
-func NewPlaybackDriver(base Driver, org string, client forge.Client, logf func(string, ...any)) *PlaybackDriver {
-	return &PlaybackDriver{base: base, org: org, client: client, logf: logf}
+func NewPlaybackDriver(base Driver) *PlaybackDriver {
+	return &PlaybackDriver{base: base}
 }
 
 // SetRepoHint is retained for the shared playback step definitions. Pool

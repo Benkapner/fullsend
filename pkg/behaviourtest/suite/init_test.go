@@ -272,7 +272,7 @@ func TestBeforeScenario_NilDriver(t *testing.T) {
 
 func TestBeforeScenario_PlaybackDriverGetsRepoHint(t *testing.T) {
 	base := newFakeDriver(1)
-	pd := install.NewPlaybackDriver(base, "test-org", forge.NewFakeClient(), t.Logf)
+	pd := install.NewPlaybackDriver(base)
 	template := &world.World{Org: "test-org", Driver: pd}
 
 	// SetRepoHint on PlaybackDriver is a no-op (pool repos have stable

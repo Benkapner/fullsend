@@ -46,7 +46,7 @@ var _ Driver = (*fakeBaseDriver)(nil)
 
 func TestPlaybackDriver_DelegatesToBase(t *testing.T) {
 	base := &fakeBaseDriver{allocateName: "test-repo-01", capacity: 7}
-	pd := NewPlaybackDriver(base, "acme", forge.NewFakeClient(), t.Logf)
+	pd := NewPlaybackDriver(base)
 
 	name, err := pd.AllocateRepo(context.Background())
 	require.NoError(t, err)
@@ -64,7 +64,7 @@ func TestPlaybackDriver_DelegatesToBase(t *testing.T) {
 
 func TestPlaybackDriver_AllocateRepo_PropagatesBaseError(t *testing.T) {
 	base := &fakeBaseDriver{allocateErr: errors.New("pool exhausted")}
-	pd := NewPlaybackDriver(base, "acme", forge.NewFakeClient(), t.Logf)
+	pd := NewPlaybackDriver(base)
 
 	_, err := pd.AllocateRepo(context.Background())
 	assert.ErrorContains(t, err, "pool exhausted")
@@ -72,7 +72,7 @@ func TestPlaybackDriver_AllocateRepo_PropagatesBaseError(t *testing.T) {
 
 func TestPlaybackDriver_SetRepoHint_NoOp(t *testing.T) {
 	base := &fakeBaseDriver{}
-	pd := NewPlaybackDriver(base, "acme", forge.NewFakeClient(), t.Logf)
+	pd := NewPlaybackDriver(base)
 
 	// SetRepoHint is retained for the shared playback step definitions
 	// but does not affect allocation — pool repos have stable names
