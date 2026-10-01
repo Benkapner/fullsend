@@ -62,7 +62,6 @@ The `event` variable has the following top-level fields:
 | `event.actor.is_entity_author` | boolean | True when the actor is the author of the work item, change proposal, or conversation |
 | `event.state.labels` | list | Label names on the entity at event time |
 | `event.state.change_proposal` | object | Present when a change proposal is involved (includes `is_fork`, `head_ref`, `base_ref`) |
-
 | `event.state.conversation` | object | Required when `entity.kind == "conversation"` (includes `category.name`; optional `category.id` / `slug` / `format`) |
 | `event.source.system` | string | `"github"`, `"gitlab"`, `"jira"`, `"manual"`, or `"schedule"` |
 

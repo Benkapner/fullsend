@@ -106,7 +106,10 @@ fails. For `actor.kind: human`,
 `actor.bot_role` MUST be absent or `null`, and `actor.role` contains the forge
 permission role when `actor.role_verified` is true. Only a non-null,
 provider-resolved `actor.bot_role` can pass the bot dispatch gate; CEL may
-further restrict it but cannot create or broaden it.
+further restrict it but cannot create or broaden it. Once that gate succeeds,
+the actor.role-keyed observation and mutation thresholds below do not apply to
+the bot; the bot is authorized by role recognition plus the selected harness's
+generic transition/target policy and any further CEL restrictions.
 
 For humans, `role_verified: false` denies the event regardless of the role
 string. A missing `role_verified` on a trusted pre-migration event is treated
@@ -123,6 +126,11 @@ adapters MUST emit the field, and their false value MUST fail closed.
 A role satisfies a threshold when it is **at or above** the minimum in
 the role ordering. For example, `admin` satisfies both `triage` and
 `write` thresholds.
+
+These thresholds apply to human actors and to legacy bot events that still
+use forge permissions during migration. They do not apply to a bot after
+successful `actor.bot_role` recognition, because `actor.role` remains the
+compatibility value `none` for that target representation.
 
 The bash dispatch implementation uses a parameterized
 `has_repo_permission(username, min)` helper that encodes this comparison
@@ -156,7 +164,7 @@ migration is complete.
 | Bot-role lookup returns no registered identity | `actor.role` remains `none`; `actor.role_verified` is true; `actor.bot_role` is absent/null; denied |
 | Bot-role lookup fails or is unverifiable | `actor.role` remains `none`; `actor.role_verified` is false; `actor.bot_role` is absent/null; denied, with the failure retained in resolver/audit diagnostics |
 | Custom repository roles (GitHub) | Mapped to `none`; denied until custom roles are handled platform-wide |
-| `actor.role` is empty or missing for a human | Event fails `NormalizedEvent` validation; never reaches dispatch |
+| `actor.role` is empty or missing | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | `actor.role_verified` is false for a human | Denied regardless of `actor.role` |
 | Legacy bot event has an `actor.role` other than `none` | Valid in the v1 compatibility schema; authorization follows current compatibility behavior during migration and is not an ADR 0107 bot-role authorization result |
 | `actor.role_verified` is false but `actor.bot_role` is non-null for a bot | Event fails `NormalizedEvent` validation; never reaches dispatch |
@@ -225,6 +233,11 @@ Adapters set `actor.kind` to `bot`, resolve the configured identity through the
 provider, set `actor.bot_role` when recognized, and leave `actor.role` as
 `none`. The standard identity authorization gate applies; an unrecognized or
 unresolved service identity is denied.
+
+**Current compatibility behavior:** Until provider-backed bot-role resolution
+is wired into the adapters and dispatch path, adapters set `actor.role` to the
+service identity's effective repository permission (typically `write`), so
+the standard permission gate applies.
 
 > **Target contract, not yet implemented:** Existing schedule/manual
 > compatibility handling remains authoritative until provider-backed bot-role

@@ -101,12 +101,15 @@ Authorization then follows these rules:
 1. A recognized bot satisfies only the bot-identity prerequisite for
    bot-originated dispatch. It does not by itself authorize an event, stage,
    forge mutation, or destination. The selected harness's generic
-   transition/target policy and any applicable observation-versus-mutation
-   checks remain mandatory before dispatch. CEL and other routing layers MAY
-   narrow this by requiring a particular `actor.bot_role`, transition, label,
-   review state, fork state, or other policy condition, but MUST NOT broaden
-   authorization to an unrecognized bot. This same contract supports BYOA
-   identities without a bot-name-to-stage allowlist.
+   transition/target policy remains mandatory before dispatch. After
+   successful `actor.bot_role` recognition, the actor.role-keyed observation
+   and mutation thresholds do not apply to bots; their authorization is
+   recognition plus the harness's transition/target policy and any CEL or
+   other routing restrictions. Those restrictions MAY narrow this by requiring
+   a particular `actor.bot_role`, transition, label, review state, fork state,
+   or other policy condition, but MUST NOT broaden authorization to an
+   unrecognized bot. This same contract supports BYOA identities without a
+   bot-name-to-stage allowlist.
 2. A bot with no recognized role, or a bot whose lookup fails, is denied before
    CEL evaluation. Neither bot classification without a recognized role, nor
    a label transition, nor a bot-authored review is by itself sufficient
