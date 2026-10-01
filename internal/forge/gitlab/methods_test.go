@@ -1653,6 +1653,91 @@ func TestCreatePipeline_NoVariables(t *testing.T) {
 	assert.Equal(t, int64(100), p.ID)
 }
 
+// TestCreatePipelineWithInputs_SerializesInputsSeparatelyFromVariables
+// verifies that inputs are sent under a dedicated "inputs" key, each
+// rendered as its underlying JSON primitive, and that no "variables" key
+// is present on the request at all — this is the dispatch path for a
+// project with ci_pipeline_variables_minimum_override_role=no_one_allowed,
+// where even an empty "variables" value must not appear.
+func TestCreatePipelineWithInputs_SerializesInputsSeparatelyFromVariables(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, "main", body["ref"])
+		_, hasVariables := body["variables"]
+		assert.False(t, hasVariables, "request must not include a variables field")
+
+		inputs, ok := body["inputs"].(map[string]any)
+		require.True(t, ok, "inputs should be an object")
+		assert.Equal(t, "triage", inputs["STAGE"])
+		assert.Equal(t, true, inputs["IS_FORK"])
+		assert.InEpsilon(t, float64(3), inputs["RETRY_COUNT"], 0)
+		assert.Equal(t, []any{"a", "b"}, inputs["TAGS"])
+
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"id":      101,
+			"web_url": "https://gitlab.com/myorg/myrepo/-/pipelines/101",
+		})
+	})
+
+	p, err := client.CreatePipelineWithInputs(ctx, "myorg", "myrepo", "main", map[string]forge.PipelineInputValue{
+		"STAGE":       forge.StringInput("triage"),
+		"IS_FORK":     forge.BoolInput(true),
+		"RETRY_COUNT": forge.NumberInput(3),
+		"TAGS":        forge.ArrayInput([]string{"a", "b"}),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(101), p.ID)
+	assert.Equal(t, "https://gitlab.com/myorg/myrepo/-/pipelines/101", p.WebURL)
+}
+
+// TestCreatePipelineWithInputs_NoUserDefinedVariables exercises the
+// no_one_allowed dispatch path: a pipeline can be created with zero
+// user-defined variables, carrying only inputs.
+func TestCreatePipelineWithInputs_NoUserDefinedVariables(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		_, hasVariables := body["variables"]
+		assert.False(t, hasVariables)
+		assert.Equal(t, map[string]any{}, body["inputs"])
+
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"id":      102,
+			"web_url": "https://gitlab.com/myorg/myrepo/-/pipelines/102",
+		})
+	})
+
+	p, err := client.CreatePipelineWithInputs(ctx, "myorg", "myrepo", "main", nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(102), p.ID)
+}
+
+// TestCreatePipelineWithInputs_ErrorMapsToForgeError confirms GitLab API
+// error responses map to the shared typed forge errors, the same way
+// every other LiveClient method does via APIError.Unwrap.
+func TestCreatePipelineWithInputs_ErrorMapsToForgeError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
+	})
+
+	_, err := client.CreatePipelineWithInputs(ctx, "myorg", "myrepo", "main", map[string]forge.PipelineInputValue{
+		"STAGE": forge.StringInput("triage"),
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrForbidden)
+}
+
 func TestCreatePipelineSchedule(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()

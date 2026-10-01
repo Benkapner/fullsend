@@ -70,6 +70,12 @@ type PipelineCallRecord struct {
 	Variables        map[string]string
 }
 
+// PipelineInputsCallRecord records a CreatePipelineWithInputs invocation.
+type PipelineInputsCallRecord struct {
+	Owner, Repo, Ref string
+	Inputs           map[string]PipelineInputValue
+}
+
 // ProtectedBranchMergeGrantRecord records a GrantProtectedBranchMergeUser call.
 type ProtectedBranchMergeGrantRecord struct {
 	Owner, Repo, Branch string
@@ -365,6 +371,7 @@ type FakeClient struct {
 	DeletedComments         []int    // comment IDs
 	CreatedPipelines        []Pipeline
 	PipelineCalls           []PipelineCallRecord
+	PipelineInputsCalls     []PipelineInputsCallRecord
 	CreatedSchedules        []PipelineSchedule
 	DeletedScheduleIDs      []int64
 	UpdatedScheduleIDs      []int64
@@ -2345,6 +2352,37 @@ func (f *FakeClient) CreatePipeline(_ context.Context, owner, repo, ref string, 
 	})
 
 	if e := f.err("CreatePipeline"); e != nil {
+		return nil, e
+	}
+
+	p := Pipeline{
+		ID:     int64(len(f.CreatedPipelines) + 1),
+		WebURL: fmt.Sprintf("https://gitlab.example.com/-/pipelines/%d", len(f.CreatedPipelines)+1),
+	}
+	f.CreatedPipelines = append(f.CreatedPipelines, p)
+	return &p, nil
+}
+
+// CreatePipelineWithInputs records the call and returns a fake pipeline,
+// mirroring CreatePipeline's behavior but without ever touching the
+// variables-based call record — callers can use PipelineInputsCalls to
+// assert that no user-defined variables were required for a dispatch.
+func (f *FakeClient) CreatePipelineWithInputs(_ context.Context, owner, repo, ref string, inputs map[string]PipelineInputValue) (*Pipeline, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	in := make(map[string]PipelineInputValue, len(inputs))
+	for k, v := range inputs {
+		in[k] = v
+	}
+	f.PipelineInputsCalls = append(f.PipelineInputsCalls, PipelineInputsCallRecord{
+		Owner:  owner,
+		Repo:   repo,
+		Ref:    ref,
+		Inputs: in,
+	})
+
+	if e := f.err("CreatePipelineWithInputs"); e != nil {
 		return nil, e
 	}
 

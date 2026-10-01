@@ -1707,6 +1707,41 @@ func TestFakeClient_CreatePipeline_Error(t *testing.T) {
 	assert.Empty(t, fc.CreatedPipelines)
 }
 
+func TestFakeClient_CreatePipelineWithInputs(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	p, err := fc.CreatePipelineWithInputs(ctx, "org", "repo", "main", map[string]PipelineInputValue{
+		"STAGE": StringInput("triage"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), p.ID)
+	assert.Contains(t, p.WebURL, "pipelines/1")
+	require.Len(t, fc.PipelineInputsCalls, 1)
+	assert.Equal(t, "org", fc.PipelineInputsCalls[0].Owner)
+	assert.Equal(t, StringInput("triage"), fc.PipelineInputsCalls[0].Inputs["STAGE"])
+	// CreatePipelineWithInputs must never populate the variables-based
+	// call record — that would misrepresent the no-user-defined-variable
+	// dispatch path this method exists for.
+	assert.Empty(t, fc.PipelineCalls)
+
+	p2, err := fc.CreatePipelineWithInputs(ctx, "org", "repo", "main", nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), p2.ID)
+	require.Len(t, fc.PipelineInputsCalls, 2)
+}
+
+func TestFakeClient_CreatePipelineWithInputs_Error(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+	fc.Errors["CreatePipelineWithInputs"] = fmt.Errorf("forbidden")
+
+	p, err := fc.CreatePipelineWithInputs(ctx, "org", "repo", "main", nil)
+	require.Error(t, err)
+	assert.Nil(t, p)
+	assert.Empty(t, fc.CreatedPipelines)
+}
+
 func TestFakeClient_PipelineTriggerTokenRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	fc := NewFakeClient()
