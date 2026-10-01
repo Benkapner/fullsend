@@ -1215,7 +1215,12 @@ func (c *LiveClient) guardAgainstInterveningWrite(ctx context.Context, owner, re
 // guard in guardAgainstInterveningWrite: GitLab compares last_commit_id
 // against the file's own last-modifying commit, not the branch tip, so this
 // must be resolved from the file's commit history rather than assumed to
-// equal ref.
+// equal ref. A missing, null, or empty commit id in the response is treated
+// as a failure rather than a usable guard value: sending an empty
+// last_commit_id would not necessarily make GitLab enforce the concurrency
+// check, so an intervening write could be silently overwritten. Returning an
+// error here instead makes guardAgainstInterveningWrite fail closed, which
+// aborts the retry before any POST is sent.
 func (c *LiveClient) resolveLastCommitForPath(ctx context.Context, owner, repo, ref, path string) (string, error) {
 	proj := projectPath(owner, repo)
 	params := url.Values{}
@@ -1235,6 +1240,9 @@ func (c *LiveClient) resolveLastCommitForPath(ctx context.Context, owner, repo, 
 	}
 	if len(commits) == 0 {
 		return "", fmt.Errorf("%w: no commit history for %s at %s", forge.ErrNotFound, path, ref)
+	}
+	if commits[0].ID == "" {
+		return "", fmt.Errorf("commits list for %s at %s returned an empty commit id", path, ref)
 	}
 	return commits[0].ID, nil
 }
@@ -1282,7 +1290,12 @@ func (c *LiveClient) resolveLastCommitForPath(ctx context.Context, owner, repo, 
 // confirmed with a fresh tip check before mapping the ambiguous message to
 // forge.ErrNonFastForward, so persistWithCAS reloads, sees the file is gone,
 // and rebuilds the action as a create instead of aborting on a generic
-// error.
+// error. The branch itself (not just the file) can also disappear in that
+// same window — e.g. a concurrent branch deletion — in which case the
+// confirmation GET returns a confirmed forge.ErrNotFound instead of a fresh
+// tip; that is mapped to forge.ErrNonFastForward too, so persistWithCAS
+// reloads and retries branch creation instead of falling through to a
+// generic error.
 func (c *LiveClient) retryCommitWithoutStartSHA(ctx context.Context, owner, repo, branch, startSHA string, payload map[string]any) (bool, error) {
 	tip, err := c.GetBranchRef(ctx, owner, repo, branch)
 	if err != nil {
@@ -1322,8 +1335,18 @@ func (c *LiveClient) retryCommitWithoutStartSHA(ctx context.Context, owner, repo
 				// Ambiguous on its own: confirm the branch actually
 				// advanced (the deletion itself must be a commit) before
 				// classifying this as a conflict rather than some other
-				// failure.
-				if liveTip, tipErr := c.GetBranchRef(ctx, owner, repo, branch); tipErr == nil && liveTip != startSHA {
+				// failure. The branch itself can also have been deleted
+				// between the tip lookup above and this retry POST, in
+				// which case the confirmation GET returns a confirmed
+				// forge.ErrNotFound rather than a fresh tip — that is
+				// just as much a CAS conflict as an advanced tip, and
+				// persistWithCAS must reload and retry branch creation
+				// rather than abort on a generic error.
+				liveTip, tipErr := c.GetBranchRef(ctx, owner, repo, branch)
+				if forge.IsNotFound(tipErr) {
+					return false, fmt.Errorf("%w: branch %s deleted concurrently since start_sha %s: %w", forge.ErrNonFastForward, branch, startSHA, err)
+				}
+				if tipErr == nil && liveTip != startSHA {
 					return false, fmt.Errorf("%w: file deleted concurrently in %s since start_sha %s: %w", forge.ErrNonFastForward, branch, startSHA, err)
 				}
 			}

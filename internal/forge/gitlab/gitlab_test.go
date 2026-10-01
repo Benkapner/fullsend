@@ -2616,6 +2616,130 @@ func TestCommitFileToBranch_ExistingBranchAlreadyExistsRetryConcurrentDeletionIs
 	assert.Equal(t, 2, branchCalls, "expected the tip check plus a confirmation check after the deletion rejection")
 }
 
+// TestCommitFileToBranch_ExistingBranchAlreadyExistsRetryBranchDeletedDuringRetryIsNonFastForward
+// covers the edge-case gap distinct from
+// TestCommitFileToBranch_ExistingBranchAlreadyExistsBranchDeletedIsNonFastForward:
+// here the branch still exists at the initial tip check inside
+// retryCommitWithoutStartSHA (so the retry POST is attempted), but is
+// deleted entirely before the retry POST's rejection is classified. The
+// confirmation GET after a "doesn't exist" rejection must recognize a
+// confirmed forge.ErrNotFound (the branch is gone), not just a tip that has
+// merely moved — otherwise persistWithCAS aborts on a generic error instead
+// of reloading and retrying branch creation.
+func TestCommitFileToBranch_ExistingBranchAlreadyExistsRetryBranchDeletedDuringRetryIsNonFastForward(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": blobSHA([]byte(`{"n":0}`)), "path": "state.json", "type": "blob", "mode": "100644"},
+		})
+	})
+
+	branchCalls := 0
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches/state-branch", func(w http.ResponseWriter, r *http.Request) {
+		branchCalls++
+		if branchCalls == 1 {
+			// The tip check in retryCommitWithoutStartSHA still observes
+			// the branch, matching start_sha, so the retry POST proceeds.
+			json.NewEncoder(w).Encode(map[string]any{
+				"commit": map[string]any{"id": "loaded-sha"},
+			})
+			return
+		}
+		// By the time the retry POST is rejected and this confirmation
+		// check runs, the branch itself has been deleted entirely.
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"message": "404 Branch Not Found"})
+	})
+
+	var payloads []map[string]any
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			json.NewEncoder(w).Encode([]map[string]any{{"id": "loaded-sha"}})
+			return
+		}
+
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(body, &payload))
+		payloads = append(payloads, payload)
+
+		if len(payloads) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"message": "A branch called 'state-branch' already exists. Switch to that branch in order to make changes",
+			})
+			return
+		}
+		// The branch was deleted concurrently; GitLab rejects the retry
+		// with the same ambiguous "doesn't exist" message used for a
+		// deleted file.
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "A file with this name doesn't exist",
+		})
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist poll state", []byte(`{"n":1}`), "loaded-sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
+	require.Len(t, payloads, 2, "expected an initial attempt and one rejected retry")
+	assert.Equal(t, 2, branchCalls, "expected the tip check plus a confirmation check after the deletion rejection")
+}
+
+// TestCommitFileToBranch_ExistingBranchAlreadyExistsRetryLastCommitIDMalformedIsError
+// covers the fail-open gap in resolveLastCommitForPath: a commits-list
+// response whose single entry has a missing, null, or empty "id" must not be
+// accepted as a usable last_commit_id guard. Silently sending an empty guard
+// would not necessarily make GitLab enforce its intervening-write check, so
+// an intervening write could be overwritten undetected.
+// guardAgainstInterveningWrite must surface an error instead, and the retry
+// POST must never be sent.
+func TestCommitFileToBranch_ExistingBranchAlreadyExistsRetryLastCommitIDMalformedIsError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "missing id field", body: `[{"short_id":"abc1234"}]`},
+		{name: "null id", body: `[{"id":null}]`},
+		{name: "empty id", body: `[{"id":""}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, mux := setupTest(t)
+
+			mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode([]map[string]any{
+					{"id": blobSHA([]byte(`{"n":0}`)), "path": "state.json", "type": "blob", "mode": "100644"},
+				})
+			})
+
+			mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches/state-branch", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(map[string]any{
+					"commit": map[string]any{"id": "loaded-sha"},
+				})
+			})
+
+			commitPOSTs := 0
+			mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					_, _ = w.Write([]byte(tc.body))
+					return
+				}
+				commitPOSTs++
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{
+					"message": "A branch called 'state-branch' already exists. Switch to that branch in order to make changes",
+				})
+			})
+
+			err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist poll state", []byte(`{"n":1}`), "loaded-sha")
+			require.Error(t, err)
+			assert.False(t, forge.IsNonFastForward(err), "a malformed last_commit_id is not itself a CAS conflict")
+			assert.Equal(t, 1, commitPOSTs, "the retry POST must not be sent when the last_commit_id is unusable")
+		})
+	}
+}
+
 // TestCommitFileToBranch_ExistingBranchAlreadyExistsRetryLastCommitLookupEmptyIsError
 // covers resolveLastCommitForPath's defensive empty-result path: if GitLab's
 // commits-list endpoint returns no history for state.json as of the tip
