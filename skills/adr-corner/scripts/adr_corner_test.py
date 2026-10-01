@@ -81,6 +81,13 @@ class TestAttribution(unittest.TestCase):
         pr = {"author": {"login": "alice", "__typename": "User"}, "commits": {"nodes": []}}
         self.assertEqual(infer_adr_authors(pr)[0], {"login": "alice", "source": "PR author"})
 
+    def test_unsuffixed_graphql_bot_is_not_attributed_to_a_human(self):
+        pr = {
+            "author": {"login": "fullsend-ai-coder", "__typename": "Bot"},
+            "commits": {"nodes": []},
+        }
+        self.assertEqual(infer_adr_authors(pr), [])
+
 
 class TestInclusion(unittest.TestCase):
     def test_unattributed_modification_only_pr_is_excluded(self):
@@ -181,6 +188,40 @@ class TestDiscussion(unittest.TestCase):
                     {
                         "author": {"login": "alice"},
                         "body": "/fs-review",
+                        "createdAt": "2026-01-02T00:00:00Z",
+                    }
+                ]
+            },
+            "reviews": {"nodes": []},
+            "reviewThreads": {"nodes": []},
+        }
+        self.assertEqual(discussion_points(pr), [])
+
+    def test_keeps_prose_after_a_slash_command(self):
+        pr = {
+            "comments": {
+                "nodes": [
+                    {
+                        "author": {"login": "alice"},
+                        "body": "/fs-review Why should this remain a separate decision?",
+                        "createdAt": "2026-01-02T00:00:00Z",
+                    }
+                ]
+            },
+            "reviews": {"nodes": []},
+            "reviewThreads": {"nodes": []},
+        }
+        points = discussion_points(pr)
+        self.assertEqual(len(points), 1)
+        self.assertIn("Why should this remain", points[0])
+
+    def test_unsuffixed_graphql_bots_are_ignored(self):
+        pr = {
+            "comments": {
+                "nodes": [
+                    {
+                        "author": {"login": "fullsend-ai-review", "__typename": "Bot"},
+                        "body": "Why should this remain?",
                         "createdAt": "2026-01-02T00:00:00Z",
                     }
                 ]

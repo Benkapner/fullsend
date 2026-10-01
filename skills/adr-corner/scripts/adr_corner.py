@@ -311,8 +311,11 @@ def _comment_record(
     actor: dict[str, Any] | None, body: str | None, created_at: str | None, kind: str
 ) -> dict[str, Any] | None:
     body = normalize_text(body or "")
+    command = SLASH_COMMAND_RE.match(body)
+    if command:
+        body = body[command.end() :].lstrip()
     login = _actor_login(actor)
-    if not body or SLASH_COMMAND_RE.match(body):
+    if not body:
         return None
     return {
         "author": login or "unknown",
