@@ -39,14 +39,8 @@ const (
 	// separate calls on a value receiver, so the sandbox is the only state
 	// between them.
 	codexManifestFile = "fullsend-manifest.json"
-	// codexModelsCacheFile is the file codex's model manager reads at session
-	// start, before the bundled catalog, when it is fresh enough and matches
-	// the client version and provider identity
-	// (codex-rs/models-manager/src/manager.rs, should_refresh_models).
-	// fullsend never writes this file — the `/models` fetch that would is
-	// blocked by the egress profile — but nothing removes one left behind by
-	// an earlier, differently configured run, and Bootstrap does not own it.
-	// buildCodexRunCommand deletes it before every launch (codex_run.go).
+	// codexModelsCacheFile is codex's cached model catalog. The runner never
+	// writes it; buildCodexRunCommand deletes it before launch.
 	codexModelsCacheFile = "models_cache.json"
 )
 

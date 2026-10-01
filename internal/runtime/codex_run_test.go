@@ -143,10 +143,9 @@ func TestBuildCodexRunCommand_OrderAndFlags(t *testing.T) {
 	assert.Equal(t, 2, strings.Count(cmd, testRunnerHeldDigests.ConfigTOML))
 	assert.Equal(t, 2, strings.Count(cmd, testRunnerHeldDigests.HooksJSON))
 
-	// The leftover-cache removal runs once before .env is sourced and once
-	// more immediately before launch, since .env executes in the same shell
-	// and could otherwise recreate the file between the two passes.
-	removal := "rm -f " + shellQuote(CodexRuntime{}.codexModelsCachePath())
+	// models_cache.json is removed before .env is sourced and again after it,
+	// before launch.
+	removal := codexModelsCacheRemoval(CodexRuntime{})
 	assert.Equal(t, 2, strings.Count(cmd, removal))
 	firstRemovalAt := strings.Index(cmd, removal)
 	lastRemovalAt := strings.LastIndex(cmd, removal)
@@ -256,52 +255,40 @@ func TestBuildCodexRunCommand_HonoursPromptOverride(t *testing.T) {
 }
 
 // TestCodexModelsCacheRemoval_Executes runs the real removal fragment under
-// /bin/sh against a fake CODEX_HOME, because it is shell text: a Go-level
-// assertion on the string would not catch a quoting slip that makes the `rm`
-// silently fail or target the wrong path.
-//
-// codex's model manager reads models_cache.json at session start, ahead of
-// the bundled catalog, whenever it is fresh and matches the client version
-// and provider identity — but the /models fetch that would write a legitimate
-// one is blocked by the egress profile, so any file found here is leftover
-// from something else and safe to delete outright.
+// /bin/sh against a temporary CODEX_HOME, because it is shell text: a quoting
+// slip would leave the file in place while the chain still exits 0.
 func TestCodexModelsCacheRemoval_Executes(t *testing.T) {
 	dir := t.TempDir()
-	r := CodexRuntime{}
 	cachePath := filepath.Join(dir, codexModelsCacheFile)
-	removal := strings.ReplaceAll(codexModelsCacheRemoval(r), sandbox.SandboxCodexConfig, dir)
+	removal := strings.ReplaceAll(codexModelsCacheRemoval(CodexRuntime{}), sandbox.SandboxCodexConfig, dir)
+	envFile := filepath.Join(dir, ".env")
+	recreate := "printf '%s' '{}' > " + shellQuote(cachePath) + "\n"
 
-	t.Run("removes a cache present before .env", func(t *testing.T) {
-		require.NoError(t, os.WriteFile(cachePath, []byte(`{"stale":true}`), 0o644))
-		out, err := exec.Command("/bin/sh", "-c", removal+" && echo RAN").CombinedOutput()
-		require.NoError(t, err, string(out))
-		assert.Contains(t, string(out), "RAN")
-		_, statErr := os.Stat(cachePath)
-		assert.True(t, os.IsNotExist(statErr), "leftover cache must be removed")
-	})
-
-	t.Run("no-ops cleanly when no cache is present", func(t *testing.T) {
-		require.NoError(t, os.RemoveAll(cachePath))
-		out, err := exec.Command("/bin/sh", "-c", removal+" && echo RAN").CombinedOutput()
-		require.NoError(t, err, string(out))
-		assert.Contains(t, string(out), "RAN")
-	})
-
-	// The scenario the second guard pass exists for: .env runs in the same
-	// shell as the first removal and can recreate the file, so only a second
-	// pass immediately before launch catches it.
-	t.Run("removes a cache a sourced .env recreates", func(t *testing.T) {
-		require.NoError(t, os.RemoveAll(cachePath))
-		envFile := filepath.Join(dir, ".env")
-		require.NoError(t, os.WriteFile(envFile,
-			[]byte("printf '%s' '{\"stale\":true}' > "+shellQuote(cachePath)+"\n"), 0o644))
-		script := removal + " && . " + shellQuote(envFile) + " && " + removal + " && echo RAN"
-		out, err := exec.Command("/bin/sh", "-c", script).CombinedOutput()
-		require.NoError(t, err, string(out))
-		assert.Contains(t, string(out), "RAN")
-		_, statErr := os.Stat(cachePath)
-		assert.True(t, os.IsNotExist(statErr), "a cache recreated by .env must be removed by the second pass")
-	})
+	tests := []struct {
+		name   string
+		cached bool
+		env    string
+	}{
+		{name: "removes a cache present before .env", cached: true},
+		{name: "no cache present", cached: false},
+		{name: "removes a cache .env recreates", env: recreate},
+		{name: "removes a cache .env recreates behind an rm function", env: recreate + "rm() { :; }\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, os.RemoveAll(cachePath))
+			if tc.cached {
+				require.NoError(t, os.WriteFile(cachePath, []byte(`{}`), 0o644))
+			}
+			require.NoError(t, os.WriteFile(envFile, []byte(tc.env), 0o644))
+			script := removal + " && . " + shellQuote(envFile) + " && " + removal + " && echo RAN"
+			out, err := exec.Command("/bin/sh", "-c", script).CombinedOutput()
+			require.NoError(t, err, string(out))
+			assert.Contains(t, string(out), "RAN")
+			_, statErr := os.Stat(cachePath)
+			assert.True(t, os.IsNotExist(statErr), "models_cache.json must be absent before launch")
+		})
+	}
 }
 
 // TestCodexAssetGuard_Executes runs the real fragment under /bin/sh against a
