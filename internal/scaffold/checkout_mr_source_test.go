@@ -49,6 +49,23 @@ func initGitRepo(t *testing.T, dir string) {
 	gitCmd(t, dir, "config", "user.email", "test@example.com")
 }
 
+// initGitRepoSHA256 mirrors initGitRepo but initializes a SHA-256
+// repository (git init --object-format=sha256), so tests can exercise an
+// actual SHA-256 source rather than only validating the SHA-256 object
+// name's length. Skips (rather than fails) when the installed git does
+// not support the --object-format flag.
+func initGitRepoSHA256(t *testing.T, dir string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	cmd := exec.Command("git", "init", "-b", "main", "--object-format=sha256")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("git does not support --object-format=sha256: %s", out)
+	}
+	gitCmd(t, dir, "config", "user.name", "testrunner")
+	gitCmd(t, dir, "config", "user.email", "test@example.com")
+}
+
 func commitFile(t *testing.T, dir, rel, contents, msg string) string {
 	t.Helper()
 	path := filepath.Join(dir, rel)
@@ -263,6 +280,46 @@ func seedForeignProjectOrigin(t *testing.T, sourceProjectPath string) checkoutEn
 		sourceBranch:      "feature",
 		targetID:          "10",
 		sourceID:          "200",
+	}
+}
+
+// seedSameProjectOriginSHA256 mirrors seedSameProjectOrigin but builds the
+// origin repository with git's SHA-256 object format
+// (initGitRepoSHA256), to exercise an actual successful checkout against
+// a SHA-256 source — not just validate the SHA-256 object name's length
+// as TestCheckoutMRSource_AcceptsSHA256Length does with a fabricated,
+// non-existent SHA.
+func seedSameProjectOriginSHA256(t *testing.T) checkoutEnv {
+	t.Helper()
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	initGitRepoSHA256(t, work)
+	require.NoError(t, os.WriteFile(filepath.Join(work, ".fullsend-config-marker"), []byte("trusted\n"), 0o644))
+	commitFile(t, work, "README.md", "default branch\n", "main commit")
+	gitCmd(t, work, "checkout", "-b", "feature")
+	sourceSHA := commitFile(t, work, "reviewed.txt", "reviewed-file\n", "feature commit")
+	require.Len(t, sourceSHA, 64, "a SHA-256 repository must produce 64-character object names")
+
+	serverRoot := filepath.Join(root, "gitlab")
+	projectPath := "group/project"
+	bare := filepath.Join(serverRoot, projectPath+".git")
+	require.NoError(t, os.MkdirAll(filepath.Dir(bare), 0o755))
+	gitCmd(t, work, "clone", "--bare", ".", bare)
+
+	runner := filepath.Join(root, "runner")
+	gitCmd(t, root, "clone", "--depth=1", "--branch", "main", bare, runner)
+	require.NoError(t, os.WriteFile(filepath.Join(runner, ".fullsend-config-marker"), []byte("trusted-runner\n"), 0o644))
+
+	return checkoutEnv{
+		script:            checkoutMRSourceScript(t),
+		projectDir:        runner,
+		serverRoot:        serverRoot,
+		targetProjectPath: projectPath,
+		sourceProjectPath: projectPath,
+		sourceSHA:         sourceSHA,
+		sourceBranch:      "feature",
+		targetID:          "10",
+		sourceID:          "10",
 	}
 }
 
@@ -636,6 +693,26 @@ func TestCheckoutMRSource_AcceptsSHA256Length(t *testing.T) {
 	require.Error(t, err, "stdout/stderr: %s", out)
 	assert.NotContains(t, out, "invalid MR source SHA")
 	assert.Contains(t, out, "failed to fetch MR source")
+}
+
+// TestCheckoutMRSource_SHA256SourceCheckedOut proves the SHA-256 checkout
+// fix end to end: a target repository initialized against a real SHA-256
+// origin must fetch and check out successfully, not merely accept the
+// SHA's length and then fail at fetch time (the gap
+// TestCheckoutMRSource_AcceptsSHA256Length left — see
+// fullsend_reset_target_repo_git_config and the _FS_OBJECT_FORMAT
+// derivation in fullsend_checkout_mr_source).
+func TestCheckoutMRSource_SHA256SourceCheckedOut(t *testing.T) {
+	env := seedSameProjectOriginSHA256(t)
+	resolveExtra, pathPrefix := stubResolveMRSource(t, env.sourceBranch, env.sourceSHA, env.sourceProjectPath)
+	out, err := runCheckoutScript(t, env, resolveExtra, pathPrefix)
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	assertCheckedOutReviewedSource(t, env, out)
+
+	targetRepo := filepath.Join(env.projectDir, "target-repo")
+	formatOut, formatErr := exec.Command("git", "-C", targetRepo, "rev-parse", "--show-object-format").Output()
+	require.NoError(t, formatErr)
+	assert.Equal(t, "sha256", strings.TrimSpace(string(formatOut)), "target repo must be initialized with the source's SHA-256 object format")
 }
 
 func TestCheckoutMRSource_InvalidSHAFailsClosed(t *testing.T) {

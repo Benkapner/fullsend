@@ -176,21 +176,46 @@ fullsend_cleanup_mr_source_fetch() {
 # `git init --template=` at a known-empty directory (below) closes the
 # common case; rewriting .git/config here closes it regardless of the
 # template source.
+#
+# The trusted config written here must match the object format the
+# repository was actually `git init`'d with (second argument, "sha1" or
+# "sha256" — see the _FS_OBJECT_FORMAT derivation in
+# fullsend_checkout_mr_source). GitLab repositories can be configured to
+# use SHA-256 object names (fullsend_validate_mr_source_sha already
+# accepts the 64-character length), and a SHA-256 source can only be
+# fetched into a SHA-256 target: git refuses to fetch across mismatched
+# object formats outright ("mismatched algorithms"). Always writing
+# repositoryformatversion=0 with no extensions.objectFormat — regardless
+# of how `git init` was actually invoked — would silently discard SHA-256
+# format metadata and strand every SHA-256 source behind a fetch failure.
 fullsend_reset_target_repo_git_config() {
   _fs_repo=$1
-  if ! cat > "${_fs_repo}/.git/config" <<'EOF'
+  _fs_object_format=$2
+  if [ "${_fs_object_format}" = "sha256" ]; then
+    cat > "${_fs_repo}/.git/config" <<'EOF'
+[core]
+	repositoryformatversion = 1
+	filemode = true
+	bare = false
+	logallrefupdates = true
+[extensions]
+	objectFormat = sha256
+EOF
+  else
+    cat > "${_fs_repo}/.git/config" <<'EOF'
 [core]
 	repositoryformatversion = 0
 	filemode = true
 	bare = false
 	logallrefupdates = true
 EOF
-  then
+  fi
+  if [ $? -ne 0 ]; then
     echo "ERROR: failed to reset untrusted git config in '${_fs_repo}'" >&2
-    unset _fs_repo
+    unset _fs_repo _fs_object_format
     return 1
   fi
-  unset _fs_repo
+  unset _fs_repo _fs_object_format
 }
 
 fullsend_git_fetch_mr_source() {
@@ -464,8 +489,24 @@ fullsend_checkout_mr_source() {
   # (`trap - RETURN`). This script is sourced (not executed) into
   # run-agent-job.sh's shell, so leaving these behind would otherwise
   # leak into every later command that shell runs.
-  trap 'rmdir "${_FS_EMPTY_HOOKS}" 2>/dev/null || true; unset _FS_EMPTY_HOOKS _FS_GIT_ENV _FS_GIT_HOOK_ARGS; trap - RETURN' RETURN
+  trap 'rmdir "${_FS_EMPTY_HOOKS}" 2>/dev/null || true; unset _FS_EMPTY_HOOKS _FS_GIT_ENV _FS_GIT_HOOK_ARGS _FS_OBJECT_FORMAT; trap - RETURN' RETURN
   _FS_GIT_HOOK_ARGS=(-c "core.hooksPath=${_FS_EMPTY_HOOKS}" -c core.pager=cat -c core.fsmonitor=)
+
+  # The resolved, validated SOURCE_SHA (not an ambient GIT_DEFAULT_HASH
+  # CI/CD variable, which --object-format below always overrides anyway)
+  # decides which object format the target repository is initialized
+  # with. `fullsend resolve-mr-source` returns the source's full object
+  # id, so its length reliably distinguishes a SHA-256 source (64 hex
+  # characters) from a SHA-1 one (40); fullsend_validate_mr_source_sha's
+  # 7-64 range exists for abbreviation tolerance, but resolve-mr-source
+  # never abbreviates. A SHA-256 source can only be fetched into a
+  # SHA-256 target (git fails fetch outright on a mismatched object
+  # format), so defaulting to sha1 here for anything short of the full
+  # SHA-256 length is the safe choice.
+  _FS_OBJECT_FORMAT=sha1
+  if [ "${#SOURCE_SHA}" -eq 64 ]; then
+    _FS_OBJECT_FORMAT=sha256
+  fi
 
   # --template points at the just-created, guaranteed-empty _FS_EMPTY_HOOKS
   # directory so `git init` cannot pull in a GIT_TEMPLATE_DIR-supplied (or
@@ -473,8 +514,12 @@ fullsend_checkout_mr_source() {
   # unset above — and fullsend_reset_target_repo_git_config rewrites
   # .git/config immediately after so no template-supplied config key can
   # survive into the credentialed fetch below regardless of source.
-  "${_FS_GIT_ENV[@]}" git "${_FS_GIT_HOOK_ARGS[@]}" init --quiet --template="${_FS_EMPTY_HOOKS}" "${FIX_TARGET_REPO}"
-  fullsend_reset_target_repo_git_config "${FIX_TARGET_REPO}" || return 1
+  # --object-format pins the repository to the format derived above
+  # (overriding any ambient GIT_DEFAULT_HASH), and the matching trusted
+  # format metadata is written into the minimal config below so the
+  # rewrite does not strand a SHA-256 init back on SHA-1.
+  "${_FS_GIT_ENV[@]}" git "${_FS_GIT_HOOK_ARGS[@]}" init --quiet --template="${_FS_EMPTY_HOOKS}" --object-format="${_FS_OBJECT_FORMAT}" "${FIX_TARGET_REPO}"
+  fullsend_reset_target_repo_git_config "${FIX_TARGET_REPO}" "${_FS_OBJECT_FORMAT}" || return 1
   "${_FS_GIT_ENV[@]}" git -C "${FIX_TARGET_REPO}" "${_FS_GIT_HOOK_ARGS[@]}" remote add origin "${_FS_SOURCE_FETCH_URL}"
 
   _FS_CRED_HELPER=""
