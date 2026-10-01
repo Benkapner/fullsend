@@ -184,6 +184,11 @@ fullsend
 │   ├── --mr-iid <int>                       #   Merge request IID (required)
 │   ├── --gitlab-url <url>                   #   GitLab instance URL (default: https://gitlab.com)
 │   └── --token <string>                     #   GitLab token (default: $GITLAB_TOKEN)
+├── check-protected-branch                   # Fail closed unless a GitLab branch is confirmed not protected
+│   ├── --project <path>                     #   GitLab project path to check (required)
+│   ├── --branch <string>                    #   Branch name to check (required)
+│   ├── --gitlab-url <url>                   #   GitLab instance URL (default: https://gitlab.com)
+│   └── --token <string>                     #   GitLab token (default: $GITLAB_TOKEN)
 └── reconcile-status                         # Finalize orphaned status comments
     ├── --repo <owner/repo>                  #   Repository in owner/repo format (required for GitHub/GitLab)
     ├── --number <int>                       #   Issue/PR number (required for GitHub/GitLab; derived from entity.key for Jira)

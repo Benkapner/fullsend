@@ -51,6 +51,25 @@ source branch without checking it out is not sufficient: the sandbox
 inherits the runner checkout, and the agent cannot recover the reviewed
 revision from inside the sandbox.
 
+**GitLab fork and cross-project MRs:** the job-level fork gate (`IS_FORK`)
+still denies both the **code** and **fix** agents outright on a
+fork/cross-project dispatch. Code opens a new MR against the target
+project and has no analogous validated source revision to check out.
+Fix is denied for a different reason: although the pre-script
+(`checkout-mr-source.sh`) already resolves the MR's source project,
+branch, and head SHA through `fullsend resolve-mr-source` (never
+trusting the job's `IS_FORK` pipeline variable or any other unverified
+CI variable), fetches and checks out that exact revision — fetching
+from the source project even when it differs from the target project —
+and runs a pre-push safety gate, `fullsend check-protected-branch`,
+against the resolved source project and branch before the fix agent
+ever runs, the runner-side post-script that actually pushes the
+resulting fix commit still targets this job's own project and branch
+rather than the validated source project. A validated checkout alone is
+not enough to make a fork/cross-project fix dispatch safe to publish, so
+the `IS_FORK` gate stays in place for `fix` until a source-targeted
+publish path ships in a follow-up PR (#7814).
+
 ### What the agent does not read
 
 This is worth being explicit about, because the fix agent's scope is narrower

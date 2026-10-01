@@ -356,6 +356,16 @@ fi
 # Fork MR protection — skip code/fix stages for fork MRs to prevent
 # pushing commits to the target project from untrusted sources.
 # CEL equivalent: !event.state.change_proposal.is_fork
+#
+# The "fix" stage's checkout-mr-source.sh already resolves, fetches, and
+# validates the exact MR source revision in a fork/cross-project-aware
+# way, including a `fullsend check-protected-branch` pre-push gate
+# (#7814) — but that checkout-time validation is not sufficient on its
+# own to lift this gate: the runner-side post-script that actually
+# pushes the resulting fix commit still targets this job's own
+# project/branch rather than the resolved MR source project, so a fork
+# or cross-project "fix" dispatch remains denied here until a
+# source-targeted publish path ships.
 if [ "${STAGE}" = "code" ] || [ "${STAGE}" = "fix" ]; then
   if [ "${IS_FORK:-true}" = "true" ]; then
     echo "ERROR: Fork MR detected — refusing to run ${STAGE} stage" >&2
