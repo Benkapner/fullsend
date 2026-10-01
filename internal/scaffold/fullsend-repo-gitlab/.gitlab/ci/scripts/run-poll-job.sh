@@ -40,8 +40,8 @@ if [ -z "${FULLSEND_PINNED_GITLAB_URL:-}" ]; then
 fi
 FULLSEND_PINNED_API_V4_URL="${FULLSEND_PINNED_GITLAB_URL}/api/v4"
 
-# Bot token from the registered Poller credential — required in
-# every gate mode; there is no shared FULLSEND_FORGE_TOKEN fallback
+# Bot token from the registered Poller credential — selected
+# unconditionally; there is no shared FULLSEND_FORGE_TOKEN fallback
 # (ADR-0067 / gitlab-role-credentials.md).
 # shellcheck disable=SC2034  # consumed by sourced select-gitlab-role-token.sh
 FULLSEND_JOB_KIND=poller
@@ -61,11 +61,10 @@ FULLSEND_JOB_KIND=poller
 # template still needs these siblings present until its own HMAC
 # reselect and the STAGE=fix analyst-identity lookup.
 #
-# Unconditional in every gate mode: select-gitlab-role-token.sh no
-# longer has a disabled/rollback shared-token path where every role
-# resolves to the same value, so a sibling secret is a real
-# higher-privileged credential in every mode now, not only
-# migrating/enforced.
+# Unconditional for every job: select-gitlab-role-token.sh has no
+# shared-token path left where every role resolved to the same
+# value, so a sibling secret is always a real, distinct
+# higher-privileged credential that must be cleared.
 for _fs_sibling in $(compgen -v | grep -E '^FULLSEND_(GITLAB_(ANALYST|CODER|POLLER|ROLE_[A-Z0-9_]+)_TOKEN|FORGE_TOKEN)$' || true); do
   if [ "${_fs_sibling}" != "${FULLSEND_JOB_TOKEN_NAME:-}" ]; then
     unset "${_fs_sibling}"

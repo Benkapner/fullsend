@@ -60,11 +60,20 @@ const (
 	SecretForgeToken = "FULLSEND_FORGE_TOKEN"
 
 	// Optional GitLab role credentials (docs/contributing/gitlab-role-credentials.md).
-	// These are not required on leftover shared-token installations.
-	// Probe/converge must not treat their absence as health drift while
-	// the gate is leftover disabled or rollback. Built-in names are fixed;
-	// custom roles derive FULLSEND_GITLAB_ROLE_<NAME>_TOKEN. Provisioning
-	// is #7498; job routing is #7499 (`internal/gitlabroles.Select`).
+	// These are absent on an installation that has not yet completed role
+	// provisioning; FULLSEND_FORGE_TOKEN may still be retained as legacy
+	// installation/cleanup state (see gitlab_roles_cutover.go), but current
+	// runtime jobs require their selected role credential and fail closed
+	// when it is missing: gitlabroles.Resolve returns ErrUnconfigured, and
+	// select-gitlab-role-token.sh errors out rather than falling back to
+	// FULLSEND_FORGE_TOKEN. requiredSecretsForForge (internal/repos)
+	// deliberately omits these secrets, so probe/converge do not treat
+	// their absence as health drift; GitLab role readiness is tracked
+	// separately through the role registry/status path
+	// (gitlabroles.CheckBuiltinReadiness, `repos status`), not a migration
+	// gate. Built-in names are fixed; custom roles derive
+	// FULLSEND_GITLAB_ROLE_<NAME>_TOKEN. Provisioning is #7498; job
+	// routing is #7499 (`internal/gitlabroles.Select`).
 	SecretGitLabPollerToken  = "FULLSEND_GITLAB_POLLER_TOKEN"
 	SecretGitLabAnalystToken = "FULLSEND_GITLAB_ANALYST_TOKEN"
 	SecretGitLabCoderToken   = "FULLSEND_GITLAB_CODER_TOKEN"
