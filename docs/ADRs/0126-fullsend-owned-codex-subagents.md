@@ -36,7 +36,7 @@ whenever a child starts, so the launch-time checks of
 spawn arguments (context inheritance, model, effort) and can reopen a closed child
 through a separate resume tool. The spawn and resume tools carry different names under
 each collaboration version (`spawn_agent` and `multi_agent_v1resume_agent` under V1,
-`collaborationspawn_agent` under V2 on `rust-v0.157.0`; every multi-agent tool but the V1
+`collaborationspawn_agent` under V2 on `rust-v0.159.3`; every multi-agent tool but the V1
 spawn is its namespace and its name joined), so a hook keyed on one exact name misses the
 others.
 
@@ -73,7 +73,7 @@ Codex children run under a policy the runner provisions and enforces.
   per-run operator override (a validation pass or a cost cap) and below a persona's
   own entry because that entry is a deliberate per-persona choice. `gpt-5.6-luna` is
   the floor for two reasons: #6970 chose the cheap tier of the current family, and it
-  is the only listed model whose catalog entry selects V1 on `rust-v0.157.0`, so a
+  is the only listed model whose catalog entry selects V1 on `rust-v0.159.3`, so a
   catalog that can delegate at all serves it. Bootstrap generates each role file. A
   persona with its own entry carries that model in its role file; every other child
   runs the run-level default, which Bootstrap sets as `agents.default_subagent_model`.
@@ -111,8 +111,8 @@ Codex children run under a policy the runner provisions and enforces.
 ## Consequences
 
 - Review and retro can delegate on Codex once the paired instructions ship. At
-  `rust-v0.157.0` the parents that qualify are `gpt-5.6-luna`, the one listed entry that
-  selects V1, and `gpt-5.5` (with the hidden `gpt-5.4`), whose entries carry no version;
+  `rust-v0.159.3` the parents that qualify are `gpt-5.6-luna`, the one listed entry that
+  selects V1, and `gpt-5.5`, whose entry carries no version;
   every `gpt-6` model and the other `gpt-5.6` tiers select V2 and run in one context, as
   today. At the pin that is the main outcome, not an edge case: #6970 was probed on
   0.152.1, where V1 was the default, and the per-bump revalidation is where it changes.
@@ -139,9 +139,11 @@ Codex children run under a policy the runner provisions and enforces.
   catalog's V1 entries, the version Codex supplies to an entry that carries none and the
   floor model are revalidated on each Codex CLI bump.
 
-Verified against `rust-v0.157.0` (the sandbox image pin): role-file and `hooks.json`
+Verified against `rust-v0.159.3` (the sandbox image pin): role-file and `hooks.json`
 reload at child start, the spawn arguments, the V1 tool set and the hook-name rule, the
 exact-or-regex matcher rule, the hook outcomes (exit 2 with a reason blocks; exit 2
 without one, another exit, an `async` handler or a timeout does not),
 `codex debug models --bundled`, the catalog's V1 entries and the version Codex supplies
-to an entry that carries none (`multi_agent`, on by default).
+to an entry that carries none (`multi_agent`, on by default). The checks ran on the 0.157.0
+and 0.159.0 binaries and, for 0.159.3, at the source tag, where the crates involved differ
+from 0.159.0 only in Windows process creation and the catalog.
