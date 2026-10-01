@@ -129,7 +129,7 @@ table, and a validated walkthrough.
 ```
 
 The provider and profile pair depends on `--role`; the one shown is for
-`triage`. See the [role table](../../cli/agent.md#agent-new) for the others.
+`triage`. See the [role table](../../cli/agent.md#roles) for the others.
 
 The agent runs automatically when matching events arrive. It runs on the
 hosted mint as long as it keeps a built-in `role:`; a distinct GitHub App
