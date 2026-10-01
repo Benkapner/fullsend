@@ -1214,6 +1214,16 @@ func guardAgainstInterveningWrite(actions []map[string]any, startSHA string) []m
 // intervening writer's change. That rejection is mapped to
 // forge.ErrNonFastForward so persistWithCAS reloads and retries rather
 // than reporting a stale write as success.
+//
+// guardAgainstInterveningWrite only covers update/move/delete actions;
+// GitLab ignores last_commit_id on create actions, so it has no
+// server-enforced guard there. If the target file does not yet exist on
+// the branch (a "create" action) and another writer creates it between the
+// tip GET above and the retry POST below, GitLab rejects the retry with a
+// 400 "already exists" for the file, not the "file has changed" message
+// above. That is also a genuine intervening-write conflict and must map to
+// forge.ErrNonFastForward so persistWithCAS reloads and retries instead of
+// aborting on a generic error.
 func (c *LiveClient) retryCommitWithoutStartSHA(ctx context.Context, owner, repo, branch, startSHA string, payload map[string]any) (bool, error) {
 	tip, err := c.GetBranchRef(ctx, owner, repo, branch)
 	if err != nil {
@@ -1237,9 +1247,14 @@ func (c *LiveClient) retryCommitWithoutStartSHA(ctx context.Context, owner, repo
 	resp, err := c.post(ctx, fmt.Sprintf("/projects/%s/repository/commits", proj), retryPayload)
 	if err != nil {
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest &&
-			strings.Contains(strings.ToLower(apiErr.Message), "changed since you started editing it") {
-			return false, fmt.Errorf("%w: file changed in %s since start_sha %s: %w", forge.ErrNonFastForward, branch, startSHA, err)
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest {
+			msg := strings.ToLower(apiErr.Message)
+			if strings.Contains(msg, "changed since you started editing it") {
+				return false, fmt.Errorf("%w: file changed in %s since start_sha %s: %w", forge.ErrNonFastForward, branch, startSHA, err)
+			}
+			if strings.Contains(msg, "already exists") {
+				return false, fmt.Errorf("%w: file created concurrently in %s since start_sha %s: %w", forge.ErrNonFastForward, branch, startSHA, err)
+			}
 		}
 		return false, fmt.Errorf("retry commit to %s without start_sha: %w", branch, err)
 	}

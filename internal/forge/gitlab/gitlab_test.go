@@ -2331,7 +2331,9 @@ func TestCommitFileToBranch_ExistingBranchAlreadyExistsBranchDeletedIsNonFastFor
 		json.NewEncoder(w).Encode([]map[string]any{})
 	})
 
+	branchLookupCalled := false
 	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches/state-branch", func(w http.ResponseWriter, r *http.Request) {
+		branchLookupCalled = true
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"message": "404 Branch Not Found"})
 	})
@@ -2346,6 +2348,7 @@ func TestCommitFileToBranch_ExistingBranchAlreadyExistsBranchDeletedIsNonFastFor
 	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist", []byte(`{"n":1}`), "loaded-sha")
 	require.Error(t, err)
 	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
+	assert.True(t, branchLookupCalled, "expected the registered branch-lookup handler to run, not an unmatched-route 404")
 }
 
 // TestCommitFileToBranch_ExistingBranchAlreadyExistsRetriesWithoutStartSHA
@@ -2467,6 +2470,63 @@ func TestCommitFileToBranch_ExistingBranchAlreadyExistsRetryGuardsAgainstInterve
 	assert.Equal(t, "update", action["action"])
 	assert.Equal(t, "loaded-sha", action["last_commit_id"],
 		"retry's update action must carry last_commit_id so GitLab can atomically detect the intervening write")
+}
+
+// TestCommitFileToBranch_ExistingBranchAlreadyExistsRetryCreateConflictIsNonFastForward
+// covers the one race guardAgainstInterveningWrite cannot close: when
+// state.json does not yet exist on the branch, the retry's action is
+// "create", which GitLab exempts from the last_commit_id guard (only
+// update/move/delete actions carry it). If another writer creates the file
+// between the branch-tip GET in retryCommitWithoutStartSHA and the retry
+// POST, GitLab rejects the retry with a 400 "already exists" for the file
+// — not the "file has changed" message the update/move/delete guard
+// produces. That must still surface as forge.ErrNonFastForward so
+// persistWithCAS reloads and retries instead of aborting on a generic
+// error.
+func TestCommitFileToBranch_ExistingBranchAlreadyExistsRetryCreateConflictIsNonFastForward(t *testing.T) {
+	client, mux := setupTest(t)
+
+	// state.json does not exist on the branch yet, so the retry's action
+	// is "create" (not "update") and is not eligible for the
+	// last_commit_id guard.
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches/state-branch", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"commit": map[string]any{"id": "loaded-sha"},
+		})
+	})
+
+	var payloads []map[string]any
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(body, &payload))
+		payloads = append(payloads, payload)
+
+		if len(payloads) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"message": "A branch called 'state-branch' already exists. Switch to that branch in order to make changes",
+			})
+			return
+		}
+		// GitLab rejects the retry: another writer created state.json
+		// between the branch-tip GET and this POST, and the create
+		// action carries no last_commit_id to let GitLab's per-file
+		// guard catch it instead.
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "A file with this name already exists",
+		})
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist poll state", []byte(`{"n":1}`), "loaded-sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
+	require.Len(t, payloads, 2, "expected an initial attempt and one rejected retry")
 }
 
 func TestCommitFileToBranch_CommitError(t *testing.T) {
