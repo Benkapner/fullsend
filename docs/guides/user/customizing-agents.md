@@ -454,7 +454,7 @@ a custom role, see [Custom Agent Identity](custom-agent-identity.md).
 
 > **Note:** The "fix" role reuses the "coder" app and PEM — no separate GitHub App or secret is created for it.
 >
-> **Note:** The default deployment uses a shared vendor App (`fullsend-ai-review[bot]`). Code that gates on a review bot's identity must match both the org-specific and shared vendor forms — see [Bot Identities](../../contributing/bot-identities.md) for details.
+> **Note:** The default deployment uses a shared vendor App (`fullsend-ai-review[bot]`). Code that gates on a review bot's identity must match the org-specific and shared vendor forms, plus `${FULLSEND_APP_SET}-review[bot]` when a custom app set is configured — see [Bot Identities](../../contributing/bot-identities.md) for details.
 
 > **Note:** Mint-only dogfood roles such as `scribe` can be registered with
 > `fullsend mint add-role` (and used via remote harness registration) but are

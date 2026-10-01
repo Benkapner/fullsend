@@ -135,9 +135,12 @@ The fix agent also triggers automatically when the [review agent](review.md) sub
 this is the native `pull_request_review` event; on GitLab it is a poller-routed
 MR note that contains `<!-- fullsend:changes-requested -->`.
 
-For **PRs authored by the fullsend code agent** (`fullsend-ai-coder[bot]`),
-automatic fixing happens with no extra setup — the fix agent responds to review
-feedback out of the box. PRs from other bots (e.g., Renovate) require the
+For **PRs authored by the fullsend code agent** (`fullsend-ai-coder[bot]`), or
+by the configured app-set coder (`${FULLSEND_APP_SET}-coder[bot]`), automatic
+fixing happens with no extra setup — the fix agent responds to review feedback
+out of the box. In `gh pr view --json author` output, the configured coder is
+identified as `app/${FULLSEND_APP_SET}-coder` and must also have
+`.author.is_bot == true`. PRs from other bots (e.g., Renovate) require the
 `fullsend-fix` label; without it, the bot-triggered fix run is dispatched but
 the eligibility check exits early with a warning. See
 [Bot identities](../contributing/bot-identities.md) for how the eligibility

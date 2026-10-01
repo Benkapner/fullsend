@@ -45,6 +45,10 @@ The `[bot]` suffix above is the REST/App-slug form. GitHub's GraphQL API omits i
 
 The `gh pr view --json author` CLI command uses a different schema than raw GraphQL — it exposes `.author.is_bot` (boolean) and `.author.login` (with an `app/` prefix, e.g. `app/fullsend-ai-coder`), but does **not** expose `__typename`. When using `gh pr view --json`, check `.author.is_bot == true` plus `.author.login` against the `app/`-prefixed name (see #5536).
 
+### Configured app-set identities
+
+When `FULLSEND_APP_SET` is configured, dispatch and prior-review lookup also accept `${FULLSEND_APP_SET}-review[bot]`. Automatic fix eligibility accepts the matching coder identity, `${FULLSEND_APP_SET}-coder[bot]`, without requiring the `fullsend-fix` label. In `gh pr view --json` output, that coder login is `app/${FULLSEND_APP_SET}-coder`; always require `.author.is_bot == true` and use the `app/`-prefixed form when comparing CLI output. Human authors and unrelated bots remain subject to the normal `fullsend-fix` label and permission checks.
+
 ## GitLab responsibility identities
 
 GitLab does not use GitHub Apps. Runtime authentication uses registered
