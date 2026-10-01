@@ -36,8 +36,9 @@ whenever a child starts, so the launch-time checks of
 spawn arguments (context inheritance, model, effort) and can reopen a closed child
 through a separate resume tool. The spawn and resume tools carry different names under
 each collaboration version (`spawn_agent` and `multi_agent_v1resume_agent` under V1,
-`collaborationspawn_agent` under V2 on `rust-v0.157.0`), so a hook keyed on one exact
-name misses the others.
+`collaborationspawn_agent` under V2 on `rust-v0.157.0`; every multi-agent tool but the V1
+spawn is its namespace and its name joined), so a hook keyed on one exact name misses the
+others.
 
 ## Options
 
@@ -80,17 +81,26 @@ Codex children run under a policy the runner provisions and enforces.
 - A mandatory PreToolUse hook, installed whenever harness security is enabled, even with
   every individual sandbox hook disabled, admits only a V1 spawn of a registered role with
   `fork_context: false` and no model or effort override. It rejects resume and any spawn
-  from a child. Its matcher is a pattern on the tool-name suffix (`spawn_agent` or
-  `resume_agent`), not an exact name, so it runs for every namespace the CLI prefixes
-  (`multi_agent_v1…`, `collaboration…`) and admits only the exact V1 name. Native
-  configuration limits depth to one and open children to four.
+  from a child. Its matcher covers the two namespaces Codex gives its multi-agent tools
+  (`multi_agent_v1…`, `collaboration…`) and any bare name ending in `spawn_agent` or
+  `resume_agent`; inside that set the handler is deny-by-default: it admits the V1 spawn
+  under the policy above, passes the V1 `wait_agent`, `close_agent` and `send_input`
+  through, and denies every other name, the resume, the V2 tools and any tool a later
+  CLI adds to either namespace included. A dispatch tool outside both namespaces would
+  not reach the hook; the per-bump revalidation diffs the multi-agent tool set at the
+  source for one, and Codex's own depth and open-children limits still apply to it.
+  Native configuration limits depth to one and open children to four.
 - Before admitting a spawn, the hook checks `hooks.json` and the role files against
   digests the runner recorded at Bootstrap, as the ADR 0100 adapter does for each
   hook script before invoking it.
-- The hook fails closed: a policy violation, a digest mismatch, a missing file,
-  unreadable input or any error in the hook denies the spawn by exiting 2 with a reason
-  on stderr. Codex lets the call proceed after exit 2 without a reason or any other
-  non-zero exit. Bootstrap fails if it cannot install the hook.
+- The hook denies by exiting 2 with a reason on stderr, the outcome Codex honours as a
+  block. Every path the handler controls ends that way: a policy violation, a digest
+  mismatch, a missing file, unreadable input or any exception, and the reason is never
+  empty. It keeps the ADR 0100 adapter's time discipline, so a check that cannot finish
+  inside the handler timeout denies instead of being killed. What the handler does not
+  control fails open: Codex records a handler it cannot complete, one that times out or
+  whose interpreter fails to start, as failed and lets the spawn proceed, as under
+  ADR 0100. Bootstrap fails if it cannot install the hook.
 
 ## Consequences
 
@@ -107,13 +117,17 @@ Codex children run under a policy the runner provisions and enforces.
   within an iteration the parent can replace it with one that admits everything,
   digest check included. The spawn-time digest check therefore adds coverage only
   against a mid-iteration role or `hooks.json` edit that leaves the adapter untouched;
-  tampering between iterations is caught by the launch-time guard either way. Option 4
-  closes this. As in ADR 0100, a handler Codex cannot complete, such as one that times
-  out or whose interpreter fails to start, is recorded as failed and does not block.
+  tampering between iterations is caught by the launch-time guard either way. The
+  fail-open outcomes of the Decision, a handler that times out or whose interpreter fails
+  to start, are the same residual: within an iteration the parent reaches them only
+  through the same tampering as the rewritten checker. Option 4 closes both.
 - Token totals include children; Codex still reports no dollar cost.
-- Role loading, child model binding, hook reload, the spawn and resume tool names, the
+- Role loading, child model binding, hook reload, the multi-agent tool set and the rule
+  that forms hook names from it, the hook outcomes Codex honours as a block, the
   catalog's V1 entries and the floor model are revalidated on each Codex CLI bump.
 
 Verified against `rust-v0.157.0` (the sandbox image pin): role-file and `hooks.json`
-reload at child start, the spawn arguments, the tool names above, the exact-or-regex
-matcher rule, `codex debug models --bundled`, and the catalog's V1 entries.
+reload at child start, the spawn arguments, the V1 tool set and the hook-name rule, the
+exact-or-regex matcher rule, the hook outcomes (exit 2 with a reason blocks; exit 2
+without one, another exit, an `async` handler or a timeout does not),
+`codex debug models --bundled`, and the catalog's V1 entries.
