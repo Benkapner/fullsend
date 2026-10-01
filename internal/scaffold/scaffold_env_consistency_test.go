@@ -51,7 +51,6 @@ func canonicalForgeEnvVars() map[string]struct{} {
 		forge.VarPollJobURL,
 		forge.VarPollMode,
 		forge.VarGitLabBotToken,
-		forge.VarGitLabRoleMigration,
 		forge.VarGitLabRoleRegistry,
 		forge.VarGitLabRoleRotation,
 	}
@@ -135,7 +134,7 @@ func extractFullsendEnvTokens(content string) []string {
 
 // isDerivedGitLabRoleSecret reports custom-role credential names of the
 // form FULLSEND_GITLAB_ROLE_<NAME>_TOKEN documented in forge.go. Named
-// forge.VarGitLabRole* constants (migration/registry/rotation) do not
+// forge.VarGitLabRole* constants (registry/rotation) do not
 // end in _TOKEN and are covered by canonicalForgeEnvVars instead.
 func isDerivedGitLabRoleSecret(name string) bool {
 	const prefix = "FULLSEND_GITLAB_ROLE_"
@@ -236,6 +235,5 @@ func TestCanonicalForgeEnvVars_UsesExportedConstants(t *testing.T) {
 	assert.Contains(t, got, forge.SecretGitLabCoderToken)
 	assert.Contains(t, got, forge.SecretTriggerToken)
 	assert.Contains(t, got, forge.SecretWebhookSecret)
-	assert.Contains(t, got, forge.VarGitLabRoleMigration)
 	assert.NotContains(t, got, "FULLSEND_JOB_TOKEN")
 }

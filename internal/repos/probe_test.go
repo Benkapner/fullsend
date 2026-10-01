@@ -221,7 +221,6 @@ func TestProbeComponents_SecretCheckError(t *testing.T) {
 
 func TestProbeComponents_GitLab_SkipsThinCallers(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.VariableValues["acme/api/"+forge.VarGitLabRoleMigration] = "enforced"
 	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("include:")
 	putGitLabAuxiliaryScripts(t, fc, "acme", "api")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
@@ -249,7 +248,7 @@ func TestProbeComponents_GitLab_SkipsThinCallers(t *testing.T) {
 			t.Error("GitLab should not check thin callers")
 		}
 		if c.Name == "secret:"+forge.SecretForgeToken {
-			t.Error("enforced GitLab role migration must not require the shared credential")
+			t.Error("role-only GitLab authentication must not require the shared credential")
 		}
 	}
 

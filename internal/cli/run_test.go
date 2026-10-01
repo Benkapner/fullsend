@@ -6990,7 +6990,6 @@ func TestRunAgent_GitLabSkipsMint(t *testing.T) {
 	t.Setenv(forge.SecretGitLabPollerToken, "glpat-test-poller")
 	t.Setenv(forge.SecretGitLabAnalystToken, "glpat-test-analyst")
 	t.Setenv(forge.SecretGitLabCoderToken, "glpat-test-coder")
-	t.Setenv(forge.VarGitLabRoleMigration, "")
 	t.Setenv(forge.VarGitLabRoleRegistry, "")
 
 	var buf bytes.Buffer
@@ -7034,7 +7033,6 @@ func TestRunAgent_GitLabMissingRoleFailsClosed(t *testing.T) {
 
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
 	t.Setenv(forge.SecretForgeToken, "")
-	t.Setenv(forge.VarGitLabRoleMigration, "")
 	t.Setenv(forge.VarGitLabRoleRegistry, "")
 	t.Setenv("GITLAB_TOKEN", "glpat-preset-by-user")
 

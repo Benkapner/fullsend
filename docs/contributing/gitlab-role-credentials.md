@@ -19,9 +19,9 @@ forge operations by registered role is implemented by `fullsend poll`,
 in-flight overlap are implemented by `RotateGitLabRoleCredentials`
 (`internal/repos`) and invoked from `repos install`. Built-in Poller,
 Analyst, and Coder readiness is `CheckBuiltinReadiness` (surfaced on
-`repos status`). Ordinary unflagged `repos install` provisions every registered
-role and retires the legacy shared token once all roles are ready. Both
-rotation and retirement must follow the
+`repos status`). Ordinary unflagged `repos install` provisions every
+registered role; it does not retire a leftover legacy shared token —
+there is no automated path for that. Rotation must follow the
 [credential-routing security checklist](#credential-routing-security-checklist).
 
 Built-in and custom roles are the same kind of registry entry. Job
@@ -31,10 +31,12 @@ three-role enum.
 **Role credentials are the only runtime path.** `fullsend poll` and
 `fullsend run` select the registered role credential via
 `gitlabroles.Select` / `SelectAgent` and fail closed if that secret is
-missing. There is no shared-token fallback. The historical
-`FULLSEND_GITLAB_ROLE_MIGRATION` variable is not part of the runtime or
-install contract. It is retained only as uninstall cleanup state. Custom
-roles remain optional on existing installations.
+missing. There is no shared-token fallback. There is no migration-gate
+variable, flag, or state in the runtime, install, or uninstall contract.
+A repository installed before this role-only model shipped may still
+carry a leftover `FULLSEND_FORGE_TOKEN` secret; no automated path reads,
+writes, or cleans it up, so removing it is a manual administrator step.
+Custom roles remain optional on existing installations.
 
 ## Registered roles
 
@@ -150,7 +152,7 @@ references, never secret values.
 
 | Name | Kind | Purpose |
 | --- | --- | --- |
-| `FULLSEND_FORGE_TOKEN` | masked secret | Legacy shared bot PAT. Runtime never authenticates with it; role-ready `repos install` retires it. |
+| `FULLSEND_FORGE_TOKEN` | masked secret | Legacy shared bot PAT. Runtime never authenticates with it. Neither `repos install` nor `repos uninstall` retires it; a repository installed before the role-only rollout requires manual cleanup. |
 | `FULLSEND_GITLAB_POLLER_TOKEN` | masked secret | Poller PAT. Provisioned by `repos install`. |
 | `FULLSEND_GITLAB_ANALYST_TOKEN` | masked secret | Analyst PAT. Provisioned by `repos install`. |
 | `FULLSEND_GITLAB_CODER_TOKEN` | masked secret | Coder PAT. Provisioned by `repos install`. |
@@ -166,14 +168,15 @@ Canonical constants live in [`internal/forge/forge.go`](../../internal/forge/for
 are derived by `gitlabroles.CustomSecretName`.
 
 Role readiness is checked through the registry/status paths rather than the
-generic forge secret list; existing shared-token installations are repaired
-by role provisioning before the legacy secret is retired.
+generic forge secret list; role provisioning repairs an existing
+shared-token installation by provisioning the missing role credentials.
+It does not touch the leftover shared secret.
 
 ### Project access token names
 
 | Role | PAT name | Access | Scopes |
 | --- | --- | --- | --- |
-| Shared (legacy, pre-migration only) | `fullsend-bot` | Developer (30) | `api` |
+| Shared (legacy, pre-role-only installs only) | `fullsend-bot` | Developer (30) | `api` |
 | Poller | `fullsend-poller` | Developer (30) | `api` |
 | Analyst | `fullsend-analyst` | Developer (30) | `api` |
 | Coder | `fullsend-coder` | Developer (30) | `api` |
@@ -181,11 +184,12 @@ by role provisioning before the legacy secret is retired.
 | Custom `reuse` | (none; uses the target role's PAT) | — | — |
 
 `repos install` provisions the role tokens directly on a fresh GitLab
-install; it never creates `fullsend-bot`. On an existing pre-migration
-install that still has the shared `fullsend-bot` token, ordinary install
-provisions the role tokens and then retires `fullsend-bot` once every
-registered role is ready. Access level and scopes match the legacy shared
-bot; do not claim finer GitLab permissions than the implementation uses.
+install; it never creates `fullsend-bot`. On an existing installation
+that predates the role-only model and still has the shared `fullsend-bot`
+token, ordinary install provisions the missing role tokens but does not
+revoke `fullsend-bot` — an administrator must revoke that token manually.
+Access level and scopes match the legacy shared bot; do not claim finer
+GitLab permissions than the implementation uses.
 
 ## Job → role mapping
 
@@ -207,17 +211,19 @@ name; `Select` / `SelectAgent` call it as a pre-check ahead of
 
 ## Role-identity state
 
-The historical `FULLSEND_GITLAB_ROLE_MIGRATION` variable is no longer read or
-written by runtime, install, or status. It may remain until uninstall, but it
-has no effect. There is no `--gitlab-role-migration` flag and no public
-rollback to the shared token. Every job requires its registered role secret
-and fails closed when that secret is missing.
+There is no migration-gate variable, flag, or public rollback to the
+shared token anywhere in the runtime, install, or uninstall contract.
+Every job requires its registered role secret and fails closed when
+that secret is missing.
 
-The shared token is **not** selected at runtime. Leftover
-`FULLSEND_FORGE_TOKEN` remains install/uninstall state until ordinary
-`repos install` retires it. An unregistered name is never a reason to
-use the shared token. There is no shared-token fallback for an
-unconfigured role.
+The shared token is **not** selected at runtime. A repository installed
+before this role-only model shipped may still carry a leftover
+`FULLSEND_FORGE_TOKEN` secret and a leftover `fullsend-bot` project
+access token; no automated path — not install, not uninstall — reads,
+writes, or removes them. Removing that leftover state is a manual
+administrator step. An unregistered name is never a reason to use the
+shared token. There is no shared-token fallback for an unconfigured
+role.
 
 ## How a job selects its credential
 
@@ -324,8 +330,7 @@ raised to Owner, and that credential-cost tradeoff — which touches
 follow-up ships. Poll jobs
 resolve `FULLSEND_GITLAB_POLLER_TOKEN` once, after the schedule-only pin.
 The Go CLI then overrides `GITLAB_TOKEN` / `PUSH_TOKEN` from the
-registered role credential; leftover `disabled`/`rollback` gates do not
-restore `FULLSEND_FORGE_TOKEN`.
+registered role credential; nothing restores `FULLSEND_FORGE_TOKEN`.
 
 The `STAGE=fix` review-body pre-fetch is a separate case: it looks up
 the prior review note, which is always authored by the Analyst identity
@@ -384,13 +389,17 @@ report:
 - `Missing`: registered roles whose secrets are absent
 - `Diagnostics`: human-readable lines with **names only**
 
-`repos uninstall` deletes the historical gate variable, registry, rotation document,
-built-in and custom role secrets, leftover `FULLSEND_FORGE_TOKEN`, and
-matching `fullsend-bot` / `fullsend-poller` / `fullsend-analyst` /
-`fullsend-coder` / `fullsend-role-*` project access tokens. A token-
-revocation failure fails uninstall so the manifest entry remains for
-an idempotent retry. Ordinary reinstall after a complete uninstall
-does not recreate the retired shared credential or gate variable.
+`repos uninstall` deletes the registry, rotation document, built-in and
+custom role secrets, and matching `fullsend-poller` / `fullsend-analyst`
+/ `fullsend-coder` / `fullsend-role-*` project access tokens. It does
+**not** delete a leftover `FULLSEND_FORGE_TOKEN` secret or revoke a
+matching `fullsend-bot` project access token — a repository installed
+before the role-only rollout requires manual cleanup of those. A
+token-revocation failure fails uninstall so the manifest entry remains
+for an idempotent retry. Ordinary reinstall after a complete uninstall
+provisions fresh role credentials again, but it does not recreate the
+retired legacy shared credential or any migration gate — those stay
+retired.
 
 **Never** put token values in logs, status output, issue comments, or
 `Error` strings. Presence booleans and variable names are the only
@@ -402,8 +411,9 @@ expired, revoked, or unverified role credentials as drift.
 ## Built-in role readiness (#7501)
 
 `gitlabroles.CheckBuiltinReadiness(present, registry)` is the
-verification check for the three built-in roles. Successful readiness allows
-install to retire the legacy shared token.
+verification check for the three built-in roles. Readiness only reports
+whether the built-in roles are configured correctly; it does not trigger
+any retirement of the legacy shared token — no automated path retires it.
 
 For each of Poller, Analyst, and Coder it confirms:
 
@@ -438,14 +448,15 @@ repos status combines both results. Diagnostics carry role names and secret
 *names* only, and status appends these lines after the Diagnose report without
 retiring the shared token.
 
-## Verification and retirement
+## Verification
 
-`repos install` verifies registered-role readiness after provisioning. Once
-all roles are ready it deletes the legacy shared secret and revokes listed
-`fullsend-bot` project tokens. If a role is incomplete, the install reports
-the missing role and leaves the shared credential for a later retry; runtime
-still never selects that credential. A manually supplied PAT not visible to
-the GitLab token API must be revoked by its administrator.
+`repos install` verifies registered-role readiness after provisioning but
+does not act on a leftover legacy shared secret either way: whether or not
+all roles are ready, it never deletes `FULLSEND_FORGE_TOKEN` or revokes a
+`fullsend-bot` project token. Runtime never selects that credential
+regardless of readiness. A repository installed before the role-only
+rollout keeps the shared credential until an administrator manually
+removes the secret and revokes its matching PAT.
 
 ## Registry JSON shape
 
@@ -554,18 +565,18 @@ Leave these to the follow-up issues.
 | [#7498](https://github.com/fullsend-ai/fullsend/issues/7498) | **Implemented.** `repos install` creates/enrolls built-in and custom PATs, stores them as protected masked CI variables, writes the registry, reports partial provisioning, preserves the shared token, and handles reinstall/drift/uninstall without deleting credentials still in use |
 | [#7499](https://github.com/fullsend-ai/fullsend/issues/7499) | **Implemented.** `fullsend poll`, `fullsend run`, and `fullsend post-review` select the registered role credential, enforce `ValidateAgent` / `Registration.Has`, and fail closed on authentication failure without switching identities |
 | [#7500](https://github.com/fullsend-ai/fullsend/issues/7500) | **Implemented.** Role-aware rotation, recovery, in-flight overlap, and expiry/revocation diagnostics. See [Rotation and recovery](#rotation-and-recovery) and follow the [credential-routing security checklist](#credential-routing-security-checklist) |
-| [#7501](https://github.com/fullsend-ai/fullsend/issues/7501) | **Implemented.** Built-in and registered-role readiness is surfaced on `repos status`, and ready installs retire the legacy shared-token secret. Live GitLab ACL/operation probes and deployment branch-rule verification remain deployment prerequisites. |
-| [#7524](https://github.com/fullsend-ai/fullsend/issues/7524) | **Implemented.** Ordinary `repos install` provisions role credentials and retires the legacy shared credential when readiness checks pass. Partial enrollment defers retirement and runtime remains fail-closed. |
-| [#7558](https://github.com/fullsend-ai/fullsend/issues/7558) | **Implemented.** `repos uninstall` removes migration-era GitLab identity state, including the historical gate, registry, role secrets, leftover shared token, and matching project access tokens. |
-| [#7559](https://github.com/fullsend-ai/fullsend/issues/7559) | **Implemented.** Shared-token fallback and the public migration/cutover/rollback controls are removed; old state is ignored by runtime and cleaned up by uninstall. |
+| [#7501](https://github.com/fullsend-ai/fullsend/issues/7501) | **Implemented.** Built-in and registered-role readiness is surfaced on `repos status`. Live GitLab ACL/operation probes and deployment branch-rule verification remain deployment prerequisites. |
+| [#7524](https://github.com/fullsend-ai/fullsend/issues/7524) | **Implemented.** Ordinary `repos install` provisions role credentials. |
+| [#7558](https://github.com/fullsend-ai/fullsend/issues/7558) | **Implemented.** `repos uninstall` removes GitLab role-identity state: the registry, rotation document, built-in and custom role secrets, and matching project access tokens. |
+| [#7559](https://github.com/fullsend-ai/fullsend/issues/7559) | **Implemented.** Shared-token fallback and the public migration/cutover/rollback controls are removed; old state is ignored by runtime. |
 | [#7502](https://github.com/fullsend-ai/fullsend/issues/7502) | **Implemented.** [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) records that the three-role decision in [#7424](https://github.com/fullsend-ai/fullsend/issues/7424) / [#7496](https://github.com/fullsend-ai/fullsend/issues/7496) supersedes its shared-identity assumption and permits registered custom roles as an extension. Operator-facing lifecycle is in [configuring-gitlab.md](../guides/getting-started/configuring-gitlab.md#role-identity-model-and-credential-lifecycle). |
+| [#7931](https://github.com/fullsend-ai/fullsend/issues/7931) | **Implemented.** The `FULLSEND_GITLAB_ROLE_MIGRATION` gate constant, the cutover mechanism that retired a leftover shared credential during install, and the uninstall cleanup of that leftover secret and its project access token are all removed. Automated cleanup for a repository installed before the role-only rollout is intentionally not preserved; that repository may require manual cleanup. |
 
 ## Credential-routing security checklist
 
 Hold these four code invariants and the documentation-terminology rule
-below when changing `internal/gitlabroles`, GitLab credential handling
-in `internal/cli`, or GitLab role cutover
-([#7524](https://github.com/fullsend-ai/fullsend/issues/7524)). They are
+below when changing `internal/gitlabroles` or GitLab credential handling
+in `internal/cli`. They are
 the review findings from [PR #7510](https://github.com/fullsend-ai/fullsend/pull/7510)
 (stage 3 routing). A later change that selects, stores, or hands a
 GitLab role credential to a child process can reintroduce any of them.
@@ -635,8 +646,9 @@ Runtime authentication is role-credential only. Do not restore a
 secret is missing. Local GitLab runs must set the matching role secret
 (`FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`,
 `FULLSEND_GITLAB_CODER_TOKEN`, or a registered custom-role secret).
-Ordinary `repos install` still retires leftover `FULLSEND_FORGE_TOKEN`
-after role checks pass.
+Neither `repos install` nor `repos uninstall` touches a leftover
+`FULLSEND_FORGE_TOKEN` secret; removing it is a manual administrator
+step on a repository installed before the role-only rollout.
 
 - [ ] Runtime `Select` / `SelectAgent` / `Resolve` never return
       `FULLSEND_FORGE_TOKEN`.
@@ -648,9 +660,10 @@ Two distinct leftover terms share similar wording and are easy to
 conflate. Use these terms, and do not mix them:
 
 - **shared-token path** — historical selection of `FULLSEND_FORGE_TOKEN`
-  as the runtime credential. Runtime no longer uses this path. The
-  secret remains install/uninstall state until ordinary `repos install`
-  retires it.
+  as the runtime credential. Runtime no longer uses this path. A leftover
+  secret on a repository installed before the role-only rollout is not
+  touched by any automated path; removing it is a manual administrator
+  step.
 - **local direct-GITLAB_TOKEN fallback** — the retired local-dev
   workflow where `GITLAB_TOKEN` was set with no role secret. `fullsend
   run --forge gitlab` now fails closed unless the matching role secret
@@ -683,5 +696,5 @@ These two are described independently in four documents:
 - `CI_DEBUG_TRACE` remains forbidden on jobs that hold any of these
   variables. YAML `workflow:` and job `rules:` deny it before any admit
   rule so the job never starts; the script-level guard is defense-in-depth.
-- When changing credential routing, rotation, or cutover, follow the
+- When changing credential routing or rotation, follow the
   [credential-routing security checklist](#credential-routing-security-checklist).

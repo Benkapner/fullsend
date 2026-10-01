@@ -107,10 +107,11 @@ then converges the project:
   workflow rules into `.gitlab-ci.yml` without overwriting unrelated CI.
 * Provisions the built-in and registered custom role credentials as protected
   CI/CD variables. Runtime jobs select the registered role credential
-  unconditionally; the legacy shared token and migration gate are not used.
+  unconditionally; there is no legacy shared-token fallback.
   `repos status` reports `protected-ref-pipeline` drift if that pipeline
-  permission is later removed. Uninstall still cleans up old shared-token and
-  migration artifacts left by earlier installations.
+  permission is later removed. Neither install nor uninstall cleans up a
+  leftover shared token from a repository installed before the role-only
+  rollout — that requires manual cleanup.
 * Creates two pipeline schedules: `fullsend slash poll` (every 5 minutes)
   and `fullsend event poll` (at minutes 2, 17, 32, 47). Re-running install
   reports either schedule as drift if it exists but has been disabled,
@@ -251,19 +252,21 @@ A custom role can have its own PAT (`credential: own`) or reuse another
 registered role's credential (`credential: reuse`). See the
 [registry JSON shape](../../contributing/gitlab-role-credentials.md#registry-json-shape).
 
-#### Fresh install and shared-token retirement
+#### Fresh install and the legacy shared token
 
 On a fresh install, `repos install` provisions Poller, Analyst, and Coder
 (plus any registered custom roles) and never creates `fullsend-bot`. On an
-existing pre-migration install that still has `FULLSEND_FORGE_TOKEN`,
-ordinary install provisions the role tokens and retires the shared secret
-once every registered role is ready. Runtime never authenticates as the
-shared token, even while it remains.
+existing installation that predates the role-only model and still has
+`FULLSEND_FORGE_TOKEN`, ordinary install provisions the missing role
+tokens but does not retire the shared secret — there is no automated
+path that does. Runtime never authenticates as the shared token, even
+while it remains; removing that leftover secret (and revoking the
+matching `fullsend-bot` project access token) is a manual administrator
+step.
 
-There is **no rollback** to the shared token. The historical
-`--gitlab-role-migration` flag and `FULLSEND_GITLAB_ROLE_MIGRATION` gate are
-gone from the install and runtime contract. A missing role secret fails the
-job closed. Leftover gate variables are uninstall cleanup state only.
+There is **no rollback** to the shared token, no migration flag, and no
+migration-gate variable anywhere in the install or runtime contract. A
+missing role secret fails the job closed.
 
 #### Rotation, recovery, and in-flight jobs
 
@@ -285,11 +288,12 @@ rotated by the administrator, not by `repos install`.
 
 `repos status` reports per-role readiness and treats missing, expired, or
 revoked credentials as `gitlab-role:<name>` drift. Re-running
-`repos install` repairs missing role secrets and retires a leftover shared
-token once all roles are ready. `repos uninstall` deletes the historical
-gate variable, registry, rotation document, role secrets, leftover
-`FULLSEND_FORGE_TOKEN`, and matching project access tokens. See
-[Operations § Uninstalling](operations.md#uninstalling).
+`repos install` repairs missing role secrets. `repos uninstall` deletes
+the registry, rotation document, role secrets, and matching role project
+access tokens. It does not delete a leftover `FULLSEND_FORGE_TOKEN`
+secret or revoke a matching `fullsend-bot` project access token — a
+repository installed before the role-only rollout requires manual
+cleanup of those. See [Operations § Uninstalling](operations.md#uninstalling).
 
 ### Off-system polling
 
@@ -758,18 +762,19 @@ Confirm:
   project access tokens are available, a fresh install shows
   `fullsend-poller`, `fullsend-analyst`, and `fullsend-coder` (plus any
   `fullsend-role-*` tokens) under Settings → Access Tokens. `fullsend-bot`
-  is a legacy, pre-migration artifact — it appears only on an install that
-  predates per-role credentials, and is retired once role tokens are
-  ready. On GitLab.com Free with `--gitlab-role-token`, expect the
-  dedicated PAT owner's username instead; no project access token is
-  created.
+  is a legacy, pre-role-only artifact — it appears only on an install that
+  predates per-role credentials. No automated path retires it, regardless
+  of role readiness; an administrator must manually revoke it. On
+  GitLab.com Free with `--gitlab-role-token`, expect the dedicated PAT
+  owner's username instead; no project access token is created.
 * **CI/CD variables** — `FULLSEND_DISPATCH_SECRET`, `FULLSEND_GCP_PROJECT_ID`,
   and `FULLSEND_GCP_WIF_PROVIDER` exist and are protected.
   When the webhook fast-path is enabled, `FULLSEND_TRIGGER_TOKEN` and
   `FULLSEND_WEBHOOK_SECRET` are also stored as masked, protected variables
   and must never appear in logs.
-  `FULLSEND_FORGE_TOKEN` may remain only as a legacy artifact until role
-  readiness allows install to retire it (see above). Role-aware installs also provision
+  `FULLSEND_FORGE_TOKEN` may remain only as a legacy artifact; no automated
+  path retires it, so an administrator must manually remove it (see
+  above). Role-aware installs also provision
   `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, and
   `FULLSEND_GITLAB_CODER_TOKEN`; custom role enrollments may add
   `FULLSEND_GITLAB_ROLE_*_TOKEN`. Secrets are requested as masked, but GitLab

@@ -5319,9 +5319,8 @@ func TestConverge_GitLab_NeedsPostInstallSurvivesUnrelatedSecrets(t *testing.T) 
 }
 
 // TestConverge_GitLab_NeedsPostInstallFlagsForPartialArtifacts covers a
-// leftover FULLSEND_GITLAB_ROLE_MIGRATION value and leftover shared-token
-// secret: neither restores bot-token recovery, and post-install is gated
-// only on missing pipeline schedules.
+// leftover shared-token secret: it does not restore bot-token recovery,
+// and post-install is gated only on missing pipeline schedules.
 func TestConverge_GitLab_NeedsPostInstallFlagsForPartialArtifacts(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -5329,19 +5328,6 @@ func TestConverge_GitLab_NeedsPostInstallFlagsForPartialArtifacts(t *testing.T) 
 		wantSchedules   bool
 		wantPostInstall bool
 	}{
-		{
-			name: "leftover enforced gate with schedules and no shared token",
-			seed: func(fc *forge.FakeClient, full string) {
-				fc.VariableValues[full+"/"+forge.VarGitLabRoleMigration] = " EnFoRcEd "
-				fc.VariablesExist[full+"/"+forge.VarGitLabRoleMigration] = true
-				fc.PipelineSchedules[full] = []forge.PipelineSchedule{
-					{Description: "fullsend slash poll"},
-					{Description: "fullsend event poll"},
-				}
-			},
-			wantSchedules:   false,
-			wantPostInstall: false,
-		},
 		{
 			name: "leftover shared token present, schedules missing",
 			seed: func(fc *forge.FakeClient, full string) {
@@ -5407,8 +5393,6 @@ func TestConverge_GitLab_ExistingRepoReportsSharedCredentialRecovery(t *testing.
 	fc := newFakeClientForBatch("acme/api")
 	populateGitLabInstalled(fc, "acme", "api")
 	delete(fc.Secrets, "acme/api/"+forge.SecretForgeToken)
-	fc.VariableValues["acme/api/"+forge.VarGitLabRoleMigration] = "rollback"
-	fc.VariablesExist["acme/api/"+forge.VarGitLabRoleMigration] = true
 
 	result, err := Converge(context.Background(), gitlabConvergeCfg("acme/api"), newTestClientFactory(fc), (&spyScaffoldCommit{}).fn(), noopProgress)
 	if err != nil {

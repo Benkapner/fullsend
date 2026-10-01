@@ -1227,16 +1227,6 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				roleFailedRepos = append(roleFailedRepos, item.r)
 				continue
 			}
-			if err := maybeRetireGitLabSharedCredential(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
-				printer.StepWarn(fmt.Sprintf("[%s/%s] Legacy GitLab shared credential retirement failed: %v", item.r.Owner, item.r.Repo, err))
-				roleFail++
-				item.r.Error = err
-				if item.fresh {
-					roleFailInstalledCount++
-				}
-				roleFailedRepos = append(roleFailedRepos, item.r)
-				continue
-			}
 			if item.r.Error != nil {
 				continue
 			}

@@ -699,9 +699,10 @@ func convergeRepo(ctx context.Context,
 	// post-install step that failed or never ran.
 	//
 	// GitLab runtime authentication is role-only. Shared-token recovery
-	// is intentionally not consulted during convergence; uninstall and
-	// maybeRetireGitLabSharedCredential remain responsible for leftover
-	// FULLSEND_FORGE_TOKEN artifacts.
+	// is intentionally not consulted during convergence. Leftover
+	// FULLSEND_FORGE_TOKEN from a repository installed before the
+	// role-only rollout is not cleaned up automatically by any path;
+	// it requires manual cleanup.
 	needsSchedules := !gitlabSchedulesPresent(d.components)
 	cr.NeedsGitLabPostInstall = needsSchedules
 	cr.NeedsGitLabPipelineSchedules = needsSchedules

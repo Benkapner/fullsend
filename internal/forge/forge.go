@@ -62,8 +62,8 @@ const (
 
 	// Optional GitLab role credentials (docs/contributing/gitlab-role-credentials.md).
 	// These are absent on an installation that has not yet completed role
-	// provisioning; FULLSEND_FORGE_TOKEN may still be retained as legacy
-	// installation/cleanup state (see gitlab_roles_cutover.go), but current
+	// provisioning; FULLSEND_FORGE_TOKEN may still be present as leftover
+	// state from an installation predating the role-only model, but current
 	// runtime jobs require their selected role credential and fail closed
 	// when it is missing: gitlabroles.Resolve returns ErrUnconfigured, and
 	// select-gitlab-role-token.sh errors out rather than falling back to
@@ -71,10 +71,10 @@ const (
 	// deliberately omits these secrets, so probe/converge do not treat
 	// their absence as health drift; GitLab role readiness is tracked
 	// separately through the role registry/status path
-	// (gitlabroles.CheckBuiltinReadiness, `repos status`), not a migration
-	// gate. Built-in names are fixed; custom roles derive
-	// FULLSEND_GITLAB_ROLE_<NAME>_TOKEN. Provisioning is #7498; job
-	// routing is #7499 (`internal/gitlabroles.Select`).
+	// (gitlabroles.CheckBuiltinReadiness, `repos status`). Built-in names
+	// are fixed; custom roles derive FULLSEND_GITLAB_ROLE_<NAME>_TOKEN.
+	// Provisioning is #7498; job routing is #7499
+	// (`internal/gitlabroles.Select`).
 	SecretGitLabPollerToken  = "FULLSEND_GITLAB_POLLER_TOKEN"
 	SecretGitLabAnalystToken = "FULLSEND_GITLAB_ANALYST_TOKEN"
 	SecretGitLabCoderToken   = "FULLSEND_GITLAB_CODER_TOKEN"
@@ -120,12 +120,6 @@ const (
 	VarPollJobURL     = "FULLSEND_POLL_JOB_URL"
 	VarPollMode       = "FULLSEND_POLL_MODE"
 	VarGitLabBotToken = "FULLSEND_GITLAB_BOT_TOKEN"
-
-	// VarGitLabRoleMigration is leftover GitLab role-identity-gate state.
-	// Runtime, install, and status ignore it. Uninstall still deletes it
-	// so older repositories do not retain the variable. See
-	// internal/gitlabroles.
-	VarGitLabRoleMigration = "FULLSEND_GITLAB_ROLE_MIGRATION"
 
 	// VarGitLabRoleRegistry is the administrator-controlled GitLab role
 	// registry (JSON policy and credential *references*, never raw

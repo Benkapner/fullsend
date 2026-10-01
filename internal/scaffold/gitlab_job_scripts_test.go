@@ -188,7 +188,6 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 		"CI_PROJECT_DIR=" + root,
 		"RUNNER_TEMP=" + t.TempDir(),
 		"CI_JOB_TOKEN=job-token",
-		"FULLSEND_GITLAB_ROLE_MIGRATION=enforced",
 		"FULLSEND_GITLAB_POLLER_TOKEN=poll-pat",
 		"FULLSEND_GITLAB_ANALYST_TOKEN=analyst-pat",
 		"FULLSEND_GITLAB_CODER_TOKEN=coder-pat",

@@ -21,6 +21,11 @@ var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, required
 // absence is not a health problem, only its presence after uninstall is.
 var uninstallSecrets = slices.Concat(requiredSecrets, []string{forge.SecretOpenAIAPIKey})
 
+// gitlabUninstallVars intentionally does NOT include the legacy
+// FULLSEND_FORGE_TOKEN shared secret. Uninstall no longer retires it
+// automatically: a repository installed before the role-only rollout
+// may require manual cleanup of that secret and its matching
+// fullsend-bot project access token.
 var gitlabUninstallVars = []string{
 	forge.PerRepoGuardVar,
 	forge.VarLegacyBotTokenSecret,
@@ -29,7 +34,6 @@ var gitlabUninstallVars = []string{
 	forge.VarFailedKeysFast,
 	forge.VarFailedKeysFull,
 	forge.VarLegacyForge,
-	forge.SecretForgeToken,
 	forge.SecretDispatch,
 	forge.VarGCPRegion,
 	forge.VarLabelState,
@@ -37,7 +41,6 @@ var gitlabUninstallVars = []string{
 	forge.VarLastPollAtFull,
 	forge.VarLegacySA,
 	forge.VarLegacyWIFProvider,
-	forge.VarGitLabRoleMigration,
 	forge.VarGitLabRoleRegistry,
 	forge.VarGitLabRoleRotation,
 	forge.SecretGitLabPollerToken,
