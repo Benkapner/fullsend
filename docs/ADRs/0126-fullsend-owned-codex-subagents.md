@@ -100,7 +100,14 @@ Codex children run under a policy the runner provisions and enforces.
   later CLI adds to either namespace included. A dispatch tool outside both namespaces
   would not reach the hook; the per-bump revalidation diffs the multi-agent tool set at
   the source for one, and Codex's own depth and open-children limits still apply to it.
-  Native configuration limits depth to one and open children to four.
+  Native configuration limits depth to one and open children to four. A spawn past the
+  limit is rejected, not queued (`agent thread limit reached`), and a finished child holds
+  its slot until closed, so the paired instructions dispatch at most four children at a
+  time and close each finished child before the next spawn; the runner adds no queue.
+  For the ADR 0100 sandbox hooks, the adapter reports the V1 wait, close, send_input and
+  resume calls under the Claude name it already gives the spawn, `Agent`, so an org's tool
+  allowlist that admits `Agent` admits the whole delegation and one that does not blocks
+  it at the first spawn; the map is revalidated with the hook names on each bump.
 - Before admitting a spawn, the hook checks `hooks.json` and the role files against
   digests the runner recorded at Bootstrap, as the ADR 0100 adapter does for each
   hook script before invoking it. `config.toml`, which carries the run-level default,
@@ -120,7 +127,8 @@ Codex children run under a policy the runner provisions and enforces.
 
 ## Consequences
 
-- Review and retro can delegate on Codex once the paired instructions ship. At
+- Review and retro can delegate on Codex once the paired instructions ship, in waves of
+  at most four children. At
   `rust-v0.159.3` the parents that qualify are `gpt-5.6-luna`, the one listed entry that
   selects V1, and `gpt-5.5`, whose entry carries no version;
   every `gpt-6` model and the other `gpt-5.6` tiers select V2 and run in one context,
