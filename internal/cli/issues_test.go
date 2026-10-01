@@ -72,6 +72,10 @@ func TestNewIssuesPostCommentCmd_DefaultFlags(t *testing.T) {
 	dryRun := cmd.Flags().Lookup("dry-run")
 	require.NotNil(t, dryRun)
 	assert.Equal(t, "false", dryRun.DefValue)
+
+	onlyIfExists := cmd.Flags().Lookup("only-if-exists")
+	require.NotNil(t, onlyIfExists)
+	assert.Equal(t, "false", onlyIfExists.DefValue)
 }
 
 func TestFindMarkedTrackerComment(t *testing.T) {
