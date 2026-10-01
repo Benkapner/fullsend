@@ -209,8 +209,9 @@ name; `Select` / `SelectAgent` call it as a pre-check ahead of
 
 The historical `FULLSEND_GITLAB_ROLE_MIGRATION` variable is no longer read or
 written by runtime, install, or status. It may remain until uninstall, but it
-has no effect. Every job requires its registered role secret and fails closed
-when that secret is missing.
+has no effect. There is no `--gitlab-role-migration` flag and no public
+rollback to the shared token. Every job requires its registered role secret
+and fails closed when that secret is missing.
 
 The shared token is **not** selected at runtime. Leftover
 `FULLSEND_FORGE_TOKEN` remains install/uninstall state until ordinary
@@ -529,7 +530,7 @@ Leave these to the follow-up issues.
 | [#7524](https://github.com/fullsend-ai/fullsend/issues/7524) | **Implemented.** Ordinary `repos install` provisions role credentials and retires the legacy shared credential when readiness checks pass. Partial enrollment defers retirement and runtime remains fail-closed. |
 | [#7558](https://github.com/fullsend-ai/fullsend/issues/7558) | **Implemented.** `repos uninstall` removes migration-era GitLab identity state, including the historical gate, registry, role secrets, leftover shared token, and matching project access tokens. |
 | [#7559](https://github.com/fullsend-ai/fullsend/issues/7559) | **Implemented.** Shared-token fallback and the public migration/cutover/rollback controls are removed; old state is ignored by runtime and cleaned up by uninstall. |
-| [#7502](https://github.com/fullsend-ai/fullsend/issues/7502) | ADR 0067 status annotation and operator-facing lifecycle docs |
+| [#7502](https://github.com/fullsend-ai/fullsend/issues/7502) | **Implemented.** [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) records that the three-role decision in [#7424](https://github.com/fullsend-ai/fullsend/issues/7424) / [#7496](https://github.com/fullsend-ai/fullsend/issues/7496) supersedes its shared-identity assumption and permits registered custom roles as an extension. Operator-facing lifecycle is in [configuring-gitlab.md](../guides/getting-started/configuring-gitlab.md#role-identity-model-and-credential-lifecycle). |
 
 ## Credential-routing security checklist
 
