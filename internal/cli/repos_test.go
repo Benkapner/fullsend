@@ -903,6 +903,7 @@ github:
 `
 	manifestPath := writeTestManifest(t, yaml)
 	fc := newInstallFakeClient("acme/api")
+	fc.Errors["CreateOrUpdateRepoVariable"] = errors.New("simulated variable write failure")
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
 		manifest:    manifestPath,
@@ -1332,7 +1333,7 @@ func TestRunReposInstall_BootstrapsManifest(t *testing.T) {
 		forge:       repos.ForgeGitHub,
 		testClient:  fc,
 	})
-	require.Error(t, err)
+	require.NoError(t, err)
 
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)

@@ -858,7 +858,7 @@ func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 	}
 }
 
-func TestCheckInstallComponents_GitHub_MissingSecrets(t *testing.T) {
+func TestCheckInstallComponents_GitHub_NoGCPSecrets(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(shimWorkflow)
 	addThinCallerFiles(fc, "acme", "api")
@@ -868,8 +868,8 @@ func TestCheckInstallComponents_GitHub_MissingSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if installed {
-		t.Error("expected installed=false when secrets are missing")
+	if !installed {
+		t.Error("expected installed=true when both optional GCP secrets are absent")
 	}
 }
 

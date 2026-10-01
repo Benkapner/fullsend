@@ -13,8 +13,9 @@ GitHub repositories use a different command (`fullsend github setup`). See
 
 ## Prerequisites
 
-* A GCP project with Vertex AI enabled, from
-  [Getting Inference](getting-inference.md). GitLab does **not** use
+* For Vertex agents, a GCP project with Vertex AI enabled, from
+  [Getting Inference](getting-inference.md). OpenAI-only installation does not
+  need a GCP project. GitLab does **not** use
   `fullsend inference provision` — inference credentials are written by
   `repos install --inference-project` (see [Inference Setup](#inference-setup)
   below). Unless you also pass `--inference-wif-provider` (see
@@ -84,6 +85,12 @@ fullsend repos install <group/project> \
 Where `<group/project>` is the GitLab project path (nested groups are
 supported, for example `group/subgroup/project`), and `<gcp-project>` is
 the GCP project from [Getting Inference](getting-inference.md).
+
+For an installation without Vertex credentials, omit `--inference-project`.
+No GCP inference secrets are written; a later Vertex agent run requires them.
+Configure each enabled agent's runtime and model for OpenAI before it runs.
+GitLab OpenAI runs use an API key, not GitHub Actions WIF; see
+[OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
 
 `--gitlab-url` is required in every case, including gitlab.com: `repos.yaml`
 fails validation (`gitlab.url is required when GitLab repos are present`)

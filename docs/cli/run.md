@@ -52,6 +52,26 @@ The runtime for a run is resolved once, in this order: `--runtime` flag, `FULLSE
 
 The plan block prints `Runtime: <name> (from <source>)` and, when an override applied, `Model: <value> (from <source>)`; stderr carries `runtime: selected "<name>" from <source>` (and `model: requested "<value>" from <source>`) for scripts. A value from the config file is labelled with the file path, suffixed ` agents.<name>` when the agent's entry decided. When `models.aliases` in `.fullsend/config.yaml` remaps the alias, the line keeps the alias and its source and adds the remap: `Model: sonnet (from <source>) → claude-sonnet-5 (from <config path> models.aliases)`, with `model: alias "sonnet" remapped to "claude-sonnet-5" from <config path> models.aliases` on stderr. Aliased entries in the `Fallback models` line show as `alias → id` (`sonnet → claude-sonnet-5, claude-opus-4-6 (from FULLSEND_FALLBACK_MODELS)`); literal ids print as written; pi uses the chain for aliased models when Vertex does not serve the model and ignores it for pinned ids. An invalid override — unknown runtime, unknown effort level, an `agents:` entry that names no agent, or a `models.aliases` key or value the block does not accept — fails before the sandbox is created.
 
+Each run then selects its inference provider from the resolved runtime and model, so different
+agents in one repository can use different providers. On GitHub Actions, a Vertex run picks its
+Google credentials before the harness pre-script:
+
+- When `FULLSEND_GCP_PROJECT_ID` and `FULLSEND_GCP_WIF_PROVIDER` are both set, the run prepares
+  Google WIF credentials and points `GOOGLE_APPLICATION_CREDENTIALS` at them. This replaces any
+  credential file an earlier step prepared, including one that impersonates a service account.
+- When neither is set, the run uses the credential file that `GOOGLE_APPLICATION_CREDENTIALS`
+  already names. An `external_account` file must read its token from `credential_source.file`.
+- When only one is set, the run fails.
+
+The run prints which source it used. For local and GitLab Vertex runs, point
+`GOOGLE_APPLICATION_CREDENTIALS` at a non-empty credential file when the harness mounts it.
+An OpenAI run uses the [OpenAI credential path](#openai-credentials-on-pi-and-codex). When both GCP
+inputs are set, an OpenAI run on GitHub Actions also prepares Google WIF credentials for Vertex
+sub-agents; a failure there is a warning. The `dummy` and `dummy-playback` runtimes follow the
+same rule and need no GCP inputs. On GitHub Actions, a run whose parent does not use Vertex clears a
+`GOOGLE_APPLICATION_CREDENTIALS` file that fails these checks, so the pre-script, the sandbox and
+the post-script do not get it.
+
 ```bash
 # try a repo's triage on pi with Gemini Flash, without touching its config
 fullsend run triage --fullsend-dir . --target-repo ../repo \

@@ -426,10 +426,10 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	}
 
 	repoSecrets := make(map[string]string)
-	if !reuseProject {
+	if !reuseProject && effectiveInferenceProject(cfg, effective) != "" {
 		repoSecrets["FULLSEND_GCP_PROJECT_ID"] = effectiveInferenceProject(cfg, effective)
 	}
-	if !reuseWIF {
+	if !reuseWIF && effectiveInferenceWIF(cfg, effective) != "" {
 		repoSecrets["FULLSEND_GCP_WIF_PROVIDER"] = effectiveInferenceWIF(cfg, effective)
 	}
 
@@ -747,9 +747,12 @@ func composeSetupLayers(overlayYAML []byte, overlay config.PerRepoConfigWriter, 
 // resolveInferenceReuse determines, for each of the GCP project and WIF
 // provider inference values, whether setup should reuse the existing
 // repo secret because neither the CLI flag nor the composed effective
-// config supplied a value. It errors if a value is missing and no
-// existing secret is found, since one or the other is required.
+// config supplied a value. When neither value is configured, GCP
+// credentials are optional and existing secrets are left untouched.
 func resolveInferenceReuse(ctx context.Context, client forge.Client, owner, repo string, cfg githubSetupConfig, effective config.PerRepoConfigReader) (reuseProject, reuseWIF bool, err error) {
+	if effectiveInferenceProject(cfg, effective) == "" && effectiveInferenceWIF(cfg, effective) == "" {
+		return false, false, nil
+	}
 	if effectiveInferenceProject(cfg, effective) == "" {
 		var exists bool
 		exists, err = client.RepoSecretExists(ctx, owner, repo, "FULLSEND_GCP_PROJECT_ID")

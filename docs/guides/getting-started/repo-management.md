@@ -25,13 +25,18 @@ The remaining prerequisites are forge-specific:
 
 - **GitHub access** — admin or write access to the target repositories
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
-- **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) must be completed separately before running `repos install`. For self-managed mints, mint enrollment (`fullsend mint enroll`) is also required. The hosted community mint needs no enrollment — install the shared Apps and use the CLI defaults. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
+- **Vertex prerequisites** — if any agent will use Vertex, complete GCP WIF provisioning (`fullsend inference provision`) separately. For self-managed mints, mint enrollment (`fullsend mint enroll`) is also required. The hosted community mint needs no enrollment — install the shared Apps and use the CLI defaults. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
+
+An OpenAI-only repository can be installed without GCP inference inputs. Each
+agent's provider is selected when it runs; see
+[OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
 
 **GitLab:**
 
 GitLab does not use `gh`, `fullsend inference provision`, or mint
 enrollment. See [Configuring GitLab § Prerequisites](configuring-gitlab.md#prerequisites)
-for the GitLab token, GCP inference project, and runner requirements.
+for the GitLab token and runner requirements. A GCP inference project is
+needed only for Vertex agents.
 
 ## Getting started
 
@@ -586,20 +591,10 @@ the command.
 
 ### Partial secret state
 
-When only one of the two required inference secrets (`FULLSEND_GCP_PROJECT_ID`
-or `FULLSEND_GCP_WIF_PROVIDER`) exists on a repo but not both, `repos
-install` reports an error:
-
-```
-partial secret state: FULLSEND_GCP_PROJECT_ID exists but FULLSEND_GCP_WIF_PROVIDER is missing
-```
-
-This typically occurs when a previous install was interrupted or when
-secrets were manually modified. To resolve, either:
-
-- Delete the existing secret and re-run `repos install` to re-provision
-  both secrets together.
-- Manually create the missing secret with the correct value.
+Both GCP inference secrets may be absent. If only one exists, `repos status`
+reports drift. Supply the complete GCP inference flags to `repos install`
+to write the missing secret, or add it manually; until then a Vertex run
+fails its early credential check. An OpenAI run does not use the GCP pair.
 
 ## Migrating from per-org mode to manifest management
 
