@@ -51,7 +51,6 @@ func canonicalForgeEnvVars() map[string]struct{} {
 		forge.VarPollJobURL,
 		forge.VarPollMode,
 		forge.VarGitLabBotToken,
-		forge.VarGitLabRoleMigration,
 		forge.VarGitLabRoleRegistry,
 		forge.VarGitLabRoleRotation,
 	}
@@ -236,6 +235,5 @@ func TestCanonicalForgeEnvVars_UsesExportedConstants(t *testing.T) {
 	assert.Contains(t, got, forge.SecretGitLabCoderToken)
 	assert.Contains(t, got, forge.SecretTriggerToken)
 	assert.Contains(t, got, forge.SecretWebhookSecret)
-	assert.Contains(t, got, forge.VarGitLabRoleMigration)
 	assert.NotContains(t, got, "FULLSEND_JOB_TOKEN")
 }

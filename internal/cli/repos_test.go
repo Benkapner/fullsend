@@ -2272,8 +2272,6 @@ gitlab:
 	for _, p := range repos.ScaffoldPathsForForge(repos.ForgeGitLab) {
 		fc.FileContents["group/project/"+p] = []byte("content")
 	}
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "enforced"
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
 	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[]}`
 	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
 	for _, name := range []string{
@@ -2300,10 +2298,12 @@ gitlab:
 		testGitLabTokens: tokens,
 	}, []string{"group/project"})
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []int{1, 2}, tokens.revoked)
-	assert.Empty(t, fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	// Only the Poller role token (ID 1) is revoked; the legacy
+	// fullsend-bot token (ID 2) is left for manual cleanup.
+	assert.ElementsMatch(t, []int{1}, tokens.revoked)
+	assert.Empty(t, fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry])
 	assert.False(t, fc.Secrets["group/project/"+forge.SecretGitLabPollerToken])
-	assert.False(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
+	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken], "legacy shared secret must not be auto-deleted by uninstall")
 }
 
 func TestRunReposInstall_GitLabPRTitleIncludesSkipCI(t *testing.T) {
