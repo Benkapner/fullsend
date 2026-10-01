@@ -18,7 +18,12 @@ import (
 
 const (
 	pollInterval = 15 * time.Second
-	dispatchWait = 12 * time.Minute
+	// dispatchWait bounds how long WaitForHarnessAgent and friends wait
+	// for a harness run to settle. Raised from 12 to 20 minutes to give
+	// longer-running playback scenarios (which replay a full dummy-agent
+	// pipeline rather than a single dispatch) room to complete without
+	// spuriously timing out.
+	dispatchWait = 20 * time.Minute
 
 	// Dispatch detection uses exponential backoff: the poll interval
 	// starts at dispatchPollInit, doubles each iteration up to
