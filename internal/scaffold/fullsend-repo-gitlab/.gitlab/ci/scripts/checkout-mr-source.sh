@@ -192,7 +192,7 @@ fullsend_reset_target_repo_git_config() {
   _fs_repo=$1
   _fs_object_format=$2
   if [ "${_fs_object_format}" = "sha256" ]; then
-    cat > "${_fs_repo}/.git/config" <<'EOF'
+    if ! cat > "${_fs_repo}/.git/config" <<'EOF'
 [core]
 	repositoryformatversion = 1
 	filemode = true
@@ -201,19 +201,24 @@ fullsend_reset_target_repo_git_config() {
 [extensions]
 	objectFormat = sha256
 EOF
+    then
+      echo "ERROR: failed to reset untrusted git config in '${_fs_repo}'" >&2
+      unset _fs_repo _fs_object_format
+      return 1
+    fi
   else
-    cat > "${_fs_repo}/.git/config" <<'EOF'
+    if ! cat > "${_fs_repo}/.git/config" <<'EOF'
 [core]
 	repositoryformatversion = 0
 	filemode = true
 	bare = false
 	logallrefupdates = true
 EOF
-  fi
-  if [ $? -ne 0 ]; then
-    echo "ERROR: failed to reset untrusted git config in '${_fs_repo}'" >&2
-    unset _fs_repo _fs_object_format
-    return 1
+    then
+      echo "ERROR: failed to reset untrusted git config in '${_fs_repo}'" >&2
+      unset _fs_repo _fs_object_format
+      return 1
+    fi
   fi
   unset _fs_repo _fs_object_format
 }
