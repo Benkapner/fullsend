@@ -319,15 +319,22 @@ The tail of a successful run:
   • Cleaning up sandbox
   ✓ Sandbox deleted (45.7s)
   • Running post-script: .fullsend/scripts/post-lint-docs.sh
+::stop-commands::0e3a20110bf83ae618cd260cbd0e67e4
 **2 broken links added in docs/**
 
 ### Broken links
 
 - `docs/a.md:14` -> `../missing.md`
 - `docs/b.md:3` -> `/docs/gone.md`
+::0e3a20110bf83ae618cd260cbd0e67e4::
 post-lint-docs: dry run, not posting
   ✓ Post-script completed (0.1s)
 ```
+
+The `::stop-commands::` lines around the preview stop GitHub Actions from
+reading anything the model wrote as a workflow command. The token is
+random on every run, so the model cannot predict the line that closes the
+block.
 
 With `--runtime claude`, the same agent against a real pull request — the
 model does the work, the schema gate runs, and the post-script still only
