@@ -202,7 +202,7 @@ func TestGeneratedPostScriptOkReplacesEarlierFindingsViaOnlyIfExists(t *testing.
 		t.Fatalf("the script never invoked fullsend on the ok path: %v; stderr:\n%s", err, stderr.String())
 	}
 	args := string(got)
-	for _, want := range []string{"issues\npost-comment\n", "--only-if-exists\n", "--marker\n", "fullsend-ai/demo\n", "99\n"} {
+	for _, want := range []string{"issues\npost-comment\n", "--only-if-exists\n", "--keep-history=false\n", "--marker\n", "fullsend-ai/demo\n", "99\n"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("fullsend was called without %q; args:\n%s", strings.TrimSpace(want), args)
 		}
@@ -275,5 +275,38 @@ func TestGeneratedPostScriptOkFailsWhenThePostFails(t *testing.T) {
 	)
 	if err := cmd.Run(); err == nil {
 		t.Fatal("ok must fail when fullsend issues post-comment fails")
+	}
+}
+
+// TestGeneratedPostScriptOkFailsWhenFullsendHelpFails pins that a broken
+// runner is not mistaken for an older CLI: a fullsend that is missing or
+// whose --help fails must fail the ok path, not silently post nothing.
+func TestGeneratedPostScriptOkFailsWhenFullsendHelpFails(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	binDir := t.TempDir()
+	stub := "#!/usr/bin/env bash\necho 'error: unable to load config' >&2\nexit 2\n"
+	if err := os.WriteFile(filepath.Join(binDir, "fullsend"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	runDir := writeRunDir(t, map[string]any{
+		"iteration-1": map[string]any{"status": "ok", "summary": "All clear", "comment": "All added documentation links resolve."},
+	})
+	cmd := exec.Command("bash", script)
+	cmd.Dir = runDir
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"ISSUE_URL=https://github.com/fullsend-ai/demo/pull/99",
+		"GH_TOKEN=test-token",
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err == nil {
+		t.Fatalf("ok must fail when fullsend --help fails; stderr:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "unable to load config") {
+		t.Fatalf("expected fullsend's own error in the log, got:\n%s", stderr.String())
 	}
 }

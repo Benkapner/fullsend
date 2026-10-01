@@ -114,7 +114,7 @@ func TestPostTrackerStickyComment_Create(t *testing.T) {
 	printer := ui.New(io.Discard)
 	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 
-	url, err := postTrackerStickyComment(context.Background(), tc, "acme/widgets", 42, "hello world", cfg, printer)
+	url, err := postTrackerStickyComment(context.Background(), tc, "acme/widgets", 42, "hello world", cfg, false, printer)
 	require.NoError(t, err)
 	assert.NotEmpty(t, url)
 
@@ -136,11 +136,11 @@ func TestPostTrackerStickyComment_Update(t *testing.T) {
 	ctx := context.Background()
 
 	// First post creates the comment.
-	_, err := postTrackerStickyComment(ctx, tc, "acme/widgets", 42, "first run", cfg, printer)
+	_, err := postTrackerStickyComment(ctx, tc, "acme/widgets", 42, "first run", cfg, false, printer)
 	require.NoError(t, err)
 
 	// Second post updates in-place.
-	_, err = postTrackerStickyComment(ctx, tc, "acme/widgets", 42, "second run", cfg, printer)
+	_, err = postTrackerStickyComment(ctx, tc, "acme/widgets", 42, "second run", cfg, false, printer)
 	require.NoError(t, err)
 
 	// Verify only one comment exists (updated, not duplicated).
@@ -157,7 +157,7 @@ func TestPostTrackerStickyComment_EmptyBody(t *testing.T) {
 	printer := ui.New(io.Discard)
 	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 
-	_, err := postTrackerStickyComment(context.Background(), tc, "acme/widgets", 42, "", cfg, printer)
+	_, err := postTrackerStickyComment(context.Background(), tc, "acme/widgets", 42, "", cfg, false, printer)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "comment body is empty")
 }
@@ -168,7 +168,7 @@ func TestPostTrackerStickyComment_EmptyMarker(t *testing.T) {
 	printer := ui.New(io.Discard)
 	cfg := sticky.Config{Marker: "", KeepHistory: true}
 
-	_, err := postTrackerStickyComment(context.Background(), tc, "acme/widgets", 42, "hello", cfg, printer)
+	_, err := postTrackerStickyComment(context.Background(), tc, "acme/widgets", 42, "hello", cfg, false, printer)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "marker is empty")
 }
@@ -180,7 +180,7 @@ func TestPostTrackerStickyComment_DryRun_Create(t *testing.T) {
 	printer := ui.New(io.Discard)
 	cfg := sticky.Config{Marker: "<!-- test -->", DryRun: true, KeepHistory: true}
 
-	url, err := postTrackerStickyComment(context.Background(), tc, "acme/widgets", 42, "hello", cfg, printer)
+	url, err := postTrackerStickyComment(context.Background(), tc, "acme/widgets", 42, "hello", cfg, false, printer)
 	require.NoError(t, err)
 	assert.Empty(t, url) // dry run returns empty URL
 
@@ -199,12 +199,12 @@ func TestPostTrackerStickyComment_DryRun_Update(t *testing.T) {
 	ctx := context.Background()
 
 	// Create the initial comment (not dry run).
-	_, err := postTrackerStickyComment(ctx, tc, "acme/widgets", 42, "first", cfg, printer)
+	_, err := postTrackerStickyComment(ctx, tc, "acme/widgets", 42, "first", cfg, false, printer)
 	require.NoError(t, err)
 
 	// Dry run update should not modify the comment.
 	cfg.DryRun = true
-	url, err := postTrackerStickyComment(ctx, tc, "acme/widgets", 42, "second", cfg, printer)
+	url, err := postTrackerStickyComment(ctx, tc, "acme/widgets", 42, "second", cfg, false, printer)
 	require.NoError(t, err)
 	assert.Empty(t, url)
 
@@ -721,7 +721,7 @@ func TestPostJiraStickyComment_DryRun_Create(t *testing.T) {
 	printer := ui.New(io.Discard)
 	cfg := sticky.Config{Marker: "<!-- test -->", DryRun: true, KeepHistory: true}
 
-	url, err := postJiraStickyComment(context.Background(), tc, "PROJ", 42, "hello", cfg, printer)
+	url, err := postJiraStickyComment(context.Background(), tc, "PROJ", 42, "hello", cfg, false, printer)
 	require.NoError(t, err)
 	assert.Empty(t, url)
 
@@ -740,12 +740,12 @@ func TestPostJiraStickyComment_DryRun_Update(t *testing.T) {
 	ctx := context.Background()
 
 	// Create the initial comment (not dry run).
-	_, err = postJiraStickyComment(ctx, tc, "PROJ", 42, "first", cfg, printer)
+	_, err = postJiraStickyComment(ctx, tc, "PROJ", 42, "first", cfg, false, printer)
 	require.NoError(t, err)
 
 	// Dry run update should not modify the comment.
 	cfg.DryRun = true
-	url, err := postJiraStickyComment(ctx, tc, "PROJ", 42, "second", cfg, printer)
+	url, err := postJiraStickyComment(ctx, tc, "PROJ", 42, "second", cfg, false, printer)
 	require.NoError(t, err)
 	assert.Empty(t, url)
 
@@ -761,7 +761,7 @@ func TestPostJiraStickyComment_EmptyBody(t *testing.T) {
 	printer := ui.New(io.Discard)
 	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 
-	_, err = postJiraStickyComment(context.Background(), tc, "PROJ", 42, "   ", cfg, printer)
+	_, err = postJiraStickyComment(context.Background(), tc, "PROJ", 42, "   ", cfg, false, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "comment body is empty")
 }
@@ -772,7 +772,7 @@ func TestPostJiraStickyComment_EmptyMarker(t *testing.T) {
 	printer := ui.New(io.Discard)
 	cfg := sticky.Config{Marker: "  ", KeepHistory: true}
 
-	_, err = postJiraStickyComment(context.Background(), tc, "PROJ", 42, "body", cfg, printer)
+	_, err = postJiraStickyComment(context.Background(), tc, "PROJ", 42, "body", cfg, false, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "marker is empty")
 }
@@ -1451,4 +1451,40 @@ func TestRunIssuesPostComment_Jira_OnlyIfExistsIgnoresPlantedMarker(t *testing.T
 	require.NoError(t, err)
 	require.Len(t, comments, 1)
 	assert.NotContains(t, string(comments[0].Body), "all clear")
+}
+
+func TestRunIssuesPostComment_OnlyIfExistsWithoutHistoryReplacesInPlace(t *testing.T) {
+	// The generated ok path passes --keep-history=false: the all-clear
+	// replaces the earlier findings, and repeated clean runs leave one
+	// all-clear rather than stacking identical "Previous run" blocks.
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	tc := tracker.NewForgeClient(fc)
+	noHistory := false
+	cfg := &issuesPostCommentConfig{
+		trackerName: trackerGitHub,
+		project:     "acme/widgets",
+		number:      42,
+		marker:      "<!-- test:agent -->",
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+		testBody:    "2 broken links",
+	}
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	cfg.onlyIfExists = true
+	cfg.keepHistory = &noHistory
+	cfg.testBody = "all clear"
+	for i := 0; i < 3; i++ {
+		require.NoError(t, runIssuesPostComment(ctx, cfg))
+	}
+
+	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	body := string(comments[0].Body)
+	assert.Equal(t, 1, strings.Count(body, "all clear"), "the all-clear replaces in place; got:\n%s", body)
+	assert.NotContains(t, body, "2 broken links")
+	assert.NotContains(t, body, "Previous run")
 }

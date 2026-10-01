@@ -21,12 +21,6 @@ type Config struct {
 	MaxSize      int    // max comment body size (default 65000)
 	DryRun       bool
 	KeepHistory  bool // when false, updates replace the body in-place with no "Previous run" history
-	// OnlyIfExists updates an existing marked comment but never creates one:
-	// a post-script uses it on an all-clear result so an earlier findings
-	// comment is replaced while a clean first run stays silent. It is
-	// honoured by `fullsend issues post-comment` (internal/cli), which also
-	// verifies the comment author; Post here does not read it.
-	OnlyIfExists bool
 }
 
 func (c Config) maxSize() int {

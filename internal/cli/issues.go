@@ -295,10 +295,9 @@ func runIssuesPostComment(ctx context.Context, cfg *issuesPostCommentConfig) err
 	}
 
 	stickyCfg := sticky.Config{
-		Marker:       cfg.marker,
-		DryRun:       cfg.dryRun,
-		KeepHistory:  keepHistory,
-		OnlyIfExists: cfg.onlyIfExists,
+		Marker:      cfg.marker,
+		DryRun:      cfg.dryRun,
+		KeepHistory: keepHistory,
 	}
 	if trackerName == trackerJira {
 		// The Jira write path routes every body through
@@ -319,9 +318,9 @@ func runIssuesPostComment(ctx context.Context, cfg *issuesPostCommentConfig) err
 	// path; otherwise fall back to the body-embedded path used by
 	// GitHub/GitLab.
 	if jc, ok := tc.(*tracker.JiraClient); ok {
-		_, err = postJiraStickyComment(ctx, jc, cfg.project, cfg.number, body, stickyCfg, printer)
+		_, err = postJiraStickyComment(ctx, jc, cfg.project, cfg.number, body, stickyCfg, cfg.onlyIfExists, printer)
 	} else {
-		_, err = postTrackerStickyComment(ctx, tc, cfg.project, cfg.number, body, stickyCfg, printer)
+		_, err = postTrackerStickyComment(ctx, tc, cfg.project, cfg.number, body, stickyCfg, cfg.onlyIfExists, printer)
 	}
 	return err
 }
@@ -336,7 +335,7 @@ func runIssuesPostComment(ctx context.Context, cfg *issuesPostCommentConfig) err
 // with ?expand=properties and matched by property value. On update, the
 // property is (re)set to handle legacy migration from body-embedded
 // markers.
-func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project string, number int, body string, cfg sticky.Config, printer *ui.Printer) (string, error) {
+func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project string, number int, body string, cfg sticky.Config, onlyIfExists bool, printer *ui.Printer) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("comment body is empty")
 	}
@@ -386,7 +385,7 @@ func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project 
 		return "", nil // Jira has no stable comment permalink
 	}
 
-	if cfg.OnlyIfExists {
+	if onlyIfExists {
 		printer.StepInfo("No existing comment with this marker; nothing to post (--only-if-exists)")
 		return "", nil
 	}
@@ -417,8 +416,9 @@ func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project 
 // exactly the login this client posts as, so a comment anyone could plant
 // with the same marker is ignored. When that login cannot be resolved
 // (after a short retry) it returns an error and posts nothing, with or
-// without OnlyIfExists.
-func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project string, number int, body string, cfg sticky.Config, printer *ui.Printer) (string, error) {
+// without onlyIfExists, which updates an existing comment but never
+// creates one.
+func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project string, number int, body string, cfg sticky.Config, onlyIfExists bool, printer *ui.Printer) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("comment body is empty")
 	}
@@ -460,7 +460,7 @@ func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project st
 		return existing.HTMLURL, nil
 	}
 
-	if cfg.OnlyIfExists {
+	if onlyIfExists {
 		printer.StepInfo("No existing comment with this marker; nothing to post (--only-if-exists)")
 		return "", nil
 	}
