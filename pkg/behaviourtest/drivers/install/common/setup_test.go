@@ -157,6 +157,23 @@ func TestRunGitHubSetupWithOpts_ConfigPresetOmitsRuntime(t *testing.T) {
 	assert.NotContains(t, joined, "--runtime")
 }
 
+func TestRunGitHubSetupWithOpts_ConfigPresetWithExplicitRuntime(t *testing.T) {
+	var capturedArgs []string
+	runner := func(_, _ string, args ...string) (string, error) {
+		capturedArgs = args
+		return "", nil
+	}
+
+	opts := GitHubSetupOpts{Vendor: true, ConfigPreset: "./presets/bt.yaml", Runtime: "dummy-playback"}
+	err := RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
+	require.NoError(t, err)
+
+	joined := strings.Join(capturedArgs, " ")
+	assert.Contains(t, joined, "--config ./presets/bt.yaml")
+	assert.Contains(t, joined, "--runtime dummy-playback",
+		"an explicit Runtime must be forwarded even with a preset, so post-install validation (which checks opts.Runtime) matches what was actually installed")
+}
+
 func TestRunGitHubSetupWithOpts_ConfigPresetWithFullsendRef(t *testing.T) {
 	var capturedArgs []string
 	runner := func(_, _ string, args ...string) (string, error) {

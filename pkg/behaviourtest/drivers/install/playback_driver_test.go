@@ -80,23 +80,6 @@ func TestPlaybackDriver_SetRepoHint_NoOp(t *testing.T) {
 	assert.NotPanics(t, func() { pd.SetRepoHint("Some Scenario Name") })
 }
 
-func TestPlaybackDriver_InstalledBotToken_Found(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.VariableValues = map[string]string{"acme/test-repo-01/FULLSEND_FORGE_TOKEN": "tok-123"}
-	pd := NewPlaybackDriver(&fakeBaseDriver{}, "acme", client, t.Logf)
-
-	tok, err := pd.InstalledBotToken(context.Background(), "test-repo-01")
-	require.NoError(t, err)
-	assert.Equal(t, "tok-123", tok)
-}
-
-func TestPlaybackDriver_InstalledBotToken_NotFound(t *testing.T) {
-	pd := NewPlaybackDriver(&fakeBaseDriver{}, "acme", forge.NewFakeClient(), t.Logf)
-
-	_, err := pd.InstalledBotToken(context.Background(), "test-repo-01")
-	assert.ErrorContains(t, err, "FULLSEND_FORGE_TOKEN not found")
-}
-
 func TestPlaybackInstallHooks_NonPlaybackRuntime_NoHooks(t *testing.T) {
 	hooks := playbackInstallHooks(common.GitHubSetupOpts{}, t.Logf)
 	assert.Nil(t, hooks.BeforeInstall)
@@ -139,4 +122,53 @@ func TestPlaybackSetupOpts_HonoursEnvOverride(t *testing.T) {
 	t.Setenv("PLAYBACK_RUNTIME", "dummy-playback")
 	opts := playbackSetupOpts()
 	assert.Equal(t, "dummy-playback", opts.Runtime)
+}
+
+// TestPlaybackSetupOpts_PropagatesConfigPreset is a regression test for a
+// factory-path bug: NewRepoPoolCFMintPreviews builds its GitHubSetupOpts via
+// playbackSetupOpts instead of common.DefaultGitHubSetupOpts, and the
+// replacement silently dropped BEHAVIOUR_CONFIG_PRESET (unlike
+// newRepoEnsurer, which applies it onto the vendored-mode defaults). That
+// made ordinary DEV suites silently lose their requested preset even when
+// PLAYBACK_RUNTIME is unset. playbackSetupOpts must forward the preset so
+// it reaches `github setup` as --config.
+func TestPlaybackSetupOpts_PropagatesConfigPreset(t *testing.T) {
+	t.Setenv("PLAYBACK_RUNTIME", "")
+	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "https://example.com/preset.yaml")
+	opts := playbackSetupOpts()
+	assert.Equal(t, "https://example.com/preset.yaml", opts.ConfigPreset)
+
+	var capturedArgs []string
+	runner := func(_, _ string, args ...string) (string, error) {
+		capturedArgs = args
+		return "", nil
+	}
+	err := common.RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
+	require.NoError(t, err)
+	assert.Contains(t, capturedArgs, "--config")
+	assert.Contains(t, capturedArgs, "https://example.com/preset.yaml")
+}
+
+// TestPlaybackSetupOpts_ConfigPresetAndRuntime is a regression test
+// covering the combined preset + explicit playback runtime case: the
+// installed runtime must match what doEnsure's post-install validation
+// expects (opts.Runtime), even when a config preset is also set.
+func TestPlaybackSetupOpts_ConfigPresetAndRuntime(t *testing.T) {
+	t.Setenv("PLAYBACK_RUNTIME", "dummy-playback")
+	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "https://example.com/preset.yaml")
+	opts := playbackSetupOpts()
+	assert.Equal(t, "https://example.com/preset.yaml", opts.ConfigPreset)
+	assert.Equal(t, "dummy-playback", opts.Runtime)
+
+	var capturedArgs []string
+	runner := func(_, _ string, args ...string) (string, error) {
+		capturedArgs = args
+		return "", nil
+	}
+	err := common.RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
+	require.NoError(t, err)
+	assert.Contains(t, capturedArgs, "--config")
+	assert.Contains(t, capturedArgs, "https://example.com/preset.yaml")
+	assert.Contains(t, capturedArgs, "--runtime")
+	assert.Contains(t, capturedArgs, "dummy-playback")
 }

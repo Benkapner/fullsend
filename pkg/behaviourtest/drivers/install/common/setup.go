@@ -77,10 +77,17 @@ func RunGitHubSetupWithOpts(
 		"--skip-app-setup",
 		"--mint-url", mintURL,
 	}
-	// Omit --runtime when a preset is supplied so the preset's runtime is
-	// inherited rather than pinned in the overlay.
+	// Omit the implicit default runtime when a preset is supplied so the
+	// preset's runtime is inherited rather than pinned in the overlay.
+	// When the caller explicitly set Runtime (e.g. "dummy-playback"), it
+	// must still win over the preset's embedded runtime — otherwise the
+	// install runs the preset's runtime while doEnsure's post-install
+	// validation checks against opts.Runtime, a mismatch.
 	if preset := strings.TrimSpace(opts.ConfigPreset); preset != "" {
 		args = append(args, "--config", preset)
+		if opts.Runtime != "" {
+			args = append(args, "--runtime", opts.Runtime)
+		}
 	} else {
 		runtime := opts.Runtime
 		if runtime == "" {

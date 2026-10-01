@@ -1,9 +1,11 @@
-// playback_driver.go implements PlaybackDriver, which decorates a
-// standard behaviour repo-pool Driver with the dummy-playback runtime's
-// tracking-comment setup. Allocation, WIF resolution, installation,
-// cleanup, and capacity all remain owned by the wrapped Driver — this
-// keeps the existing pool-based driver paths untouched while giving
-// playback scenarios the extra bookkeeping they need.
+// playback_driver.go implements PlaybackDriver, a playback-mode marker
+// and delegating wrapper around a standard behaviour repo-pool Driver.
+// Allocation, WIF resolution, installation, cleanup, and capacity all
+// remain owned by the wrapped Driver — this keeps the existing
+// pool-based driver paths untouched. The tracking-issue/comment setup
+// playback scenarios rely on is provisioned separately via
+// playbackInstallHooks, attached to the repoEnsurer by the factories
+// (e.g. NewRepoPoolCFMintPreviews) alongside PlaybackDriver construction.
 package install
 
 import (
@@ -18,11 +20,14 @@ import (
 // playbackRuntime is the config runtime name used for playback installs.
 const playbackRuntime = "dummy-playback"
 
-// PlaybackDriver decorates a standard behaviour repo-pool Driver with the
-// dummy-playback runtime's tracking-comment setup. The wrapped Driver
-// still owns AllocateRepo/DeallocateRepo/Finalize/Capacity; PlaybackDriver
-// only adds the post-install hook that creates the per-repo playback
-// tracking issue.
+// PlaybackDriver is a playback-mode marker and delegating wrapper around
+// a standard behaviour repo-pool Driver: World.IsPlaybackMode type-asserts
+// on it to detect a playback suite, and it forwards
+// AllocateRepo/DeallocateRepo/Finalize/Capacity unchanged to the wrapped
+// Driver. The tracking-issue/comment setup playback installs rely on is
+// provisioned by playbackInstallHooks, attached to the repoEnsurer
+// independently of this wrapper. org and client are retained for the
+// shared playback step definitions (not yet wired in this package).
 type PlaybackDriver struct {
 	base   Driver
 	org    string
@@ -34,8 +39,9 @@ type PlaybackDriver struct {
 // base is typically constructed by one of the existing Factory functions
 // (e.g. NewRepoPoolCFMintPreviews, NewRepoPoolCFMintStage) using
 // GitHubSetupOpts.Runtime set to "dummy-playback" so installed repos run
-// the playback runtime; this wrapper adds the tracking-issue bookkeeping
-// those installs rely on.
+// the playback runtime; playbackInstallHooks (attached to the ensurer by
+// the same factory) provisions the tracking-issue bookkeeping those
+// installs rely on.
 func NewPlaybackDriver(base Driver, org string, client forge.Client, logf func(string, ...any)) *PlaybackDriver {
 	return &PlaybackDriver{base: base, org: org, client: client, logf: logf}
 }
@@ -62,20 +68,6 @@ func (d *PlaybackDriver) Finalize(ctx context.Context) error {
 
 // Capacity delegates to the wrapped Driver.
 func (d *PlaybackDriver) Capacity() int { return d.base.Capacity() }
-
-// InstalledBotToken reads the FULLSEND_FORGE_TOKEN repo variable that
-// github setup writes during install, so playback steps can act as the
-// installed bot identity without needing a separate credential.
-func (d *PlaybackDriver) InstalledBotToken(ctx context.Context, repoName string) (string, error) {
-	val, ok, err := d.client.GetRepoVariable(ctx, d.org, repoName, "FULLSEND_FORGE_TOKEN")
-	if err != nil {
-		return "", fmt.Errorf("reading FULLSEND_FORGE_TOKEN: %w", err)
-	}
-	if !ok {
-		return "", fmt.Errorf("FULLSEND_FORGE_TOKEN not found on %s/%s", d.org, repoName)
-	}
-	return val, nil
-}
 
 // Compile-time check: PlaybackDriver implements Driver.
 var _ Driver = (*PlaybackDriver)(nil)
@@ -120,16 +112,18 @@ func playbackInstallHooks(opts common.GitHubSetupOpts, logf func(string, ...any)
 	}
 }
 
-// playbackSetupOpts returns vendored-mode GitHubSetupOpts with Runtime set
-// to the playback runtime when PLAYBACK_RUNTIME is set in the
-// environment, and the normal "dummy" runtime (Runtime left empty)
-// otherwise. Factories that build the shared pool driver (e.g.
-// NewRepoPoolCFMintPreviews) call this instead of
-// common.DefaultGitHubSetupOpts() so the same factory can back either a
-// normal behaviour suite or a playback suite depending on how the
-// process was launched.
+// playbackSetupOpts returns vendored-mode GitHubSetupOpts with ConfigPreset
+// populated from BEHAVIOUR_CONFIG_PRESET (same as newRepoEnsurer) and
+// Runtime set to the playback runtime when PLAYBACK_RUNTIME is set in the
+// environment, or left empty (normal "dummy" runtime) otherwise. Factories
+// that build the shared pool driver (e.g. NewRepoPoolCFMintPreviews) call
+// this instead of common.DefaultGitHubSetupOpts() so the same factory can
+// back either a normal behaviour suite or a playback suite depending on
+// how the process was launched, without losing BEHAVIOUR_CONFIG_PRESET
+// support for ordinary (non-playback) suites.
 func playbackSetupOpts() common.GitHubSetupOpts {
 	opts := common.DefaultGitHubSetupOpts()
+	opts.ConfigPreset = envConfigPreset()
 	if runtime := os.Getenv("PLAYBACK_RUNTIME"); runtime != "" {
 		opts.Runtime = runtime
 	}
