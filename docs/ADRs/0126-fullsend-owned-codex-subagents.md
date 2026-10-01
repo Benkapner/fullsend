@@ -67,8 +67,10 @@ Codex children run under a policy the runner provisions and enforces.
   generic `default` and an instruction-only `explore` role. Every other agent runs with
   Codex's multi-agent tools off (`[agents] enabled = false`), a parent whose entry
   selects V2 or that is not in the bundled catalog included.
-- Child models resolve in the order decided on #6970: `subagents.<persona>`, then
-  `FULLSEND_CODEX_SUBAGENT_MODEL`, then `subagents.default`, then `gpt-5.6-luna`.
+- Child models resolve in the order the maintainer decided on #6970 (the decision of
+  2026-09-03 and the implementation request of 2026-09-25, which replaced the issue body's
+  parent-model default): `subagents.<persona>`, then `FULLSEND_CODEX_SUBAGENT_MODEL`, then
+  `subagents.default`, then `gpt-5.6-luna`.
   The environment variable sits above the repository default because it is the
   per-run operator override (a validation pass or a cost cap) and below a persona's
   own entry because that entry is a deliberate per-persona choice. `gpt-5.6-luna` is
@@ -77,18 +79,21 @@ Codex children run under a policy the runner provisions and enforces.
   catalog that can delegate at all serves it. Bootstrap generates each role file. A
   persona with its own entry carries that model in its role file; every other child
   runs the run-level default, which Bootstrap sets as `agents.default_subagent_model`.
-  Only OpenAI model IDs are accepted. Bootstrap reads the pinned CLI's bundled catalog
-  (`codex debug models --bundled`, offline) and fails when a resolved child model is not
-  in it, because Codex checks the run-level default only at each spawn and a role-file
-  model not at all. Persona `model:` and `tools:` frontmatter is reported, not applied.
+  Only OpenAI model IDs are accepted, through the same translation as the parent's model
+  (an `openai/` prefix is stripped, a Claude alias rejected). Bootstrap reads the pinned
+  CLI's bundled catalog (`codex debug models --bundled`, offline) and fails when a
+  resolved child model is not in it, because Codex checks the run-level default only at
+  each spawn and a role-file model not at all. Persona `model:` and `tools:` frontmatter
+  is reported, not applied.
 - A mandatory PreToolUse hook, installed whenever harness security is enabled, even with
   every individual sandbox hook disabled, admits only a V1 spawn of a registered role with
-  `fork_context: false` and no model or effort override. It rejects resume and any spawn
-  from a child. Its matcher covers the two namespaces Codex gives its multi-agent tools
+  `fork_context` present and false and no `model` or `reasoning_effort` key, whatever its
+  value. It rejects resume and any spawn from a child, which it recognises by the
+  `agent_id` Codex puts only in a child's hook payload. Its matcher covers the two namespaces Codex gives its multi-agent tools
   (`multi_agent_v1…`, `collaboration…`) and any bare name ending in `spawn_agent` or
   `resume_agent`; inside that set the handler is deny-by-default: it admits the V1 spawn
   under the policy above, passes the V1 `wait_agent`, `close_agent` and `send_input`
-  through, and denies every other name, the resume, the V2 tools and any tool a later
+  through (as hook names, `multi_agent_v1` joined with each), and denies every other name, the resume, the V2 tools and any tool a later
   CLI adds to either namespace included. A dispatch tool outside both namespaces would
   not reach the hook; the per-bump revalidation diffs the multi-agent tool set at the
   source for one, and Codex's own depth and open-children limits still apply to it.
@@ -126,8 +131,10 @@ Codex children run under a policy the runner provisions and enforces.
   the agent-writable `$CODEX_HOME` and is integrity-checked before each iteration, so
   within an iteration the parent can replace it with one that admits everything,
   digest check included. The spawn-time digest check therefore adds coverage only
-  against a mid-iteration role or `hooks.json` edit that leaves the adapter untouched;
-  tampering between iterations is caught by the launch-time guard either way. Of the
+  against a mid-iteration role or `hooks.json` edit made before the check and leaving the
+  adapter untouched; an edit between the check and Codex's reread at child start is the
+  time-of-check window Option 4 names; tampering between iterations is caught by the
+  launch-time guard either way. Of the
   Decision's fail-open outcomes, an interpreter that fails to start is the same residual,
   reached within an iteration only through the same tampering, and Option 4 closes both.
   Starvation is not: a parent's background processes can hold CPU or I/O until Codex's
