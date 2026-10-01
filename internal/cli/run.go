@@ -2173,7 +2173,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 9b-1. Let OpenShell 0.1.2's first settings poll pass before any network
 	// request; it terminates connections in flight (OpenShell #3809). Remove
 	// with openShellFirstPollSettle once the pin includes the upstream fix.
-	waitForOpenShellFirstPoll(sandboxReadyAt, printer)
+	if _, err := waitForOpenShellFirstPoll(ctx, sandboxReadyAt, printer); err != nil {
+		return fmt.Errorf("waiting for the sandbox's first policy poll: %w", err)
+	}
 
 	// 9b-2. Pre-flight GitHub API connectivity check.
 	// Validates that the sandbox can reach api.github.com through the proxy

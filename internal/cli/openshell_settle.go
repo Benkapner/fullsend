@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -22,24 +23,34 @@ import (
 // Remove this once fullsend pins an OpenShell release that includes #3819.
 const openShellFirstPollSettle = 12 * time.Second
 
-// Test seams.
-var (
-	settleNow   = time.Now
-	settleSleep = time.Sleep
-)
+// settleNowFn returns the current time for waitForOpenShellFirstPoll.
+// Override in tests to fix the clock.
+var settleNowFn = time.Now
 
-// waitForOpenShellFirstPoll sleeps for whatever remains of
+// settleAfterFn returns a channel that fires after the given duration, like
+// time.After. Override in tests to skip or hold the real wait.
+var settleAfterFn = time.After
+
+// waitForOpenShellFirstPoll waits for whatever remains of
 // openShellFirstPollSettle since readyAt and returns how long it waited.
 // It returns immediately when that much time has already passed, so slow
-// bootstraps pay nothing.
-func waitForOpenShellFirstPoll(readyAt time.Time, printer *ui.Printer) time.Duration {
-	remaining := openShellFirstPollSettle - settleNow().Sub(readyAt)
+// bootstraps pay nothing, and it stops early with ctx's error when the run
+// is cancelled.
+func waitForOpenShellFirstPoll(ctx context.Context, readyAt time.Time, printer *ui.Printer) (time.Duration, error) {
+	remaining := openShellFirstPollSettle - settleNowFn().Sub(readyAt)
 	if remaining <= 0 {
-		return 0
+		return 0, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 	if printer != nil {
 		printer.StepInfo(fmt.Sprintf("Waiting %.1fs for the sandbox's first policy poll (OpenShell #3809)", remaining.Seconds()))
 	}
-	settleSleep(remaining)
-	return remaining
+	select {
+	case <-settleAfterFn(remaining):
+		return remaining, nil
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 }
