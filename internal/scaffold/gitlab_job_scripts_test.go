@@ -226,6 +226,42 @@ func TestRunAgentJobScript_DebugTraceAborts(t *testing.T) {
 	assert.Contains(t, string(out), "CI_DEBUG_TRACE enabled")
 }
 
+// TestRunAgentJobScript_RejectsUserinfoAPIURL proves that a userinfo-bearing
+// CI_API_V4_URL is rejected before the identity pin trusts it. run-agent-job.sh
+// sources pin-ci-job-identity.sh (gitlabPinCIJobIdentityScriptPath) first, and
+// that helper — not run-agent-job.sh itself — is what validates CI_API_V4_URL,
+// so the fixture must install it (plus trust-ci-server-ca.sh, which it
+// sources) and supply CI_JOB_TOKEN so execution actually reaches that
+// validation instead of failing earlier for unrelated reasons.
+func TestRunAgentJobScript_RejectsUserinfoAPIURL(t *testing.T) {
+	root := t.TempDir()
+	writeGitLabScript(t, root, ".gitlab/ci/scripts/trust-ci-server-ca.sh")
+	writeGitLabScript(t, root, gitlabPinCIJobIdentityScriptPath)
+	writeGitLabScript(t, root, ".gitlab/ci/scripts/select-gitlab-role-token.sh")
+	script := writeGitLabScript(t, root, gitlabRunAgentJobScriptPath)
+
+	cmd := exec.Command("bash", "-c", "set -euo pipefail; . \"$SCRIPT\"")
+	cmd.Env = []string{
+		"SCRIPT=" + script,
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"CI_PROJECT_DIR=" + root,
+		"CI_JOB_TOKEN=job-token",
+		"FULLSEND_FORGE_TOKEN=shared-pat",
+		"CI_SERVER_URL=https://gitlab.example",
+		"CI_SERVER_HOST=gitlab.example",
+		// "${host%:*}" alone strips everything up to the last colon, so
+		// this would previously resolve to hostname "gitlab.example" (a
+		// match against CI_SERVER_HOST) even though the request actually
+		// goes to "attacker.example" — "gitlab.example:443" is HTTP
+		// userinfo here, not the host.
+		"CI_API_V4_URL=https://gitlab.example:443@attacker.example/api/v4",
+	}
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, string(out), "CI_API_V4_URL contains characters not permitted in a GitLab API root")
+}
+
 func TestInstallFullsendCLIScript_DebugTraceAborts(t *testing.T) {
 	root := t.TempDir()
 	writeGitLabScript(t, root, ".gitlab/ci/scripts/trust-ci-server-ca.sh")

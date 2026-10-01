@@ -541,10 +541,11 @@ func TestGitLabAgentTemplateFixChecksOutMRSourceBeforeSandbox(t *testing.T) {
 	assert.Contains(t, s, `git show "${DEFAULT_BRANCH_SHA}:.fullsend/config.yaml"`)
 	assert.Contains(t, s, `git show "${DEFAULT_BRANCH_SHA}:.fullsend/eval/measurements/${STAGE}.yaml"`)
 
-	// Fork MRs still cannot run the fix stage; the checkout helper
-	// itself also fails closed on any cross-project source mismatch
-	// (see TestCheckoutMRSource_CrossProjectSourceRejected) — there is
-	// no cross-project fetch path in this implementation.
+	// Fork jobs still die at the job-level IS_FORK gate before reaching
+	// this checkout logic — that gate is unchanged by this PR. The
+	// checkout helper itself, however, has a working cross-project fetch
+	// path for when a future PR lifts that gate (see
+	// TestCheckoutMRSource_CrossProjectSourceCheckedOut).
 	assert.Contains(t, s, "Fork MR detected")
 }
 
