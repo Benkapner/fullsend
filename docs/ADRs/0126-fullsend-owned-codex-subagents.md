@@ -82,9 +82,9 @@ Codex children run under a policy the runner provisions and enforces.
   Only OpenAI model IDs are accepted, through the same translation as the parent's model
   (an `openai/` prefix is stripped, a Claude alias rejected). Bootstrap reads the pinned
   CLI's bundled catalog (`codex debug models --bundled`, offline) and fails when a
-  resolved child model is not in it, because Codex checks the run-level default only at
-  each spawn and a role-file model not at all. Persona `model:` and `tools:` frontmatter
-  is reported, not applied.
+  resolved child model is not in it, because Codex validates the run-level default
+  against its catalog only when a spawn uses it, and a role-file model never. Persona
+  `model:` and `tools:` frontmatter is reported, not applied.
 - A mandatory PreToolUse hook, installed whenever harness security is enabled, even with
   every individual sandbox hook disabled, admits only a V1 spawn of a registered role with
   `fork_context` present and false and no `model` or `reasoning_effort` key, whatever its
@@ -101,7 +101,9 @@ Codex children run under a policy the runner provisions and enforces.
   Native configuration limits depth to one and open children to four.
 - Before admitting a spawn, the hook checks `hooks.json` and the role files against
   digests the runner recorded at Bootstrap, as the ADR 0100 adapter does for each
-  hook script before invoking it.
+  hook script before invoking it. `config.toml`, which carries the run-level default,
+  is not in that set: Codex reads it once at launch and never again, so a rewrite after
+  launch cannot reach a child, and the launch-time guard covers it between iterations.
 - The hook denies by exiting 2 with a reason on stderr, the outcome Codex honours as a
   block. Every path the handler controls ends that way: a policy violation, a digest
   mismatch, a missing file, unreadable input or any exception, and the reason is never
@@ -126,7 +128,10 @@ Codex children run under a policy the runner provisions and enforces.
   `FULLSEND_CODEX_SUBAGENT_MODEL` and ends at `gpt-5.6-luna` instead of the parent's
   live model, persona `tools:` are instructions only (every child has the parent's
   shell and `apply_patch`), and an unregistered role is always rejected, because a
-  delegating agent always has `default` and `explore` registered.
+  delegating agent always has `default` and `explore` registered. The unrestricted
+  child is an accepted limit of Option 3, not a control left out: Codex has no per-child
+  tool allowlist, so a review or retro child can do what its parent can, under the same
+  hooks.
 - `code` and `fix` declare no `tools:`, so they also get roles, as on pi.
 - The residual is a rewritten checker, not only a race: the hook adapter lives under
   the agent-writable `$CODEX_HOME` and is integrity-checked before each iteration, so
@@ -148,9 +153,9 @@ Codex children run under a policy the runner provisions and enforces.
   floor model are revalidated on each Codex CLI bump.
 
 Verified against `rust-v0.159.3` (the sandbox image pin): role-file and `hooks.json`
-reload at child start, the spawn arguments, the V1 tool set and the hook-name rule, the
-exact-or-regex matcher rule, the hook outcomes (exit 2 with a reason blocks; exit 2
-without one, another exit, an `async` handler or a timeout does not),
-`codex debug models --bundled`, the catalog's V1 entries and the version Codex supplies
-to an entry that carries none (`multi_agent`, on by default). The checks ran on the
-0.157.0, 0.159.0 and 0.159.3 binaries.
+reload at child start, `config.toml` read once at launch, the spawn arguments, the V1
+tool set and the hook-name rule, the exact-or-regex matcher rule, the hook outcomes
+(exit 2 with a reason blocks; exit 2 without one, another exit, an `async` handler or a
+timeout does not), `codex debug models --bundled`, the catalog's V1 entries and the
+version Codex supplies to an entry that carries none (`multi_agent`, on by default). The
+checks ran on the 0.157.0, 0.159.0 and 0.159.3 binaries.
