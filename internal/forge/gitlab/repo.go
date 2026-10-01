@@ -1173,24 +1173,70 @@ var interveningWriteActions = map[string]struct{}{
 }
 
 // guardAgainstInterveningWrite returns a copy of actions with last_commit_id
-// set to startSHA on every update/move/delete action, so GitLab atomically
-// rejects the retry if the target file changed after startSHA. Actions for
-// which GitLab ignores last_commit_id (e.g. create) are passed through
-// unmodified. See retryCommitWithoutStartSHA for why this guard is required.
-func guardAgainstInterveningWrite(actions []map[string]any, startSHA string) []map[string]any {
+// set, on every update/move/delete action, to the SHA of the last commit
+// that actually touched that action's file as of ref — not the branch tip —
+// so GitLab atomically rejects the retry if the target file changed since
+// then. GitLab's last_commit_id check is matched against the file's own
+// history: when other files advanced the branch past the commit that last
+// touched this path, passing the tip itself would send a value GitLab never
+// recorded for this file and incorrectly reject an uncontended update.
+// Actions for which GitLab ignores last_commit_id (e.g. create) are passed
+// through unmodified. See retryCommitWithoutStartSHA for why this guard is
+// required.
+func (c *LiveClient) guardAgainstInterveningWrite(ctx context.Context, owner, repo, ref string, actions []map[string]any) ([]map[string]any, error) {
 	guarded := make([]map[string]any, len(actions))
+	lastCommitByPath := make(map[string]string, len(actions))
 	for i, action := range actions {
 		actionType, _ := action["action"].(string)
 		if _, guardable := interveningWriteActions[actionType]; !guardable {
 			guarded[i] = action
 			continue
 		}
+		path, _ := action["file_path"].(string)
+		lastCommit, ok := lastCommitByPath[path]
+		if !ok {
+			var err error
+			lastCommit, err = c.resolveLastCommitForPath(ctx, owner, repo, ref, path)
+			if err != nil {
+				return nil, err
+			}
+			lastCommitByPath[path] = lastCommit
+		}
 		withGuard := make(map[string]any, len(action)+1)
 		maps.Copy(withGuard, action)
-		withGuard["last_commit_id"] = startSHA
+		withGuard["last_commit_id"] = lastCommit
 		guarded[i] = withGuard
 	}
-	return guarded
+	return guarded, nil
+}
+
+// resolveLastCommitForPath returns the SHA of the most recent commit that
+// touched path as of ref. It is used to build the per-file last_commit_id
+// guard in guardAgainstInterveningWrite: GitLab compares last_commit_id
+// against the file's own last-modifying commit, not the branch tip, so this
+// must be resolved from the file's commit history rather than assumed to
+// equal ref.
+func (c *LiveClient) resolveLastCommitForPath(ctx context.Context, owner, repo, ref, path string) (string, error) {
+	proj := projectPath(owner, repo)
+	params := url.Values{}
+	params.Set("ref_name", ref)
+	params.Set("path", path)
+	params.Set("per_page", "1")
+	resp, err := c.get(ctx, fmt.Sprintf("/projects/%s/repository/commits?%s", proj, params.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("list commits for %s: %w", path, err)
+	}
+
+	var commits []struct {
+		ID string `json:"id"`
+	}
+	if err := decodeJSON(resp, &commits); err != nil {
+		return "", fmt.Errorf("decode commits for %s: %w", path, err)
+	}
+	if len(commits) == 0 {
+		return "", fmt.Errorf("%w: no commit history for %s at %s", forge.ErrNotFound, path, ref)
+	}
+	return commits[0].ID, nil
 }
 
 // retryCommitWithoutStartSHA handles the self-hosted GitLab EE quirk
@@ -1207,13 +1253,16 @@ func guardAgainstInterveningWrite(actions []map[string]any, startSHA string) []m
 // since a writer can still land a commit on the target file between that
 // GET and the retry POST below, and the retry carries no start_sha to let
 // GitLab's own fast-forward check catch it. To close that window, the
-// retry payload's update/move/delete actions carry last_commit_id set to
-// startSHA, GitLab's own per-file optimistic-concurrency guard: GitLab
-// atomically rejects the commit with a 400 "file has changed" error if the
-// file was touched since startSHA, instead of silently overwriting the
-// intervening writer's change. That rejection is mapped to
-// forge.ErrNonFastForward so persistWithCAS reloads and retries rather
-// than reporting a stale write as success.
+// retry payload's update/move/delete actions carry last_commit_id resolved
+// per file (see guardAgainstInterveningWrite) to that file's own
+// last-touching commit as of startSHA — not startSHA itself, which is the
+// branch tip and may postdate the file's last change if other files were
+// committed in between. GitLab atomically rejects the commit with a 400
+// "file has changed" error if the file was touched since its resolved
+// last_commit_id, instead of silently overwriting the intervening writer's
+// change. That rejection is mapped to forge.ErrNonFastForward so
+// persistWithCAS reloads and retries rather than reporting a stale write as
+// success.
 //
 // guardAgainstInterveningWrite only covers update/move/delete actions;
 // GitLab ignores last_commit_id on create actions, so it has no
@@ -1224,6 +1273,16 @@ func guardAgainstInterveningWrite(actions []map[string]any, startSHA string) []m
 // above. That is also a genuine intervening-write conflict and must map to
 // forge.ErrNonFastForward so persistWithCAS reloads and retries instead of
 // aborting on a generic error.
+//
+// Symmetrically, if the retained action is "update" or "delete" (the file
+// existed at startSHA) and another writer deletes that file between the tip
+// GET above and the retry POST below, GitLab rejects with a "doesn't exist"
+// message instead of either message above. Deleting the file requires a
+// commit, so the branch tip must have advanced past startSHA; that is
+// confirmed with a fresh tip check before mapping the ambiguous message to
+// forge.ErrNonFastForward, so persistWithCAS reloads, sees the file is gone,
+// and rebuilds the action as a create instead of aborting on a generic
+// error.
 func (c *LiveClient) retryCommitWithoutStartSHA(ctx context.Context, owner, repo, branch, startSHA string, payload map[string]any) (bool, error) {
 	tip, err := c.GetBranchRef(ctx, owner, repo, branch)
 	if err != nil {
@@ -1240,7 +1299,11 @@ func (c *LiveClient) retryCommitWithoutStartSHA(ctx context.Context, owner, repo
 	maps.Copy(retryPayload, payload)
 	delete(retryPayload, "start_sha")
 	if actions, ok := retryPayload["actions"].([]map[string]any); ok {
-		retryPayload["actions"] = guardAgainstInterveningWrite(actions, startSHA)
+		guarded, err := c.guardAgainstInterveningWrite(ctx, owner, repo, startSHA, actions)
+		if err != nil {
+			return false, fmt.Errorf("guard against intervening write: %w", err)
+		}
+		retryPayload["actions"] = guarded
 	}
 
 	proj := projectPath(owner, repo)
@@ -1254,6 +1317,15 @@ func (c *LiveClient) retryCommitWithoutStartSHA(ctx context.Context, owner, repo
 			}
 			if strings.Contains(msg, "already exists") {
 				return false, fmt.Errorf("%w: file created concurrently in %s since start_sha %s: %w", forge.ErrNonFastForward, branch, startSHA, err)
+			}
+			if strings.Contains(msg, "doesn't exist") {
+				// Ambiguous on its own: confirm the branch actually
+				// advanced (the deletion itself must be a commit) before
+				// classifying this as a conflict rather than some other
+				// failure.
+				if liveTip, tipErr := c.GetBranchRef(ctx, owner, repo, branch); tipErr == nil && liveTip != startSHA {
+					return false, fmt.Errorf("%w: file deleted concurrently in %s since start_sha %s: %w", forge.ErrNonFastForward, branch, startSHA, err)
+				}
 			}
 		}
 		return false, fmt.Errorf("retry commit to %s without start_sha: %w", branch, err)
