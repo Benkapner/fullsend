@@ -127,10 +127,14 @@ or a Jira user with Edit All Comments) is still trusted: their edits are
 kept as history when the comment is next updated.
 
 If that identity cannot be resolved after a short retry, the command
-fails with an error naming the cause and posts or edits nothing. Rerun
-it if the failure was transient; otherwise check that the token can read
-its own identity. Posting a new comment instead would leave the earlier
-one behind with content no later run updates.
+fails with an error naming the cause and posts or edits nothing. Posting
+a new comment instead would leave the earlier one behind with content no
+later run updates. To recover:
+
+1. Rerun the command. A transient API failure clears on its own.
+2. If it fails again, check that the token can read its own identity:
+   `GET /user` (or the GraphQL `viewer`) on GitHub, `GET /user` on
+   GitLab, `GET /myself` on Jira.
 
 ## Environment variables
 

@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 )
 
 func TestSplitProject(t *testing.T) {
@@ -397,7 +396,7 @@ var _ Client = staticClient{}
 var _ Client = (*ForgeClient)(nil)
 var _ Reactor = (*ForgeClient)(nil)
 
-func TestForgeClientAuthenticatedUser(t *testing.T) {
+func TestForgeClient_AuthenticatedUser(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "fullsend-ai-review[bot]"
 	got, err := NewForgeClient(fc).AuthenticatedUser(context.Background())
@@ -408,27 +407,5 @@ func TestForgeClientAuthenticatedUser(t *testing.T) {
 	fc.Errors = map[string]error{"GetAuthenticatedUser": errors.New("401")}
 	if _, err := NewForgeClient(fc).AuthenticatedUser(context.Background()); err == nil {
 		t.Fatal("AuthenticatedUser() must return the forge error")
-	}
-}
-
-func TestJiraClientAuthenticatedUser(t *testing.T) {
-	jc, fj, err := NewFakeJiraClientWithFake("https://acme.atlassian.net")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := jc.AuthenticatedUser(context.Background())
-	if err != nil || got != FakeJiraBot.AccountID {
-		t.Fatalf("AuthenticatedUser() = %q, %v; want the account ID, not the display name", got, err)
-	}
-
-	fj.Myself = jira.User{DisplayName: "no account id"}
-	got, err = jc.AuthenticatedUser(context.Background())
-	if err != nil || got != "" {
-		t.Fatalf("AuthenticatedUser() = %q, %v; want an empty account ID passed through for the caller to reject", got, err)
-	}
-
-	fj.MyselfError = errors.New("401")
-	if _, err := jc.AuthenticatedUser(context.Background()); err == nil {
-		t.Fatal("AuthenticatedUser() must return the GetMyself error")
 	}
 }
