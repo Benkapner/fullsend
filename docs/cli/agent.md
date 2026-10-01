@@ -331,7 +331,8 @@ post-lint-docs: dry run, not posting
 
 The `::stop-commands::` lines around the preview stop GitHub Actions from
 reading anything the model wrote as a workflow command. The token is
-random on every run, and a GitHub Actions log masks it as `***`.
+random on every run, so the model cannot predict the line that closes the
+block.
 
 With `--runtime claude`, the same agent against a real pull request — the
 model does the work, the schema gate runs, and the post-script still only
