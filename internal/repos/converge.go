@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
@@ -72,8 +73,18 @@ type ConvergeConfig struct {
 	WIFProvider string
 
 	// ReviewAppClientID is the OAuth client ID of the review agent's
-	// GitHub App.
+	// GitHub App, pre-resolved by the caller for ReviewAppClientIDAppSet.
+	// It seeds the per-repo resolution cache so repos on that app set
+	// reuse it without a second lookup.
 	ReviewAppClientID string
+
+	// ReviewAppClientIDAppSet is the app set that ReviewAppClientID was
+	// resolved for. Repos whose effective app set differs (via a per-repo
+	// or platform app_set override) get their review client ID resolved
+	// independently so FULLSEND_REVIEW_CLIENT_ID tracks the same app set
+	// persisted as FULLSEND_APP_SET. Empty means ReviewAppClientID was
+	// resolved for the built-in default app set.
+	ReviewAppClientIDAppSet string
 
 	// VendorOverride, when non-nil, overrides the manifest's resolved
 	// vendor setting for all repos in this convergence run. This lets
@@ -108,49 +119,25 @@ type ConvergeResult struct {
 	// received a full install.
 	Installed bool
 
-	// NeedsGitLabPostInstall is true when Installed is true and the
-	// GitLab post-install artifacts (the fullsend-bot PAT secret and
-	// pipeline schedules) did not already exist on the repo before this
-	// run. GitLab post-install (bot token + pipeline schedule setup) is
-	// destructive — it revokes and recreates the live fullsend-bot
-	// project access token and deletes and recreates pipeline
-	// schedules — so it must run only when those artifacts are
-	// genuinely missing. Re-running install while the initialization MR
-	// is still open (#7417) keeps Installed true (workflow file still
-	// absent) but must not re-trigger this destructive setup once the
-	// bot token and schedules already exist from a prior run. This is
-	// deliberately narrower than "any fullsend-managed component
-	// exists" — the GCP inference secrets every Install() writes are
-	// unrelated to GitLab post-install and must not mask it having
-	// failed or never run.
-	//
-	// This is an OR of NeedsGitLabBotToken and NeedsGitLabPipelineSchedules
-	// below, kept for callers that only need to know whether GitLab
-	// post-install requires any action at all (e.g. whether to fetch a
-	// GitLab client for the repo). Callers that actually perform
-	// post-install setup must gate each action on its own specific flag
-	// instead — gating both the bot-token and schedule setup on this
-	// combined flag re-revokes an already-valid bot PAT whenever only
-	// the schedules are missing (or vice versa).
+	// NeedsGitLabPostInstall is true when GitLab pipeline schedules did
+	// not already exist on the repo before this run. GitLab post-install
+	// schedule setup is destructive — it deletes and recreates pipeline
+	// schedules — so it must run only when those artifacts are genuinely
+	// missing. Re-running install while the initialization MR is still
+	// open (#7417) keeps Installed true (workflow file still absent) but
+	// must not re-trigger this destructive setup once the schedules
+	// already exist from a prior run. This is deliberately narrower than
+	// "any fullsend-managed component exists" — the GCP inference secrets
+	// every Install() writes are unrelated to GitLab post-install and
+	// must not mask it having failed or never run. Shared-token bot-PAT
+	// setup is gone: role credentials are the only GitLab runtime path.
 	NeedsGitLabPostInstall bool
-
-	// NeedsGitLabBotToken is true only when the shared credential is still
-	// required by the live migration gate and the fullsend-bot PAT secret
-	// (secret:FULLSEND_FORGE_TOKEN) was not already present before this run.
-	// In enforced mode the shared credential is intentionally not required,
-	// so this remains false even when FULLSEND_FORGE_TOKEN is absent. Callers
-	// must gate bot-token setup on this field specifically,
-	// not on NeedsGitLabPostInstall, so a retry where the token already
-	// exists does not revoke and recreate the live PAT merely because a
-	// pipeline schedule is still missing.
-	NeedsGitLabBotToken bool
 
 	// NeedsGitLabPipelineSchedules is true when at least one pipeline
 	// schedule component (see PipelineScheduleSpecs) was not already
 	// present before this run. Callers must gate pipeline-schedule setup
-	// on this field specifically, not on NeedsGitLabPostInstall, so a
-	// retry where the schedules already exist does not delete and
-	// recreate them merely because the bot token is still missing.
+	// on this field, so a retry where the schedules already exist does
+	// not delete and recreate them.
 	NeedsGitLabPipelineSchedules bool
 
 	// Converged is true when the repo had drifted components that were
@@ -232,7 +219,16 @@ type convergeDiscovery struct {
 	components    []ComponentStatus
 	preset        []byte
 	managedConfig []byte
-	err           error
+	// appSet is the effective FULLSEND_APP_SET value to persist (GitHub
+	// only). When app_set is explicitly configured it is the resolved
+	// value; otherwise it preserves an existing repo variable, falling
+	// back to the built-in default. Empty for GitLab.
+	appSet string
+	// reviewClientID is the FULLSEND_REVIEW_CLIENT_ID value to persist,
+	// resolved for the same effective app set as appSet (GitHub only).
+	// Empty when unavailable (best-effort) or for GitLab.
+	reviewClientID string
+	err            error
 }
 
 // hasComponent returns true if the named component is present in the probe results.
@@ -245,7 +241,7 @@ func hasComponent(components []ComponentStatus, name string) bool {
 	return false
 }
 
-// secretsPresent returns true when both required inference secrets are present.
+// secretsPresent returns true when both optional GCP inference secrets are present.
 func secretsPresent(components []ComponentStatus) bool {
 	return hasComponent(components, "secret:"+forge.SecretGCPProjectID) &&
 		hasComponent(components, "secret:"+forge.SecretGCPWIFProvider)
@@ -287,12 +283,6 @@ func anyComponentPresent(components []ComponentStatus) bool {
 	return false
 }
 
-// gitlabBotTokenPresent returns true when the fullsend-bot PAT secret
-// (secret:FULLSEND_FORGE_TOKEN) is already present.
-func gitlabBotTokenPresent(components []ComponentStatus) bool {
-	return hasComponent(components, "secret:"+forge.SecretForgeToken)
-}
-
 // gitlabSchedulesPresent returns true when every pipeline-schedule
 // component (see PipelineScheduleSpecs) is already present.
 func gitlabSchedulesPresent(components []ComponentStatus) bool {
@@ -302,23 +292,6 @@ func gitlabSchedulesPresent(components []ComponentStatus) bool {
 		}
 	}
 	return true
-}
-
-// gitlabPostInstallDone returns true when the GitLab-specific
-// post-install artifacts — the fullsend-bot PAT secret and every
-// pipeline schedule — are already present. Unlike anyComponentPresent,
-// this ignores unrelated components (e.g. the GCP inference secrets
-// that every Install() writes regardless of forge), so a repo whose
-// Install() succeeded but whose GitLab post-install step failed or
-// never ran is not mistaken for one that already has a bot token and
-// schedules.
-//
-// This is an AND of the two artifacts, so it does not distinguish which
-// one is missing. Callers that need to act on only the missing piece
-// (see NeedsGitLabBotToken / NeedsGitLabPipelineSchedules) must call
-// gitlabBotTokenPresent / gitlabSchedulesPresent directly instead.
-func gitlabPostInstallDone(components []ComponentStatus) bool {
-	return gitlabBotTokenPresent(components) && gitlabSchedulesPresent(components)
 }
 
 // workflowPresent returns true when the forge-specific shim workflow file
@@ -432,6 +405,36 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 
 	// Phase 1: parallel discovery — probe all repos.
 
+	// Per-app-set cache for review app client IDs. Seeded with the
+	// caller's pre-resolved value so the common case (every repo on the
+	// same app set) needs no extra lookups; repos on a different effective
+	// app set resolve and memoize their own. Keyed by app set; the zero
+	// key maps the caller's value to the built-in default app set.
+	reviewIDSeed := cfg.ReviewAppClientIDAppSet
+	if reviewIDSeed == "" {
+		reviewIDSeed = appsetup.DefaultAppSet
+	}
+	var reviewIDMu sync.Mutex
+	reviewIDCache := map[string]string{}
+	if cfg.ReviewAppClientID != "" {
+		reviewIDCache[reviewIDSeed] = cfg.ReviewAppClientID
+	}
+	// resolveReviewID is only ever called with a GitHub repo's effective
+	// app set, which is always non-empty.
+	resolveReviewID := func(ctx context.Context, client forge.Client, appSet string) string {
+		reviewIDMu.Lock()
+		cached, ok := reviewIDCache[appSet]
+		reviewIDMu.Unlock()
+		if ok {
+			return cached
+		}
+		id := appsetup.ResolveReviewAppClientID(ctx, client, appSet)
+		reviewIDMu.Lock()
+		reviewIDCache[appSet] = id
+		reviewIDMu.Unlock()
+		return id
+	}
+
 	concurrency := cfg.MaxConcurrency
 	discoveries := make([]convergeDiscovery, len(repos))
 	sem := make(chan struct{}, concurrency)
@@ -461,15 +464,36 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			}
 			resolved.ForgeConfig = fc
 
+			// Resolve the effective FULLSEND_APP_SET value to persist
+			// (GitHub only). An explicitly configured app_set repairs
+			// drift to that value; otherwise the existing repo variable
+			// is preserved, falling back to the built-in default only
+			// when absent (repairing older installs that predate it).
+			effectiveAppSet, appSetErr := resolveConvergeAppSet(ctx, fc.Client, rr.Owner, rr.Repo, resolved)
+			if appSetErr != nil {
+				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: appSetErr}
+				return
+			}
+
+			// Resolve FULLSEND_REVIEW_CLIENT_ID for the same effective app
+			// set persisted as FULLSEND_APP_SET, so a per-repo or platform
+			// app_set override points provenance matching at that app set's
+			// review bot rather than the run-wide default. GitHub only.
+			reviewClientID := cfg.ReviewAppClientID
+			if resolved.Forge == ForgeGitHub {
+				reviewClientID = resolveReviewID(ctx, fc.Client, effectiveAppSet)
+			}
+
 			// Build expected values for all static variables so
 			// ProbeComponents can detect value drift — not just
-			// FULLSEND_MINT_URL but also FULLSEND_GCP_REGION
-			// and FULLSEND_REVIEW_CLIENT_ID.
+			// FULLSEND_MINT_URL but also FULLSEND_GCP_REGION,
+			// FULLSEND_REVIEW_CLIENT_ID, and FULLSEND_APP_SET.
 			expectedVars, varValErr := staticExpectedVarValues(InstallConfig{
 				Forge:             resolved.Forge,
 				MintURL:           resolved.MintURL,
 				InferenceRegion:   cfg.InferenceRegion,
-				ReviewAppClientID: cfg.ReviewAppClientID,
+				ReviewAppClientID: reviewClientID,
+				AppSet:            effectiveAppSet,
 			}, resolved.MintURL)
 			if varValErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: varValErr}
@@ -482,9 +506,11 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			}
 
 			discoveries[idx] = convergeDiscovery{
-				repo:       rr,
-				resolved:   resolved,
-				components: probed,
+				repo:           rr,
+				resolved:       resolved,
+				components:     probed,
+				appSet:         effectiveAppSet,
+				reviewClientID: reviewClientID,
 			}
 		}(i, r)
 	}
@@ -587,17 +613,6 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				wif = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/gitlab-oidc",
 					cfg.InferenceProjectNumber, mintcore.DefaultInferencePool)
 			}
-
-			// Validate inference flags for repos without existing secrets.
-			if cfg.InferenceProject == "" && cfg.WIFProvider == "" {
-				repoFullName := d.repo.Owner + "/" + d.repo.Repo
-				result.Results[i] = ConvergeResult{
-					Owner: d.repo.Owner,
-					Repo:  d.repo.Repo,
-					Error: fmt.Errorf("--inference-project is required for %s (inference secrets are always needed)", repoFullName),
-				}
-				continue
-			}
 		}
 		candidates[i] = candidateInfo{discovery: d, wifProvider: wif}
 	}
@@ -674,36 +689,22 @@ func convergeRepo(ctx context.Context,
 	// upgrade path selects a version-specific bump branch and leaves
 	// the original MR incomplete (#7417).
 	isNew := !workflowPresent(d.components)
-	// Snapshot "GitLab post-install has not already succeeded" ahead of
-	// Install(), which is about to write variables/secrets —
-	// gitlabPostInstallDone on d.components (probed during discovery,
-	// before any writes) reflects the pre-run state. Destructive GitLab
-	// post-install setup (bot token + pipeline schedule recreation) must
-	// gate on this, not on isNew/Installed alone, so it does not re-run
-	// on every re-install while the initialization MR is still open
-	// (#7417). It must also gate on the GitLab-specific artifacts
-	// (bot token secret, schedules) rather than any component being
-	// present — the GCP inference secrets Install() always writes are
-	// unrelated to GitLab post-install, so their presence alone must not
-	// mask a post-install step that failed or never ran.
+	// Snapshot whether GitLab pipeline schedules are already present
+	// ahead of Install(), which is about to write variables/secrets.
+	// Destructive GitLab post-install schedule setup must gate on this,
+	// not on isNew/Installed alone, so it does not re-run on every
+	// re-install while the initialization MR is still open (#7417). It
+	// must also ignore unrelated components (the GCP inference secrets
+	// Install() always writes) so their presence alone does not mask a
+	// post-install step that failed or never ran.
 	//
-	// needsBotToken and needsSchedules are tracked separately (rather
-	// than only the combined needsPostInstall) so callers can run
-	// bot-token setup and pipeline-schedule setup independently: a retry
-	// where one artifact already exists must not redo that one just
-	// because the other is still missing.
-	// GitLab runtime authentication is role-only. The old shared-token gate
-	// is intentionally not consulted during convergence; uninstall remains
-	// responsible for removing legacy shared-token artifacts.
-	sharedCredentialRequired := false
-	needsBotToken := sharedCredentialRequired && !gitlabBotTokenPresent(d.components)
+	// GitLab runtime authentication is role-only. Shared-token recovery
+	// is intentionally not consulted during convergence. Leftover
+	// FULLSEND_FORGE_TOKEN from a repository installed before the
+	// role-only rollout is not cleaned up automatically by any path;
+	// it requires manual cleanup.
 	needsSchedules := !gitlabSchedulesPresent(d.components)
-	// Track whether either independently gated post-install action is needed.
-	// The shared bot-token action is retired; role provisioning owns all
-	// GitLab runtime credentials.
-	needsPostInstall := needsBotToken || needsSchedules
-	cr.NeedsGitLabPostInstall = needsPostInstall
-	cr.NeedsGitLabBotToken = needsBotToken
+	cr.NeedsGitLabPostInstall = needsSchedules
 	cr.NeedsGitLabPipelineSchedules = needsSchedules
 
 	// Case 1: Workflow not on the default branch — full install via
@@ -810,7 +811,8 @@ func convergeRepo(ctx context.Context,
 			UpstreamRef:                   ref,
 			UpstreamTag:                   tag,
 			WIFProvider:                   wifProvider,
-			ReviewAppClientID:             cfg.ReviewAppClientID,
+			ReviewAppClientID:             d.reviewClientID,
+			AppSet:                        d.appSet,
 			AgentRunnerTags:               gitlabAgentRunnerTags(cfg.Manifest),
 			ControlRunnerTags:             gitlabControlRunnerTags(cfg.Manifest),
 			Runtime:                       resolved.Runtime,
@@ -1005,7 +1007,7 @@ func convergeRepo(ctx context.Context,
 		ctx, resolved, cfg, refResolver, refFileSet,
 		DriftConfig{
 			InferenceRegion:   cfg.InferenceRegion,
-			ReviewAppClientID: cfg.ReviewAppClientID,
+			ReviewAppClientID: d.reviewClientID,
 			AgentRunnerTags:   gitlabAgentRunnerTags(cfg.Manifest),
 			ControlRunnerTags: gitlabControlRunnerTags(cfg.Manifest),
 		},
@@ -1120,6 +1122,36 @@ func uniqueScaffoldFiles(files []forge.TreeFile) []forge.TreeFile {
 		out = append(out, f)
 	}
 	return out
+}
+
+// resolveConvergeAppSet returns the effective FULLSEND_APP_SET value to
+// persist for a repo during convergence. GitLab repos never carry the
+// variable, so it returns "". For GitHub, an explicitly configured app_set
+// (per-repo override or manifest default) wins so drift is repaired to the
+// configured value; otherwise the value already present on the repo is
+// preserved, falling back to the built-in default only when the variable is
+// absent (repairing older installs created before FULLSEND_APP_SET existed).
+func resolveConvergeAppSet(ctx context.Context, client forge.Client, owner, repo string, resolved ResolvedConfig) (string, error) {
+	if resolved.Forge != ForgeGitHub {
+		return "", nil
+	}
+	if resolved.AppSetExplicit {
+		return appsetup.ResolvePersistedAppSet(resolved.AppSet, ""), nil
+	}
+	existing, _, err := client.GetRepoVariable(ctx, owner, repo, forge.VarAppSet)
+	if err != nil {
+		return "", fmt.Errorf("reading variable %s for %s/%s: %w", forge.VarAppSet, owner, repo, err)
+	}
+	// The existing variable comes from the repo, not from a validated CLI
+	// or manifest source — unlike the AppSetExplicit branch above, it was
+	// never passed through appsetup.ValidateAppSet. Validate it here
+	// before it is preserved and later used to build a GitHub App slug
+	// (appsetup.ResolveReviewAppClientID), so a malformed value falls
+	// back to the built-in default instead of flowing through unchecked.
+	if existing != "" && appsetup.ValidateAppSet(existing) != nil {
+		existing = ""
+	}
+	return appsetup.ResolvePersistedAppSet("", existing), nil
 }
 
 // convergeVariables checks and repairs variable drift for an installed repo.
@@ -1480,17 +1512,21 @@ func activatePipelineSchedules(ctx context.Context, client forge.Client,
 
 // convergeGitLabRootCIFiles migrates already-enrolled GitLab repos whose
 // root .gitlab-ci.yml still carries entries that fullsend no longer
-// requires: obsolete workflow:rules (the native merge_request_event
+// requires — obsolete workflow:rules (the native merge_request_event
 // dispatch rule removed in #7322) and obsolete stages (the empty
-// "dispatch" stage removed in #7337). The root file is user-owned and
-// is otherwise only touched by the install merge path (fresh installs)
-// and the uninstall unmerge path (teardown) — neither runs during
-// upgrade/converge, so without this step an obsolete entry would survive
-// convergence forever. StripObsoleteGitLabWorkflowRules only rewrites
-// the file when it can prove fullsend owns the workflow block (see
-// gitlabCIWorkflowIsFullsendOwned), so merge-path enrollments without
-// the fullsend workflow.name are intentionally left for manual cleanup
-// rather than risking a user's own MR gate. StripObsoleteGitLabStages
+// "dispatch" stage removed in #7337) — and backfills entries a newer
+// fullsend version now requires but an older enrollment never received
+// (the CI_DEBUG_TRACE deny-before-admit rule added by ADR 0125). The root
+// file is user-owned and is otherwise only touched by the install merge
+// path (fresh installs, or installs onto a repo HasFullsendEntries judges
+// incompletely migrated) and the uninstall unmerge path (teardown) —
+// neither runs during upgrade/converge, so without this step a missing or
+// obsolete entry would survive convergence forever.
+// StripObsoleteGitLabWorkflowRules and MergeMissingGitLabDebugTraceRule
+// only rewrite the file when they can prove fullsend owns the workflow
+// block (see gitlabCIWorkflowIsFullsendOwned), so merge-path enrollments
+// without the fullsend workflow.name are intentionally left for manual
+// cleanup rather than risking a user's own configuration. StripObsoleteGitLabStages
 // gates on the fullsend pipeline include plus a current fullsend stage
 // (see that function's doc comment). It does not commit — the caller
 // batches all scaffold file changes into a single atomic commit.
@@ -1550,6 +1586,35 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 				Detail:    "removed obsolete merge_request_event workflow rule from .gitlab-ci.yml",
 			})
 			progress(repoFullName, "repair", "Removing obsolete merge_request_event workflow rule from .gitlab-ci.yml")
+		}
+	}
+
+	merged, debugTraceRuleAdded, mergeErr := MergeMissingGitLabDebugTraceRule(content)
+	if mergeErr != nil {
+		actions = append(actions, ComponentAction{
+			Component: "gitlab-ci-rules",
+			Action:    "error",
+			Detail:    fmt.Sprintf("error checking .gitlab-ci.yml for missing CI_DEBUG_TRACE workflow rule: %v", mergeErr),
+		})
+		return nil, actions
+	}
+	if debugTraceRuleAdded {
+		content = merged
+		changed = true
+		if cfg.DryRun {
+			actions = append(actions, ComponentAction{
+				Component: "gitlab-ci-rules",
+				Action:    "update",
+				Detail:    "would add missing CI_DEBUG_TRACE deny-before-admit workflow rule to .gitlab-ci.yml",
+			})
+			progress(repoFullName, "dry-run", "Would add missing CI_DEBUG_TRACE deny-before-admit workflow rule to .gitlab-ci.yml")
+		} else {
+			actions = append(actions, ComponentAction{
+				Component: "gitlab-ci-rules",
+				Action:    "update",
+				Detail:    "added missing CI_DEBUG_TRACE deny-before-admit workflow rule to .gitlab-ci.yml",
+			})
+			progress(repoFullName, "repair", "Adding missing CI_DEBUG_TRACE deny-before-admit workflow rule to .gitlab-ci.yml")
 		}
 	}
 

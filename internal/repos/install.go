@@ -82,6 +82,12 @@ type InstallConfig struct {
 	// provenance of prior review comments.
 	ReviewAppClientID string
 
+	// AppSet is the GitHub App set prefix (apps named "{app_set}-{role}").
+	// When set, it is written as the FULLSEND_APP_SET repo variable so the
+	// scaffold workflows can derive bot identities. GitHub-only; empty for
+	// GitLab, where no FULLSEND_APP_SET variable is written.
+	AppSet string
+
 	// AgentRunnerTags is a list of GitLab CI runner tags embedded in the
 	// agent job so sandbox work is routed to the data-plane fleet.
 	AgentRunnerTags []string
@@ -564,6 +570,9 @@ func managedVarsForForge(cfg InstallConfig, mintURL string) ([]ManagedVar, error
 		if cfg.ReviewAppClientID != "" {
 			vars = append(vars, ManagedVar{Name: forge.VarReviewClientID, Value: cfg.ReviewAppClientID})
 		}
+		if cfg.AppSet != "" {
+			vars = append(vars, ManagedVar{Name: forge.VarAppSet, Value: cfg.AppSet})
+		}
 		return vars, nil
 	case ForgeGitLab:
 		var vars []ManagedVar
@@ -607,9 +616,8 @@ func installVarsForForge(cfg InstallConfig, mintURL string) (map[string]string, 
 }
 
 // installSecretsForForge returns the inference secrets to write.
-// Returns nil when InferenceProject is not set (the convergence
-// layer validates that InferenceProject is provided for repos
-// without existing secrets).
+// Returns nil when InferenceProject is not set; repositories without
+// Vertex inference credentials do not write GCP secrets.
 func installSecretsForForge(cfg InstallConfig, wifProvider string) map[string]string {
 	if cfg.InferenceProject == "" {
 		return nil
@@ -624,13 +632,15 @@ func installSecretsForForge(cfg InstallConfig, wifProvider string) map[string]st
 // requiredVariables lists the per-repo variables that must exist for a
 // complete installation. FULLSEND_GCP_REGION is excluded because it is
 // conditionally set (only when --inference-region is provided) and may
-// not be present when secrets are reused. Shared by install,
-// checkInstallComponents, and uninstall.
-var requiredVariables = []string{forge.VarMintURL}
+// not be present when secrets are reused. FULLSEND_APP_SET is required:
+// every GitHub install writes it (defaulting to the built-in app set), so
+// its absence on an existing repo is drift that convergence repairs.
+// Shared by install, checkInstallComponents, and uninstall.
+var requiredVariables = []string{forge.VarMintURL, forge.VarAppSet}
 
-// requiredSecrets lists the per-repo secrets that must exist for a
-// complete installation. Shared by install, checkInstallComponents,
-// and uninstall.
+// requiredSecrets lists the managed GCP inference secrets. Both may be
+// absent from an installation; probe checks pair consistency. Shared by
+// install, checkInstallComponents, and uninstall.
 var requiredSecrets = []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider}
 
 // gitlabRetiredLegacyVars is the set of GitLab poller CI/CD variables

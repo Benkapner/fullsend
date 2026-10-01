@@ -417,19 +417,59 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		forge.PerRepoGuardVar: "true",
 	}
 
+	// Determine the effective app set to persist as FULLSEND_APP_SET so
+	// scaffold workflows can derive bot identities, before resolving the
+	// review app's client ID below: both must agree on the same app set,
+	// or FULLSEND_REVIEW_CLIENT_ID would end up resolved against the
+	// wrong app on a re-run (e.g. the flag's default instead of a custom
+	// app set already persisted on the repo). When --app-set was passed
+	// explicitly, that value is authoritative; otherwise preserve any
+	// value already on the repo so a re-run does not silently overwrite a
+	// custom app set with the built-in default, falling back to the flag
+	// default only when the variable is genuinely absent. GetRepoVariable
+	// reports a missing variable as (\"\", false, nil); a non-nil error
+	// instead means the read failed, so we skip the write entirely rather
+	// than clobber a possibly-custom existing value with the flag default.
+	explicitAppSet := ""
+	if cfg.changedFlags["app-set"] {
+		explicitAppSet = cfg.appSet
+	}
+	existingAppSet := ""
+	writeAppSet := true
+	if explicitAppSet == "" {
+		var appSetErr error
+		existingAppSet, _, appSetErr = client.GetRepoVariable(ctx, owner, repo, forge.VarAppSet)
+		if appSetErr != nil {
+			writeAppSet = false
+		}
+		// Unlike explicitAppSet (validated via appsetup.ValidateAppSet
+		// before this function runs), existingAppSet comes straight from
+		// the repo variable. Reject a malformed value here, before it is
+		// preserved and used to build a GitHub App slug below, instead of
+		// trusting it unchecked.
+		if existingAppSet != "" && appsetup.ValidateAppSet(existingAppSet) != nil {
+			existingAppSet = ""
+		}
+	}
+	appSetToPersist := appsetup.ResolvePersistedAppSet(explicitAppSet, existingAppSet)
+
 	// Resolve the review app's client ID so pre-fetch-prior-review.sh
-	// can validate provenance of prior review comments. Best-effort:
-	// a missing client ID degrades incremental reviews but does not
-	// block installation.
-	if reviewClientID := resolveReviewAppClientID(ctx, client, cfg.appSet); reviewClientID != "" {
+	// can validate provenance of prior review comments, using the same
+	// effective app set computed above. Best-effort: a missing client ID
+	// degrades incremental reviews but does not block installation.
+	if reviewClientID := resolveReviewAppClientID(ctx, client, appSetToPersist); reviewClientID != "" {
 		repoVars["FULLSEND_REVIEW_CLIENT_ID"] = reviewClientID
 	}
 
+	if writeAppSet {
+		repoVars[forge.VarAppSet] = appSetToPersist
+	}
+
 	repoSecrets := make(map[string]string)
-	if !reuseProject {
+	if !reuseProject && effectiveInferenceProject(cfg, effective) != "" {
 		repoSecrets["FULLSEND_GCP_PROJECT_ID"] = effectiveInferenceProject(cfg, effective)
 	}
-	if !reuseWIF {
+	if !reuseWIF && effectiveInferenceWIF(cfg, effective) != "" {
 		repoSecrets["FULLSEND_GCP_WIF_PROVIDER"] = effectiveInferenceWIF(cfg, effective)
 	}
 
@@ -747,9 +787,12 @@ func composeSetupLayers(overlayYAML []byte, overlay config.PerRepoConfigWriter, 
 // resolveInferenceReuse determines, for each of the GCP project and WIF
 // provider inference values, whether setup should reuse the existing
 // repo secret because neither the CLI flag nor the composed effective
-// config supplied a value. It errors if a value is missing and no
-// existing secret is found, since one or the other is required.
+// config supplied a value. When neither value is configured, GCP
+// credentials are optional and existing secrets are left untouched.
 func resolveInferenceReuse(ctx context.Context, client forge.Client, owner, repo string, cfg githubSetupConfig, effective config.PerRepoConfigReader) (reuseProject, reuseWIF bool, err error) {
+	if effectiveInferenceProject(cfg, effective) == "" && effectiveInferenceWIF(cfg, effective) == "" {
+		return false, false, nil
+	}
 	if effectiveInferenceProject(cfg, effective) == "" {
 		var exists bool
 		exists, err = client.RepoSecretExists(ctx, owner, repo, "FULLSEND_GCP_PROJECT_ID")
@@ -1637,14 +1680,5 @@ func runGitHubSyncScaffold(ctx context.Context, client forge.Client, printer *ui
 // an empty string if the lookup fails (best-effort — a missing client ID
 // degrades incremental reviews but does not block installation).
 func resolveReviewAppClientID(ctx context.Context, client forge.Client, appSet string) string {
-	ghExt, ok := client.(forge.GitHubExtensions)
-	if !ok {
-		return ""
-	}
-	slug := appsetup.AppSlug(appSet, "review")
-	clientID, err := ghExt.GetAppClientID(ctx, slug)
-	if err != nil {
-		return ""
-	}
-	return clientID
+	return appsetup.ResolveReviewAppClientID(ctx, client, appSet)
 }

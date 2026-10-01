@@ -98,13 +98,14 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 		Providers:   append([]string(nil), role.Providers...),
 		OpenShell:   &harness.OpenShellConfig{Profiles: append([]string(nil), role.Profiles...)},
 		HostFiles: []harness.HostFile{
-			{Src: "${GOOGLE_APPLICATION_CREDENTIALS}", Dest: "/tmp/.gcp-credentials.json"},
+			{Src: "${GOOGLE_APPLICATION_CREDENTIALS}", Dest: "/tmp/.gcp-credentials.json", Optional: true},
 			{Src: "${GCP_OIDC_TOKEN_FILE}", Dest: "/sandbox/workspace/.gcp-oidc-token", Optional: true},
 		},
 		Model:          opts.Model,
 		Effort:         opts.Effort,
 		PostScript:     "scripts/post-" + opts.Name + ".sh",
 		TimeoutMinutes: opts.TimeoutMinutes,
+		ReadonlyRepo:   role.ReadonlyRepo,
 		Trigger:        opts.Trigger,
 		Env: &harness.EnvConfig{
 			Runner: map[string]string{

@@ -446,7 +446,11 @@ case "${STATUS}" in
     echo "Agent needs more information"
     ;;
   *)
-    echo "ERROR: Unknown or missing status '${STATUS}'"
+    # STATUS is model output: flatten CR/LF and cap it before logging, and
+    # use printf, which never expands backslash escapes, so a crafted value
+    # cannot start a new log line (a "::" workflow command).
+    shown="${STATUS//[$'\r\n']/ }"
+    printf '%s\n' "ERROR: Unknown or missing status '${shown:0:40}'"
     exit 1
     ;;
 esac
@@ -540,15 +544,6 @@ jobs:
           done
           rm -rf .defaults
 
-      - name: Authenticate to GCP via WIF
-        uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-          project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-
-      - name: Prepare sandbox credentials
-        run: bash .fullsend/scripts/prepare-sandbox-credentials.sh
-
       - name: Install fullsend CLI
         uses: fullsend-ai/fullsend@main
         with:
@@ -560,6 +555,8 @@ jobs:
           ISSUE_KEY: ${{ inputs.issue_key }}
           ISSUE_SOURCE: ${{ inputs.issue_source || 'github' }}
           REPO_FULL_NAME: ${{ github.repository }}
+          FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}  # value drift is detected and repaired by convergence
         run: |

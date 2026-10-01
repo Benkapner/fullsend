@@ -3,6 +3,7 @@ package github
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/sha1" //nolint:gosec // Git's blob hash algorithm, not used for security
 	"encoding/base64"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"golang.org/x/crypto/nacl/box"
+	"golang.org/x/sync/singleflight"
 )
 
 // LiveClient implements forge.Client for the GitHub REST API.
@@ -41,7 +43,61 @@ type LiveClient struct {
 	rateMu   sync.Mutex
 	rate     forge.RateLimit
 	rateSeen bool
+
+	// etagCache holds the last ETag and raw JSON body seen for GET URLs
+	// that opt into conditional requests via getCachedJSON (#6702). A 304
+	// response reusing a cached ETag does not count against the primary
+	// rate-limit budget, which is what makes this worth doing for the
+	// behaviour-test harness-wait poll loop: the same workflow-runs URL
+	// is requested every few seconds by up to a dozen concurrent
+	// scenarios sharing one installation token.
+	//
+	// Keys are full request URLs (base URL, path and query). A client
+	// carries one token for its whole life (set only by New) and sends
+	// the same Accept and API-version headers on every request, so the
+	// URL alone identifies the representation.
+	etagMu    sync.Mutex
+	etagCache map[string]*list.Element // key -> element of etagLRU holding *etagEntry
+	etagLRU   *list.List               // most recently used at the front
+	etagBytes int                      // total len(body) across etagCache
+
+	// etagFlight collapses concurrent conditional GETs of one URL into a
+	// single request. Besides saving quota, it serialises the
+	// read-request-store sequence per URL, so an older response can never
+	// overwrite a newer cache entry.
+	etagFlight singleflight.Group
 }
+
+// etagEntry is one cached (ETag, body) pair for a GET URL.
+type etagEntry struct {
+	key  string
+	etag string
+	body []byte
+}
+
+// Bounds on etagCache, so a long-lived client (the behaviour suite runs
+// many scenarios against many distinct run/job/artifact URLs) cannot grow
+// without bound. Entries are evicted least recently used first until both
+// bounds hold, so per-run jobs/artifacts URLs that are no longer polled
+// age out before the per-repo lists every scenario keeps polling.
+const (
+	// etagCacheLimit bounds the number of cached URLs.
+	etagCacheLimit = 256
+	// etagMaxBodyBytes is the largest body retained. Workflow-runs pages
+	// measured 2026-09-30: per_page=30 ≈ 0.41 MB (what the pollers use)
+	// and per_page=100 ≈ 1.31 MB (the largest ListRecentWorkflowRuns
+	// allows). A larger body is still returned in full, just not cached.
+	etagMaxBodyBytes = 2 << 20
+	// etagMaxTotalBytes bounds the bytes retained across all entries.
+	etagMaxTotalBytes = 16 << 20
+	// etagFetchTimeout bounds a shared conditional fetch, which runs
+	// detached from any one caller's context (see getCachedJSON). It
+	// covers do()'s retries under ordinary secondary-rate-limit backoff
+	// (about 9 minutes worst case) but deliberately truncates a chain of
+	// maximal Retry-After waits; waiters then get a wrapped error naming
+	// this bound rather than a bare deadline.
+	etagFetchTimeout = 10 * time.Minute
+)
 
 // Compile-time interface checks.
 var _ forge.Client = (*LiveClient)(nil)
@@ -218,8 +274,20 @@ func IsPATForbiddenError(err error) bool {
 
 const maxRetries = 5
 
+// requestHeader is one extra header to set on a do() request. Only
+// getConditional uses this today (If-None-Match); it exists as a variadic
+// option rather than a new do() overload so the other 28 call sites
+// stay untouched.
+type requestHeader struct {
+	key, value string
+}
+
+func withHeader(key, value string) requestHeader {
+	return requestHeader{key: key, value: value}
+}
+
 // do performs an HTTP request against the GitHub API with retry on rate limits.
-func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+func (c *LiveClient) do(ctx context.Context, method, path string, body any, headers ...requestHeader) (*http.Response, error) {
 	url := c.baseURL + path
 
 	var bodyData []byte
@@ -249,6 +317,9 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
+		}
+		for _, h := range headers {
+			req.Header.Set(h.key, h.value)
 		}
 
 		resp, err := c.http.Do(req)
@@ -478,6 +549,179 @@ func (c *LiveClient) get(ctx context.Context, path string) (*http.Response, erro
 		return nil, err
 	}
 	return resp, nil
+}
+
+// getConditional performs a GET request, sending If-None-Match with etag
+// when non-empty. notModified is true when the server confirmed the
+// cached etag is still current (304); resp is nil in that case and the
+// caller must reuse its previously cached body. GitHub does not count a
+// 304 against the primary rate-limit budget (verified 2026-08-31: three
+// consecutive conditional requests left X-RateLimit-Remaining unchanged).
+func (c *LiveClient) getConditional(ctx context.Context, path, etag string) (resp *http.Response, notModified bool, err error) {
+	var headers []requestHeader
+	if etag != "" {
+		headers = append(headers, withHeader("If-None-Match", etag))
+	}
+	resp, err = c.do(ctx, http.MethodGet, path, nil, headers...)
+	if err != nil {
+		return nil, false, err
+	}
+	if resp.StatusCode == http.StatusNotModified {
+		resp.Body.Close()
+		return nil, true, nil
+	}
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return nil, false, err
+	}
+	return resp, false, nil
+}
+
+// getCachedJSON performs a conditional GET against path and decodes the
+// JSON body into v, reusing the cached body on a 304. Only worth it for
+// GET paths a caller polls repeatedly with an unchanged result most of
+// the time — see etagCache's doc comment.
+//
+// A body is cached only when it has an ETag, is valid JSON and is within
+// etagMaxBodyBytes. If v cannot decode a cached body, the entry is
+// dropped so the next request is a plain GET rather than a replay of the
+// same failure.
+func (c *LiveClient) getCachedJSON(ctx context.Context, path, decodeLabel string, v any) error {
+	key := c.baseURL + path
+	// Don't start a detached fetch for a caller that has already given up.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// The shared fetch must not inherit one caller's cancellation: the
+	// behaviour suite's scenarios poll the same URLs with independent
+	// deadlines, and a waiter must not fail because another scenario's
+	// context ended. It runs detached, bounded by etagFetchTimeout, and
+	// each caller stops waiting as soon as its own context is done.
+	ch := c.etagFlight.DoChan(key, func() (any, error) {
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), etagFetchTimeout)
+		defer cancel()
+		return c.fetchConditional(fetchCtx, key, path)
+	})
+	var res singleflight.Result
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case res = <-ch:
+	}
+	if res.Err != nil {
+		if ctx.Err() == nil && errors.Is(res.Err, context.DeadlineExceeded) {
+			return fmt.Errorf("shared conditional fetch of %s exceeded %s: %w", path, etagFetchTimeout, res.Err)
+		}
+		return res.Err
+	}
+	fetched := res.Val.(conditionalBody)
+	// json.Unmarshal neither retains nor modifies its input, so decoding
+	// straight from the shared body is safe; the cache holds its own copy.
+	if err := json.Unmarshal(fetched.body, v); err != nil {
+		c.dropCachedETag(key, fetched.etag)
+		return fmt.Errorf("%s: %w", decodeLabel, err)
+	}
+	return nil
+}
+
+// conditionalBody is the result of one conditional fetch.
+type conditionalBody struct {
+	etag string
+	body []byte
+}
+
+// fetchConditional performs the conditional GET for key and updates the
+// cache. It runs inside etagFlight, so at most one runs per key at a time.
+func (c *LiveClient) fetchConditional(ctx context.Context, key, path string) (conditionalBody, error) {
+	prev, ok := c.lookupCachedETag(key)
+	etag := ""
+	if ok {
+		etag = prev.etag
+	}
+
+	resp, notModified, err := c.getConditional(ctx, path, etag)
+	if err != nil {
+		return conditionalBody{}, err
+	}
+	if notModified {
+		if !ok {
+			return conditionalBody{}, fmt.Errorf("GET %s: 304 Not Modified without a cached entry", path)
+		}
+		return conditionalBody{etag: prev.etag, body: prev.body}, nil
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return conditionalBody{}, fmt.Errorf("read response %s: %w", path, err)
+	}
+	newETag := resp.Header.Get("ETag")
+	if newETag != "" && len(data) <= etagMaxBodyBytes && json.Valid(data) {
+		// The store happens before the result reaches any caller, so a
+		// caller's decode-failure eviction always comes after it within a
+		// flight. Across flights, dropCachedETag only removes an entry
+		// still carrying the ETag that failed, so a late drop never
+		// removes a newer entry.
+		c.storeCachedETag(key, newETag, slices.Clone(data))
+	} else if ok {
+		// The new representation can't be cached, so the old entry is
+		// stale: stop sending its ETag and free its bytes.
+		c.dropCachedETag(key, prev.etag)
+	}
+	return conditionalBody{etag: newETag, body: data}, nil
+}
+
+// lookupCachedETag returns a copy of key's entry and marks it most
+// recently used.
+func (c *LiveClient) lookupCachedETag(key string) (etagEntry, bool) {
+	c.etagMu.Lock()
+	defer c.etagMu.Unlock()
+	el, ok := c.etagCache[key]
+	if !ok {
+		return etagEntry{}, false
+	}
+	c.etagLRU.MoveToFront(el)
+	return *el.Value.(*etagEntry), true
+}
+
+// storeCachedETag stores (etag, body) under key as the most recently used
+// entry, then evicts least recently used entries until both the entry and
+// byte bounds hold. Callers must pass a body within etagMaxBodyBytes
+// (fetchConditional checks); the new entry itself is never evicted.
+func (c *LiveClient) storeCachedETag(key, etag string, body []byte) {
+	c.etagMu.Lock()
+	defer c.etagMu.Unlock()
+	if c.etagCache == nil {
+		c.etagCache = make(map[string]*list.Element)
+		c.etagLRU = list.New()
+	}
+	if el, ok := c.etagCache[key]; ok {
+		e := el.Value.(*etagEntry)
+		c.etagBytes += len(body) - len(e.body)
+		e.etag, e.body = etag, body
+		c.etagLRU.MoveToFront(el)
+	} else {
+		c.etagCache[key] = c.etagLRU.PushFront(&etagEntry{key: key, etag: etag, body: body})
+		c.etagBytes += len(body)
+	}
+	for c.etagLRU.Len() > 1 && (c.etagLRU.Len() > etagCacheLimit || c.etagBytes > etagMaxTotalBytes) {
+		c.removeCachedETag(c.etagLRU.Back())
+	}
+}
+
+// dropCachedETag removes key's entry if it still carries etag.
+func (c *LiveClient) dropCachedETag(key, etag string) {
+	c.etagMu.Lock()
+	defer c.etagMu.Unlock()
+	if el, ok := c.etagCache[key]; ok && el.Value.(*etagEntry).etag == etag {
+		c.removeCachedETag(el)
+	}
+}
+
+// removeCachedETag unlinks el. The caller holds etagMu.
+func (c *LiveClient) removeCachedETag(el *list.Element) {
+	e := el.Value.(*etagEntry)
+	c.etagLRU.Remove(el)
+	delete(c.etagCache, e.key)
+	c.etagBytes -= len(e.body)
 }
 
 // post performs a POST request and checks for success.
@@ -3323,10 +3567,6 @@ func (c *LiveClient) awaitBranchUpdate(ctx context.Context, owner, repo string, 
 
 // ListWorkflowRuns returns recent workflow runs for a workflow file.
 func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]forge.WorkflowRun, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?per_page=10", owner, repo, workflowFile))
-	if err != nil {
-		return nil, fmt.Errorf("list workflow runs: %w", err)
-	}
 	var result struct {
 		WorkflowRuns []struct {
 			ID         int    `json:"id"`
@@ -3338,8 +3578,8 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 			CreatedAt  string `json:"created_at"`
 		} `json:"workflow_runs"`
 	}
-	if err := decodeJSON(resp, &result); err != nil {
-		return nil, fmt.Errorf("decode workflow runs: %w", err)
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?per_page=10", owner, repo, workflowFile), "decode workflow runs", &result); err != nil {
+		return nil, fmt.Errorf("list workflow runs: %w", err)
 	}
 	runs := make([]forge.WorkflowRun, len(result.WorkflowRuns))
 	for i, r := range result.WorkflowRuns {
@@ -3364,10 +3604,6 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 	if perPage > 100 {
 		perPage = 100
 	}
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=%d", owner, repo, perPage))
-	if err != nil {
-		return nil, fmt.Errorf("list recent workflow runs: %w", err)
-	}
 	var result struct {
 		WorkflowRuns []struct {
 			ID         int    `json:"id"`
@@ -3379,8 +3615,8 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 			CreatedAt  string `json:"created_at"`
 		} `json:"workflow_runs"`
 	}
-	if err := decodeJSON(resp, &result); err != nil {
-		return nil, fmt.Errorf("decode recent workflow runs: %w", err)
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=%d", owner, repo, perPage), "decode recent workflow runs", &result); err != nil {
+		return nil, fmt.Errorf("list recent workflow runs: %w", err)
 	}
 	runs := make([]forge.WorkflowRun, len(result.WorkflowRuns))
 	for i, r := range result.WorkflowRuns {
@@ -3399,10 +3635,6 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 
 // ListWorkflowRunJobs returns the jobs within a workflow run.
 func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", owner, repo, runID))
-	if err != nil {
-		return nil, fmt.Errorf("list workflow run jobs: %w", err)
-	}
 	var result struct {
 		Jobs []struct {
 			ID         int    `json:"id"`
@@ -3411,8 +3643,8 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 			Conclusion string `json:"conclusion"`
 		} `json:"jobs"`
 	}
-	if err := decodeJSON(resp, &result); err != nil {
-		return nil, fmt.Errorf("decode workflow run jobs: %w", err)
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", owner, repo, runID), "decode workflow run jobs", &result); err != nil {
+		return nil, fmt.Errorf("list workflow run jobs: %w", err)
 	}
 	jobs := make([]forge.WorkflowJob, len(result.Jobs))
 	for i, j := range result.Jobs {
@@ -3428,18 +3660,14 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 
 // ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
 func (c *LiveClient) ListWorkflowRunArtifacts(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowArtifact, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts", owner, repo, runID))
-	if err != nil {
-		return nil, fmt.Errorf("list workflow run artifacts: %w", err)
-	}
 	var result struct {
 		Artifacts []struct {
 			ID   int    `json:"id"`
 			Name string `json:"name"`
 		} `json:"artifacts"`
 	}
-	if err := decodeJSON(resp, &result); err != nil {
-		return nil, fmt.Errorf("decode workflow run artifacts: %w", err)
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts", owner, repo, runID), "decode workflow run artifacts", &result); err != nil {
+		return nil, fmt.Errorf("list workflow run artifacts: %w", err)
 	}
 	artifacts := make([]forge.WorkflowArtifact, len(result.Artifacts))
 	for i, art := range result.Artifacts {
@@ -3484,10 +3712,6 @@ func (c *LiveClient) ListRepositoryArtifacts(ctx context.Context, owner, repo st
 	if perPage > 100 {
 		perPage = 100
 	}
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/artifacts?per_page=%d", owner, repo, perPage))
-	if err != nil {
-		return nil, fmt.Errorf("list repository artifacts: %w", err)
-	}
 	var result struct {
 		Artifacts []struct {
 			ID          int    `json:"id"`
@@ -3499,8 +3723,8 @@ func (c *LiveClient) ListRepositoryArtifacts(ctx context.Context, owner, repo st
 			} `json:"workflow_run"`
 		} `json:"artifacts"`
 	}
-	if err := decodeJSON(resp, &result); err != nil {
-		return nil, fmt.Errorf("decode repository artifacts: %w", err)
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/artifacts?per_page=%d", owner, repo, perPage), "decode repository artifacts", &result); err != nil {
+		return nil, fmt.Errorf("list repository artifacts: %w", err)
 	}
 	artifacts := make([]forge.RepositoryArtifact, 0, len(result.Artifacts))
 	for _, art := range result.Artifacts {
@@ -4068,6 +4292,12 @@ func (c *LiveClient) GrantProtectedBranchMergeUser(_ context.Context, _, _, _ st
 
 // CreatePipeline is not supported on GitHub.
 func (c *LiveClient) CreatePipeline(_ context.Context, _, _, _ string, _ map[string]string) (*forge.Pipeline, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// CreatePipelineWithInputs is not supported on GitHub. GitHub Actions has
+// no equivalent to GitLab CI/CD Inputs for API-triggered workflow runs.
+func (c *LiveClient) CreatePipelineWithInputs(_ context.Context, _, _, _ string, _ map[string]forge.PipelineInputValue) (*forge.Pipeline, error) {
 	return nil, forge.ErrNotSupported
 }
 
