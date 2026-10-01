@@ -6,7 +6,7 @@ Inputs for `parseCodexStream` (`internal/runtime/codex_progress.go`) and its tes
 
 | Fixture | Origin |
 |---|---|
-| `basic_run.ndjson` | **Live capture**, 2026-09-25, `@openai/codex@0.157.0` (`npx`), model `gpt-5.6-luna`, API-key login (`codex login --with-api-key`). Captured by `regen.sh`; the throwaway working directory was rewritten to `/sandbox/workspace/repo`, nothing else was edited. Not yet re-captured against `0.159.3` — `regen.sh` needs a live `OPENAI_API_KEY`/logged-in `codex`, unavailable in an unattended agent sandbox. The event shapes it exercises are unchanged at `0.159.3` (see "Event structs" below), so the existing capture is still a valid `parseCodexStream` fixture; re-run `regen.sh` by hand to refresh the capture itself. |
+| `basic_run.ndjson` | **Live capture**, 2026-10-01, `@openai/codex@0.159.3` (`npx`), model `gpt-5.6-luna`, API-key login (`codex login --with-api-key`). Captured by `regen.sh`; the throwaway working directory was rewritten to `/sandbox/workspace/repo`, nothing else was edited. Reasoning items appear in roughly one capture in four; keep one that has it. |
 | everything else | Hand-authored to the structs below. |
 
 `regen.sh` re-captures `basic_run.ndjson` only. It reads `ARG CODEX_VERSION` from
@@ -105,7 +105,7 @@ in `parseCodexStream`:
   — is the opposite: cache and reasoning are separate from input and output.
   `codexUsage.counters()` subtracts the subsets so the five normalized
   counters sum to the tokens actually used. In `basic_run.ndjson` that is
-  41,615; passed through unchanged it would render as ~83,000.
+  43,934; passed through unchanged it would render as ~87,500.
 - **An `error` item is not a failure.** The processor emits one for config
   warnings, generic warnings, deprecation notices and model reroutes, and keeps
   the status `Running`.
