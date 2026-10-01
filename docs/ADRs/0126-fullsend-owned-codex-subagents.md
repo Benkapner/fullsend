@@ -89,14 +89,15 @@ Codex children run under a policy the runner provisions and enforces.
   every individual sandbox hook disabled, admits only a V1 spawn of a registered role with
   `fork_context` present and false and no `model` or `reasoning_effort` key, whatever its
   value. It rejects resume and any spawn from a child, which it recognises by the
-  `agent_id` Codex puts only in a child's hook payload. Its matcher covers the two namespaces Codex gives its multi-agent tools
-  (`multi_agent_v1…`, `collaboration…`) and any bare name ending in `spawn_agent` or
-  `resume_agent`; inside that set the handler is deny-by-default: it admits the V1 spawn
-  under the policy above, passes the V1 `wait_agent`, `close_agent` and `send_input`
-  through (as hook names, `multi_agent_v1` joined with each), and denies every other name, the resume, the V2 tools and any tool a later
-  CLI adds to either namespace included. A dispatch tool outside both namespaces would
-  not reach the hook; the per-bump revalidation diffs the multi-agent tool set at the
-  source for one, and Codex's own depth and open-children limits still apply to it.
+  `agent_id` Codex puts only in a child's hook payload. Its matcher covers the two
+  namespaces Codex gives its multi-agent tools (`multi_agent_v1…`, `collaboration…`) and
+  any bare name ending in `spawn_agent` or `resume_agent`; inside that set the handler is
+  deny-by-default: it admits the V1 spawn under the policy above, passes the V1
+  `wait_agent`, `close_agent` and `send_input` through (as hook names, `multi_agent_v1`
+  joined with each), and denies every other name, the resume, the V2 tools and any tool a
+  later CLI adds to either namespace included. A dispatch tool outside both namespaces
+  would not reach the hook; the per-bump revalidation diffs the multi-agent tool set at
+  the source for one, and Codex's own depth and open-children limits still apply to it.
   Native configuration limits depth to one and open children to four.
 - Before admitting a spawn, the hook checks `hooks.json` and the role files against
   digests the runner recorded at Bootstrap, as the ADR 0100 adapter does for each
