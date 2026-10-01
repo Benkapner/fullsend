@@ -320,12 +320,12 @@ func TestIsGitLabIdentityUninstallVar(t *testing.T) {
 	assert.False(t, isGitLabIdentityUninstallVar(forge.VarGCPRegion))
 }
 
-// TestGitLabRoleLifecycle_UninstallThenReinstallDoesNotKeepLegacyState
+// TestGitLabRoleLifecycle_UninstallThenReinstallLeavesLegacySharedCredential
 // covers a repository installed before the role-only rollout: cleanup
 // and a subsequent reinstall must not touch the leftover legacy shared
 // credential (there is no automated path for that — it requires manual
 // cleanup), while reinstall still provisions fresh role secrets.
-func TestGitLabRoleLifecycle_UninstallThenReinstallDoesNotKeepLegacyState(t *testing.T) {
+func TestGitLabRoleLifecycle_UninstallThenReinstallLeavesLegacySharedCredential(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	fc := provisionClient(t)

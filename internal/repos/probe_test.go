@@ -248,7 +248,7 @@ func TestProbeComponents_GitLab_SkipsThinCallers(t *testing.T) {
 			t.Error("GitLab should not check thin callers")
 		}
 		if c.Name == "secret:"+forge.SecretForgeToken {
-			t.Error("enforced GitLab role migration must not require the shared credential")
+			t.Error("role-only GitLab authentication must not require the shared credential")
 		}
 	}
 

@@ -23,13 +23,13 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-type cliCutoverTokens struct{}
+type cliRoleTokenInventory struct{}
 
-func (cliCutoverTokens) CreateProjectAccessToken(context.Context, string, string, string, []string, int, string) (*repos.ProjectAccessToken, error) {
+func (cliRoleTokenInventory) CreateProjectAccessToken(context.Context, string, string, string, []string, int, string) (*repos.ProjectAccessToken, error) {
 	return nil, nil
 }
 
-func (cliCutoverTokens) ListProjectAccessTokens(context.Context, string, string) ([]repos.ProjectAccessToken, error) {
+func (cliRoleTokenInventory) ListProjectAccessTokens(context.Context, string, string) ([]repos.ProjectAccessToken, error) {
 	return []repos.ProjectAccessToken{
 		{ID: 1, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-01-01"},
 		{ID: 2, Name: gitlabroles.AnalystTokenName, Active: true, ExpiresAt: "2027-01-01"},
@@ -37,7 +37,7 @@ func (cliCutoverTokens) ListProjectAccessTokens(context.Context, string, string)
 	}, nil
 }
 
-func (cliCutoverTokens) RevokeProjectAccessToken(context.Context, string, string, int) error {
+func (cliRoleTokenInventory) RevokeProjectAccessToken(context.Context, string, string, int) error {
 	return nil
 }
 
@@ -683,7 +683,7 @@ func TestGitLabUninstallTokens(t *testing.T) {
 	printer := ui.New(&bytes.Buffer{})
 
 	t.Run("test hook wins", func(t *testing.T) {
-		hook := cliCutoverTokens{}
+		hook := cliRoleTokenInventory{}
 		got := gitLabUninstallTokens(&reposUninstallConfig{testGitLabTokens: hook}, nil, printer, manifest, []string{"group/project"})
 		assert.Equal(t, hook, got)
 	})

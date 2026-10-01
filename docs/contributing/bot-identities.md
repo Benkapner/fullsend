@@ -53,16 +53,18 @@ role contract — built-in Poller, Analyst, and Coder plus optional
 administrator-registered custom roles — is defined in
 [gitlab-role-credentials.md](gitlab-role-credentials.md).
 `repos install` provisions those credentials on fresh and existing
-shared-token installs and, when every registered role is ready, retires
-`FULLSEND_FORGE_TOKEN`.
+shared-token installs. It does not retire a leftover `FULLSEND_FORGE_TOKEN`
+— there is no automated path for that; an administrator must revoke it
+manually.
 GitLab CI poll/agent jobs and `fullsend poll` / `fullsend run` always
 select the registered role credential and fail closed if that
 secret is missing (see [gitlab-role-credentials.md](gitlab-role-credentials.md)).
-The shared `fullsend-bot` identity never authenticates at runtime, not only
-once its credential is retired — runtime credential selection unconditionally
-requires the registered role credential and fails closed otherwise. A
-leftover `FULLSEND_FORGE_TOKEN` is install/uninstall state only. Role
-registration is install-state only; repository and merge-request content
+The shared `fullsend-bot` identity never authenticates at runtime — runtime
+credential selection unconditionally requires the registered role credential
+and fails closed otherwise. A leftover `FULLSEND_FORGE_TOKEN` is untouched by
+both `repos install` and `repos uninstall`; cleaning it up (and revoking its
+matching `fullsend-bot` project access token) is a manual administrator step.
+Role registration is install-state only; repository and merge-request content
 cannot create or elevate a GitLab role.
-Role credentials are provisioned and the legacy shared credential is retired
-automatically once all registered roles are ready.
+Role credentials are provisioned, but the legacy shared credential is left
+in place — retiring it is always a manual administrator step.
