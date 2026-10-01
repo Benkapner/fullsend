@@ -131,10 +131,10 @@ func TestCoderUsesEmbeddedGithubProvider(t *testing.T) {
 // harness in fullsend-ai/agents sets readonly_repo, and only the review role
 // does.
 func TestReviewRoleMountsTheRepositoryReadOnly(t *testing.T) {
-	for _, r := range roleTable {
-		want := r.Name == "review"
-		if r.ReadonlyRepo != want {
-			t.Errorf("role %s: ReadonlyRepo = %v, want %v", r.Name, r.ReadonlyRepo, want)
+	for _, name := range RoleNames() {
+		want := name == "review"
+		if got := roleTable[name].ReadonlyRepo; got != want {
+			t.Errorf("role %q: ReadonlyRepo = %v, want %v", name, got, want)
 		}
 	}
 }
