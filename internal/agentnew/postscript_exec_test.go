@@ -310,3 +310,23 @@ func TestGeneratedPostScriptOkFailsWhenFullsendHelpFails(t *testing.T) {
 		t.Fatalf("expected fullsend's own error in the log, got:\n%s", stderr.String())
 	}
 }
+
+// TestGeneratedPostScriptOkRejectsANonGitHubIssueURL pins that an ok result
+// is validated like any other: the ok path runs after the ISSUE_URL check,
+// so a non-GitHub work-item URL fails the run instead of exiting 0 unseen.
+func TestGeneratedPostScriptOkRejectsANonGitHubIssueURL(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	runDir := writeRunDir(t, map[string]any{
+		"iteration-1": map[string]any{"status": "ok", "summary": "All clear", "comment": "All added documentation links resolve."},
+	})
+	_, stderr, err := runPostScript(t, script, runDir, "ISSUE_URL=https://evil.example.com/fullsend-ai/demo/pull/99")
+	if err == nil {
+		t.Fatalf("ok with a non-GitHub ISSUE_URL must fail; stderr:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "ISSUE_URL is not a GitHub issue or pull request URL") {
+		t.Fatalf("expected the ISSUE_URL rejection, got:\n%s", stderr)
+	}
+}
