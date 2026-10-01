@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
@@ -25,6 +26,7 @@ func TestProbeComponents_FullyInstalled(t *testing.T) {
 	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
 	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = appsetup.DefaultAppSet
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
 
@@ -144,6 +146,7 @@ func TestProbeComponents_NoGCPSecretsIsCurrent(t *testing.T) {
 	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
 	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = appsetup.DefaultAppSet
 	// A repository without Vertex credentials is a valid installation.
 
 	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
@@ -464,6 +467,7 @@ func TestProbeComponents_NilExpectedVars_PresenceOnly(t *testing.T) {
 	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
 	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old.example.com"
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = appsetup.DefaultAppSet
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
 

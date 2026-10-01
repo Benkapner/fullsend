@@ -37,6 +37,13 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | Full WIF provider resource name for OIDC authentication | `projects/123456789/locations/global/...` |
 | `FULLSEND_OPENAI_API_KEY` | Repo secret | Opt-in OpenAI API key when OpenAI WIF is unavailable (exported as `OPENAI_API_KEY`; unused when the WIF trio is set) | `sk-...` |
 
+`FULLSEND_APP_SET` (GitHub App set prefix; apps named `{app-set}-{role}`,
+defaulting to `fullsend-ai`) is not one of the keys `fullsend github set`
+accepts. It is set by the installer from `--app-set` / `app_set`, and
+reruns preserve a custom value and repair drift or absence; to change it
+after the fact, update `app_set` in `repos.yaml` and run
+`fullsend repos install`, or use `fullsend github setup --app-set`.
+
 ### GitLab
 
 For initial GitLab setup, see [Configuring GitLab](configuring-gitlab.md). Secrets are checked for presence only, so `repos install` cannot update the *value* of an existing `FULLSEND_GCP_PROJECT_ID` or `FULLSEND_GCP_WIF_PROVIDER` — once those CI/CD secrets exist, a new `--inference-project` is a silent no-op for them. To change either one, edit the CI/CD variable directly in GitLab (Settings → CI/CD → Variables), since converge cannot read secret values back to compare or overwrite them.

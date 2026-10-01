@@ -77,6 +77,7 @@ fullsend
 │   │   ├── --inference-region <region>      #   Per-repo GCP inference region override
 │   │   ├── --fullsend-ref <ref>             #   Per-repo fullsend workflow ref override
 │   │   ├── --mint-url <url>                 #   Per-repo mint URL override
+│   │   ├── --app-set <prefix>               #   GitHub App set prefix override ($FULLSEND_APP_SET); GitHub-only
 │   │   ├── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
 │   │   ├── --vendor                         #   Vendor binary and content into each repo for offline CI
 │   │   ├── --gitlab-url <url>               #   GitLab instance URL; sets gitlab.url in the manifest
@@ -324,6 +325,7 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │              FULLSEND_GCP_REGION                           │ │
 │  │              FULLSEND_MINT_URL                             │ │
 │  │              FULLSEND_REVIEW_CLIENT_ID (best-effort)       │ │
+│  │              FULLSEND_APP_SET (GitHub only)                │ │
 │  │                                                            │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
 │  │  │ Per-org:  secrets → .fullsend config repo│              │ │

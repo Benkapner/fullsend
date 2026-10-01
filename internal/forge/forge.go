@@ -39,6 +39,7 @@ const (
 	VarMintURL        = "FULLSEND_MINT_URL"
 	VarGCPRegion      = "FULLSEND_GCP_REGION"
 	VarReviewClientID = "FULLSEND_REVIEW_CLIENT_ID"
+	VarAppSet         = "FULLSEND_APP_SET"
 
 	// Retired GitLab poller state variables. Superseded by HMAC-signed
 	// state.json on fullsend-poll-state-slash / fullsend-poll-state-events.

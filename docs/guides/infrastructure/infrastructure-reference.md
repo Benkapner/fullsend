@@ -352,6 +352,7 @@ Secrets and variables are deployed at different scopes depending on the installa
 - `FULLSEND_MINT_URL`
 - `FULLSEND_GCP_REGION` (value drift is detected and repaired by convergence)
 - `FULLSEND_REVIEW_CLIENT_ID` — OAuth client ID of the review agent's GitHub App (best-effort, conditional on successful lookup)
+- `FULLSEND_APP_SET` — GitHub App set prefix (apps named `{app-set}-{role}`); auto-set by the installer and repaired on convergence
 
 #### GitLab
 

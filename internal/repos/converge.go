@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
@@ -72,8 +73,18 @@ type ConvergeConfig struct {
 	WIFProvider string
 
 	// ReviewAppClientID is the OAuth client ID of the review agent's
-	// GitHub App.
+	// GitHub App, pre-resolved by the caller for ReviewAppClientIDAppSet.
+	// It seeds the per-repo resolution cache so repos on that app set
+	// reuse it without a second lookup.
 	ReviewAppClientID string
+
+	// ReviewAppClientIDAppSet is the app set that ReviewAppClientID was
+	// resolved for. Repos whose effective app set differs (via a per-repo
+	// or platform app_set override) get their review client ID resolved
+	// independently so FULLSEND_REVIEW_CLIENT_ID tracks the same app set
+	// persisted as FULLSEND_APP_SET. Empty means ReviewAppClientID was
+	// resolved for the built-in default app set.
+	ReviewAppClientIDAppSet string
 
 	// VendorOverride, when non-nil, overrides the manifest's resolved
 	// vendor setting for all repos in this convergence run. This lets
@@ -208,7 +219,16 @@ type convergeDiscovery struct {
 	components    []ComponentStatus
 	preset        []byte
 	managedConfig []byte
-	err           error
+	// appSet is the effective FULLSEND_APP_SET value to persist (GitHub
+	// only). When app_set is explicitly configured it is the resolved
+	// value; otherwise it preserves an existing repo variable, falling
+	// back to the built-in default. Empty for GitLab.
+	appSet string
+	// reviewClientID is the FULLSEND_REVIEW_CLIENT_ID value to persist,
+	// resolved for the same effective app set as appSet (GitHub only).
+	// Empty when unavailable (best-effort) or for GitLab.
+	reviewClientID string
+	err            error
 }
 
 // hasComponent returns true if the named component is present in the probe results.
@@ -385,6 +405,36 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 
 	// Phase 1: parallel discovery — probe all repos.
 
+	// Per-app-set cache for review app client IDs. Seeded with the
+	// caller's pre-resolved value so the common case (every repo on the
+	// same app set) needs no extra lookups; repos on a different effective
+	// app set resolve and memoize their own. Keyed by app set; the zero
+	// key maps the caller's value to the built-in default app set.
+	reviewIDSeed := cfg.ReviewAppClientIDAppSet
+	if reviewIDSeed == "" {
+		reviewIDSeed = appsetup.DefaultAppSet
+	}
+	var reviewIDMu sync.Mutex
+	reviewIDCache := map[string]string{}
+	if cfg.ReviewAppClientID != "" {
+		reviewIDCache[reviewIDSeed] = cfg.ReviewAppClientID
+	}
+	// resolveReviewID is only ever called with a GitHub repo's effective
+	// app set, which is always non-empty.
+	resolveReviewID := func(ctx context.Context, client forge.Client, appSet string) string {
+		reviewIDMu.Lock()
+		cached, ok := reviewIDCache[appSet]
+		reviewIDMu.Unlock()
+		if ok {
+			return cached
+		}
+		id := appsetup.ResolveReviewAppClientID(ctx, client, appSet)
+		reviewIDMu.Lock()
+		reviewIDCache[appSet] = id
+		reviewIDMu.Unlock()
+		return id
+	}
+
 	concurrency := cfg.MaxConcurrency
 	discoveries := make([]convergeDiscovery, len(repos))
 	sem := make(chan struct{}, concurrency)
@@ -414,15 +464,36 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			}
 			resolved.ForgeConfig = fc
 
+			// Resolve the effective FULLSEND_APP_SET value to persist
+			// (GitHub only). An explicitly configured app_set repairs
+			// drift to that value; otherwise the existing repo variable
+			// is preserved, falling back to the built-in default only
+			// when absent (repairing older installs that predate it).
+			effectiveAppSet, appSetErr := resolveConvergeAppSet(ctx, fc.Client, rr.Owner, rr.Repo, resolved)
+			if appSetErr != nil {
+				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: appSetErr}
+				return
+			}
+
+			// Resolve FULLSEND_REVIEW_CLIENT_ID for the same effective app
+			// set persisted as FULLSEND_APP_SET, so a per-repo or platform
+			// app_set override points provenance matching at that app set's
+			// review bot rather than the run-wide default. GitHub only.
+			reviewClientID := cfg.ReviewAppClientID
+			if resolved.Forge == ForgeGitHub {
+				reviewClientID = resolveReviewID(ctx, fc.Client, effectiveAppSet)
+			}
+
 			// Build expected values for all static variables so
 			// ProbeComponents can detect value drift — not just
-			// FULLSEND_MINT_URL but also FULLSEND_GCP_REGION
-			// and FULLSEND_REVIEW_CLIENT_ID.
+			// FULLSEND_MINT_URL but also FULLSEND_GCP_REGION,
+			// FULLSEND_REVIEW_CLIENT_ID, and FULLSEND_APP_SET.
 			expectedVars, varValErr := staticExpectedVarValues(InstallConfig{
 				Forge:             resolved.Forge,
 				MintURL:           resolved.MintURL,
 				InferenceRegion:   cfg.InferenceRegion,
-				ReviewAppClientID: cfg.ReviewAppClientID,
+				ReviewAppClientID: reviewClientID,
+				AppSet:            effectiveAppSet,
 			}, resolved.MintURL)
 			if varValErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: varValErr}
@@ -435,9 +506,11 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			}
 
 			discoveries[idx] = convergeDiscovery{
-				repo:       rr,
-				resolved:   resolved,
-				components: probed,
+				repo:           rr,
+				resolved:       resolved,
+				components:     probed,
+				appSet:         effectiveAppSet,
+				reviewClientID: reviewClientID,
 			}
 		}(i, r)
 	}
@@ -737,7 +810,8 @@ func convergeRepo(ctx context.Context,
 			UpstreamRef:                   ref,
 			UpstreamTag:                   tag,
 			WIFProvider:                   wifProvider,
-			ReviewAppClientID:             cfg.ReviewAppClientID,
+			ReviewAppClientID:             d.reviewClientID,
+			AppSet:                        d.appSet,
 			AgentRunnerTags:               gitlabAgentRunnerTags(cfg.Manifest),
 			ControlRunnerTags:             gitlabControlRunnerTags(cfg.Manifest),
 			Runtime:                       resolved.Runtime,
@@ -932,7 +1006,7 @@ func convergeRepo(ctx context.Context,
 		ctx, resolved, cfg, refResolver, refFileSet,
 		DriftConfig{
 			InferenceRegion:   cfg.InferenceRegion,
-			ReviewAppClientID: cfg.ReviewAppClientID,
+			ReviewAppClientID: d.reviewClientID,
 			AgentRunnerTags:   gitlabAgentRunnerTags(cfg.Manifest),
 			ControlRunnerTags: gitlabControlRunnerTags(cfg.Manifest),
 		},
@@ -1047,6 +1121,36 @@ func uniqueScaffoldFiles(files []forge.TreeFile) []forge.TreeFile {
 		out = append(out, f)
 	}
 	return out
+}
+
+// resolveConvergeAppSet returns the effective FULLSEND_APP_SET value to
+// persist for a repo during convergence. GitLab repos never carry the
+// variable, so it returns "". For GitHub, an explicitly configured app_set
+// (per-repo override or manifest default) wins so drift is repaired to the
+// configured value; otherwise the value already present on the repo is
+// preserved, falling back to the built-in default only when the variable is
+// absent (repairing older installs created before FULLSEND_APP_SET existed).
+func resolveConvergeAppSet(ctx context.Context, client forge.Client, owner, repo string, resolved ResolvedConfig) (string, error) {
+	if resolved.Forge != ForgeGitHub {
+		return "", nil
+	}
+	if resolved.AppSetExplicit {
+		return appsetup.ResolvePersistedAppSet(resolved.AppSet, ""), nil
+	}
+	existing, _, err := client.GetRepoVariable(ctx, owner, repo, forge.VarAppSet)
+	if err != nil {
+		return "", fmt.Errorf("reading variable %s for %s/%s: %w", forge.VarAppSet, owner, repo, err)
+	}
+	// The existing variable comes from the repo, not from a validated CLI
+	// or manifest source — unlike the AppSetExplicit branch above, it was
+	// never passed through appsetup.ValidateAppSet. Validate it here
+	// before it is preserved and later used to build a GitHub App slug
+	// (appsetup.ResolveReviewAppClientID), so a malformed value falls
+	// back to the built-in default instead of flowing through unchecked.
+	if existing != "" && appsetup.ValidateAppSet(existing) != nil {
+		existing = ""
+	}
+	return appsetup.ResolvePersistedAppSet("", existing), nil
 }
 
 // convergeVariables checks and repairs variable drift for an installed repo.
