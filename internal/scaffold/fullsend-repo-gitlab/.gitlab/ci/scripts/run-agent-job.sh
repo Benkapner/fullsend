@@ -353,28 +353,20 @@ if [ "${STAGE}" != "retro" ] && [ "${STAGE}" != "prioritize" ]; then
   fi
 fi
 
-# Fork MR protection — deny-by-default for the "code" stage, which opens
-# a new MR against the target project and has no analogous validated
-# source revision to check out: a fork/cross-project dispatch is always
-# refused here, regardless of IS_FORK's value (IS_FORK itself is an
-# attacker-influenced pipeline variable before DISPATCH_VERIFIED, which
-# is already enforced above).
+# Fork MR protection — skip code/fix stages for fork MRs to prevent
+# pushing commits to the target project from untrusted sources.
+# CEL equivalent: !event.state.change_proposal.is_fork
 #
-# "fix" is deliberately NOT gated on IS_FORK here (#7814) — below, it
-# sources checkout-mr-source.sh, which resolves the MR source through
-# `fullsend resolve-mr-source` (never trusting IS_FORK or any other
-# unverified CI variable) and fails the job closed on missing source
-# metadata, a fetch failure, a checked-out SHA that doesn't match, or a
-# protected source branch (`fullsend check-protected-branch`), before
-# the fix agent ever runs. That validated source project and branch —
-# SOURCE_PROJECT_PATH/SOURCE_BRANCH, exported below — is also what the
-# runner-side post-script pushes the resulting fix commit back to,
-# never FULLSEND_PINNED_PROJECT_PATH (the target project) and never an
-# unvalidated branch. Checking out and validating the exact source
-# revision is what makes it safe to run "fix" on a fork/cross-project
-# MR; IS_FORK alone was never a sufficient signal either way.
-# CEL equivalent: !event.state.change_proposal.is_fork (code stage only)
-if [ "${STAGE}" = "code" ]; then
+# The "fix" stage's checkout-mr-source.sh already resolves, fetches, and
+# validates the exact MR source revision in a fork/cross-project-aware
+# way, including a `fullsend check-protected-branch` pre-push gate
+# (#7814) — but that checkout-time validation is not sufficient on its
+# own to lift this gate: the runner-side post-script that actually
+# pushes the resulting fix commit still targets this job's own
+# project/branch rather than the resolved MR source project, so a fork
+# or cross-project "fix" dispatch remains denied here until a
+# source-targeted publish path ships.
+if [ "${STAGE}" = "code" ] || [ "${STAGE}" = "fix" ]; then
   if [ "${IS_FORK:-true}" = "true" ]; then
     echo "ERROR: Fork MR detected — refusing to run ${STAGE} stage" >&2
     exit 1
@@ -597,13 +589,9 @@ if [ "${STAGE}" = "code" ] || [ "${STAGE}" = "fix" ] || [ "${STAGE}" = "review" 
 
   # Push token — on GitLab the selected role PAT
   # (FULLSEND_JOB_TOKEN) serves as both the API token and the
-  # push token. The post-script uses PUSH_TOKEN to push commits —
-  # for the fix stage, to SOURCE_PROJECT_PATH/SOURCE_BRANCH (the
-  # validated MR source, exported by checkout-mr-source.sh below;
-  # may be a fork or cross-project repository), never to
-  # FULLSEND_PINNED_PROJECT_PATH (the target project) or an
-  # unvalidated branch (#7814). fullsend run may later blank
-  # PUSH_TOKEN for roles without write_repository.
+  # push token. The post-script uses PUSH_TOKEN to push commits.
+  # fullsend run may later blank PUSH_TOKEN for roles without
+  # write_repository.
   export PUSH_TOKEN="${FULLSEND_JOB_TOKEN}"
   export PUSH_TOKEN_SOURCE="pat"
 

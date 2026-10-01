@@ -54,14 +54,14 @@
 # resolve-mr-source is the sole source of truth. A fast-path value
 # that disagrees with the resolved source fails closed instead of
 # being trusted. This helper is fork-aware and validates the source
-# project, branch, and exact SHA for any resolved source. run-agent-job.sh's
-# job-level fork gate only denies the "code" stage now (#7814) — "fix"
-# relies on this script's own checkout-time validation (the consistency
-# checks above and the protected-branch check below) plus runner-side
-# post-script push-back (pushes to SOURCE_PROJECT_PATH/SOURCE_BRANCH,
-# never to FULLSEND_PINNED_PROJECT_PATH) to stay safe for fork and
-# cross-project sources, so a fix dispatch reaches this checkout logic
-# regardless of IS_FORK.
+# project, branch, and exact SHA for any resolved source, and also
+# runs a pre-push safety gate (`fullsend check-protected-branch`,
+# below) against that resolved source — but run-agent-job.sh's
+# job-level IS_FORK gate (unchanged by this PR) still refuses the fix
+# stage outright whenever IS_FORK is true, so a genuine fork or
+# cross-project MR never reaches this checkout logic today. That gate
+# is expected to be lifted in a follow-up PR (#7814) once post-script
+# push-back also ships to the validated source project.
 #
 # This script also owns the pre-push safety gate: once the source is
 # resolved and validated above, `fullsend check-protected-branch` fails

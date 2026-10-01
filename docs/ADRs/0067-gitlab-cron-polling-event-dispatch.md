@@ -684,13 +684,8 @@ injection > insider > drift > supply chain):
   instance-level CI/CD variables (requires admin API access).
 - **Event data sanitization.** Attacker-controlled content is base64-encoded
   before passing to child pipelines.
-- **Fork MR protection.** Code stages are skipped when
-  `source_project_id != target_project_id`. (The fix stage's handling of
-  fork/cross-project sources was extended in
-  [#7814](https://github.com/fullsend-ai/fullsend/issues/7814): it
-  validates and checks out the exact MR source revision and rejects a
-  protected source branch instead of being skipped outright — see
-  [the fix agent doc](../agents/fix.md).)
+- **Fork MR protection.** Fix/code stages are skipped when
+  `source_project_id != target_project_id`.
 - **Slash command authorization.** Only users with Developer-level (30+)
   project access can trigger agent stages via `/fs-*` commands.
   ~~Exception: non-command comments on issues with the `needs-info` label
