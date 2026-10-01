@@ -235,6 +235,23 @@ func codexHooksAdapterCheck(hooksPath, adapter string) string {
 	return fmt.Sprintf(`[ "%s" = "%s" ]`, count(`"command":`), count(adapter))
 }
 
+// codexModelsCacheRemoval is the POSIX sh fragment that deletes a leftover
+// $CODEX_HOME/models_cache.json before codex starts. codex's model manager
+// reads this file at session start, ahead of the bundled catalog, whenever it
+// matches the client version and provider identity and is under 300s old
+// (codex-rs/models-manager/src/manager.rs, should_refresh_models) — and
+// fullsend's provider uses command auth, which turns that refresh check on.
+// The `/models` fetch that would normally write the file is blocked by the
+// egress profile, so no cache codex itself wrote can ever be fresh during a
+// run; removing whatever is there is correct in every case, which is why this
+// deletes rather than refuses the launch the way codexAssetGuard and
+// codexConfigGuard do for files that might legitimately differ.
+//
+// `rm -f` no-ops cleanly when the file is absent, which is the common case.
+func codexModelsCacheRemoval(r CodexRuntime) string {
+	return "rm -f " + shellQuote(r.codexModelsCachePath())
+}
+
 func codexSHACheck(path, sum string) string {
 	return fmt.Sprintf(`[ "$(command -p sha256sum %s | command -p cut -d' ' -f1)" = %s ]`,
 		shellQuote(path), shellQuote(sum))
@@ -287,7 +304,11 @@ func codexConfigGuard(r CodexRuntime, digests codexRunnerHeldDigestSet) string {
 //     repo's own .codex/ layer — including repo-owned hooks — never loads;
 //   - whether the hook adapter is required is decided from the runner's own
 //     signal (params.HooksSettingsPath, the same one ClaudeRuntime uses for
-//     --settings), never from the agent-writable manifest.
+//     --settings), never from the agent-writable manifest;
+//   - a leftover models_cache.json is removed once before .env and again
+//     immediately before launch, so codex always starts against the bundled
+//     model catalog rather than a stale cache's instructions template,
+//     multi_agent_version or shell_type.
 func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled bool, digests codexRunnerHeldDigestSet) string {
 	r := CodexRuntime{}
 	envFile := sandbox.SandboxWorkspace + "/.env"
@@ -305,6 +326,11 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 		"&& readonly "+codexPathVar+`="$PATH"`,
 		"&& "+codexAssetGuard(r, hooksEnabled, digests),
 		"&& "+codexConfigGuard(r, digests),
+		// No legitimate models_cache.json can exist while /models is blocked by
+		// the egress profile, so a leftover here is removed before .env can run
+		// — one more pass follows immediately before launch, since .env
+		// executes in this same shell and could otherwise recreate the file.
+		"&& "+codexModelsCacheRemoval(r),
 		"&& "+r.OpenAIAuthSeed(),
 		"&& . "+shellQuote(envFile),
 		// .env is agent-writable; re-pin the runner-owned config location
@@ -330,6 +356,9 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 		"&& unset -f test command grep cut wc sha256sum printf codex",
 		"&& "+codexAssetGuard(r, hooksEnabled, digests),
 		"&& "+codexConfigGuard(r, digests),
+		// Immediately before launch: a sourced .env ran in this same shell
+		// since the first removal, and could have recreated the file.
+		"&& "+codexModelsCacheRemoval(r),
 	)
 	if params.Debug != "" {
 		// codex exec has no --debug flag. Its tracing goes to stderr, at
