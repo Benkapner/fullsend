@@ -144,6 +144,5 @@ reload at child start, the spawn arguments, the V1 tool set and the hook-name ru
 exact-or-regex matcher rule, the hook outcomes (exit 2 with a reason blocks; exit 2
 without one, another exit, an `async` handler or a timeout does not),
 `codex debug models --bundled`, the catalog's V1 entries and the version Codex supplies
-to an entry that carries none (`multi_agent`, on by default). The checks ran on the 0.157.0
-and 0.159.0 binaries and, for 0.159.3, at the source tag, where the crates involved differ
-from 0.159.0 only in Windows process creation and the catalog.
+to an entry that carries none (`multi_agent`, on by default). The checks ran on the
+0.157.0, 0.159.0 and 0.159.3 binaries.
