@@ -25,13 +25,18 @@ The remaining prerequisites are forge-specific:
 
 - **GitHub access** — admin or write access to the target repositories
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
-- **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) must be completed separately before running `repos install`. For self-managed mints, mint enrollment (`fullsend mint enroll`) is also required. The hosted community mint needs no enrollment — install the shared Apps and use the CLI defaults. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
+- **Vertex prerequisites** — if any agent will use Vertex, complete GCP WIF provisioning (`fullsend inference provision`) separately. For self-managed mints, mint enrollment (`fullsend mint enroll`) is also required. The hosted community mint needs no enrollment — install the shared Apps and use the CLI defaults. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
+
+An OpenAI-only repository can be installed without GCP inference inputs. Each
+agent's provider is selected when it runs; see
+[OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
 
 **GitLab:**
 
 GitLab does not use `gh`, `fullsend inference provision`, or mint
 enrollment. See [Configuring GitLab § Prerequisites](configuring-gitlab.md#prerequisites)
-for the GitLab token, GCP inference project, and runner requirements.
+for the GitLab token and runner requirements. A GCP inference project is
+needed only for Vertex agents.
 
 ## Getting started
 
@@ -317,7 +322,8 @@ Install runs in two phases:
    separate upgrade PR. Repos whose workflow is already on the default
    branch are checked for component drift (workflow, thin callers,
    variables, secrets, pipeline schedules, GitLab poller protected-ref
-   pipeline access), scaffold content drift, managed `.fullsend/config.yaml`
+   pipeline access, GitLab pipeline-variable override-role inspection —
+   report-only by default), scaffold content drift, managed `.fullsend/config.yaml`
    drift, scaffold ref drift, and declared configuration-preset drift against
    `.fullsend/config.base.yaml`. Missing or drifted components are repaired
    automatically; ref updates are committed as PRs (or direct pushes with
@@ -389,7 +395,8 @@ fullsend repos status -f repos.yaml --json
 
 Run `repos install` to detect and fix component drift (workflow, thin
 callers, variables, secrets, pipeline schedules, GitLab poller
-protected-ref pipeline access), scaffold ref drift,
+protected-ref pipeline access, GitLab pipeline-variable override-role
+inspection — report-only by default), scaffold ref drift,
 scaffold content drift, declared configuration-preset drift, and managed
 `.fullsend/config.yaml` drift across all manifest repos:
 
@@ -407,7 +414,8 @@ The convergence phase checks all components (workflow, thin callers,
 variables, secrets, pipeline schedules, GitLab poller protected-ref
 pipeline access — a disabled GitLab schedule is
 reported as drift and reactivated only when `--reactivate-schedules` is
-passed), scaffold content drift (including structural rewrites of
+passed; GitLab pipeline-variable override-role inspection, report-only
+by default), scaffold content drift (including structural rewrites of
 `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref, and
 removal of a leftover `.gitlab/ci/fullsend-dispatch.yml` from installs
 predating #7707),
@@ -586,20 +594,10 @@ the command.
 
 ### Partial secret state
 
-When only one of the two required inference secrets (`FULLSEND_GCP_PROJECT_ID`
-or `FULLSEND_GCP_WIF_PROVIDER`) exists on a repo but not both, `repos
-install` reports an error:
-
-```
-partial secret state: FULLSEND_GCP_PROJECT_ID exists but FULLSEND_GCP_WIF_PROVIDER is missing
-```
-
-This typically occurs when a previous install was interrupted or when
-secrets were manually modified. To resolve, either:
-
-- Delete the existing secret and re-run `repos install` to re-provision
-  both secrets together.
-- Manually create the missing secret with the correct value.
+Both GCP inference secrets may be absent. If only one exists, `repos status`
+reports drift. Supply the complete GCP inference flags to `repos install`
+to write the missing secret, or add it manually; until then a Vertex run
+fails its early credential check. An OpenAI run does not use the GCP pair.
 
 ## Migrating from per-org mode to manifest management
 

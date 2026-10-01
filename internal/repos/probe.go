@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
@@ -33,8 +32,8 @@ type ComponentStatus struct {
 	// when the component is not present or its value is opaque.
 	Actual string
 
-	// Match is true when the component is present and either no value
-	// check applies or the actual value equals the expected value.
+	// Match is true when the component meets its requirement. Both GCP
+	// secrets absent is also a match because Vertex is optional at install.
 	Match bool
 }
 
@@ -230,21 +229,7 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 	}
 
 	// Required secrets (existence check only — values cannot be read back).
-	migrationMode := ""
-	migrationExists := false
-	if forgeName == ForgeGitLab {
-		var migrationErr error
-		migrationMode, migrationExists, migrationErr = client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabRoleMigration)
-		if migrationErr != nil {
-			return nil, fmt.Errorf("checking variable %s: %w", forge.VarGitLabRoleMigration, migrationErr)
-		}
-		if migrationExists {
-			if _, err := gitlabroles.ParseMode(migrationMode); err != nil {
-				return nil, fmt.Errorf("invalid GitLab role migration mode: %w", err)
-			}
-		}
-	}
-	for _, secretName := range requiredSecretsForForgeMode(forgeName, migrationMode, migrationExists) {
+	for _, secretName := range requiredSecretsForForge(forgeName) {
 		exists, err := client.RepoSecretExists(ctx, owner, repo, secretName)
 		if err != nil {
 			return nil, fmt.Errorf("checking secret %s: %w", secretName, err)
@@ -254,6 +239,22 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 			Present: exists,
 			Match:   exists,
 		})
+	}
+	// Installation does not select an agent's inference route. Keep both
+	// GCP components visible so a partial pair remains
+	// detectable and convergence can repair it when values are supplied.
+	var projectIndex, wifIndex = -1, -1
+	for i := range results {
+		switch results[i].Name {
+		case "secret:" + forge.SecretGCPProjectID:
+			projectIndex = i
+		case "secret:" + forge.SecretGCPWIFProvider:
+			wifIndex = i
+		}
+	}
+	if projectIndex >= 0 && wifIndex >= 0 && !results[projectIndex].Present && !results[wifIndex].Present {
+		results[projectIndex].Match = true
+		results[wifIndex].Match = true
 	}
 
 	return results, nil

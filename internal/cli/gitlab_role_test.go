@@ -55,7 +55,6 @@ func TestResolveGitLabPollerCredentialMissingRoleFailsClosed(t *testing.T) {
 	_, _, err := resolveGitLabPollerCredential(mapGetenv(map[string]string{forge.SecretForgeToken: "glpat-SHARED"}))
 	require.Error(t, err)
 	assert.ErrorIs(t, err, gitlabroles.ErrUnconfigured)
-	assert.NotErrorIs(t, err, gitlabroles.ErrSharedUnconfigured)
 	assert.Contains(t, err.Error(), forge.SecretGitLabPollerToken)
 }
 
@@ -317,7 +316,6 @@ func TestCheckGitLabApprovalCapability(t *testing.T) {
 func TestWrapGitLabAuthFailureDoesNotSwitchIdentity(t *testing.T) {
 	t.Parallel()
 	sel := gitlabroles.Selection{
-		Mode: gitlabroles.ModeMigrating,
 		Source: gitlabroles.Source{
 			Role:       gitlabroles.RoleAnalyst,
 			SecretName: forge.SecretGitLabAnalystToken,
@@ -364,7 +362,6 @@ func TestApplyGitLabRoleSelectionNilSetenv(t *testing.T) {
 	t.Setenv(envGitLabRoleSource, "")
 	t.Setenv("PUSH_TOKEN", "leftover")
 	sel := gitlabroles.Selection{
-		Mode: gitlabroles.ModeDisabled,
 		Source: gitlabroles.Source{
 			Role:       gitlabroles.RolePoller,
 			SecretName: forge.SecretGitLabPollerToken,
@@ -376,11 +373,17 @@ func TestApplyGitLabRoleSelectionNilSetenv(t *testing.T) {
 	assert.Equal(t, "", os.Getenv("PUSH_TOKEN"), "Poller must not inherit leftover PUSH_TOKEN")
 }
 
-func TestCheckGitLabApprovalCapabilityInvalidMode(t *testing.T) {
+func TestCheckGitLabApprovalCapabilityIgnoresInvalidMode(t *testing.T) {
 	t.Parallel()
-	err := checkGitLabApprovalCapability("gitlab", "approve", "", func(string) string { return "nope" })
-	require.Error(t, err)
-	assert.ErrorIs(t, err, gitlabroles.ErrInvalidMode)
+	env := map[string]string{
+		forge.VarGitLabRoleMigration:   "nope",
+		forge.SecretForgeToken:         "shared",
+		forge.SecretGitLabPollerToken:  "p",
+		forge.SecretGitLabAnalystToken: "a",
+		forge.SecretGitLabCoderToken:   "c",
+		envGitLabRole:                  "analyst",
+	}
+	require.NoError(t, checkGitLabApprovalCapability("gitlab", "approve", "a", mapGetenv(env)))
 }
 
 func TestCheckGitLabApprovalCapabilityNilGetenvDisabledFailsClosed(t *testing.T) {

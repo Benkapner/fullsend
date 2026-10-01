@@ -194,13 +194,11 @@ func TestGitHubSetupCmd_PerRepoDryRun_Vendor(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestGitHubSetupCmd_PerRepoRequiresInferenceProject(t *testing.T) {
-	// No existing .fullsend/config.yaml (first install, modeled via an
-	// empty FakeClient — loadExistingPerRepoConfig sees a 404 and
-	// returns a nil top layer) and no FULLSEND_GCP_PROJECT_ID secret:
-	// --inference-project has no source to resolve from, so setup must
-	// fail the required-value check in resolveInferenceReuse.
+func TestGitHubSetupCmd_PerRepoWithoutGCP(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
 	printer := ui.New(&discardWriter{})
 
 	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
@@ -208,6 +206,24 @@ func TestGitHubSetupCmd_PerRepoRequiresInferenceProject(t *testing.T) {
 		mintURL:      "https://mint-test-abc123.run.app",
 		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
 		changedFlags: map[string]bool{"mint-url": true},
+	})
+	require.NoError(t, err)
+	for _, secret := range client.CreatedSecrets {
+		assert.NotContains(t, secret.Name, "FULLSEND_GCP_")
+	}
+}
+
+func TestGitHubSetupCmd_PerRepoRequiresProjectWhenWIFConfigured(t *testing.T) {
+	// A WIF provider without a project is an incomplete Vertex pair.
+	client := forge.NewFakeClient()
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags:         map[string]bool{"mint-url": true, "inference-wif-provider": true},
 	})
 	require.Error(t, err)
 	errMsg := err.Error()
@@ -1551,22 +1567,6 @@ func TestRunGitHubSetupPerRepo_PartialReuse_ProjectOnly(t *testing.T) {
 	assert.Contains(t, secretNames, "FULLSEND_GCP_WIF_PROVIDER")
 }
 
-func TestRunGitHubSetupPerRepo_MissingFlagNoExistingSecret(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.AuthenticatedUser = "acme"
-	printer := ui.New(&discardWriter{})
-
-	// No existing secrets and no flags — should fail.
-	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
-		target:          "acme/widget",
-		mintURL:         "https://mint-test-abc123.run.app",
-		inferenceRegion: "global",
-		agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--inference-project is required")
-}
-
 func TestRunGitHubSetupPerRepo_MissingWIFNoExistingSecret(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "acme"
@@ -1623,10 +1623,11 @@ func TestRunGitHubSetupPerRepo_SecretCheckError(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
-		target:          "acme/widget",
-		mintURL:         "https://mint-test-abc123.run.app",
-		inferenceRegion: "global",
-		agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceRegion:      "global",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "API rate limit exceeded")
@@ -2075,7 +2076,7 @@ func TestResolveInferenceReuse_SecretCheckErrors(t *testing.T) {
 	t.Parallel()
 	client := forge.NewFakeClient()
 	client.Errors = map[string]error{"RepoSecretExists": fmt.Errorf("boom")}
-	_, _, err := resolveInferenceReuse(context.Background(), client, "acme", "widget", githubSetupConfig{}, nil)
+	_, _, err := resolveInferenceReuse(context.Background(), client, "acme", "widget", githubSetupConfig{inferenceWIFProvider: "provider"}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checking existing secret FULLSEND_GCP_PROJECT_ID")
 

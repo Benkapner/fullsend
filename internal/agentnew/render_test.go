@@ -86,6 +86,30 @@ func TestGeneratedHarnessLoads(t *testing.T) {
 	}
 }
 
+func TestGeneratedHarnessMakesGCPCredentialMountOptional(t *testing.T) {
+	files, err := Render(testOptions("lint-docs", "triage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	writeTree(t, dir, files)
+	h, err := harness.Load(filepath.Join(dir, "harness", "lint-docs.yaml"))
+	if err != nil {
+		t.Fatalf("generated harness does not load: %v", err)
+	}
+
+	for _, hostFile := range h.HostFiles {
+		if hostFile.Src == "${GOOGLE_APPLICATION_CREDENTIALS}" {
+			if !hostFile.Optional {
+				t.Error("generated GCP credential host file must be optional")
+			}
+			return
+		}
+	}
+	t.Error("generated harness is missing the GCP credential host file")
+}
+
 // TestGeneratedHarnessHasNoDeprecatedShapes pins decision 6: no forge: block
 // (deprecated by ADR 0088) and no runner_env (deprecated by ADR 0055). Lint
 // would warn, and a generator must never emit a shape the repo has deprecated.

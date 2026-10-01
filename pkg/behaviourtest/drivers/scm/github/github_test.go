@@ -5,6 +5,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
@@ -563,4 +566,76 @@ func TestSubmitPullRequestReview_CreateReviewError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when CreatePullRequestReview fails")
 	}
+}
+
+// laggingRepoClient returns ErrNotFound for the first fails GetRepo
+// calls, then delegates: GitHub's read-after-create lag (#7861).
+type laggingRepoClient struct {
+	forge.Client
+	fails int
+	err   error
+	calls int
+}
+
+func (c *laggingRepoClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Repository, error) {
+	c.calls++
+	if c.calls <= c.fails {
+		if c.err != nil {
+			return nil, c.err
+		}
+		return nil, forge.ErrNotFound
+	}
+	return c.Client.GetRepo(ctx, owner, repo)
+}
+
+func noRepoVisibleDelay(t *testing.T) {
+	t.Helper()
+	orig := repoVisibleDelay
+	repoVisibleDelay = 0
+	t.Cleanup(func() { repoVisibleDelay = orig })
+}
+
+func newPublicRepoFake() *forge.FakeClient {
+	fc := forge.NewFakeClient()
+	fc.Repos = append(fc.Repos, forge.Repository{Name: "host", FullName: "org/host", Private: false})
+	return fc
+}
+
+func TestEnsureRepoPublic_RetriesNotFoundAfterCreate(t *testing.T) {
+	noRepoVisibleDelay(t)
+	c := &laggingRepoClient{Client: newPublicRepoFake(), fails: 2}
+
+	require.NoError(t, New(c).EnsureRepoPublic(context.Background(), "org", "host"))
+	assert.Equal(t, 3, c.calls)
+}
+
+func TestEnsureRepoPublic_NotFoundExhaustsBudget(t *testing.T) {
+	noRepoVisibleDelay(t)
+	c := &laggingRepoClient{Client: newPublicRepoFake(), fails: 100}
+
+	err := New(c).EnsureRepoPublic(context.Background(), "org", "host")
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+	assert.Contains(t, err.Error(), "still not found 5 attempts after creation")
+	assert.Equal(t, repoVisibleAttempts, c.calls)
+}
+
+func TestEnsureRepoPublic_OtherErrorNotRetried(t *testing.T) {
+	noRepoVisibleDelay(t)
+	c := &laggingRepoClient{Client: newPublicRepoFake(), fails: 100, err: errors.New("forbidden")}
+
+	err := New(c).EnsureRepoPublic(context.Background(), "org", "host")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forbidden")
+	assert.Equal(t, 1, c.calls)
+}
+
+func TestEnsureRepoPublic_ContextCancelledWhileWaiting(t *testing.T) {
+	c := &laggingRepoClient{Client: newPublicRepoFake(), fails: 100}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := New(c).EnsureRepoPublic(ctx, "org", "host")
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, c.calls)
 }

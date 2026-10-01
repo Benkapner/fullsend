@@ -10,7 +10,6 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
@@ -85,6 +84,28 @@ func TestConverge_AllFresh(t *testing.T) {
 	}
 	if len(result.Failed()) != 0 {
 		t.Errorf("expected 0 failed, got %d", len(result.Failed()))
+	}
+}
+
+func TestConverge_FreshInstallWithoutGCP(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	cfg := convergeCfgWithDefaults(newConvergeManifest("acme/api"))
+	cfg.InferenceProject = ""
+	cfg.InferenceProjectNumber = ""
+	cfg.InferenceRegion = ""
+	sc := &fakeScaffoldCommit{}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Installed()) != 1 || len(result.Failed()) != 0 {
+		t.Fatalf("want one installed repo and no failures, got installed=%d failed=%v", len(result.Installed()), result.Failed())
+	}
+	for _, secret := range fc.CreatedSecrets {
+		if strings.HasPrefix(secret.Name, "FULLSEND_GCP_") {
+			t.Errorf("unexpected GCP secret %s", secret.Name)
+		}
 	}
 }
 
@@ -353,33 +374,6 @@ func TestConverge_InvalidConcurrency(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "concurrency") {
 		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestConverge_InferenceProjectRequired(t *testing.T) {
-	repoNames := []string{"acme/api"}
-	fc := newFakeClientForBatch(repoNames...)
-	m := newConvergeManifest(repoNames...)
-
-	sc := &fakeScaffoldCommit{}
-	cfg := ConvergeConfig{
-		Manifest:       m,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
-
-	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("Converge() unexpected batch error: %v", err)
-	}
-
-	failed := result.Failed()
-	if len(failed) != 1 {
-		t.Fatalf("expected 1 failed (missing inference-project), got %d", len(failed))
-	}
-	if !strings.Contains(failed[0].Error.Error(), "--inference-project is required") {
-		t.Errorf("unexpected error message: %v", failed[0].Error)
 	}
 }
 
@@ -1890,6 +1884,28 @@ func gitlabConvergeCfg(repo string) ConvergeConfig {
 	}
 }
 
+func TestConverge_GitLabFreshInstallWithoutGCP(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	cfg := gitlabConvergeCfg("acme/api")
+	cfg.InferenceProject = ""
+	cfg.InferenceProjectNumber = ""
+	cfg.InferenceRegion = ""
+	sc := &fakeScaffoldCommit{}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Installed()) != 1 || len(result.Failed()) != 0 {
+		t.Fatalf("want one installed repo and no failures, got installed=%d failed=%v", len(result.Installed()), result.Failed())
+	}
+	for _, secret := range fc.CreatedSecrets {
+		if strings.HasPrefix(secret.Name, "FULLSEND_GCP_") {
+			t.Errorf("unexpected GCP secret %s", secret.Name)
+		}
+	}
+}
+
 func populateGitLabInstalled(fc *forge.FakeClient, owner, repo string) {
 	full := owner + "/" + repo
 	fc.FileContents[full+"/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
@@ -3255,6 +3271,13 @@ workflow:
 	}
 }
 
+// TestConverge_GitLab_NoObsoleteWorkflowRuleNoAction covers a repo that has
+// no obsolete merge_request_event rule but is still missing the
+// CI_DEBUG_TRACE deny-before-admit rule (ADR 0125) — the state of a repo
+// enrolled via the merge path before that rule existed. convergeGitLabRootCIFiles
+// must backfill it via MergeMissingGitLabDebugTraceRule, since the install
+// merge path only reruns when HasFullsendEntries is false and the periodic
+// converge path otherwise never touches workflow:rules.
 func TestConverge_GitLab_NoObsoleteWorkflowRuleNoAction(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
@@ -3272,7 +3295,9 @@ func TestConverge_GitLab_NoObsoleteWorkflowRuleNoAction(t *testing.T) {
 		{ID: 1, Description: "fullsend slash poll", Active: true},
 		{ID: 2, Description: "fullsend event poll", Active: true},
 	}
-	// Already migrated — no obsolete rule present.
+	// No obsolete merge_request_event rule, but also no CI_DEBUG_TRACE
+	// rule — this repo enrolled via the merge path before ADR 0125 added
+	// that guard.
 	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
 include:
   - local: '.gitlab/ci/fullsend-pipeline.yml'
@@ -3282,6 +3307,185 @@ workflow:
   auto_cancel:
     on_new_commit: none
   rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	cfg := ConvergeConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+	}
+
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
+	}
+
+	found := false
+	for _, a := range result.Results[0].Actions {
+		if a.Component == "gitlab-ci-rules" && a.Action == "update" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a gitlab-ci-rules update action backfilling the debug-trace rule, got %+v", result.Results[0].Actions)
+	}
+
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	var updated []byte
+	for _, f := range sc.files {
+		if f.Path == ".gitlab-ci.yml" {
+			updated = f.Content
+		}
+	}
+	if updated == nil {
+		t.Fatalf("expected .gitlab-ci.yml to be committed, got files: %+v", sc.files)
+	}
+	s := string(updated)
+	debugIdx := strings.Index(s, debugTraceDenyRuleIf)
+	if debugIdx == -1 {
+		t.Fatalf("expected debug-trace deny rule to be inserted, got:\n%s", s)
+	}
+	scheduleIdx := strings.Index(s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	if scheduleIdx == -1 {
+		t.Fatalf("expected schedule admit rule to be preserved, got:\n%s", s)
+	}
+	if debugIdx >= scheduleIdx {
+		t.Errorf("expected debug-trace deny rule to precede the schedule admit rule, got:\n%s", s)
+	}
+	if !strings.Contains(s, `$CI_PIPELINE_SOURCE == "api"`) {
+		t.Errorf("expected current api rule to be preserved, got:\n%s", s)
+	}
+}
+
+// TestConverge_GitLab_DebugTraceRuleBackfillDryRun is the DryRun
+// counterpart of TestConverge_GitLab_NoObsoleteWorkflowRuleNoAction: the
+// missing CI_DEBUG_TRACE rule is reported as a would-be update, but
+// nothing is actually committed.
+func TestConverge_GitLab_DebugTraceRuleBackfillDryRun(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	cfg := ConvergeConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+		DryRun:                 true,
+	}
+
+	sc := &fakeScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
+	}
+
+	var detail string
+	for _, a := range result.Results[0].Actions {
+		if a.Component == "gitlab-ci-rules" && a.Action == "update" {
+			detail = a.Detail
+		}
+	}
+	if !strings.Contains(detail, "would add") {
+		t.Errorf("expected a dry-run gitlab-ci-rules update action, got %+v", result.Results[0].Actions)
+	}
+	if sc.called {
+		t.Error("scaffold commit should not be called in dry-run mode")
+	}
+}
+
+// TestConverge_GitLab_FullyMigratedNoAction covers a repo that already has
+// both fullsend's current workflow rules and the CI_DEBUG_TRACE
+// deny-before-admit rule — convergeGitLabRootCIFiles must not report any
+// gitlab-ci-rules action for it.
+func TestConverge_GitLab_FullyMigratedNoAction(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+	// Fully migrated — no obsolete rule, and the debug-trace rule is
+	// already present.
+	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: ` + debugTraceDenyRuleIf + `
+      when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
     - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
 `)
@@ -4750,6 +4954,7 @@ func gitlabRequiredScaffoldPaths() []string {
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/scripts/trust-ci-server-ca.sh",
+		".gitlab/ci/scripts/pin-ci-job-identity.sh",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
 		".gitlab/ci/scripts/install-fullsend-cli.sh",
 		".gitlab/ci/scripts/run-poll-job.sh",
@@ -4920,31 +5125,23 @@ func TestConverge_GitLab_NeedsPostInstallSurvivesUnrelatedSecrets(t *testing.T) 
 		t.Fatalf("expected 1 installed, got %d", len(result.Installed()))
 	}
 	if !result.Installed()[0].NeedsGitLabPostInstall {
-		t.Error("expected NeedsGitLabPostInstall=true: pre-existing GCP inference secrets must not mask a missing GitLab bot token/schedules")
+		t.Error("expected NeedsGitLabPostInstall=true: pre-existing GCP inference secrets must not mask missing GitLab pipeline schedules")
 	}
 }
 
 // TestConverge_GitLab_NeedsPostInstallFlagsForPartialArtifacts covers a
-// review finding on #7418: gitlabPostInstallDone (and the needsBotToken /
-// needsSchedules present-checks it wraps) were only exercised directly by
-// TestGitlabPostInstallDone, never through Converge itself. A regression
-// that set NeedsGitLabBotToken / NeedsGitLabPipelineSchedules from the
-// combined needsPostInstall flag instead of their own present-checks would
-// still pass every other integration test, since those only cover the two
-// poles (nothing present, everything present). This exercises the partial
-// states in between: bot token present but schedules missing, schedules
-// present but the bot token missing, and the bot token plus only one of
-// the two schedules present.
+// leftover FULLSEND_GITLAB_ROLE_MIGRATION value and leftover shared-token
+// secret: neither restores bot-token recovery, and post-install is gated
+// only on missing pipeline schedules.
 func TestConverge_GitLab_NeedsPostInstallFlagsForPartialArtifacts(t *testing.T) {
 	tests := []struct {
 		name            string
 		seed            func(fc *forge.FakeClient, full string)
-		wantBotToken    bool
 		wantSchedules   bool
 		wantPostInstall bool
 	}{
 		{
-			name: "enforced mode with schedules and no shared token",
+			name: "leftover enforced gate with schedules and no shared token",
 			seed: func(fc *forge.FakeClient, full string) {
 				fc.VariableValues[full+"/"+forge.VarGitLabRoleMigration] = " EnFoRcEd "
 				fc.VariablesExist[full+"/"+forge.VarGitLabRoleMigration] = true
@@ -4953,40 +5150,36 @@ func TestConverge_GitLab_NeedsPostInstallFlagsForPartialArtifacts(t *testing.T) 
 					{Description: "fullsend event poll"},
 				}
 			},
-			wantBotToken:    false,
 			wantSchedules:   false,
 			wantPostInstall: false,
 		},
 		{
-			name: "bot token present, schedules missing",
+			name: "leftover shared token present, schedules missing",
 			seed: func(fc *forge.FakeClient, full string) {
 				fc.Secrets[full+"/"+forge.SecretForgeToken] = true
 			},
-			wantBotToken:    false,
 			wantSchedules:   true,
 			wantPostInstall: true,
 		},
 		{
-			name: "schedules present, bot token missing",
+			name: "schedules present, leftover shared token missing",
 			seed: func(fc *forge.FakeClient, full string) {
 				fc.PipelineSchedules[full] = []forge.PipelineSchedule{
 					{Description: "fullsend slash poll"},
 					{Description: "fullsend event poll"},
 				}
 			},
-			wantBotToken:    true,
 			wantSchedules:   false,
-			wantPostInstall: true,
+			wantPostInstall: false,
 		},
 		{
-			name: "bot token plus only one schedule present",
+			name: "leftover shared token plus only one schedule present",
 			seed: func(fc *forge.FakeClient, full string) {
 				fc.Secrets[full+"/"+forge.SecretForgeToken] = true
 				fc.PipelineSchedules[full] = []forge.PipelineSchedule{
 					{Description: "fullsend slash poll"},
 				}
 			},
-			wantBotToken:    false,
 			wantSchedules:   true,
 			wantPostInstall: true,
 		},
@@ -5011,9 +5204,6 @@ func TestConverge_GitLab_NeedsPostInstallFlagsForPartialArtifacts(t *testing.T) 
 				t.Fatalf("expected 1 installed, got %d", len(result.Installed()))
 			}
 			got := result.Installed()[0]
-			if got.NeedsGitLabBotToken != tt.wantBotToken {
-				t.Errorf("NeedsGitLabBotToken = %v, want %v", got.NeedsGitLabBotToken, tt.wantBotToken)
-			}
 			if got.NeedsGitLabPipelineSchedules != tt.wantSchedules {
 				t.Errorf("NeedsGitLabPipelineSchedules = %v, want %v", got.NeedsGitLabPipelineSchedules, tt.wantSchedules)
 			}
@@ -5028,7 +5218,7 @@ func TestConverge_GitLab_ExistingRepoReportsSharedCredentialRecovery(t *testing.
 	fc := newFakeClientForBatch("acme/api")
 	populateGitLabInstalled(fc, "acme", "api")
 	delete(fc.Secrets, "acme/api/"+forge.SecretForgeToken)
-	fc.VariableValues["acme/api/"+forge.VarGitLabRoleMigration] = string(gitlabroles.ModeRollback)
+	fc.VariableValues["acme/api/"+forge.VarGitLabRoleMigration] = "rollback"
 	fc.VariablesExist["acme/api/"+forge.VarGitLabRoleMigration] = true
 
 	result, err := Converge(context.Background(), gitlabConvergeCfg("acme/api"), newTestClientFactory(fc), (&spyScaffoldCommit{}).fn(), noopProgress)
@@ -5042,8 +5232,8 @@ func TestConverge_GitLab_ExistingRepoReportsSharedCredentialRecovery(t *testing.
 		t.Fatalf("expected one result, got installed=%d converged=%d current=%d", len(result.Installed()), len(result.Converged()), len(result.AlreadyCurrent()))
 	}
 	got := result.Results[0]
-	if !got.NeedsGitLabBotToken || !got.NeedsGitLabPostInstall {
-		t.Fatalf("recovery flags = bot:%v post-install:%v, want both true", got.NeedsGitLabBotToken, got.NeedsGitLabPostInstall)
+	if got.NeedsGitLabPostInstall {
+		t.Fatalf("legacy shared-token recovery must be disabled, got post-install:%v", got.NeedsGitLabPostInstall)
 	}
 }
 
@@ -5073,16 +5263,10 @@ func TestConverge_GitLab_ExistingRepoAddsMissingScheduleWithoutDeletingExisting(
 	}
 }
 
-// TestGitlabPostInstallDone is a table test for gitlabPostInstallDone
-// covering partial GitLab post-install states. gitlabPostInstallDone is
-// a strict AND of the bot-token secret and every pipeline-schedule
-// component; before this test, only the two poles (nothing present, and
-// token+both schedules present) were exercised, so a regression that
-// weakened the AND to check only the token (or only the schedules)
-// would still pass. This covers the partial states in between: token
-// only, schedules only (no token), and token plus just one of the two
-// schedules.
-func TestGitlabPostInstallDone(t *testing.T) {
+// TestGitlabSchedulesPresent covers partial GitLab post-install schedule
+// states. Post-install is schedules-only after shared-token bot-PAT setup
+// was removed; leftover FULLSEND_FORGE_TOKEN must not count as done.
+func TestGitlabSchedulesPresent(t *testing.T) {
 	specs := PipelineScheduleSpecs()
 	if len(specs) < 2 {
 		t.Fatalf("expected at least 2 pipeline schedule specs, got %d", len(specs))
@@ -5115,22 +5299,22 @@ func TestGitlabPostInstallDone(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "bot token only, no schedules",
+			name: "leftover shared token only, no schedules",
 			components: []ComponentStatus{
 				{Name: tokenComponent, Present: true},
 			},
 			want: false,
 		},
 		{
-			name: "both schedules only, no bot token",
+			name: "both schedules present",
 			components: []ComponentStatus{
 				{Name: schedule0, Present: true},
 				{Name: schedule1, Present: true},
 			},
-			want: false,
+			want: true,
 		},
 		{
-			name: "bot token plus only the first schedule",
+			name: "leftover shared token plus only the first schedule",
 			components: []ComponentStatus{
 				{Name: tokenComponent, Present: true},
 				{Name: schedule0, Present: true},
@@ -5138,15 +5322,7 @@ func TestGitlabPostInstallDone(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "bot token plus only the second schedule",
-			components: []ComponentStatus{
-				{Name: tokenComponent, Present: true},
-				{Name: schedule1, Present: true},
-			},
-			want: false,
-		},
-		{
-			name: "bot token plus both schedules",
+			name: "leftover shared token plus both schedules",
 			components: []ComponentStatus{
 				{Name: tokenComponent, Present: true},
 				{Name: schedule0, Present: true},
@@ -5158,44 +5334,10 @@ func TestGitlabPostInstallDone(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := gitlabPostInstallDone(tt.components); got != tt.want {
-				t.Errorf("gitlabPostInstallDone(%+v) = %v, want %v", tt.components, got, tt.want)
+			if got := gitlabSchedulesPresent(tt.components); got != tt.want {
+				t.Errorf("gitlabSchedulesPresent(%+v) = %v, want %v", tt.components, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestGitlabSharedCredentialRequired(t *testing.T) {
-	if !gitlabSharedCredentialRequired("", false) {
-		t.Error("missing migration mode should require the shared credential")
-	}
-	if !gitlabSharedCredentialRequired("migrating", true) {
-		t.Error("migrating mode should require the shared credential")
-	}
-	if gitlabSharedCredentialRequired("enforced", true) {
-		t.Error("enforced mode should not require the shared credential")
-	}
-	if gitlabSharedCredentialRequired(" EnFoRcEd ", true) {
-		t.Error("case- and whitespace-normalized enforced mode should not require the shared credential")
-	}
-	if gitlabSharedCredentialRequired("unknown", true) {
-		t.Error("unknown migration mode must not permit shared credential recreation")
-	}
-}
-
-func TestGitlabRoleCredentialPresent(t *testing.T) {
-	if gitlabRoleCredentialPresent(nil) {
-		t.Fatal("nil components must not report an enrolled role credential")
-	}
-	if !gitlabRoleCredentialPresent([]ComponentStatus{{
-		Name: "secret:" + forge.SecretGitLabPollerToken, Present: true,
-	}}) {
-		t.Fatal("any present built-in role credential must report enrollment")
-	}
-	if gitlabRoleCredentialPresent([]ComponentStatus{{
-		Name: "secret:" + forge.SecretGitLabPollerToken, Present: false,
-	}}) {
-		t.Fatal("an absent role credential must not report enrollment")
 	}
 }
 

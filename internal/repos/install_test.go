@@ -858,7 +858,7 @@ func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 	}
 }
 
-func TestCheckInstallComponents_GitHub_MissingSecrets(t *testing.T) {
+func TestCheckInstallComponents_GitHub_NoGCPSecrets(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(shimWorkflow)
 	addThinCallerFiles(fc, "acme", "api")
@@ -868,8 +868,8 @@ func TestCheckInstallComponents_GitHub_MissingSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if installed {
-		t.Error("expected installed=false when secrets are missing")
+	if !installed {
+		t.Error("expected installed=true when both optional GCP secrets are absent")
 	}
 }
 
@@ -1060,18 +1060,6 @@ func TestRequiredSecretsForForge(t *testing.T) {
 	secrets := requiredSecretsForForge(ForgeGitHub)
 	if len(secrets) == 0 {
 		t.Fatal("expected non-empty required secrets")
-	}
-	if got := requiredSecretsForForgeMode(ForgeGitLab, "enforced", true); len(got) != len(requiredSecrets) {
-		t.Errorf("enforced GitLab mode should omit the shared credential, got %v", got)
-	}
-	if got := requiredSecretsForForgeMode(ForgeGitLab, "migrating", true); len(got) != len(requiredSecrets)+1 {
-		t.Errorf("migrating GitLab mode should require the shared credential, got %v", got)
-	}
-	if got := requiredSecretsForForgeMode(ForgeGitLab, " EnFoRcEd ", true); len(got) != len(requiredSecrets) {
-		t.Errorf("normalized enforced GitLab mode should omit the shared credential, got %v", got)
-	}
-	if got := requiredSecretsForForgeMode(ForgeGitLab, "unknown", true); len(got) != len(requiredSecrets) {
-		t.Errorf("unknown GitLab mode should not require the shared credential, got %v", got)
 	}
 }
 
@@ -1365,6 +1353,7 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
+		".gitlab/ci/scripts/pin-ci-job-identity.sh",
 		".gitlab/ci/scripts/install-fullsend-cli.sh",
 		".gitlab/ci/scripts/run-poll-job.sh",
 		".gitlab/ci/scripts/run-agent-job.sh",
