@@ -91,23 +91,28 @@ Codex children run under a policy the runner provisions and enforces.
   every individual sandbox hook disabled, admits only a V1 spawn of a registered role with
   `fork_context` present and false and no `model` or `reasoning_effort` key, whatever its
   value. It rejects resume and any spawn from a child, which it recognises by the
-  `agent_id` Codex puts only in a child's hook payload. Its matcher covers the two
-  namespaces Codex gives its multi-agent tools (`multi_agent_v1…`, `collaboration…`) and
-  any bare name ending in `spawn_agent` or `resume_agent`; inside that set the handler is
-  deny-by-default: it admits the V1 spawn under the policy above, passes the V1
-  `wait_agent`, `close_agent` and `send_input` through (as hook names, `multi_agent_v1`
-  joined with each), and denies every other name, the resume, the V2 tools and any tool a
-  later CLI adds to either namespace included. A dispatch tool outside both namespaces
-  would not reach the hook; the per-bump revalidation diffs the multi-agent tool set at
-  the source for one, and Codex's own depth and open-children limits still apply to it.
-  Native configuration limits depth to one and open children to four. A spawn past the
+  `agent_id` Codex puts only in a child's hook payload. Its matcher is the union of three
+  clauses: names starting `multi_agent_v1`, names starting `collaboration` (the two
+  namespaces Codex gives its multi-agent tools) and bare names ending in `spawn_agent` or
+  `resume_agent`; inside that set the handler is deny-by-default: it admits the exact
+  hook name `spawn_agent` under the policy above, passes the V1 `wait_agent`,
+  `close_agent` and `send_input` through (as hook names, `multi_agent_v1` joined with
+  each) when the caller is the parent, and denies every other name and every call from a
+  child: the resume, the V2 tools (`collaborationspawn_agent` included, whatever clause
+  it matches) and any tool a later CLI adds to either namespace. A tool matching none of
+  the three clauses never reaches the hook; the per-bump revalidation diffs the
+  multi-agent tool set at the source for one, and Codex's own depth and open-children
+  limits still apply to it. Native configuration limits depth to one and open children
+  to four; at depth one Codex offers a child no multi-agent tool at all. A spawn past the
   limit is rejected, not queued (`agent thread limit reached`), and a finished child holds
-  its slot until closed, so the paired instructions dispatch at most four children at a
-  time and close each finished child before the next spawn; the runner adds no queue.
-  For the ADR 0100 sandbox hooks, the adapter reports the V1 wait, close, send_input and
-  resume calls under the Claude name it already gives the spawn, `Agent`, so an org's tool
-  allowlist that admits `Agent` admits the whole delegation and one that does not blocks
-  it at the first spawn; the map is revalidated with the hook names on each bump.
+  its slot until closed, so the paired instructions run up to four children at once and
+  close a finished child before a spawn that would exceed four open; the runner adds no
+  queue. For the ADR 0100 sandbox hooks, the adapter reports the V1 wait, close and
+  send_input calls under the Claude name it already gives the spawn, `Agent`, so an org's
+  tool allowlist that admits `Agent` admits an admitted delegation's control calls and
+  one that does not blocks it at the first spawn; resume stays unmapped, so that
+  allowlist still blocks it when the dispatch hook cannot run. The map is revalidated
+  with the hook names on each bump.
 - Before admitting a spawn, the hook checks `hooks.json` and the role files against
   digests the runner recorded at Bootstrap, as the ADR 0100 adapter does for each
   hook script before invoking it. `config.toml`, which carries the run-level default,
@@ -120,15 +125,18 @@ Codex children run under a policy the runner provisions and enforces.
   deadline passes, and it reads a file for hashing only through the ADR 0100 adapter's
   reader, which refuses anything but a regular file under a size cap, checked on the
   open descriptor, so a path swapped for a FIFO or an oversized file is denied rather
-  than read. What the handler does not control fails open: Codex records a handler it
-  cannot complete, one whose interpreter fails to start or one starved of CPU or I/O
-  until the timeout kills it, as failed and lets the spawn proceed, as under ADR 0100.
-  Bootstrap fails if it cannot install the hook.
+  than read. What the handler does not control fails open, for every call the matcher
+  reaches and whatever its arguments: Codex records a handler it cannot complete, one
+  whose interpreter fails to start or one starved of CPU or I/O until the timeout kills
+  it, as failed and lets the call proceed, as under ADR 0100, so on that path a resume, a
+  V2 spawn, a spawn with a forbidden argument or of an unregistered role, or a spawn from
+  a child goes through unpoliced, and the opt-in tool allowlist, off by default, is no
+  backstop for it. Bootstrap fails if it cannot install the hook.
 
 ## Consequences
 
-- Review and retro can delegate on Codex once the paired instructions ship, in waves of
-  at most four children. At
+- Review and retro can delegate on Codex once the paired instructions ship, with up to
+  four children open at a time. At
   `rust-v0.159.3` the parents that qualify are `gpt-5.6-luna`, the one listed entry that
   selects V1, and `gpt-5.5`, whose entry carries no version;
   every `gpt-6` model and the other `gpt-5.6` tiers select V2 and run in one context,
@@ -157,19 +165,26 @@ Codex children run under a policy the runner provisions and enforces.
   reached within an iteration only through the same tampering, and Option 4 closes both.
   Starvation is not: a parent's background processes can hold CPU or I/O until Codex's
   timeout kills the handler without touching a protected file, so it is the fail-open
-  path that remains under Option 4.
+  path that remains under Option 4, and on it the whole admission policy is unenforced
+  for one call: a resume, a V2 spawn, a spawn with a forbidden argument, of an
+  unregistered role or from a child.
 - Token totals include children, which is runner work: `codex exec` forwards token
   updates for the primary thread and turn only and its JSONL total is that thread's, so
   the runner reads each child's rollout after the run and folds its last cumulative
   `token_count` into the run totals, per model. Codex still reports no dollar cost.
 - Role loading, child model binding, hook reload, the multi-agent tool set and the rule
-  that forms hook names from it, the hook outcomes Codex honours as a block, the
+  that forms hook names from it, the hook outcomes Codex honours as a block, the child
+  marker in hook payloads (`agent_id` in a child's, absent from the parent's), depth one
+  with no multi-agent tool for a child, four open children with overflow rejected, the
   catalog's V1 entries, the version Codex supplies to an entry that carries none and the
-  floor model are revalidated on each Codex CLI bump.
+  floor model are revalidated on each Codex CLI bump; a bump that changes the payload
+  shape ships with the hook updated, or the child-spawn rule fails open.
 
 Verified against `rust-v0.159.3` (the sandbox image pin): role-file and `hooks.json`
-reload at child start, `config.toml` read once at launch, the spawn arguments, the V1
-tool set and the hook-name rule, the exact-or-regex matcher rule, the hook outcomes
+reload at child start, `config.toml` read once at launch, the spawn arguments, the child
+marker in hook payloads, depth one with no multi-agent tool for a child, four open
+children with overflow rejected, the V1 tool set and the hook-name rule, the
+exact-or-regex matcher rule, the hook outcomes
 (exit 2 with a reason blocks; exit 2 without one, another exit, an `async` handler or a
 timeout does not), `codex debug models --bundled`, the catalog's V1 entries and the
 version Codex supplies to an entry that carries none (`multi_agent`, on by default), and
