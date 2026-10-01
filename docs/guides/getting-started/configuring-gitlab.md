@@ -762,18 +762,19 @@ Confirm:
   project access tokens are available, a fresh install shows
   `fullsend-poller`, `fullsend-analyst`, and `fullsend-coder` (plus any
   `fullsend-role-*` tokens) under Settings → Access Tokens. `fullsend-bot`
-  is a legacy, pre-migration artifact — it appears only on an install that
-  predates per-role credentials, and is retired once role tokens are
-  ready. On GitLab.com Free with `--gitlab-role-token`, expect the
-  dedicated PAT owner's username instead; no project access token is
-  created.
+  is a legacy, pre-role-only artifact — it appears only on an install that
+  predates per-role credentials. No automated path retires it, regardless
+  of role readiness; an administrator must manually revoke it. On
+  GitLab.com Free with `--gitlab-role-token`, expect the dedicated PAT
+  owner's username instead; no project access token is created.
 * **CI/CD variables** — `FULLSEND_DISPATCH_SECRET`, `FULLSEND_GCP_PROJECT_ID`,
   and `FULLSEND_GCP_WIF_PROVIDER` exist and are protected.
   When the webhook fast-path is enabled, `FULLSEND_TRIGGER_TOKEN` and
   `FULLSEND_WEBHOOK_SECRET` are also stored as masked, protected variables
   and must never appear in logs.
-  `FULLSEND_FORGE_TOKEN` may remain only as a legacy artifact until role
-  readiness allows install to retire it (see above). Role-aware installs also provision
+  `FULLSEND_FORGE_TOKEN` may remain only as a legacy artifact; no automated
+  path retires it, so an administrator must manually remove it (see
+  above). Role-aware installs also provision
   `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, and
   `FULLSEND_GITLAB_CODER_TOKEN`; custom role enrollments may add
   `FULLSEND_GITLAB_ROLE_*_TOKEN`. Secrets are requested as masked, but GitLab

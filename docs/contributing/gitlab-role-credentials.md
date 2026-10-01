@@ -152,7 +152,7 @@ references, never secret values.
 
 | Name | Kind | Purpose |
 | --- | --- | --- |
-| `FULLSEND_FORGE_TOKEN` | masked secret | Legacy shared bot PAT. Runtime never authenticates with it; role-ready `repos install` retires it. |
+| `FULLSEND_FORGE_TOKEN` | masked secret | Legacy shared bot PAT. Runtime never authenticates with it. Neither `repos install` nor `repos uninstall` retires it; a repository installed before the role-only rollout requires manual cleanup. |
 | `FULLSEND_GITLAB_POLLER_TOKEN` | masked secret | Poller PAT. Provisioned by `repos install`. |
 | `FULLSEND_GITLAB_ANALYST_TOKEN` | masked secret | Analyst PAT. Provisioned by `repos install`. |
 | `FULLSEND_GITLAB_CODER_TOKEN` | masked secret | Coder PAT. Provisioned by `repos install`. |
@@ -411,8 +411,9 @@ expired, revoked, or unverified role credentials as drift.
 ## Built-in role readiness (#7501)
 
 `gitlabroles.CheckBuiltinReadiness(present, registry)` is the
-verification check for the three built-in roles. Successful readiness allows
-install to retire the legacy shared token.
+verification check for the three built-in roles. Readiness only reports
+whether the built-in roles are configured correctly; it does not trigger
+any retirement of the legacy shared token — no automated path retires it.
 
 For each of Poller, Analyst, and Coder it confirms:
 
@@ -447,14 +448,15 @@ repos status combines both results. Diagnostics carry role names and secret
 *names* only, and status appends these lines after the Diagnose report without
 retiring the shared token.
 
-## Verification and retirement
+## Verification
 
-`repos install` verifies registered-role readiness after provisioning. Once
-all roles are ready it deletes the legacy shared secret and revokes listed
-`fullsend-bot` project tokens. If a role is incomplete, the install reports
-the missing role and leaves the shared credential for a later retry; runtime
-still never selects that credential. A manually supplied PAT not visible to
-the GitLab token API must be revoked by its administrator.
+`repos install` verifies registered-role readiness after provisioning but
+does not act on a leftover legacy shared secret either way: whether or not
+all roles are ready, it never deletes `FULLSEND_FORGE_TOKEN` or revokes a
+`fullsend-bot` project token. Runtime never selects that credential
+regardless of readiness. A repository installed before the role-only
+rollout keeps the shared credential until an administrator manually
+removes the secret and revokes its matching PAT.
 
 ## Registry JSON shape
 
