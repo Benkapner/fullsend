@@ -5,6 +5,7 @@ package forge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -947,6 +948,19 @@ type Client interface {
 	// the API instead of bridge jobs and child pipelines.
 	CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (*Pipeline, error)
 
+	// CreatePipelineWithInputs creates a new pipeline on the given ref using
+	// GitLab CI/CD Inputs (spec:inputs) instead of user-defined pipeline
+	// variables. It is additive to CreatePipeline, not a replacement:
+	// callers that still need the variables-map path keep using
+	// CreatePipeline unchanged. Unlike CreatePipeline, this never sends a
+	// "variables" value on the wire, so it remains usable when a project's
+	// ci_pipeline_variables_minimum_override_role is
+	// PipelineVarOverrideNoOneAllowed — GitLab's variable-override gate does
+	// not govern pipeline inputs. See PipelineInputValue for the supported
+	// value shapes. Returns ErrNotSupported on forges with no equivalent
+	// concept (e.g. GitHub Actions).
+	CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]PipelineInputValue) (*Pipeline, error)
+
 	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
 	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
 	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
@@ -1022,6 +1036,73 @@ type Client interface {
 type Pipeline struct {
 	ID     int64
 	WebURL string
+}
+
+// pipelineInputKind identifies which of PipelineInputValue's typed fields
+// is populated.
+type pipelineInputKind int
+
+const (
+	pipelineInputString pipelineInputKind = iota
+	pipelineInputNumber
+	pipelineInputBoolean
+	pipelineInputArray
+)
+
+// PipelineInputValue is a single typed value for a GitLab CI/CD pipeline
+// input (spec:inputs in .gitlab-ci.yml). GitLab's pipeline-creation API
+// accepts string, number, boolean, and array-of-string values for inputs;
+// this type constrains callers to exactly those shapes rather than
+// accepting an untyped any that could silently serialize something GitLab
+// rejects (e.g. a nested object). Construct one with StringInput,
+// NumberInput, BoolInput, or ArrayInput. See
+// https://docs.gitlab.com/ee/ci/inputs/.
+type PipelineInputValue struct {
+	kind pipelineInputKind
+	str  string
+	num  float64
+	bl   bool
+	arr  []string
+}
+
+// StringInput constructs a string-typed pipeline input value.
+func StringInput(v string) PipelineInputValue {
+	return PipelineInputValue{kind: pipelineInputString, str: v}
+}
+
+// NumberInput constructs a number-typed pipeline input value.
+func NumberInput(v float64) PipelineInputValue {
+	return PipelineInputValue{kind: pipelineInputNumber, num: v}
+}
+
+// BoolInput constructs a boolean-typed pipeline input value.
+func BoolInput(v bool) PipelineInputValue {
+	return PipelineInputValue{kind: pipelineInputBoolean, bl: v}
+}
+
+// ArrayInput constructs an array-typed pipeline input value from a slice
+// of strings. The slice is copied so later mutation by the caller does not
+// affect the constructed value.
+func ArrayInput(v []string) PipelineInputValue {
+	cp := make([]string, len(v))
+	copy(cp, v)
+	return PipelineInputValue{kind: pipelineInputArray, arr: cp}
+}
+
+// MarshalJSON renders the value as the bare JSON primitive GitLab expects
+// for a pipeline input: a JSON string, number, boolean, or array of
+// strings — never an object wrapper.
+func (v PipelineInputValue) MarshalJSON() ([]byte, error) {
+	switch v.kind {
+	case pipelineInputNumber:
+		return json.Marshal(v.num)
+	case pipelineInputBoolean:
+		return json.Marshal(v.bl)
+	case pipelineInputArray:
+		return json.Marshal(v.arr)
+	default:
+		return json.Marshal(v.str)
+	}
 }
 
 // ProtectedBranchAccess is one grant on a protected branch.

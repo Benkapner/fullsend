@@ -4737,6 +4737,12 @@ func TestUnsupportedMethods(t *testing.T) {
 		_, err := client.CreatePipeline(ctx, "o", "r", "main", nil)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
+	t.Run("CreatePipelineWithInputs", func(t *testing.T) {
+		_, err := client.CreatePipelineWithInputs(ctx, "o", "r", "main", map[string]forge.PipelineInputValue{
+			"STAGE": forge.StringInput("triage"),
+		})
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("CreatePipelineSchedule", func(t *testing.T) {
 		_, err := client.CreatePipelineSchedule(ctx, "o", "r", "main", "desc", "0 * * * *", nil)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
