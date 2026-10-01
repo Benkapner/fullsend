@@ -1164,6 +1164,35 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 	return true, nil
 }
 
+// interveningWriteActions are the actions for which GitLab's commits API
+// considers the per-action last_commit_id guard (see guardAgainstInterveningWrite).
+var interveningWriteActions = map[string]struct{}{
+	"update": {},
+	"move":   {},
+	"delete": {},
+}
+
+// guardAgainstInterveningWrite returns a copy of actions with last_commit_id
+// set to startSHA on every update/move/delete action, so GitLab atomically
+// rejects the retry if the target file changed after startSHA. Actions for
+// which GitLab ignores last_commit_id (e.g. create) are passed through
+// unmodified. See retryCommitWithoutStartSHA for why this guard is required.
+func guardAgainstInterveningWrite(actions []map[string]any, startSHA string) []map[string]any {
+	guarded := make([]map[string]any, len(actions))
+	for i, action := range actions {
+		actionType, _ := action["action"].(string)
+		if _, guardable := interveningWriteActions[actionType]; !guardable {
+			guarded[i] = action
+			continue
+		}
+		withGuard := make(map[string]any, len(action)+1)
+		maps.Copy(withGuard, action)
+		withGuard["last_commit_id"] = startSHA
+		guarded[i] = withGuard
+	}
+	return guarded
+}
+
 // retryCommitWithoutStartSHA handles the self-hosted GitLab EE quirk
 // documented in commitFilesImpl's "already exists" branch: the commits API
 // rejects start_sha for an already-existing branch, even when it matches
@@ -1173,6 +1202,18 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 // forge.ErrNonFastForward so persistWithCAS reloads and retries. If the
 // tip is unchanged, start_sha was never a real fast-forward guard here, so
 // the commit is retried once without it.
+//
+// The tip check above only narrows the race window; it cannot close it,
+// since a writer can still land a commit on the target file between that
+// GET and the retry POST below, and the retry carries no start_sha to let
+// GitLab's own fast-forward check catch it. To close that window, the
+// retry payload's update/move/delete actions carry last_commit_id set to
+// startSHA, GitLab's own per-file optimistic-concurrency guard: GitLab
+// atomically rejects the commit with a 400 "file has changed" error if the
+// file was touched since startSHA, instead of silently overwriting the
+// intervening writer's change. That rejection is mapped to
+// forge.ErrNonFastForward so persistWithCAS reloads and retries rather
+// than reporting a stale write as success.
 func (c *LiveClient) retryCommitWithoutStartSHA(ctx context.Context, owner, repo, branch, startSHA string, payload map[string]any) (bool, error) {
 	tip, err := c.GetBranchRef(ctx, owner, repo, branch)
 	if err != nil {
@@ -1188,10 +1229,18 @@ func (c *LiveClient) retryCommitWithoutStartSHA(ctx context.Context, owner, repo
 	retryPayload := make(map[string]any, len(payload))
 	maps.Copy(retryPayload, payload)
 	delete(retryPayload, "start_sha")
+	if actions, ok := retryPayload["actions"].([]map[string]any); ok {
+		retryPayload["actions"] = guardAgainstInterveningWrite(actions, startSHA)
+	}
 
 	proj := projectPath(owner, repo)
 	resp, err := c.post(ctx, fmt.Sprintf("/projects/%s/repository/commits", proj), retryPayload)
 	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest &&
+			strings.Contains(strings.ToLower(apiErr.Message), "changed since you started editing it") {
+			return false, fmt.Errorf("%w: file changed in %s since start_sha %s: %w", forge.ErrNonFastForward, branch, startSHA, err)
+		}
 		return false, fmt.Errorf("retry commit to %s without start_sha: %w", branch, err)
 	}
 	resp.Body.Close()

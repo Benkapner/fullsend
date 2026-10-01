@@ -2398,6 +2398,77 @@ func TestCommitFileToBranch_ExistingBranchAlreadyExistsRetriesWithoutStartSHA(t 
 	assert.Equal(t, "persist poll state [skip ci]", payloads[1]["commit_message"])
 }
 
+// TestCommitFileToBranch_ExistingBranchAlreadyExistsRetryGuardsAgainstInterveningWrite
+// covers the race retryCommitWithoutStartSHA's own tip check cannot close on
+// its own: another poller can commit a change to state.json after the
+// branch-tip GET but before the retry POST, since the retry omits start_sha
+// entirely. Without a server-enforced guard on the retry itself, that
+// intervening write would be silently overwritten (last-writer-wins). The
+// retry must carry GitLab's last_commit_id guard on the update action so
+// GitLab itself atomically rejects a stale write, and that rejection must
+// surface as forge.ErrNonFastForward so persistWithCAS reloads and retries
+// instead of reporting a stale write as success.
+func TestCommitFileToBranch_ExistingBranchAlreadyExistsRetryGuardsAgainstInterveningWrite(t *testing.T) {
+	client, mux := setupTest(t)
+
+	// state.json already exists on the branch, so the retry's action is
+	// "update" (not "create") and is eligible for the last_commit_id guard.
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": blobSHA([]byte(`{"n":0}`)), "path": "state.json", "type": "blob", "mode": "100644"},
+		})
+	})
+
+	// The branch-tip GET in retryCommitWithoutStartSHA reports loaded-sha,
+	// so the naive tip check alone would wrongly conclude nothing has
+	// changed. In reality, this models a writer whose commit lands between
+	// this GET and the retry POST below — a window the tip check cannot
+	// observe. Only the server-enforced last_commit_id guard on the retry
+	// POST itself can catch that.
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches/state-branch", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"commit": map[string]any{"id": "loaded-sha"},
+		})
+	})
+
+	var payloads []map[string]any
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(body, &payload))
+		payloads = append(payloads, payload)
+
+		if len(payloads) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"message": "A branch called 'state-branch' already exists. Switch to that branch in order to make changes",
+			})
+			return
+		}
+		// GitLab rejects the retry: last_commit_id no longer matches
+		// state.json's current last-touching commit because an
+		// intervening writer already changed it since loaded-sha.
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "The file has changed since you started editing it: state.json",
+		})
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist poll state", []byte(`{"n":1}`), "loaded-sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
+	require.Len(t, payloads, 2, "expected an initial attempt and one rejected retry")
+
+	actions, ok := payloads[1]["actions"].([]any)
+	require.True(t, ok, "retry payload must include actions")
+	require.Len(t, actions, 1)
+	action, ok := actions[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "update", action["action"])
+	assert.Equal(t, "loaded-sha", action["last_commit_id"],
+		"retry's update action must carry last_commit_id so GitLab can atomically detect the intervening write")
+}
+
 func TestCommitFileToBranch_CommitError(t *testing.T) {
 	client, mux := setupTest(t)
 
