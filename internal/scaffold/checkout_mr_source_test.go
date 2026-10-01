@@ -77,33 +77,57 @@ func commitFile(t *testing.T, dir, rel, contents, msg string) string {
 }
 
 // writeFullsendResolveStub stands in for the real `fullsend
-// resolve-mr-source` subcommand (internal/cli/resolvemrsource.go).
-// checkout-mr-source.sh only depends on that subcommand's I/O contract
-// — flags in, a JSON object (or a failure) on stdout/stderr — so the
-// stub reproduces that contract without a real GitLab API round trip.
-// The Go implementation itself (forge.Client wiring, source-project
-// identity, JSON shape) is covered by internal/cli/resolvemrsource_test.go.
+// resolve-mr-source` and `fullsend check-protected-branch` subcommands
+// (internal/cli/resolvemrsource.go, internal/cli/checkprotectedbranch.go).
+// checkout-mr-source.sh only depends on each subcommand's I/O contract
+// — flags in, a JSON object/empty output (or a failure) on
+// stdout/stderr — so the stub reproduces that contract without a real
+// GitLab API round trip. The Go implementations themselves (forge.Client
+// wiring, source-project identity, JSON shape, protected-branch
+// semantics) are covered by internal/cli/resolvemrsource_test.go and
+// internal/cli/checkprotectedbranch_test.go.
+//
+// check-protected-branch defaults to reporting "not protected" (exit 0)
+// so every existing checkout test — which only cares about
+// resolve-mr-source's behavior — keeps exercising the happy path on
+// this gate without opting in. Tests that specifically exercise the
+// protected-branch gate set CHECK_PROTECTED_RESULT to a non-empty
+// string, which the stub echoes to stderr and fails on.
 func writeFullsendResolveStub(t *testing.T, binDir string) {
 	t.Helper()
 	path := filepath.Join(binDir, "fullsend")
 	require.NoError(t, os.WriteFile(path, []byte(`#!/bin/sh
-if [ "$1" != "resolve-mr-source" ]; then
-  echo "unexpected fullsend subcommand: $1" >&2
-  exit 1
-fi
-if [ -n "${RESOLVE_ARGS_FILE:-}" ]; then
-  printf '%s\n' "$@" > "${RESOLVE_ARGS_FILE}"
-fi
-if [ -n "${RESOLVE_ERROR:-}" ]; then
-  echo "${RESOLVE_ERROR}" >&2
-  exit 1
-fi
-if [ -n "${RESOLVE_JSON_FILE:-}" ] && [ -f "${RESOLVE_JSON_FILE}" ]; then
-  cat "${RESOLVE_JSON_FILE}"
-  exit 0
-fi
-echo "no RESOLVE_JSON_FILE" >&2
-exit 1
+case "$1" in
+  resolve-mr-source)
+    if [ -n "${RESOLVE_ARGS_FILE:-}" ]; then
+      printf '%s\n' "$@" > "${RESOLVE_ARGS_FILE}"
+    fi
+    if [ -n "${RESOLVE_ERROR:-}" ]; then
+      echo "${RESOLVE_ERROR}" >&2
+      exit 1
+    fi
+    if [ -n "${RESOLVE_JSON_FILE:-}" ] && [ -f "${RESOLVE_JSON_FILE}" ]; then
+      cat "${RESOLVE_JSON_FILE}"
+      exit 0
+    fi
+    echo "no RESOLVE_JSON_FILE" >&2
+    exit 1
+    ;;
+  check-protected-branch)
+    if [ -n "${CHECK_PROTECTED_ARGS_FILE:-}" ]; then
+      printf '%s\n' "$@" > "${CHECK_PROTECTED_ARGS_FILE}"
+    fi
+    if [ -n "${CHECK_PROTECTED_RESULT:-}" ]; then
+      echo "${CHECK_PROTECTED_RESULT}" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  *)
+    echo "unexpected fullsend subcommand: $1" >&2
+    exit 1
+    ;;
+esac
 `), 0o755))
 }
 
@@ -499,6 +523,48 @@ func TestCheckoutMRSource_NestedCrossProjectSourceCheckedOut(t *testing.T) {
 	out, err := runCheckoutScript(t, env, resolveExtra, pathPrefix)
 	require.NoError(t, err, "stdout/stderr: %s", out)
 	assertCheckedOutReviewedSource(t, env, out)
+}
+
+// TestCheckoutMRSource_ProtectedSourceBranchFailsClosed proves the
+// pre-push safety gate: when `fullsend check-protected-branch` reports
+// the resolved source branch is protected (an exact-name rule in this
+// case; internal/cli/checkprotectedbranch_test.go separately covers the
+// exact-vs-wildcard distinction at the Go level since this shell stub
+// does not model GitLab's rule matching), checkout-mr-source.sh refuses
+// to fetch or check out the source at all.
+func TestCheckoutMRSource_ProtectedSourceBranchFailsClosed(t *testing.T) {
+	env := seedSameProjectOrigin(t)
+	resolveExtra, pathPrefix := stubResolveMRSource(t, env.sourceBranch, env.sourceSHA, env.sourceProjectPath)
+	extra := append(append([]string{}, resolveExtra...), "CHECK_PROTECTED_RESULT=branch is protected")
+
+	out, err := runCheckoutScript(t, env, extra, pathPrefix)
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "is protected or its protection status could not be determined")
+	_, statErr := os.Stat(filepath.Join(env.projectDir, "target-repo", ".git"))
+	assert.Error(t, statErr, "a protected source branch must never be fetched")
+}
+
+// TestCheckoutMRSource_ProtectedForkSourceBranchFailsClosed is the same
+// gate, exercised against a fork source project rather than the
+// same-project case above — the protected-branch check runs against
+// SOURCE_PROJECT_PATH (the fork), never FULLSEND_PINNED_PROJECT_PATH
+// (the target project).
+func TestCheckoutMRSource_ProtectedForkSourceBranchFailsClosed(t *testing.T) {
+	env := seedForeignProjectOrigin(t, "fork/project")
+	resolveExtra, pathPrefix := stubResolveMRSource(t, env.sourceBranch, env.sourceSHA, env.sourceProjectPath)
+	argsFile := filepath.Join(t.TempDir(), "check-protected-args")
+	extra := append(append([]string{}, resolveExtra...),
+		"CHECK_PROTECTED_RESULT=branch is protected via wildcard rule",
+		"CHECK_PROTECTED_ARGS_FILE="+argsFile,
+	)
+
+	out, err := runCheckoutScript(t, env, extra, pathPrefix)
+	require.Error(t, err, "stdout/stderr: %s", out)
+
+	argsOut, readErr := os.ReadFile(argsFile)
+	require.NoError(t, readErr)
+	assert.Contains(t, string(argsOut), "--project\n"+env.sourceProjectPath)
+	assert.Contains(t, string(argsOut), "--branch\n"+env.sourceBranch)
 }
 
 // TestCheckoutMRSource_ProjectPathMismatchFailsClosed proves the

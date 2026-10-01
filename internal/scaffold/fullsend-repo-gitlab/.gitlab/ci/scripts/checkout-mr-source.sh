@@ -54,12 +54,21 @@
 # resolve-mr-source is the sole source of truth. A fast-path value
 # that disagrees with the resolved source fails closed instead of
 # being trusted. This helper is fork-aware and validates the source
-# project, branch, and exact SHA for any resolved source — but
-# run-agent-job.sh's job-level IS_FORK gate (unchanged by this PR)
-# still refuses the fix stage outright whenever IS_FORK is true, so a
-# genuine fork or cross-project MR never reaches this checkout logic
-# today. That gate is expected to be lifted in a follow-up PR (#7814)
-# once post-script push-back also ships.
+# project, branch, and exact SHA for any resolved source. run-agent-job.sh's
+# job-level fork gate only denies the "code" stage now (#7814) — "fix"
+# relies on this script's own checkout-time validation (the consistency
+# checks above and the protected-branch check below) plus runner-side
+# post-script push-back (pushes to SOURCE_PROJECT_PATH/SOURCE_BRANCH,
+# never to FULLSEND_PINNED_PROJECT_PATH) to stay safe for fork and
+# cross-project sources, so a fix dispatch reaches this checkout logic
+# regardless of IS_FORK.
+#
+# This script also owns the pre-push safety gate: once the source is
+# resolved and validated above, `fullsend check-protected-branch` fails
+# the job closed if SOURCE_BRANCH is protected in SOURCE_PROJECT_PATH
+# (an exact-name rule or a matching wildcard rule), before any fetch or
+# agent run — a fix commit must never be attempted against a protected
+# branch in the source project, fork or not.
 
 fullsend_validate_mr_source_ref() {
   _fs_kind=$1
@@ -436,6 +445,25 @@ fullsend_checkout_mr_source() {
     fi
   fi
   unset _FS_FASTPATH_BRANCH _FS_FASTPATH_SHA _FS_FASTPATH_PROJECT_ID _FS_FASTPATH_PROJECT_PATH
+
+  # Pre-push safety gate — fail closed before fetching or running the
+  # fix agent if the resolved source branch is protected in the
+  # resolved source project, directly or via a matching wildcard rule
+  # (e.g. "release-*"). Runs through forge.Client (internal/forge/gitlab),
+  # not a direct curl call, for the same reason resolve-mr-source does:
+  # one forge-API path instead of a hand-rolled one in this generated
+  # scaffold. Checked against SOURCE_PROJECT_PATH/SOURCE_BRANCH (the
+  # resolved source, which may be a fork or cross-project repository),
+  # never against FULLSEND_PINNED_PROJECT_PATH — a fix commit must never
+  # be attempted against a protected branch regardless of which project
+  # it lives in.
+  if ! fullsend check-protected-branch \
+    --project "${SOURCE_PROJECT_PATH}" \
+    --branch "${SOURCE_BRANCH}" \
+    --gitlab-url "${_FS_SERVER_URL}"; then
+    echo "ERROR: refusing to run the fix agent — merge request !${MR_IID} source branch '${SOURCE_BRANCH}' in '${SOURCE_PROJECT_PATH}' is protected or its protection status could not be determined" >&2
+    return 1
+  fi
 
   _FS_SOURCE_FETCH_URL="${_FS_SERVER_URL}/${SOURCE_PROJECT_PATH}.git"
   unset _FS_SERVER_URL

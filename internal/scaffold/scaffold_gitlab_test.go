@@ -541,11 +541,11 @@ func TestGitLabAgentTemplateFixChecksOutMRSourceBeforeSandbox(t *testing.T) {
 	assert.Contains(t, s, `git show "${DEFAULT_BRANCH_SHA}:.fullsend/config.yaml"`)
 	assert.Contains(t, s, `git show "${DEFAULT_BRANCH_SHA}:.fullsend/eval/measurements/${STAGE}.yaml"`)
 
-	// Fork jobs still die at the job-level IS_FORK gate before reaching
-	// this checkout logic — that gate is unchanged by this PR. The
-	// checkout helper itself, however, has a working cross-project fetch
-	// path for when a future PR lifts that gate (see
-	// TestCheckoutMRSource_CrossProjectSourceCheckedOut).
+	// "code" jobs still die at the job-level fork gate before reaching
+	// any checkout logic — "fix" no longer does (#7814); see
+	// TestGitLabAgentTemplateFixAllowsForkAfterValidatedCheckout and
+	// TestCheckoutMRSource_CrossProjectSourceCheckedOut for the fix
+	// stage's own fork/cross-project validation path.
 	assert.Contains(t, s, "Fork MR detected")
 }
 
@@ -670,21 +670,70 @@ func TestGitLabAgentTemplateRoleEnablement(t *testing.T) {
 	assert.Contains(t, s, "retro|prioritize")
 }
 
+// TestGitLabAgentTemplateForkProtection verifies the "code" stage is
+// still denied-by-default for fork/cross-project dispatches: "code"
+// opens a new MR against the target project and has no analogous
+// validated source revision, so it has no path to run safely on a
+// fork. #7814 deliberately does NOT extend this gate's deny behavior
+// to "fix" — see TestGitLabAgentTemplateFixAllowsForkAfterValidatedCheckout.
 func TestGitLabAgentTemplateForkProtection(t *testing.T) {
 	s := gitlabAgentScaffold(t)
+	agentJob := gitlabPerRepoText(t, gitlabRunAgentJobScriptPath)
+
 	assert.Contains(t, s, "Fork MR detected")
 	assert.Contains(t, s, "IS_FORK")
 	// Fail-closed: default to true when IS_FORK is unset
 	assert.Contains(t, s, `IS_FORK:-true`)
 	assert.NotContains(t, s, `IS_FORK:-false`)
-	// Fork check applies only to code/fix stages
-	assert.Contains(t, s, `"code"`)
-	assert.Contains(t, s, `"fix"`)
 	// Fork check uses IS_FORK variable, not jq-parsing the event payload.
 	// EVENT_PAYLOAD_B64 is referenced in the HMAC signed message (not for fork detection).
 	assert.NotRegexp(t, `jq.*EVENT_PAYLOAD`, s)
 	// Fork detection exits with error (visible failure), not silent skip
 	assert.Contains(t, s, "exit 1")
+
+	// The gate itself now guards only the "code" stage — extract the
+	// "if" immediately preceding "Fork MR detected" and assert it tests
+	// STAGE against "code" alone, not "fix" (a looser repo-wide
+	// assert.Contains for `"code"`/`"fix"` would pass even if the gate
+	// still covered both, since both strings appear many times
+	// elsewhere in this file for unrelated stage checks).
+	idx := strings.Index(agentJob, "Fork MR detected")
+	require.Greater(t, idx, -1, "fork-detection message not found")
+	preceding := agentJob[:idx]
+	ifIdx := strings.LastIndex(preceding, "if [ \"${STAGE}\" = ")
+	require.Greater(t, ifIdx, -1, "could not locate the fork gate's guarding if")
+	gateHeader := agentJob[ifIdx:idx]
+	assert.Contains(t, gateHeader, `if [ "${STAGE}" = "code" ]; then`)
+	assert.NotContains(t, gateHeader, `"${STAGE}" = "fix"`)
+}
+
+// TestGitLabAgentTemplateFixAllowsForkAfterValidatedCheckout verifies
+// #7814's fork/cross-project MR support: the "fix" stage is no longer
+// denied by the job-level IS_FORK gate (that gate now only covers
+// "code") and instead relies on checkout-mr-source.sh's own
+// resolve/fetch/checkout/protected-branch validation, which runs
+// regardless of IS_FORK's value.
+func TestGitLabAgentTemplateFixAllowsForkAfterValidatedCheckout(t *testing.T) {
+	agentJob := gitlabPerRepoText(t, gitlabRunAgentJobScriptPath)
+
+	// The fix stage's MR source checkout is unconditional — it is not
+	// nested inside (or preceded by an early exit from) an IS_FORK
+	// check. Locate the checkout-mr-source.sh source line and confirm
+	// no "${STAGE}" = "fix" ... IS_FORK gate appears between the fork
+	// protection comment and that line.
+	forkIdx := strings.Index(agentJob, "Fork MR detected")
+	require.Greater(t, forkIdx, -1)
+	checkoutIdx := strings.Index(agentJob, gitlabCheckoutMRSourceScriptPath)
+	require.Greater(t, checkoutIdx, forkIdx, "checkout-mr-source.sh must be sourced after the fork gate")
+	between := agentJob[forkIdx:checkoutIdx]
+	assert.NotContains(t, between, `"${STAGE}" = "fix"`+"\n", "fix stage must not be re-gated on IS_FORK before the MR source checkout")
+
+	// checkout-mr-source.sh (sourced here) owns both the resolve/fetch/
+	// checkout validation and the protected-branch pre-push gate.
+	checkoutScript := gitlabPerRepoText(t, gitlabCheckoutMRSourceScriptPath)
+	assert.Contains(t, checkoutScript, "fullsend check-protected-branch")
+	assert.Contains(t, checkoutScript, "--project \"${SOURCE_PROJECT_PATH}\"")
+	assert.Contains(t, checkoutScript, "--branch \"${SOURCE_BRANCH}\"")
 }
 
 func TestGitLabAgentTemplateAuthorizationGate(t *testing.T) {

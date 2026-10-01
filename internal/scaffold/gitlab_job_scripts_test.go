@@ -1021,6 +1021,9 @@ case "$1" in
   resolve-mr-source)
     cat "$RESOLVE_JSON_FILE"
     ;;
+  check-protected-branch)
+    exit 0
+    ;;
   run)
     echo "TARGET_BRANCH: $TARGET_BRANCH"
     ;;
