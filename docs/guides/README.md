@@ -9,7 +9,7 @@ Guides for onboarding organizations and configuring GitHub or GitLab — the fir
 - [Mint enrollment](getting-started/README.md) — Enroll your org or repo in a token mint before configuring anything else
 - [Getting Inference](getting-started/getting-inference.md) — Provision GCP inference access for your org or repo
 - [Configuring GitHub](getting-started/configuring-github.md) — Install GitHub Apps and run the setup CLI
-- [Configuring GitLab](getting-started/configuring-gitlab.md) — Install via `repos install --forge gitlab`, runners, and polling
+- [Configuring GitLab](getting-started/configuring-gitlab.md) — Install via `repos install --forge gitlab`, runners, polling, and role-credential lifecycle
 - [Organization Mode](getting-started/org-mode.md) — _(deprecated — see [per-repo Getting Started](getting-started/configuring-github.md))_ Org-wide setup with a shared `.fullsend` config repo
 
 ## Operations & Advanced Setup

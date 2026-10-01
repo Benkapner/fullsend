@@ -981,7 +981,10 @@ func (c *LiveClient) CommitFilesToBranch(ctx context.Context, owner, repo, branc
 
 // commitFilesImpl reads the tree, computes a diff, and POSTs a commit.
 // This is a non-atomic read-modify-write; concurrent branch updates may
-// cause a 409 Conflict (mapped to ErrNonFastForward). The GitHub client
+// cause a 409 Conflict (mapped to ErrNonFastForward) or a 400 Bad Request
+// with "already exists" when start_sha is a non-tip commit used to create
+// a branch that another writer just created (mapped to ErrAlreadyExists so
+// CommitFileToBranch can surface ErrNonFastForward). The GitHub client
 // shares this structural pattern.
 //
 // When opts.force is set with opts.startSHA, the commit is re-rooted on
@@ -1110,6 +1113,15 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 			if apiErr.StatusCode == http.StatusConflict &&
 				!strings.Contains(msg, "already exists") {
 				return false, fmt.Errorf("%w: %w", forge.ErrNonFastForward, err)
+			}
+			// GitLab's commits API returns 400 (not 409) when start_sha is a
+			// non-tip commit and the named branch already exists — typical of
+			// the empty-expectedSHA create race. Map it the same way the
+			// branch-create endpoints do so CommitFileToBranch can convert it
+			// to ErrNonFastForward.
+			if apiErr.StatusCode == http.StatusBadRequest &&
+				strings.Contains(msg, "already exists") {
+				return false, fmt.Errorf("%w: %w", forge.ErrAlreadyExists, err)
 			}
 		}
 		return false, fmt.Errorf("create commit: %w", err)

@@ -351,6 +351,7 @@ func TestEnsureOpenAIProvider_NoCredentialFailsBeforeOpenshell(t *testing.T) {
 // invocation's arguments to the returned log file.
 func recordingProvidersStub(t *testing.T) string {
 	t.Helper()
+	t.Setenv("GITHUB_ACTIONS", "false")
 	neutralizeAgentsRepoFallback(t)
 	// ImportProfile keeps a per-id content cache under os.TempDir(); give
 	// each test its own so an earlier import cannot short-circuit this one.

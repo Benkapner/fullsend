@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -3777,6 +3778,127 @@ func TestListWorkflowRuns_IncludesEvent(t *testing.T) {
 	assert.Equal(t, "issues", runs[0].Event)
 }
 
+// TestGetCached_ConditionalRequestReuses304 exercises the #6702 fix
+// through ListWorkflowRuns: the first request has no If-None-Match, the
+// server returns 200 with an ETag; the second request must send that
+// exact ETag back, and on 304 the client must decode the cached body
+// rather than an empty one.
+func TestGetCached_ConditionalRequestReuses304(t *testing.T) {
+	const etag = `W/"abc123"`
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		switch calls {
+		case 1:
+			assert.Empty(t, r.Header.Get("If-None-Match"), "first request must not send If-None-Match")
+			w.Header().Set("ETag", etag)
+			json.NewEncoder(w).Encode(map[string]any{
+				"workflow_runs": []map[string]any{
+					{"id": 1, "status": "in_progress", "created_at": "2024-01-01T00:00:00Z"},
+				},
+			})
+		case 2:
+			assert.Equal(t, etag, r.Header.Get("If-None-Match"), "second request must echo the weak ETag verbatim")
+			w.Header().Set("ETag", etag)
+			w.WriteHeader(http.StatusNotModified)
+		default:
+			t.Errorf("unexpected call %d", calls)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	first, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	require.Len(t, first, 1)
+
+	second, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	require.Len(t, second, 1, "304 must decode to the cached body, not an empty one")
+	assert.Equal(t, first[0].ID, second[0].ID)
+	assert.Equal(t, "in_progress", second[0].Status)
+	assert.Equal(t, 2, calls)
+}
+
+// TestGetCached_ChangedETagRefetchesBody guards against the flake class
+// this fix could reintroduce if done wrong: a status change must always
+// come with a new ETag from the (real) server, and the client must not
+// keep serving a stale cached body once the ETag changes.
+func TestGetCached_ChangedETagRefetchesBody(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		status := "in_progress"
+		etag := `"v1"`
+		if calls > 1 {
+			status = "completed"
+			etag = `"v2"`
+		}
+		w.Header().Set("ETag", etag)
+		json.NewEncoder(w).Encode(map[string]any{
+			"workflow_runs": []map[string]any{
+				{"id": 1, "status": status, "created_at": "2024-01-01T00:00:00Z"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	first, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	require.Equal(t, "in_progress", first[0].Status)
+
+	second, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	require.Equal(t, "completed", second[0].Status)
+}
+
+// TestGetCached_NoETagNotCached ensures a response without an ETag
+// header is decoded normally and never triggers a conditional request
+// on the next call — there is nothing to send.
+func TestGetCached_NoETagNotCached(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		assert.Empty(t, r.Header.Get("If-None-Match"))
+		json.NewEncoder(w).Encode(map[string]any{
+			"workflow_runs": []map[string]any{
+				{"id": 1, "status": "in_progress", "created_at": "2024-01-01T00:00:00Z"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	_, err = client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, 2, calls)
+}
+
+// TestEtagCache_Bounded ensures a long-lived client polling many
+// distinct URLs (one per workflow run, in the behaviour suite) does not
+// grow etagCache without bound.
+func TestEtagCache_Bounded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"`+r.URL.Path+`"`)
+		json.NewEncoder(w).Encode(map[string]any{"jobs": []map[string]any{}})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	for i := range etagCacheLimit * 2 {
+		_, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", i)
+		require.NoError(t, err)
+	}
+	client.etagMu.Lock()
+	size := len(client.etagCache)
+	client.etagMu.Unlock()
+	assert.LessOrEqual(t, size, etagCacheLimit)
+}
+
 func TestListWorkflowRunJobs(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/org/repo/actions/runs/42/jobs", r.URL.Path)
@@ -5100,4 +5222,527 @@ func TestIsGitDataReadLag(t *testing.T) {
 			assert.Equal(t, tc.want, isGitDataReadLag(tc.err))
 		})
 	}
+}
+
+// runsBody is a minimal valid ListWorkflowRuns payload.
+func runsBody(status string) map[string]any {
+	return map[string]any{"workflow_runs": []map[string]any{
+		{"id": 1, "status": status, "created_at": "2024-01-01T00:00:00Z"},
+	}}
+}
+
+// TestGetCached_ConcurrentCallersShareOneRequest: concurrent pollers of
+// one URL share a single conditional GET, so they cannot race each
+// other's cache writes (and spend one request, not N).
+func TestGetCached_ConcurrentCallersShareOneRequest(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		<-release
+		w.Header().Set("ETag", `"v1"`)
+		json.NewEncoder(w).Encode(runsBody("in_progress"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	const callers = 8
+	var wg sync.WaitGroup
+	errs := make([]error, callers)
+	for i := range callers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+		}(i)
+	}
+	// Let every caller join the in-flight request before it completes.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	for i, err := range errs {
+		require.NoError(t, err, "caller %d", i)
+	}
+	// Callers that joined before the response share it; a straggler that
+	// arrives after close(release) may start a second request.
+	assert.Less(t, calls.Load(), int32(callers), "concurrent callers of one URL share requests")
+}
+
+// TestGetCached_OlderResponseNeverOverwritesNewer: a later poll always
+// sees the newest state once a newer response has been cached.
+func TestGetCached_OlderResponseNeverOverwritesNewer(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			w.Header().Set("ETag", `"v1"`)
+			json.NewEncoder(w).Encode(runsBody("in_progress"))
+			return
+		}
+		if r.Header.Get("If-None-Match") == `"v2"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", `"v2"`)
+		json.NewEncoder(w).Encode(runsBody("completed"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	ctx := context.Background()
+	for i, want := range []string{"in_progress", "completed", "completed", "completed"} {
+		runs, err := client.ListWorkflowRuns(ctx, "org", "repo", "fullsend.yaml")
+		require.NoError(t, err)
+		assert.Equal(t, want, runs[0].Status, "poll %d", i)
+	}
+}
+
+// TestGetCached_InvalidJSONNotCached: a malformed ETagged body is not
+// cached, so the next poll is a plain GET rather than a replay.
+func TestGetCached_InvalidJSONNotCached(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("ETag", `"bad"`)
+			w.Write([]byte("{not json"))
+			return
+		}
+		assert.Empty(t, r.Header.Get("If-None-Match"), "a malformed body must not be cached")
+		w.Header().Set("ETag", `"good"`)
+		json.NewEncoder(w).Encode(runsBody("in_progress"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode workflow runs")
+	runs, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, "in_progress", runs[0].Status)
+}
+
+// TestGetCached_UndecodableCachedBodyEvicted: valid JSON that the caller
+// cannot decode is dropped from the cache instead of replayed on 304.
+func TestGetCached_UndecodableCachedBodyEvicted(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("ETag", `"odd"`)
+			w.Write([]byte(`{"workflow_runs":"not-a-list"}`))
+			return
+		}
+		assert.Empty(t, r.Header.Get("If-None-Match"), "an undecodable body must be evicted")
+		w.Header().Set("ETag", `"good"`)
+		json.NewEncoder(w).Encode(runsBody("in_progress"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.Error(t, err)
+	_, err = client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+}
+
+// TestGetCached_OversizeBodyReturnedNotRetained: a body larger than
+// etagMaxBodyBytes is returned intact but not cached.
+func TestGetCached_OversizeBodyReturnedNotRetained(t *testing.T) {
+	name := strings.Repeat("x", etagMaxBodyBytes)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		assert.Empty(t, r.Header.Get("If-None-Match"), "an oversize body must not be cached")
+		w.Header().Set("ETag", `"big"`)
+		json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{
+			{"id": 7, "name": name, "status": "queued", "created_at": "2024-01-01T00:00:00Z"},
+		}})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	for range 2 {
+		runs, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+		require.NoError(t, err)
+		require.Len(t, runs, 1)
+		assert.Equal(t, name, runs[0].Name, "the oversize body is returned intact")
+	}
+	assert.Equal(t, int32(2), calls.Load())
+	client.etagMu.Lock()
+	defer client.etagMu.Unlock()
+	assert.Empty(t, client.etagCache)
+	assert.Zero(t, client.etagBytes)
+}
+
+// cachedKeys returns the cached keys, most recently used first.
+func cachedKeys(c *LiveClient) []string {
+	c.etagMu.Lock()
+	defer c.etagMu.Unlock()
+	var keys []string
+	if c.etagLRU == nil {
+		return keys
+	}
+	for el := c.etagLRU.Front(); el != nil; el = el.Next() {
+		keys = append(keys, el.Value.(*etagEntry).key)
+	}
+	return keys
+}
+
+// TestEtagCache_EvictsLeastRecentlyUsed: a key that keeps being looked up
+// survives, and the least recently used one is evicted first.
+func TestEtagCache_EvictsLeastRecentlyUsed(t *testing.T) {
+	client := New("tok")
+	for i := range etagCacheLimit {
+		client.storeCachedETag(fmt.Sprintf("k%d", i), "e", []byte("1"))
+	}
+	// k0 is the oldest store, but it is hot: a lookup marks it recent.
+	_, ok := client.lookupCachedETag("k0")
+	require.True(t, ok)
+
+	client.storeCachedETag("new", "e", []byte("1"))
+	keys := cachedKeys(client)
+	assert.Len(t, keys, etagCacheLimit)
+	assert.Contains(t, keys, "k0", "a recently used entry survives eviction")
+	assert.NotContains(t, keys, "k1", "the least recently used entry is evicted first")
+	assert.Equal(t, "new", keys[0])
+}
+
+// TestEtagCache_EntryBoundEvicts: exceeding etagCacheLimit evicts only as
+// many entries as needed, not the whole cache.
+func TestEtagCache_EntryBoundEvicts(t *testing.T) {
+	client := New("tok")
+	for i := range etagCacheLimit + 3 {
+		client.storeCachedETag(fmt.Sprintf("k%d", i), "e", []byte("1"))
+	}
+	keys := cachedKeys(client)
+	assert.Len(t, keys, etagCacheLimit)
+	for i := range 3 {
+		assert.NotContains(t, keys, fmt.Sprintf("k%d", i))
+	}
+	assert.Contains(t, keys, "k3")
+	client.etagMu.Lock()
+	assert.Equal(t, etagCacheLimit, client.etagBytes)
+	client.etagMu.Unlock()
+}
+
+// TestEtagCache_ByteBoundEvicts: exceeding etagMaxTotalBytes evicts the
+// least recently used entries until the total fits.
+func TestEtagCache_ByteBoundEvicts(t *testing.T) {
+	client := New("tok")
+	body := make([]byte, etagMaxBodyBytes)
+	n := etagMaxTotalBytes / etagMaxBodyBytes
+	for i := range n {
+		client.storeCachedETag(fmt.Sprintf("k%d", i), "e", body)
+	}
+	require.Len(t, cachedKeys(client), n)
+
+	client.storeCachedETag("one-more", "e", []byte("x"))
+	keys := cachedKeys(client)
+	assert.NotContains(t, keys, "k0", "the least recently used entry makes room")
+	assert.Contains(t, keys, "k1")
+	assert.Contains(t, keys, "one-more")
+	client.etagMu.Lock()
+	defer client.etagMu.Unlock()
+	assert.LessOrEqual(t, client.etagBytes, etagMaxTotalBytes)
+	assert.Equal(t, (n-1)*etagMaxBodyBytes+1, client.etagBytes)
+}
+
+// TestEtagCache_ReplaceAdjustsBytes: storing over an existing key replaces
+// its byte count instead of adding to it.
+func TestEtagCache_ReplaceAdjustsBytes(t *testing.T) {
+	client := New("tok")
+	client.storeCachedETag("k", "e1", []byte("1"))
+	client.storeCachedETag("k", "e2", []byte("123"))
+	client.etagMu.Lock()
+	defer client.etagMu.Unlock()
+	assert.Equal(t, 3, client.etagBytes)
+	assert.Len(t, client.etagCache, 1)
+}
+
+// TestGetCached_CachedBodyNotAliased: the cache keeps its own copy of the
+// body, so mutating a fetched body cannot corrupt it.
+func TestGetCached_CachedBodyNotAliased(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		json.NewEncoder(w).Encode(runsBody("in_progress"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	path := "/repos/org/repo/actions/runs?per_page=1"
+	res, err := client.fetchConditional(context.Background(), client.baseURL+path, path)
+	require.NoError(t, err)
+	for i := range res.body {
+		res.body[i] = 'X'
+	}
+	client.etagMu.Lock()
+	cached := client.etagCache[client.baseURL+path].Value.(*etagEntry).body
+	client.etagMu.Unlock()
+	assert.True(t, json.Valid(cached), "the cached body must not alias the returned one")
+}
+
+// TestGetCached_ReadErrorNamesPath: a body read failure says which
+// request failed.
+func TestGetCached_ReadErrorNamesPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"workflow_runs":`))
+		// Close with the body short of Content-Length.
+		hj, ok := w.(http.Hijacker)
+		if !assert.True(t, ok) {
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if !assert.NoError(t, err) {
+			return
+		}
+		conn.Close()
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read response /repos/org/repo/actions/workflows/fullsend.yaml/runs")
+}
+
+// TestGetCached_304AfterRetry: a retried conditional GET keeps its
+// If-None-Match, and a 304 after a 5xx retry serves the cached body.
+func TestGetCached_304AfterRetry(t *testing.T) {
+	var calls atomic.Int32
+	var inm []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		mu.Lock()
+		inm = append(inm, r.Header.Get("If-None-Match"))
+		mu.Unlock()
+		switch n {
+		case 1:
+			w.Header().Set("ETag", `"v1"`)
+			json.NewEncoder(w).Encode(runsBody("in_progress"))
+		case 2:
+			w.WriteHeader(http.StatusBadGateway)
+		default:
+			w.WriteHeader(http.StatusNotModified)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	ctx := context.Background()
+	_, err := client.ListWorkflowRuns(ctx, "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	runs, err := client.ListWorkflowRuns(ctx, "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, "in_progress", runs[0].Status, "the 304 after a retried 502 serves the cached body")
+	assert.Equal(t, int32(3), calls.Load())
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"", `"v1"`, `"v1"`}, inm, "the retry keeps If-None-Match")
+}
+
+// TestFetchConditional_InvalidJSONNotStored: the cache gate itself
+// rejects a malformed ETagged body, before any caller decodes it.
+func TestFetchConditional_InvalidJSONNotStored(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"bad"`)
+		w.Write([]byte("{not json"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	path := "/repos/org/repo/actions/runs?per_page=1"
+	res, err := client.fetchConditional(context.Background(), client.baseURL+path, path)
+	require.NoError(t, err)
+	assert.Equal(t, "{not json", string(res.body), "the body is still returned to the caller")
+	client.etagMu.Lock()
+	defer client.etagMu.Unlock()
+	assert.Empty(t, client.etagCache)
+}
+
+// TestGetCached_LeaderCancelDoesNotFailWaiter: when the caller whose
+// request is shared gives up, a waiter with its own live context still
+// gets the result rather than the other caller's cancellation (#6797
+// review).
+func TestGetCached_LeaderCancelDoesNotFailWaiter(t *testing.T) {
+	received := make(chan struct{}, 1)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- struct{}{}
+		<-release
+		w.Header().Set("ETag", `"v1"`)
+		json.NewEncoder(w).Encode(runsBody("in_progress"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderErr := make(chan error, 1)
+	go func() {
+		_, err := client.ListWorkflowRuns(leaderCtx, "org", "repo", "fullsend.yaml")
+		leaderErr <- err
+	}()
+	<-received // the leader's request is in flight
+
+	waiterErr := make(chan error, 1)
+	var waiterRuns []forge.WorkflowRun
+	go func() {
+		runs, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+		waiterRuns = runs
+		waiterErr <- err
+	}()
+	time.Sleep(50 * time.Millisecond) // let the waiter join the flight
+	cancelLeader()
+	select {
+	case err := <-leaderErr:
+		require.ErrorIs(t, err, context.Canceled, "the leader stops on its own context")
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the leader did not stop on its own cancelled context")
+	}
+
+	close(release)
+	select {
+	case err := <-waiterErr:
+		require.NoError(t, err, "the waiter must not inherit the leader's cancellation")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiter did not get the shared result")
+	}
+	require.Len(t, waiterRuns, 1)
+}
+
+// TestGetCached_WaiterHonoursOwnDeadline: a caller waiting on another
+// caller's in-flight request stops at its own deadline.
+func TestGetCached_WaiterHonoursOwnDeadline(t *testing.T) {
+	received := make(chan struct{}, 1)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- struct{}{}
+		<-release
+		w.Header().Set("ETag", `"v1"`)
+		json.NewEncoder(w).Encode(runsBody("in_progress"))
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	client := newTestClient(t, srv)
+	go client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml") //nolint:errcheck
+	<-received
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.ListWorkflowRuns(ctx, "org", "repo", "fullsend.yaml")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiter did not return at its own deadline")
+	}
+}
+
+// TestFetchConditional_304WithoutEntryIsAnError: a 304 for a request sent
+// without If-None-Match is reported, not decoded as an empty body.
+func TestFetchConditional_304WithoutEntryIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "304 Not Modified without a cached entry")
+}
+
+// TestGetCachedJSON_CancelledCallerStartsNoFetch: a caller whose context
+// is already done returns at once without starting a request.
+func TestGetCachedJSON_CancelledCallerStartsNoFetch(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := client.ListWorkflowRuns(ctx, "org", "repo", "fullsend.yaml")
+	require.ErrorIs(t, err, context.Canceled)
+	time.Sleep(50 * time.Millisecond)
+	assert.Zero(t, calls.Load(), "no request is started for a caller that already gave up")
+}
+
+// TestGetCached_UncacheableResponseDropsStaleEntry: when a new 200 cannot
+// be cached (here: no ETag), the previous entry is dropped instead of
+// being sent as If-None-Match forever.
+func TestGetCached_UncacheableResponseDropsStaleEntry(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			w.Header().Set("ETag", `"v1"`)
+			json.NewEncoder(w).Encode(runsBody("in_progress"))
+		case 2:
+			assert.Equal(t, `"v1"`, r.Header.Get("If-None-Match"))
+			json.NewEncoder(w).Encode(runsBody("completed")) // no ETag
+		default:
+			assert.Empty(t, r.Header.Get("If-None-Match"), "the stale entry must be dropped")
+			json.NewEncoder(w).Encode(runsBody("completed"))
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	ctx := context.Background()
+	for i, want := range []string{"in_progress", "completed", "completed"} {
+		runs, err := client.ListWorkflowRuns(ctx, "org", "repo", "fullsend.yaml")
+		require.NoError(t, err)
+		assert.Equal(t, want, runs[0].Status, "poll %d", i)
+	}
+	assert.Empty(t, cachedKeys(client))
+}
+
+// TestGetCached_AbandonedFetchStillFillsCache: when every caller leaves,
+// the detached fetch completes and caches its result for the next caller.
+func TestGetCached_AbandonedFetchStillFillsCache(t *testing.T) {
+	received := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			received <- struct{}{}
+			<-release
+			w.Header().Set("ETag", `"v1"`)
+			json.NewEncoder(w).Encode(runsBody("in_progress"))
+			return
+		}
+		assert.Equal(t, `"v1"`, r.Header.Get("If-None-Match"), "the abandoned fetch filled the cache")
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() {
+		_, err := client.ListWorkflowRuns(ctx, "org", "repo", "fullsend.yaml")
+		errc <- err
+	}()
+	<-received
+	cancel()
+	require.ErrorIs(t, <-errc, context.Canceled)
+	close(release)
+
+	require.Eventually(t, func() bool { return len(cachedKeys(client)) == 1 }, 5*time.Second, 10*time.Millisecond)
+	runs, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, "in_progress", runs[0].Status)
 }

@@ -464,10 +464,10 @@ func TestRunGitHubSetupPerRepo_CLIOnlyPersistentValues(t *testing.T) {
 	assert.Equal(t, validWIFProvider, overlay.ConfigInferenceWIFProvider())
 }
 
-func TestRunGitHubSetupPerRepo_MissingRequiredAfterComposeFails(t *testing.T) {
+func TestRunGitHubSetupPerRepo_PartialGCPAfterComposeFails(t *testing.T) {
 	client := newSetupClient(t)
 	printer := ui.New(&discardWriter{})
-	presetPath := writeSetupPreset(t, "version: \"1\"\nruntime: claude\n")
+	presetPath := writeSetupPreset(t, "version: \"1\"\nruntime: claude\ninference:\n  project: preset-project\n")
 
 	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
 		target:       "acme/widget",
@@ -476,7 +476,7 @@ func TestRunGitHubSetupPerRepo_MissingRequiredAfterComposeFails(t *testing.T) {
 		changedFlags: map[string]bool{"config": true},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--inference-project is required")
+	assert.Contains(t, err.Error(), "--inference-wif-provider is required")
 	assert.Empty(t, client.CommittedFilesToBranch)
 }
 

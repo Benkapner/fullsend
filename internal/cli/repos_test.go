@@ -903,6 +903,7 @@ github:
 `
 	manifestPath := writeTestManifest(t, yaml)
 	fc := newInstallFakeClient("acme/api")
+	fc.Errors["CreateOrUpdateRepoVariable"] = errors.New("simulated variable write failure")
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
 		manifest:    manifestPath,
@@ -1332,7 +1333,7 @@ func TestRunReposInstall_BootstrapsManifest(t *testing.T) {
 		forge:       repos.ForgeGitHub,
 		testClient:  fc,
 	})
-	require.Error(t, err)
+	require.NoError(t, err)
 
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
@@ -2187,6 +2188,7 @@ func assertGitLabInitMRComplete(t *testing.T, fc *forge.FakeClient) {
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/scripts/trust-ci-server-ca.sh",
+		".gitlab/ci/scripts/pin-ci-job-identity.sh",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
 		".gitlab/ci/scripts/install-fullsend-cli.sh",
 		".gitlab/ci/scripts/run-poll-job.sh",

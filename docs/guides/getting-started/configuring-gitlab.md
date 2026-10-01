@@ -13,8 +13,9 @@ GitHub repositories use a different command (`fullsend github setup`). See
 
 ## Prerequisites
 
-* A GCP project with Vertex AI enabled, from
-  [Getting Inference](getting-inference.md). GitLab does **not** use
+* For Vertex agents, a GCP project with Vertex AI enabled, from
+  [Getting Inference](getting-inference.md). OpenAI-only installation does not
+  need a GCP project. GitLab does **not** use
   `fullsend inference provision` — inference credentials are written by
   `repos install --inference-project` (see [Inference Setup](#inference-setup)
   below). Unless you also pass `--inference-wif-provider` (see
@@ -84,6 +85,12 @@ fullsend repos install <group/project> \
 Where `<group/project>` is the GitLab project path (nested groups are
 supported, for example `group/subgroup/project`), and `<gcp-project>` is
 the GCP project from [Getting Inference](getting-inference.md).
+
+For an installation without Vertex credentials, omit `--inference-project`.
+No GCP inference secrets are written; a later Vertex agent run requires them.
+Configure each enabled agent's runtime and model for OpenAI before it runs.
+GitLab OpenAI runs use an API key, not GitHub Actions WIF; see
+[OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
 
 `--gitlab-url` is required in every case, including gitlab.com: `repos.yaml`
 fails validation (`gitlab.url is required when GitLab repos are present`)
@@ -205,6 +212,84 @@ and rotation or revocation is manual. Never use a personal administrator PAT
 for an autonomous role. If you use the one-user arrangement, document the
 approval limitation explicitly and do not assume the role names imply
 different GitLab identities.
+
+### Role identity model and credential lifecycle
+
+GitLab runtime authentication uses three built-in responsibility identities,
+decided in [#7424](https://github.com/fullsend-ai/fullsend/issues/7424) and
+implemented under [#7496](https://github.com/fullsend-ai/fullsend/issues/7496):
+
+| Role | Responsibility | Must not |
+| --- | --- | --- |
+| **Poller** | Event/issue reads, pipeline dispatch, poll-state writes on `fullsend-poll-state-slash` and `fullsend-poll-state-events` | Modify application code or act as the Analyst approval identity |
+| **Analyst** | Review, triage, prioritization, retrospectives, issue/reporting, notes, labels | Modify repository code or poll-state branches |
+| **Coder** | Repository writes, code/fix work, merge-request creation and updates | Be used as the Analyst approval identity |
+
+These are **audit identities**, not GitLab ACL grants. Every role token is
+still Developer (30) with the `api` scope. Registering a custom role does
+not create finer GitLab API permissions. When Analyst and Coder are distinct
+GitLab users, Analyst can natively approve a Coder-authored merge request;
+see [Role identities and GitLab Free](#role-identities-and-gitlab-free) for
+the same-user exception. The full contract is in the
+[role-credential contract](../../contributing/gitlab-role-credentials.md).
+
+#### Custom roles
+
+Administrators may register extra roles with `--gitlab-role-registry` (JSON
+references and policy, never secret values). Repository files, harness
+`role:` fields, and merge-request diffs may *reference* a registered name;
+they cannot create or elevate a role.
+
+```bash
+fullsend repos install <group/project> \
+  --forge gitlab \
+  --gitlab-url https://gitlab.com \
+  --gitlab-role-registry ./gitlab-roles.json
+```
+
+A custom role can have its own PAT (`credential: own`) or reuse another
+registered role's credential (`credential: reuse`). See the
+[registry JSON shape](../../contributing/gitlab-role-credentials.md#registry-json-shape).
+
+#### Fresh install and shared-token retirement
+
+On a fresh install, `repos install` provisions Poller, Analyst, and Coder
+(plus any registered custom roles) and never creates `fullsend-bot`. On an
+existing pre-migration install that still has `FULLSEND_FORGE_TOKEN`,
+ordinary install provisions the role tokens and retires the shared secret
+once every registered role is ready. Runtime never authenticates as the
+shared token, even while it remains.
+
+There is **no rollback** to the shared token. The historical
+`--gitlab-role-migration` flag and `FULLSEND_GITLAB_ROLE_MIGRATION` gate are
+gone from the install and runtime contract. A missing role secret fails the
+job closed. Leftover gate variables are uninstall cleanup state only.
+
+#### Rotation, recovery, and in-flight jobs
+
+GitLab project access tokens expire in at most one year. `repos install`
+rotates a role when its token is expiring (within 30 days), expired,
+revoked, or unverified. `--rotate-gitlab-roles` force-rotates every
+own-credential role; `--rotate-gitlab-role=<name>` limits the run.
+
+Rotation creates a new PAT, writes it to the existing masked CI variable,
+and leaves the previous PAT active for a 24-hour grace so in-flight jobs
+can finish. If creation fails, nothing is written. If distribution fails,
+the unused replacement is revoked and the previous secret stays in place.
+Rotation never selects `FULLSEND_FORGE_TOKEN`.
+
+On GitLab.com Free, personal PATs enrolled with `--gitlab-role-token` are
+rotated by the administrator, not by `repos install`.
+
+#### Readiness, drift, reinstall, and uninstall
+
+`repos status` reports per-role readiness and treats missing, expired, or
+revoked credentials as `gitlab-role:<name>` drift. Re-running
+`repos install` repairs missing role secrets and retires a leftover shared
+token once all roles are ready. `repos uninstall` deletes the historical
+gate variable, registry, rotation document, role secrets, leftover
+`FULLSEND_FORGE_TOKEN`, and matching project access tokens. See
+[Operations § Uninstalling](operations.md#uninstalling).
 
 ### Off-system polling
 
@@ -733,8 +818,9 @@ clean it up. Install does not overwrite unrelated jobs.
 
 When an existing, non-empty file already has a `workflow:` block, fullsend sets
 `workflow.auto_cancel.on_new_commit: none` if that key is missing, and does not
-overwrite an existing value. It also adds the protected-ref `schedule`/`api`
-rules if the block has no `rules:` key. Because `workflow.rules` is an
+overwrite an existing value. It also adds a `CI_DEBUG_TRACE` deny-before-admit
+rule (`when: never`) followed by the protected-ref `schedule`/`api` rules if
+the block has no `rules:` key. Because `workflow.rules` is an
 allowlist, ordinary push pipelines stop running in that case unless the block
 already has a matching rule; add a catch-all/push rule (or an explicit
 `when: always` rule) before installing, or remove the name-only `workflow:`
@@ -742,9 +828,33 @@ block so fullsend can leave it absent. When an existing, non-empty file has no
 `workflow:` block, fullsend leaves it absent so push-triggered pipelines keep
 running. For a missing or empty `.gitlab-ci.yml`, fullsend instead writes a
 fullsend-owned `workflow:` block with a name, `auto_cancel.on_new_commit:
-none`, and protected-ref `schedule`/`api` rules. Later ordinary push jobs
-added to that file likewise need additional `workflow.rules` (or an explicit
-`when: always` rule), or GitLab will skip them.
+none`, the `CI_DEBUG_TRACE` deny rule, and protected-ref `schedule`/`api`
+rules. Later ordinary push jobs added to that file likewise need additional
+`workflow.rules` (or an explicit `when: always` rule), or GitLab will skip
+them.
+
+Because `workflow:rules` gates pipeline *creation*, not individual jobs, a
+truthy `CI_DEBUG_TRACE` anywhere in the pipeline skips creating the entire
+run — including any non-fullsend jobs in that same pipeline — not only
+fullsend's own jobs, whenever fullsend owns this `workflow:` block. This is
+inherent to `workflow:rules` (CI/CD variables are visible at job init, before
+any job-scoped guard could run) and is required to keep dispatch secrets from
+materializing when debug tracing is enabled.
+
+### In-job identity pin
+
+Before any credential-bearing call, the poll and agent job scripts also pin
+their own identity from the `CI_JOB_TOKEN` job record and fail closed unless
+both hold: the job's pipeline source matches that job's allowlist (poller =
+`schedule` only, agent = `api` only — `parent_pipeline` is not admitted), and
+the job's ref is the project's **protected default branch**, not merely any
+protected ref. The YAML `workflow:` rules above still admit any protected
+ref, so a poll or agent pipeline dispatched against a protected
+non-default branch (for example a release branch) starts and then aborts in
+this in-job check. Keep fullsend's schedules and dispatches targeting the
+project's registered default branch to avoid this fail-closed abort; see
+[gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)
+for the full trust model.
 
 Repos with `on_new_commit: interruptible` (or other non-`none` values)
 may see agent pipelines canceled by later commits. Fullsend needs

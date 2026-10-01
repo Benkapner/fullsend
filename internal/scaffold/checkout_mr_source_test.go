@@ -74,6 +74,9 @@ if [ "$1" != "resolve-mr-source" ]; then
   echo "unexpected fullsend subcommand: $1" >&2
   exit 1
 fi
+if [ -n "${RESOLVE_ARGS_FILE:-}" ]; then
+  printf '%s\n' "$@" > "${RESOLVE_ARGS_FILE}"
+fi
 if [ -n "${RESOLVE_ERROR:-}" ]; then
   echo "${RESOLVE_ERROR}" >&2
   exit 1
@@ -91,7 +94,7 @@ exit 1
 // the given branch/sha/source-project-path. checkout-mr-source.sh
 // always resolves through this subcommand (fast-path
 // CI_MERGE_REQUEST_SOURCE_* variables are cross-checked against it or
-// against CI_PROJECT_ID/CI_PROJECT_PATH directly, never trusted
+// against FULLSEND_PINNED_PROJECT_ID/PATH directly, never trusted
 // outright), so any test that sets those fast-path variables also
 // needs a matching stub response or resolution fails first.
 func stubResolveMRSource(t *testing.T, branch, sha, sourceProjectPath string) (extraEnv []string, pathPrefix string) {
@@ -229,6 +232,15 @@ func runCheckoutScript(t *testing.T, env checkoutEnv, extra []string, pathPrefix
 		"CI_SERVER_URL=" + env.serverRoot,
 		"CI_PROJECT_PATH=" + env.targetProjectPath,
 		"CI_PROJECT_ID=" + env.targetID,
+		// checkout-mr-source.sh now resolves and fetches the MR source
+		// from FULLSEND_PINNED_* (verified via the CI_JOB_TOKEN job
+		// record), not CI_PROJECT_PATH/CI_PROJECT_ID/CI_SERVER_URL. In
+		// this base env the pinned values match the CI_* values above;
+		// tests proving the CI_* variables are ignored override these
+		// with distinct, unpinned values instead.
+		"FULLSEND_PINNED_PROJECT_ID=" + env.targetID,
+		"FULLSEND_PINNED_PROJECT_PATH=" + env.targetProjectPath,
+		"FULLSEND_PINNED_GITLAB_URL=" + env.serverRoot,
 		"FULLSEND_JOB_TOKEN=***",
 		"MR_IID=7",
 		"GIT_CONFIG_NOSYSTEM=1",
@@ -330,29 +342,60 @@ func TestCheckoutMRSource_CrossProjectSourceRejected(t *testing.T) {
 
 // TestCheckoutMRSource_ProjectPathMismatchFailsClosed proves the
 // untrusted-input fix: an untrusted CI_MERGE_REQUEST_SOURCE_PROJECT_PATH
-// that disagrees with CI_PROJECT_PATH must be rejected, not trusted
-// outright as the fetch source.
+// that disagrees with the pinned project path must be rejected, not
+// trusted outright as the fetch source.
 func TestCheckoutMRSource_ProjectPathMismatchFailsClosed(t *testing.T) {
 	env := seedSameProjectOrigin(t)
 	out, err := runCheckoutScript(t, env, []string{
 		"CI_MERGE_REQUEST_SOURCE_PROJECT_PATH=missing/project",
 	}, "")
 	require.Error(t, err, "stdout/stderr: %s", out)
-	assert.Contains(t, out, "does not match this project's CI_PROJECT_PATH")
+	assert.Contains(t, out, "does not match the pinned project path")
 }
 
 // TestCheckoutMRSource_ProjectIDMismatchFailsClosed mirrors
 // TestCheckoutMRSource_ProjectPathMismatchFailsClosed for the numeric
 // fast-path variable: an untrusted CI_MERGE_REQUEST_SOURCE_PROJECT_ID
-// that disagrees with CI_PROJECT_ID must be rejected outright, since
-// this helper only supports same-project MRs.
+// that disagrees with the pinned project id must be rejected outright,
+// since this helper only supports same-project MRs.
 func TestCheckoutMRSource_ProjectIDMismatchFailsClosed(t *testing.T) {
 	env := seedSameProjectOrigin(t)
 	out, err := runCheckoutScript(t, env, []string{
 		"CI_MERGE_REQUEST_SOURCE_PROJECT_ID=999999",
 	}, "")
 	require.Error(t, err, "stdout/stderr: %s", out)
-	assert.Contains(t, out, "does not match this project's CI_PROJECT_ID")
+	assert.Contains(t, out, "does not match the pinned project id")
+}
+
+// TestCheckoutMRSource_ResolvesUsingPinnedProjectAndGitLabURLNotUnpinnedCIVars
+// is a regression test for the logic-error finding: CI_PROJECT_PATH,
+// CI_PROJECT_ID, and CI_SERVER_URL are ordinary, overridable pipeline
+// variables — the same outrankable class ADR 0125 already establishes for
+// CI_PROJECT_ID elsewhere. checkout-mr-source.sh must resolve and fetch
+// the MR source using FULLSEND_PINNED_PROJECT_PATH/FULLSEND_PINNED_GITLAB_URL
+// (verified via the CI_JOB_TOKEN job record) even when those CI_* variables
+// point somewhere else entirely.
+func TestCheckoutMRSource_ResolvesUsingPinnedProjectAndGitLabURLNotUnpinnedCIVars(t *testing.T) {
+	env := seedSameProjectOrigin(t)
+	resolveExtra, pathPrefix := stubResolveMRSource(t, env.sourceBranch, env.sourceSHA, env.sourceProjectPath)
+	argsFile := filepath.Join(t.TempDir(), "resolve-args.txt")
+	out, err := runCheckoutScript(t, env, append([]string{
+		"RESOLVE_ARGS_FILE=" + argsFile,
+		"CI_PROJECT_PATH=unpinned/project",
+		"CI_PROJECT_ID=999999",
+		"CI_SERVER_URL=https://unpinned.example",
+	}, resolveExtra...), pathPrefix)
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "SOURCE_SHA="+env.sourceSHA)
+	assert.Contains(t, out, "HEAD="+env.sourceSHA)
+
+	argsRaw, readErr := os.ReadFile(argsFile)
+	require.NoError(t, readErr)
+	args := strings.Split(strings.TrimRight(string(argsRaw), "\n"), "\n")
+	assert.Contains(t, args, env.targetProjectPath)
+	assert.Contains(t, args, env.serverRoot)
+	assert.NotContains(t, args, "unpinned/project")
+	assert.NotContains(t, args, "https://unpinned.example")
 }
 
 // TestCheckoutMRSource_BranchFastPathMismatchFailsClosed proves the
@@ -463,6 +506,24 @@ func TestCheckoutMRSource_DebugTraceAborts(t *testing.T) {
 	out, err := runCheckoutScript(t, env, []string{"CI_DEBUG_TRACE=true"}, "")
 	require.Error(t, err, "stdout/stderr: %s", out)
 	assert.Contains(t, out, "CI_DEBUG_TRACE enabled")
+}
+
+// TestCheckoutMRSource_DebugTraceAbortsOnTruthyVariants is the
+// checkout-mr-source.sh counterpart of
+// TestRunAgentJobScript_DebugTraceAbortsOnTruthyVariants: this script is
+// sourced from run-agent-job.sh's fix stage after that broader guard
+// already ran, but its own guard must independently match the full
+// truthy set gitlab-runner accepts for CI_DEBUG_TRACE, not just an
+// exact "true", so it never becomes a weaker leftover check.
+func TestCheckoutMRSource_DebugTraceAbortsOnTruthyVariants(t *testing.T) {
+	for _, v := range []string{"1", "TRUE", "T"} {
+		t.Run(v, func(t *testing.T) {
+			env := seedSameProjectOrigin(t)
+			out, err := runCheckoutScript(t, env, []string{"CI_DEBUG_TRACE=" + v}, "")
+			require.Error(t, err, "stdout/stderr: %s", out)
+			assert.Contains(t, out, "CI_DEBUG_TRACE enabled")
+		})
+	}
 }
 
 // TestCheckoutMRSource_HTTPSCredentialHelperFetchesWithToken exercises the
