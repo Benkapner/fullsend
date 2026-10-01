@@ -3,6 +3,7 @@ package github
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/sha1" //nolint:gosec // Git's blob hash algorithm, not used for security
 	"encoding/base64"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"golang.org/x/crypto/nacl/box"
+	"golang.org/x/sync/singleflight"
 )
 
 // LiveClient implements forge.Client for the GitHub REST API.
@@ -41,7 +43,61 @@ type LiveClient struct {
 	rateMu   sync.Mutex
 	rate     forge.RateLimit
 	rateSeen bool
+
+	// etagCache holds the last ETag and raw JSON body seen for GET URLs
+	// that opt into conditional requests via getCachedJSON (#6702). A 304
+	// response reusing a cached ETag does not count against the primary
+	// rate-limit budget, which is what makes this worth doing for the
+	// behaviour-test harness-wait poll loop: the same workflow-runs URL
+	// is requested every few seconds by up to a dozen concurrent
+	// scenarios sharing one installation token.
+	//
+	// Keys are full request URLs (base URL, path and query). A client
+	// carries one token for its whole life (set only by New) and sends
+	// the same Accept and API-version headers on every request, so the
+	// URL alone identifies the representation.
+	etagMu    sync.Mutex
+	etagCache map[string]*list.Element // key -> element of etagLRU holding *etagEntry
+	etagLRU   *list.List               // most recently used at the front
+	etagBytes int                      // total len(body) across etagCache
+
+	// etagFlight collapses concurrent conditional GETs of one URL into a
+	// single request. Besides saving quota, it serialises the
+	// read-request-store sequence per URL, so an older response can never
+	// overwrite a newer cache entry.
+	etagFlight singleflight.Group
 }
+
+// etagEntry is one cached (ETag, body) pair for a GET URL.
+type etagEntry struct {
+	key  string
+	etag string
+	body []byte
+}
+
+// Bounds on etagCache, so a long-lived client (the behaviour suite runs
+// many scenarios against many distinct run/job/artifact URLs) cannot grow
+// without bound. Entries are evicted least recently used first until both
+// bounds hold, so per-run jobs/artifacts URLs that are no longer polled
+// age out before the per-repo lists every scenario keeps polling.
+const (
+	// etagCacheLimit bounds the number of cached URLs.
+	etagCacheLimit = 256
+	// etagMaxBodyBytes is the largest body retained. Workflow-runs pages
+	// measured 2026-09-30: per_page=30 ≈ 0.41 MB (what the pollers use)
+	// and per_page=100 ≈ 1.31 MB (the largest ListRecentWorkflowRuns
+	// allows). A larger body is still returned in full, just not cached.
+	etagMaxBodyBytes = 2 << 20
+	// etagMaxTotalBytes bounds the bytes retained across all entries.
+	etagMaxTotalBytes = 16 << 20
+	// etagFetchTimeout bounds a shared conditional fetch, which runs
+	// detached from any one caller's context (see getCachedJSON). It
+	// covers do()'s retries under ordinary secondary-rate-limit backoff
+	// (about 9 minutes worst case) but deliberately truncates a chain of
+	// maximal Retry-After waits; waiters then get a wrapped error naming
+	// this bound rather than a bare deadline.
+	etagFetchTimeout = 10 * time.Minute
+)
 
 // Compile-time interface checks.
 var _ forge.Client = (*LiveClient)(nil)
@@ -218,8 +274,20 @@ func IsPATForbiddenError(err error) bool {
 
 const maxRetries = 5
 
+// requestHeader is one extra header to set on a do() request. Only
+// getConditional uses this today (If-None-Match); it exists as a variadic
+// option rather than a new do() overload so the other 28 call sites
+// stay untouched.
+type requestHeader struct {
+	key, value string
+}
+
+func withHeader(key, value string) requestHeader {
+	return requestHeader{key: key, value: value}
+}
+
 // do performs an HTTP request against the GitHub API with retry on rate limits.
-func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+func (c *LiveClient) do(ctx context.Context, method, path string, body any, headers ...requestHeader) (*http.Response, error) {
 	url := c.baseURL + path
 
 	var bodyData []byte
@@ -249,6 +317,9 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
+		}
+		for _, h := range headers {
+			req.Header.Set(h.key, h.value)
 		}
 
 		resp, err := c.http.Do(req)
@@ -478,6 +549,179 @@ func (c *LiveClient) get(ctx context.Context, path string) (*http.Response, erro
 		return nil, err
 	}
 	return resp, nil
+}
+
+// getConditional performs a GET request, sending If-None-Match with etag
+// when non-empty. notModified is true when the server confirmed the
+// cached etag is still current (304); resp is nil in that case and the
+// caller must reuse its previously cached body. GitHub does not count a
+// 304 against the primary rate-limit budget (verified 2026-08-31: three
+// consecutive conditional requests left X-RateLimit-Remaining unchanged).
+func (c *LiveClient) getConditional(ctx context.Context, path, etag string) (resp *http.Response, notModified bool, err error) {
+	var headers []requestHeader
+	if etag != "" {
+		headers = append(headers, withHeader("If-None-Match", etag))
+	}
+	resp, err = c.do(ctx, http.MethodGet, path, nil, headers...)
+	if err != nil {
+		return nil, false, err
+	}
+	if resp.StatusCode == http.StatusNotModified {
+		resp.Body.Close()
+		return nil, true, nil
+	}
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return nil, false, err
+	}
+	return resp, false, nil
+}
+
+// getCachedJSON performs a conditional GET against path and decodes the
+// JSON body into v, reusing the cached body on a 304. Only worth it for
+// GET paths a caller polls repeatedly with an unchanged result most of
+// the time — see etagCache's doc comment.
+//
+// A body is cached only when it has an ETag, is valid JSON and is within
+// etagMaxBodyBytes. If v cannot decode a cached body, the entry is
+// dropped so the next request is a plain GET rather than a replay of the
+// same failure.
+func (c *LiveClient) getCachedJSON(ctx context.Context, path, decodeLabel string, v any) error {
+	key := c.baseURL + path
+	// Don't start a detached fetch for a caller that has already given up.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// The shared fetch must not inherit one caller's cancellation: the
+	// behaviour suite's scenarios poll the same URLs with independent
+	// deadlines, and a waiter must not fail because another scenario's
+	// context ended. It runs detached, bounded by etagFetchTimeout, and
+	// each caller stops waiting as soon as its own context is done.
+	ch := c.etagFlight.DoChan(key, func() (any, error) {
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), etagFetchTimeout)
+		defer cancel()
+		return c.fetchConditional(fetchCtx, key, path)
+	})
+	var res singleflight.Result
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case res = <-ch:
+	}
+	if res.Err != nil {
+		if ctx.Err() == nil && errors.Is(res.Err, context.DeadlineExceeded) {
+			return fmt.Errorf("shared conditional fetch of %s exceeded %s: %w", path, etagFetchTimeout, res.Err)
+		}
+		return res.Err
+	}
+	fetched := res.Val.(conditionalBody)
+	// json.Unmarshal neither retains nor modifies its input, so decoding
+	// straight from the shared body is safe; the cache holds its own copy.
+	if err := json.Unmarshal(fetched.body, v); err != nil {
+		c.dropCachedETag(key, fetched.etag)
+		return fmt.Errorf("%s: %w", decodeLabel, err)
+	}
+	return nil
+}
+
+// conditionalBody is the result of one conditional fetch.
+type conditionalBody struct {
+	etag string
+	body []byte
+}
+
+// fetchConditional performs the conditional GET for key and updates the
+// cache. It runs inside etagFlight, so at most one runs per key at a time.
+func (c *LiveClient) fetchConditional(ctx context.Context, key, path string) (conditionalBody, error) {
+	prev, ok := c.lookupCachedETag(key)
+	etag := ""
+	if ok {
+		etag = prev.etag
+	}
+
+	resp, notModified, err := c.getConditional(ctx, path, etag)
+	if err != nil {
+		return conditionalBody{}, err
+	}
+	if notModified {
+		if !ok {
+			return conditionalBody{}, fmt.Errorf("GET %s: 304 Not Modified without a cached entry", path)
+		}
+		return conditionalBody{etag: prev.etag, body: prev.body}, nil
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return conditionalBody{}, fmt.Errorf("read response %s: %w", path, err)
+	}
+	newETag := resp.Header.Get("ETag")
+	if newETag != "" && len(data) <= etagMaxBodyBytes && json.Valid(data) {
+		// The store happens before the result reaches any caller, so a
+		// caller's decode-failure eviction always comes after it within a
+		// flight. Across flights, dropCachedETag only removes an entry
+		// still carrying the ETag that failed, so a late drop never
+		// removes a newer entry.
+		c.storeCachedETag(key, newETag, slices.Clone(data))
+	} else if ok {
+		// The new representation can't be cached, so the old entry is
+		// stale: stop sending its ETag and free its bytes.
+		c.dropCachedETag(key, prev.etag)
+	}
+	return conditionalBody{etag: newETag, body: data}, nil
+}
+
+// lookupCachedETag returns a copy of key's entry and marks it most
+// recently used.
+func (c *LiveClient) lookupCachedETag(key string) (etagEntry, bool) {
+	c.etagMu.Lock()
+	defer c.etagMu.Unlock()
+	el, ok := c.etagCache[key]
+	if !ok {
+		return etagEntry{}, false
+	}
+	c.etagLRU.MoveToFront(el)
+	return *el.Value.(*etagEntry), true
+}
+
+// storeCachedETag stores (etag, body) under key as the most recently used
+// entry, then evicts least recently used entries until both the entry and
+// byte bounds hold. Callers must pass a body within etagMaxBodyBytes
+// (fetchConditional checks); the new entry itself is never evicted.
+func (c *LiveClient) storeCachedETag(key, etag string, body []byte) {
+	c.etagMu.Lock()
+	defer c.etagMu.Unlock()
+	if c.etagCache == nil {
+		c.etagCache = make(map[string]*list.Element)
+		c.etagLRU = list.New()
+	}
+	if el, ok := c.etagCache[key]; ok {
+		e := el.Value.(*etagEntry)
+		c.etagBytes += len(body) - len(e.body)
+		e.etag, e.body = etag, body
+		c.etagLRU.MoveToFront(el)
+	} else {
+		c.etagCache[key] = c.etagLRU.PushFront(&etagEntry{key: key, etag: etag, body: body})
+		c.etagBytes += len(body)
+	}
+	for c.etagLRU.Len() > 1 && (c.etagLRU.Len() > etagCacheLimit || c.etagBytes > etagMaxTotalBytes) {
+		c.removeCachedETag(c.etagLRU.Back())
+	}
+}
+
+// dropCachedETag removes key's entry if it still carries etag.
+func (c *LiveClient) dropCachedETag(key, etag string) {
+	c.etagMu.Lock()
+	defer c.etagMu.Unlock()
+	if el, ok := c.etagCache[key]; ok && el.Value.(*etagEntry).etag == etag {
+		c.removeCachedETag(el)
+	}
+}
+
+// removeCachedETag unlinks el. The caller holds etagMu.
+func (c *LiveClient) removeCachedETag(el *list.Element) {
+	e := el.Value.(*etagEntry)
+	c.etagLRU.Remove(el)
+	delete(c.etagCache, e.key)
+	c.etagBytes -= len(e.body)
 }
 
 // post performs a POST request and checks for success.
@@ -943,6 +1187,14 @@ func (c *LiveClient) putFileWithRetry(ctx context.Context, apiPath string, paylo
 // by do(). It uses linear backoff (2s between attempts) and up to 5
 // attempts (~10s total).
 func (c *LiveClient) retryOnRepoRace(ctx context.Context, label string, fn func() error) error {
+	return c.retryOnRepoRaceIf(ctx, label, func(apiErr *APIError) bool {
+		return isTransientStatus(apiErr.StatusCode)
+	}, fn)
+}
+
+// retryOnRepoRaceIf is retryOnRepoRace with a caller-chosen test for
+// which API errors are transient.
+func (c *LiveClient) retryOnRepoRaceIf(ctx context.Context, label string, transient func(*APIError) bool, fn func() error) error {
 	const attempts = 5
 	const delay = 2 * time.Second
 
@@ -953,12 +1205,10 @@ func (c *LiveClient) retryOnRepoRace(ctx context.Context, label string, fn func(
 			return nil
 		}
 
-		// Retry on transient errors:
-		// - 404: repo not ready (async init)
-		// - 409: branch ref conflict
-		// - 500/502/503/504: transient server-side errors
+		// Retry only the API errors the caller's predicate marks as
+		// transient; anything else, including non-API errors, fails now.
 		var apiErr *APIError
-		if !errors.As(lastErr, &apiErr) || !isTransientStatus(apiErr.StatusCode) {
+		if !errors.As(lastErr, &apiErr) || !transient(apiErr) {
 			return lastErr
 		}
 
@@ -987,6 +1237,61 @@ func isTransientStatus(code int) bool {
 	}
 }
 
+// getRepoObjectWithRetry GETs a repo, commit or tree for a Git Data
+// write or listing and decodes it into v, retrying GitHub's
+// read-after-create lag (#7861) as classified by isGitDataReadLag: the
+// transient 404/409s plus the "Invalid object requested" 422. Callers here always
+// expect the object to exist, so a genuinely missing one costs the full
+// retry budget (about 8s) before the error is returned. GetRepo itself is
+// not retried: callers use its 404 to test for existence.
+func (c *LiveClient) getRepoObjectWithRetry(ctx context.Context, label, decodeLabel, path string, v any) error {
+	return c.retryOnRepoRaceIf(ctx, label, isGitDataReadLag, func() error {
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
+		if err := decodeJSON(resp, v); err != nil {
+			return fmt.Errorf("%s: %w", decodeLabel, err)
+		}
+		return nil
+	})
+}
+
+// isGitDataReadLag reports whether a Git Data read failed on GitHub's
+// read-after-create lag: the usual transient statuses, plus the 422
+// "Invalid object requested. SHA must identify a commit or a tree"
+// that GitHub returns for a commit or tree SHA that another read just
+// returned but this replica has not seen yet. Other 422s are real
+// validation errors and are not retried.
+func isGitDataReadLag(apiErr *APIError) bool {
+	if isTransientStatus(apiErr.StatusCode) {
+		return true
+	}
+	if apiErr.StatusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	msg := strings.ToLower(apiErr.Message)
+	for _, d := range apiErr.Errors {
+		msg += " " + strings.ToLower(d.Message)
+	}
+	return strings.Contains(msg, "invalid object requested")
+}
+
+// getCommitTreeSHA returns the tree SHA of commitSHA, retrying replica
+// lag on a freshly created repo (see getRepoObjectWithRetry).
+func (c *LiveClient) getCommitTreeSHA(ctx context.Context, owner, repo, commitSHA string) (string, error) {
+	var commitObj struct {
+		Tree struct {
+			SHA string `json:"sha"`
+		} `json:"tree"`
+	}
+	if err := c.getRepoObjectWithRetry(ctx, "get commit", "decode commit",
+		fmt.Sprintf("/repos/%s/%s/git/commits/%s", owner, repo, commitSHA), &commitObj); err != nil {
+		return "", err
+	}
+	return commitObj.Tree.SHA, nil
+}
+
 // CommitFiles atomically commits multiple files to the default branch
 // using the Git Trees/Blobs/Commits API. Returns (false, nil) when
 // all files already match the current tree (idempotent).
@@ -1001,15 +1306,12 @@ func (c *LiveClient) CommitFiles(ctx context.Context, owner, repo, message strin
 	}
 
 	// Get default branch name.
-	repoResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
-	if err != nil {
-		return false, fmt.Errorf("get repo: %w", err)
-	}
 	var repoInfo struct {
 		DefaultBranch string `json:"default_branch"`
 	}
-	if err := decodeJSON(repoResp, &repoInfo); err != nil {
-		return false, fmt.Errorf("decode repo info: %w", err)
+	if err := c.getRepoObjectWithRetry(ctx, "get repo", "decode repo info",
+		fmt.Sprintf("/repos/%s/%s", owner, repo), &repoInfo); err != nil {
+		return false, err
 	}
 
 	return c.commitFilesWithRetry(ctx, owner, repo, repoInfo.DefaultBranch, message, files)
@@ -1073,26 +1375,15 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		return false, err
 	}
 
-	// 2. Get the current commit to find its tree SHA.
-	cResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/commits/%s", owner, repo, commitSHA))
+	// 2. Get the current commit to find its tree SHA. Retried because
+	// GitHub's auto_init can make the branch ref readable while the
+	// commit object is still propagating (#7861).
+	baseTreeSHA, err := c.getCommitTreeSHA(ctx, owner, repo, commitSHA)
 	if err != nil {
-		return false, fmt.Errorf("get commit: %w", err)
+		return false, err
 	}
-	var commitObj struct {
-		Tree struct {
-			SHA string `json:"sha"`
-		} `json:"tree"`
-	}
-	if err := decodeJSON(cResp, &commitObj); err != nil {
-		return false, fmt.Errorf("decode commit: %w", err)
-	}
-	baseTreeSHA := commitObj.Tree.SHA
 
 	// 3. Get the full recursive tree to compare existing blobs.
-	treeResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, baseTreeSHA))
-	if err != nil {
-		return false, fmt.Errorf("get tree: %w", err)
-	}
 	var existingTree struct {
 		Tree []struct {
 			Path string `json:"path"`
@@ -1101,8 +1392,9 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		} `json:"tree"`
 		Truncated bool `json:"truncated"`
 	}
-	if err := decodeJSON(treeResp, &existingTree); err != nil {
-		return false, fmt.Errorf("decode tree: %w", err)
+	if err := c.getRepoObjectWithRetry(ctx, "get tree", "decode tree",
+		fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, baseTreeSHA), &existingTree); err != nil {
+		return false, err
 	}
 	if existingTree.Truncated {
 		return false, fmt.Errorf("tree too large (truncated); cannot diff")
@@ -1243,15 +1535,12 @@ func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message strin
 		return 0, nil
 	}
 
-	repoResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
-	if err != nil {
-		return 0, fmt.Errorf("get repo: %w", err)
-	}
 	var repoInfo struct {
 		DefaultBranch string `json:"default_branch"`
 	}
-	if err := decodeJSON(repoResp, &repoInfo); err != nil {
-		return 0, fmt.Errorf("decode repo info: %w", err)
+	if err := c.getRepoObjectWithRetry(ctx, "get repo", "decode repo info",
+		fmt.Sprintf("/repos/%s/%s", owner, repo), &repoInfo); err != nil {
+		return 0, err
 	}
 
 	var commitSHA string
@@ -1274,24 +1563,11 @@ func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message strin
 		return 0, err
 	}
 
-	cResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/commits/%s", owner, repo, commitSHA))
+	baseTreeSHA, err := c.getCommitTreeSHA(ctx, owner, repo, commitSHA)
 	if err != nil {
-		return 0, fmt.Errorf("get commit: %w", err)
+		return 0, err
 	}
-	var commitObj struct {
-		Tree struct {
-			SHA string `json:"sha"`
-		} `json:"tree"`
-	}
-	if err := decodeJSON(cResp, &commitObj); err != nil {
-		return 0, fmt.Errorf("decode commit: %w", err)
-	}
-	baseTreeSHA := commitObj.Tree.SHA
 
-	treeResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, baseTreeSHA))
-	if err != nil {
-		return 0, fmt.Errorf("get tree: %w", err)
-	}
 	var existingTree struct {
 		Tree []struct {
 			Path string `json:"path"`
@@ -1299,8 +1575,9 @@ func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message strin
 		} `json:"tree"`
 		Truncated bool `json:"truncated"`
 	}
-	if err := decodeJSON(treeResp, &existingTree); err != nil {
-		return 0, fmt.Errorf("decode tree: %w", err)
+	if err := c.getRepoObjectWithRetry(ctx, "get tree", "decode tree",
+		fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, baseTreeSHA), &existingTree); err != nil {
+		return 0, err
 	}
 	if existingTree.Truncated {
 		return 0, fmt.Errorf("tree too large (truncated); cannot delete")
@@ -1598,15 +1875,12 @@ func (c *LiveClient) listDirContents(ctx context.Context, owner, repo, path, ref
 // the Git Trees API (single recursive call).
 func (c *LiveClient) ListRepositoryFiles(ctx context.Context, owner, repo string) ([]string, error) {
 	// 1. Get default branch.
-	repoResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
-	if err != nil {
-		return nil, fmt.Errorf("get repo: %w", err)
-	}
 	var repoInfo struct {
 		DefaultBranch string `json:"default_branch"`
 	}
-	if err := decodeJSON(repoResp, &repoInfo); err != nil {
-		return nil, fmt.Errorf("decode repo info: %w", err)
+	if err := c.getRepoObjectWithRetry(ctx, "get repo", "decode repo info",
+		fmt.Sprintf("/repos/%s/%s", owner, repo), &repoInfo); err != nil {
+		return nil, err
 	}
 
 	// 2. Get branch ref → commit SHA.
@@ -1631,24 +1905,12 @@ func (c *LiveClient) ListRepositoryFiles(ctx context.Context, owner, repo string
 	}
 
 	// 3. Get commit → tree SHA.
-	cResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/commits/%s", owner, repo, commitSHA))
+	treeSHA, err := c.getCommitTreeSHA(ctx, owner, repo, commitSHA)
 	if err != nil {
-		return nil, fmt.Errorf("get commit: %w", err)
-	}
-	var commitObj struct {
-		Tree struct {
-			SHA string `json:"sha"`
-		} `json:"tree"`
-	}
-	if err := decodeJSON(cResp, &commitObj); err != nil {
-		return nil, fmt.Errorf("decode commit: %w", err)
+		return nil, err
 	}
 
 	// 4. Get recursive tree → file paths.
-	treeResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, commitObj.Tree.SHA))
-	if err != nil {
-		return nil, fmt.Errorf("get tree: %w", err)
-	}
 	var tree struct {
 		Tree []struct {
 			Path string `json:"path"`
@@ -1656,8 +1918,9 @@ func (c *LiveClient) ListRepositoryFiles(ctx context.Context, owner, repo string
 		} `json:"tree"`
 		Truncated bool `json:"truncated"`
 	}
-	if err := decodeJSON(treeResp, &tree); err != nil {
-		return nil, fmt.Errorf("decode tree: %w", err)
+	if err := c.getRepoObjectWithRetry(ctx, "get tree", "decode tree",
+		fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, treeSHA), &tree); err != nil {
+		return nil, err
 	}
 	if tree.Truncated {
 		return nil, fmt.Errorf("repository tree too large: %w", forge.ErrTreeTruncated)
@@ -3304,10 +3567,6 @@ func (c *LiveClient) awaitBranchUpdate(ctx context.Context, owner, repo string, 
 
 // ListWorkflowRuns returns recent workflow runs for a workflow file.
 func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]forge.WorkflowRun, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?per_page=10", owner, repo, workflowFile))
-	if err != nil {
-		return nil, fmt.Errorf("list workflow runs: %w", err)
-	}
 	var result struct {
 		WorkflowRuns []struct {
 			ID         int    `json:"id"`
@@ -3319,8 +3578,8 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 			CreatedAt  string `json:"created_at"`
 		} `json:"workflow_runs"`
 	}
-	if err := decodeJSON(resp, &result); err != nil {
-		return nil, fmt.Errorf("decode workflow runs: %w", err)
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?per_page=10", owner, repo, workflowFile), "decode workflow runs", &result); err != nil {
+		return nil, fmt.Errorf("list workflow runs: %w", err)
 	}
 	runs := make([]forge.WorkflowRun, len(result.WorkflowRuns))
 	for i, r := range result.WorkflowRuns {
@@ -3345,10 +3604,6 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 	if perPage > 100 {
 		perPage = 100
 	}
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=%d", owner, repo, perPage))
-	if err != nil {
-		return nil, fmt.Errorf("list recent workflow runs: %w", err)
-	}
 	var result struct {
 		WorkflowRuns []struct {
 			ID         int    `json:"id"`
@@ -3360,8 +3615,8 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 			CreatedAt  string `json:"created_at"`
 		} `json:"workflow_runs"`
 	}
-	if err := decodeJSON(resp, &result); err != nil {
-		return nil, fmt.Errorf("decode recent workflow runs: %w", err)
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=%d", owner, repo, perPage), "decode recent workflow runs", &result); err != nil {
+		return nil, fmt.Errorf("list recent workflow runs: %w", err)
 	}
 	runs := make([]forge.WorkflowRun, len(result.WorkflowRuns))
 	for i, r := range result.WorkflowRuns {
@@ -3380,10 +3635,6 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 
 // ListWorkflowRunJobs returns the jobs within a workflow run.
 func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", owner, repo, runID))
-	if err != nil {
-		return nil, fmt.Errorf("list workflow run jobs: %w", err)
-	}
 	var result struct {
 		Jobs []struct {
 			ID         int    `json:"id"`
@@ -3392,8 +3643,8 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 			Conclusion string `json:"conclusion"`
 		} `json:"jobs"`
 	}
-	if err := decodeJSON(resp, &result); err != nil {
-		return nil, fmt.Errorf("decode workflow run jobs: %w", err)
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", owner, repo, runID), "decode workflow run jobs", &result); err != nil {
+		return nil, fmt.Errorf("list workflow run jobs: %w", err)
 	}
 	jobs := make([]forge.WorkflowJob, len(result.Jobs))
 	for i, j := range result.Jobs {
@@ -3409,18 +3660,14 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 
 // ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
 func (c *LiveClient) ListWorkflowRunArtifacts(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowArtifact, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts", owner, repo, runID))
-	if err != nil {
-		return nil, fmt.Errorf("list workflow run artifacts: %w", err)
-	}
 	var result struct {
 		Artifacts []struct {
 			ID   int    `json:"id"`
 			Name string `json:"name"`
 		} `json:"artifacts"`
 	}
-	if err := decodeJSON(resp, &result); err != nil {
-		return nil, fmt.Errorf("decode workflow run artifacts: %w", err)
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts", owner, repo, runID), "decode workflow run artifacts", &result); err != nil {
+		return nil, fmt.Errorf("list workflow run artifacts: %w", err)
 	}
 	artifacts := make([]forge.WorkflowArtifact, len(result.Artifacts))
 	for i, art := range result.Artifacts {
@@ -3465,10 +3712,6 @@ func (c *LiveClient) ListRepositoryArtifacts(ctx context.Context, owner, repo st
 	if perPage > 100 {
 		perPage = 100
 	}
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/artifacts?per_page=%d", owner, repo, perPage))
-	if err != nil {
-		return nil, fmt.Errorf("list repository artifacts: %w", err)
-	}
 	var result struct {
 		Artifacts []struct {
 			ID          int    `json:"id"`
@@ -3480,8 +3723,8 @@ func (c *LiveClient) ListRepositoryArtifacts(ctx context.Context, owner, repo st
 			} `json:"workflow_run"`
 		} `json:"artifacts"`
 	}
-	if err := decodeJSON(resp, &result); err != nil {
-		return nil, fmt.Errorf("decode repository artifacts: %w", err)
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/artifacts?per_page=%d", owner, repo, perPage), "decode repository artifacts", &result); err != nil {
+		return nil, fmt.Errorf("list repository artifacts: %w", err)
 	}
 	artifacts := make([]forge.RepositoryArtifact, 0, len(result.Artifacts))
 	for _, art := range result.Artifacts {
