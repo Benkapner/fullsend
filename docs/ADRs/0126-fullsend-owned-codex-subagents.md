@@ -23,7 +23,7 @@ Accepted
 Review and retro dispatch sub-agents with fresh contexts and selected personas
 ([agent architecture](../problems/agent-architecture.md)). On Codex they run in one
 context today: fullsend registers no roles, although Codex already offers its native
-`spawn_agent` tool to parent models whose catalog entry selects collaboration V1
+`spawn_agent` tool to parent models it resolves to collaboration V1
 ([#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
 
 [ADR 0104](0104-per-persona-model-resolution.md) makes child models a runner decision
@@ -60,10 +60,13 @@ others.
 Codex children run under a policy the runner provisions and enforces.
 
 - An agent delegates when its tools include `Agent` (an absent `tools:` includes it, as
-  on Claude Code and pi), harness security is enabled, and the parent model's catalog
-  entry selects collaboration V1. Bootstrap then registers its skill personas plus a
-  generic `default` and an instruction-only `explore` role. Every other agent, a V2
-  parent included, runs with Codex's multi-agent tools off (`[agents] enabled = false`).
+  on Claude Code and pi), harness security is enabled, and Codex resolves the parent
+  model to collaboration V1: its catalog entry selects V1, or carries no version and
+  Codex's `multi_agent` feature, on by default at the pin and untouched by the runner's
+  configuration, supplies V1. Bootstrap then registers its skill personas plus a
+  generic `default` and an instruction-only `explore` role. Every other agent runs with
+  Codex's multi-agent tools off (`[agents] enabled = false`), a parent whose entry
+  selects V2 or that is not in the bundled catalog included.
 - Child models resolve in the order decided on #6970: `subagents.<persona>`, then
   `FULLSEND_CODEX_SUBAGENT_MODEL`, then `subagents.default`, then `gpt-5.6-luna`.
   The environment variable sits above the repository default because it is the
@@ -96,16 +99,23 @@ Codex children run under a policy the runner provisions and enforces.
 - The hook denies by exiting 2 with a reason on stderr, the outcome Codex honours as a
   block. Every path the handler controls ends that way: a policy violation, a digest
   mismatch, a missing file, unreadable input or any exception, and the reason is never
-  empty. It keeps the ADR 0100 adapter's time discipline, so a check that cannot finish
-  inside the handler timeout denies instead of being killed. What the handler does not
-  control fails open: Codex records a handler it cannot complete, one that times out or
-  whose interpreter fails to start, as failed and lets the spawn proceed, as under
-  ADR 0100. Bootstrap fails if it cannot install the hook.
+  empty. It sets its own deadline inside Codex's handler timeout and denies when the
+  deadline passes, and it reads a file for hashing only through the ADR 0100 adapter's
+  reader, which refuses anything but a regular file under a size cap, checked on the
+  open descriptor, so a path swapped for a FIFO or an oversized file is denied rather
+  than read. What the handler does not control fails open: Codex records a handler it
+  cannot complete, one whose interpreter fails to start or one starved of CPU or I/O
+  until the timeout kills it, as failed and lets the spawn proceed, as under ADR 0100.
+  Bootstrap fails if it cannot install the hook.
 
 ## Consequences
 
-- Review and retro can delegate on Codex once the paired instructions ship; a parent
-  model whose catalog entry selects collaboration V2 runs in one context, as today.
+- Review and retro can delegate on Codex once the paired instructions ship. At
+  `rust-v0.157.0` the parents that qualify are `gpt-5.6-luna`, the one listed entry that
+  selects V1, and `gpt-5.5` (with the hidden `gpt-5.4`), whose entries carry no version;
+  every `gpt-6` model and the other `gpt-5.6` tiers select V2 and run in one context, as
+  today. At the pin that is the main outcome, not an edge case: #6970 was probed on
+  0.152.1, where V1 was the default, and the per-bump revalidation is where it changes.
 - Departures from ADR 0104 on Codex: persona `model:` is not applied, the chain adds
   `FULLSEND_CODEX_SUBAGENT_MODEL` and ends at `gpt-5.6-luna` instead of the parent's
   live model, persona `tools:` are instructions only (every child has the parent's
@@ -117,17 +127,21 @@ Codex children run under a policy the runner provisions and enforces.
   within an iteration the parent can replace it with one that admits everything,
   digest check included. The spawn-time digest check therefore adds coverage only
   against a mid-iteration role or `hooks.json` edit that leaves the adapter untouched;
-  tampering between iterations is caught by the launch-time guard either way. The
-  fail-open outcomes of the Decision, a handler that times out or whose interpreter fails
-  to start, are the same residual: within an iteration the parent reaches them only
-  through the same tampering as the rewritten checker. Option 4 closes both.
+  tampering between iterations is caught by the launch-time guard either way. Of the
+  Decision's fail-open outcomes, an interpreter that fails to start is the same residual,
+  reached within an iteration only through the same tampering, and Option 4 closes both.
+  Starvation is not: a parent's background processes can hold CPU or I/O until Codex's
+  timeout kills the handler without touching a protected file, so it is the fail-open
+  path that remains under Option 4.
 - Token totals include children; Codex still reports no dollar cost.
 - Role loading, child model binding, hook reload, the multi-agent tool set and the rule
   that forms hook names from it, the hook outcomes Codex honours as a block, the
-  catalog's V1 entries and the floor model are revalidated on each Codex CLI bump.
+  catalog's V1 entries, the version Codex supplies to an entry that carries none and the
+  floor model are revalidated on each Codex CLI bump.
 
 Verified against `rust-v0.157.0` (the sandbox image pin): role-file and `hooks.json`
 reload at child start, the spawn arguments, the V1 tool set and the hook-name rule, the
 exact-or-regex matcher rule, the hook outcomes (exit 2 with a reason blocks; exit 2
 without one, another exit, an `async` handler or a timeout does not),
-`codex debug models --bundled`, and the catalog's V1 entries.
+`codex debug models --bundled`, the catalog's V1 entries and the version Codex supplies
+to an entry that carries none (`multi_agent`, on by default).
