@@ -115,8 +115,13 @@ func GitLabPATExpiresAt(now time.Time) string {
 
 // IsGitLabRoleManagedVar reports whether a FULLSEND_* CI/CD variable is
 // a GitLab role-credential artifact (registry, built-in or custom role
-// secret), or the legacy shared token. These are managed, not orphans, and
-// are removed on uninstall.
+// secret), or the legacy shared token. This is an orphan-detection
+// classification only: it tells drift/orphan scans that the name is
+// recognized role-identity state, not an unmanaged leftover. It does not
+// mean the variable is removed on uninstall — the legacy FULLSEND_FORGE_TOKEN
+// shared token is deliberately excluded from automatic uninstall cleanup
+// (see gitLabRoleUninstallVars and extraGitLabRoleUninstallVars) and
+// requires manual cleanup.
 func IsGitLabRoleManagedVar(name string) bool {
 	switch name {
 	case forge.SecretForgeToken, forge.VarGitLabRoleRegistry,

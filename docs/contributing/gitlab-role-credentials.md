@@ -397,7 +397,9 @@ matching `fullsend-bot` project access token — a repository installed
 before the role-only rollout requires manual cleanup of those. A
 token-revocation failure fails uninstall so the manifest entry remains
 for an idempotent retry. Ordinary reinstall after a complete uninstall
-does not recreate the retired role credentials.
+provisions fresh role credentials again, but it does not recreate the
+retired legacy shared credential or any migration gate — those stay
+retired.
 
 **Never** put token values in logs, status output, issue comments, or
 `Error` strings. Presence booleans and variable names are the only
