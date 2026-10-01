@@ -3,6 +3,8 @@ package agentnew
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -101,5 +103,78 @@ func TestGeneratedPostScriptCapsALongInvalidStatus(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "(got '"+strings.Repeat("x", 40)+"')") {
 		t.Fatalf("expected the status capped at 40 characters, got: %q", stderr)
+	}
+}
+
+// TestGeneratedPostScriptDryRunPreviewCannotIssueWorkflowCommands feeds a
+// findings comment whose lines start with "::" (after LF, after CR, and
+// after leading spaces, which the Actions runner trims) and checks that the
+// dry-run preview keeps every one of them inside a stop-commands block with
+// a random 32-hex token, opened before the preview and closed after it.
+func TestGeneratedPostScriptDryRunPreviewCannotIssueWorkflowCommands(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	runDir := writeRunDir(t, map[string]any{
+		"iteration-1": map[string]any{
+			"status":  "findings",
+			"summary": "s",
+			"comment": "intro\n::error::injected\r::add-mask::x\n   ::warning::indented",
+		},
+	})
+	token := regexp.MustCompile(`^::stop-commands::([0-9a-f]{32})$`)
+	var tokens []string
+	for i := 0; i < 2; i++ {
+		stdout, stderr, err := runPostScript(t, script, runDir)
+		if err != nil {
+			t.Fatalf("dry run must exit 0, got %v; stderr:\n%s", err, stderr)
+		}
+		lines := strings.FieldsFunc(stdout, func(r rune) bool { return r == '\n' || r == '\r' })
+		m := token.FindStringSubmatch(lines[0])
+		if m == nil {
+			t.Fatalf("preview must open with ::stop-commands::<32 hex>, got first line %q", lines[0])
+		}
+		if last := lines[len(lines)-1]; last != "::"+m[1]+"::" {
+			t.Fatalf("preview must close with ::%s::, got last line %q", m[1], last)
+		}
+		inside := strings.Join(lines[1:len(lines)-1], "\n")
+		for _, injected := range []string{"::error::injected", "::add-mask::x", "::warning::indented"} {
+			if !strings.Contains(inside, injected) {
+				t.Fatalf("%q must appear inside the stop-commands block, got:\n%s", injected, stdout)
+			}
+		}
+		tokens = append(tokens, m[1])
+	}
+	if tokens[0] == tokens[1] {
+		t.Fatalf("the stop-commands token must be random per run, got %s twice", tokens[0])
+	}
+}
+
+// TestGeneratedPostScriptDryRunFailsClosedWithoutAToken pins the token
+// guard: if od yields no token, an empty ::stop-commands:: would be
+// rejected by the runner and the preview read as commands, so the script
+// must exit 1 before printing anything.
+func TestGeneratedPostScriptDryRunFailsClosedWithoutAToken(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "od"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	runDir := writeRunDir(t, map[string]any{
+		"iteration-1": map[string]any{"status": "findings", "summary": "s", "comment": "::error::injected"},
+	})
+	stdout, stderr, err := runPostScript(t, script, runDir, "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil {
+		t.Fatalf("a dry run without a token must fail; stdout:\n%s", stdout)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("nothing may be printed without a token, got:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "could not generate a stop-commands token") {
+		t.Fatalf("expected the token guard's message, got:\n%s", stderr)
 	}
 }
