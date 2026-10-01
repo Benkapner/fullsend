@@ -22,8 +22,10 @@ Accepted
 
 Review and retro dispatch sub-agents with fresh contexts and selected personas
 ([agent architecture](../problems/agent-architecture.md)). On Codex they run in one
-context today: fullsend registers no roles, although Codex already offers its native
-`spawn_agent` tool to parent models it resolves to collaboration V1
+context today only because nothing asks for a child: fullsend registers no roles, while
+Codex offers a native spawn tool to every parent, `spawn_agent` under collaboration V1
+and `collaborationspawn_agent` under V2, neither policed by the runner (#7829 turns both
+off until this mechanism ships)
 ([#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
 
 [ADR 0104](0104-per-persona-model-resolution.md) makes child models a runner decision
@@ -42,11 +44,11 @@ others.
 
 ## Options
 
-1. **Single context (status quo).** No new mechanism; review and retro keep no
-   independent child contexts on Codex.
-2. **Native children governed by instructions only.** Nothing enforces fresh context,
-   depth or model choice; a parent can fork its conversation into the challenger or
-   pick any OpenAI model.
+1. **Single context.** Turn Codex's multi-agent tools off for every agent (#7829 does
+   this until a decision) and keep no independent child contexts for review and retro.
+2. **Native children governed by instructions only** (the state on `main` with the tools
+   on). Nothing enforces fresh context, depth or model choice; a parent can fork its
+   conversation into the challenger or pick any OpenAI model.
 3. **Native children under a runner-owned role and dispatch policy** (chosen).
 4. **Option 3 plus write protection of the runtime's files.** Closes the
    time-of-check window noted below. Each way to do it adds a platform requirement:
@@ -121,9 +123,11 @@ Codex children run under a policy the runner provisions and enforces.
 - Review and retro can delegate on Codex once the paired instructions ship. At
   `rust-v0.159.3` the parents that qualify are `gpt-5.6-luna`, the one listed entry that
   selects V1, and `gpt-5.5`, whose entry carries no version;
-  every `gpt-6` model and the other `gpt-5.6` tiers select V2 and run in one context, as
-  today. At the pin that is the main outcome, not an edge case: #6970 was probed on
-  0.152.1, where V1 was the default, and the per-bump revalidation is where it changes.
+  every `gpt-6` model and the other `gpt-5.6` tiers select V2 and run in one context,
+  with the multi-agent tools off, a new restriction for them rather than a continuation,
+  since a V2 parent has its spawn tool today. At the pin that is the main outcome, not an
+  edge case: #6970 was probed on 0.152.1, where V1 was the default, and the per-bump
+  revalidation is where it changes.
 - Departures from ADR 0104 on Codex: persona `model:` is not applied, the chain adds
   `FULLSEND_CODEX_SUBAGENT_MODEL` and ends at `gpt-5.6-luna` instead of the parent's
   live model, persona `tools:` are instructions only (every child has the parent's
@@ -146,7 +150,10 @@ Codex children run under a policy the runner provisions and enforces.
   Starvation is not: a parent's background processes can hold CPU or I/O until Codex's
   timeout kills the handler without touching a protected file, so it is the fail-open
   path that remains under Option 4.
-- Token totals include children; Codex still reports no dollar cost.
+- Token totals include children, which is runner work: `codex exec` forwards token
+  updates for the primary thread and turn only and its JSONL total is that thread's, so
+  the runner reads each child's rollout after the run and folds its last cumulative
+  `token_count` into the run totals, per model. Codex still reports no dollar cost.
 - Role loading, child model binding, hook reload, the multi-agent tool set and the rule
   that forms hook names from it, the hook outcomes Codex honours as a block, the
   catalog's V1 entries, the version Codex supplies to an entry that carries none and the
@@ -157,5 +164,6 @@ reload at child start, `config.toml` read once at launch, the spawn arguments, t
 tool set and the hook-name rule, the exact-or-regex matcher rule, the hook outcomes
 (exit 2 with a reason blocks; exit 2 without one, another exit, an `async` handler or a
 timeout does not), `codex debug models --bundled`, the catalog's V1 entries and the
-version Codex supplies to an entry that carries none (`multi_agent`, on by default). The
-checks ran on the 0.157.0, 0.159.0 and 0.159.3 binaries.
+version Codex supplies to an entry that carries none (`multi_agent`, on by default), and
+the `exec` usage stream carrying the primary thread only. The checks ran on the 0.157.0,
+0.159.0 and 0.159.3 binaries.
