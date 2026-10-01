@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -585,12 +586,22 @@ func TestValidateRunnerEnvWith_ReportsAllMissingVars(t *testing.T) {
 	require.Error(t, err)
 	message := err.Error()
 	assert.Contains(t, message, "3 unresolved host variable(s):")
-	for _, variable := range []string{"MISSING_DIR", "MISSING_VAR", "ALSO_MISSING"} {
-		assert.Contains(t, message, variable+" is referenced but not set:")
-	}
-	assert.Contains(t, message, `host_files[0].src="${MISSING_VAR}"`)
-	assert.Contains(t, message, `env.runner[KEY]="${MISSING_VAR}"`)
+
+	assert.Contains(t, message, "env.runner[KEY]")
+	assert.Contains(t, message, "env.sandbox[KEY]")
+	assert.Contains(t, message, "host_files[0].src")
+	assert.Contains(t, message, "validation_loop.schema")
+
+	assert.Contains(t, message, "ALSO_MISSING")
+	assert.Contains(t, message, "MISSING_DIR")
+	assert.Contains(t, message, "MISSING_VAR")
 	assert.NotContains(t, message, "SET_VAR")
+
+	alsoMissing := strings.Index(message, "ALSO_MISSING")
+	missingDir := strings.Index(message, "MISSING_DIR")
+	missingVar := strings.Index(message, "MISSING_VAR")
+	assert.Less(t, alsoMissing, missingDir)
+	assert.Less(t, missingDir, missingVar)
 }
 
 func TestValidateRunnerEnvWith_EnvAllSet(t *testing.T) {

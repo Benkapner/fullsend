@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -778,8 +779,10 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 
 	lines := make([]string, 0, len(references))
 	for variable, refs := range references {
+		sort.Strings(refs)
 		lines = append(lines, fmt.Sprintf("%s is referenced but not set: %s", variable, strings.Join(refs, ", ")))
 	}
+	sort.Strings(lines)
 	return fmt.Errorf("%d unresolved host variable(s):\n    %s", len(references), strings.Join(lines, "\n    "))
 }
 
