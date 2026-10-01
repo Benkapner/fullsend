@@ -1353,6 +1353,7 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
+		".gitlab/ci/scripts/pin-ci-job-identity.sh",
 		".gitlab/ci/scripts/install-fullsend-cli.sh",
 		".gitlab/ci/scripts/run-poll-job.sh",
 		".gitlab/ci/scripts/run-agent-job.sh",

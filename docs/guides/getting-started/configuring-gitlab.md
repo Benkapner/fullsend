@@ -818,8 +818,9 @@ clean it up. Install does not overwrite unrelated jobs.
 
 When an existing, non-empty file already has a `workflow:` block, fullsend sets
 `workflow.auto_cancel.on_new_commit: none` if that key is missing, and does not
-overwrite an existing value. It also adds the protected-ref `schedule`/`api`
-rules if the block has no `rules:` key. Because `workflow.rules` is an
+overwrite an existing value. It also adds a `CI_DEBUG_TRACE` deny-before-admit
+rule (`when: never`) followed by the protected-ref `schedule`/`api` rules if
+the block has no `rules:` key. Because `workflow.rules` is an
 allowlist, ordinary push pipelines stop running in that case unless the block
 already has a matching rule; add a catch-all/push rule (or an explicit
 `when: always` rule) before installing, or remove the name-only `workflow:`
@@ -827,9 +828,33 @@ block so fullsend can leave it absent. When an existing, non-empty file has no
 `workflow:` block, fullsend leaves it absent so push-triggered pipelines keep
 running. For a missing or empty `.gitlab-ci.yml`, fullsend instead writes a
 fullsend-owned `workflow:` block with a name, `auto_cancel.on_new_commit:
-none`, and protected-ref `schedule`/`api` rules. Later ordinary push jobs
-added to that file likewise need additional `workflow.rules` (or an explicit
-`when: always` rule), or GitLab will skip them.
+none`, the `CI_DEBUG_TRACE` deny rule, and protected-ref `schedule`/`api`
+rules. Later ordinary push jobs added to that file likewise need additional
+`workflow.rules` (or an explicit `when: always` rule), or GitLab will skip
+them.
+
+Because `workflow:rules` gates pipeline *creation*, not individual jobs, a
+truthy `CI_DEBUG_TRACE` anywhere in the pipeline skips creating the entire
+run — including any non-fullsend jobs in that same pipeline — not only
+fullsend's own jobs, whenever fullsend owns this `workflow:` block. This is
+inherent to `workflow:rules` (CI/CD variables are visible at job init, before
+any job-scoped guard could run) and is required to keep dispatch secrets from
+materializing when debug tracing is enabled.
+
+### In-job identity pin
+
+Before any credential-bearing call, the poll and agent job scripts also pin
+their own identity from the `CI_JOB_TOKEN` job record and fail closed unless
+both hold: the job's pipeline source matches that job's allowlist (poller =
+`schedule` only, agent = `api` only — `parent_pipeline` is not admitted), and
+the job's ref is the project's **protected default branch**, not merely any
+protected ref. The YAML `workflow:` rules above still admit any protected
+ref, so a poll or agent pipeline dispatched against a protected
+non-default branch (for example a release branch) starts and then aborts in
+this in-job check. Keep fullsend's schedules and dispatches targeting the
+project's registered default branch to avoid this fail-closed abort; see
+[gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)
+for the full trust model.
 
 Repos with `on_new_commit: interruptible` (or other non-`none` values)
 may see agent pipelines canceled by later commits. Fullsend needs

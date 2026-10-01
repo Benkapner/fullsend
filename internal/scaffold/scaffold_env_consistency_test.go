@@ -87,6 +87,20 @@ var gitlabCIScaffoldLocalEnvVars = map[string]struct{}{
 	"FULLSEND_NOTE_TARGET": {},
 	// trust-ci-server-ca.sh idempotency flag.
 	"FULLSEND_CI_SERVER_CA_TRUSTED": {},
+	// pin-ci-job-identity.sh caller input and pinned job-record exports.
+	"FULLSEND_ADMIT_SOURCE":             {},
+	"FULLSEND_PINNED_PROJECT_ID":        {},
+	"FULLSEND_PINNED_PIPELINE_ID":       {},
+	"FULLSEND_PINNED_REF":               {},
+	"FULLSEND_PINNED_PIPELINE_SOURCE":   {},
+	"FULLSEND_PINNED_PIPELINE_RESPONSE": {},
+	"FULLSEND_PINNED_PROJECT_PATH":      {},
+	"FULLSEND_PINNED_GITLAB_URL":        {},
+	// run-agent-job.sh / run-poll-job.sh script-local derivation
+	// (FULLSEND_PINNED_GITLAB_URL + "/api/v4") used to route every
+	// post-pin PAT-bearing call through the pinned API root instead of
+	// the overridable CI_API_V4_URL pipeline variable.
+	"FULLSEND_PINNED_API_V4_URL": {},
 	// CLI GitLab base-URL override (internal/forge/gitlab.URLEnvVars).
 	"FULLSEND_GITLAB_URL": {},
 	// Concatenation prefix for custom-role secrets
@@ -181,6 +195,7 @@ func TestGitLabCIScaffoldEnvVarsAreCanonical(t *testing.T) {
 	assert.Contains(t, scanned, ".gitlab/ci/scripts/install-fullsend-cli.sh")
 	assert.Contains(t, scanned, ".gitlab/ci/scripts/run-poll-job.sh")
 	assert.Contains(t, scanned, ".gitlab/ci/scripts/run-agent-job.sh")
+	assert.Contains(t, scanned, ".gitlab/ci/scripts/pin-ci-job-identity.sh")
 	assert.Contains(t, scanned, ".gitlab/ci/scripts/checkout-mr-source.sh")
 	if len(failures) > 0 {
 		t.Errorf("scaffold FULLSEND_* names absent from forge.Secret*/Var* constants and the script-local allowlist:\n  %s",

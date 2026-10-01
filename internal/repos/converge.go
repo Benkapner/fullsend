@@ -1407,17 +1407,21 @@ func activatePipelineSchedules(ctx context.Context, client forge.Client,
 
 // convergeGitLabRootCIFiles migrates already-enrolled GitLab repos whose
 // root .gitlab-ci.yml still carries entries that fullsend no longer
-// requires: obsolete workflow:rules (the native merge_request_event
+// requires — obsolete workflow:rules (the native merge_request_event
 // dispatch rule removed in #7322) and obsolete stages (the empty
-// "dispatch" stage removed in #7337). The root file is user-owned and
-// is otherwise only touched by the install merge path (fresh installs)
-// and the uninstall unmerge path (teardown) — neither runs during
-// upgrade/converge, so without this step an obsolete entry would survive
-// convergence forever. StripObsoleteGitLabWorkflowRules only rewrites
-// the file when it can prove fullsend owns the workflow block (see
-// gitlabCIWorkflowIsFullsendOwned), so merge-path enrollments without
-// the fullsend workflow.name are intentionally left for manual cleanup
-// rather than risking a user's own MR gate. StripObsoleteGitLabStages
+// "dispatch" stage removed in #7337) — and backfills entries a newer
+// fullsend version now requires but an older enrollment never received
+// (the CI_DEBUG_TRACE deny-before-admit rule added by ADR 0125). The root
+// file is user-owned and is otherwise only touched by the install merge
+// path (fresh installs, or installs onto a repo HasFullsendEntries judges
+// incompletely migrated) and the uninstall unmerge path (teardown) —
+// neither runs during upgrade/converge, so without this step a missing or
+// obsolete entry would survive convergence forever.
+// StripObsoleteGitLabWorkflowRules and MergeMissingGitLabDebugTraceRule
+// only rewrite the file when they can prove fullsend owns the workflow
+// block (see gitlabCIWorkflowIsFullsendOwned), so merge-path enrollments
+// without the fullsend workflow.name are intentionally left for manual
+// cleanup rather than risking a user's own configuration. StripObsoleteGitLabStages
 // gates on the fullsend pipeline include plus a current fullsend stage
 // (see that function's doc comment). It does not commit — the caller
 // batches all scaffold file changes into a single atomic commit.
@@ -1477,6 +1481,35 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 				Detail:    "removed obsolete merge_request_event workflow rule from .gitlab-ci.yml",
 			})
 			progress(repoFullName, "repair", "Removing obsolete merge_request_event workflow rule from .gitlab-ci.yml")
+		}
+	}
+
+	merged, debugTraceRuleAdded, mergeErr := MergeMissingGitLabDebugTraceRule(content)
+	if mergeErr != nil {
+		actions = append(actions, ComponentAction{
+			Component: "gitlab-ci-rules",
+			Action:    "error",
+			Detail:    fmt.Sprintf("error checking .gitlab-ci.yml for missing CI_DEBUG_TRACE workflow rule: %v", mergeErr),
+		})
+		return nil, actions
+	}
+	if debugTraceRuleAdded {
+		content = merged
+		changed = true
+		if cfg.DryRun {
+			actions = append(actions, ComponentAction{
+				Component: "gitlab-ci-rules",
+				Action:    "update",
+				Detail:    "would add missing CI_DEBUG_TRACE deny-before-admit workflow rule to .gitlab-ci.yml",
+			})
+			progress(repoFullName, "dry-run", "Would add missing CI_DEBUG_TRACE deny-before-admit workflow rule to .gitlab-ci.yml")
+		} else {
+			actions = append(actions, ComponentAction{
+				Component: "gitlab-ci-rules",
+				Action:    "update",
+				Detail:    "added missing CI_DEBUG_TRACE deny-before-admit workflow rule to .gitlab-ci.yml",
+			})
+			progress(repoFullName, "repair", "Adding missing CI_DEBUG_TRACE deny-before-admit workflow rule to .gitlab-ci.yml")
 		}
 	}
 

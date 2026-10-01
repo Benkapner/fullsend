@@ -254,16 +254,25 @@ env vars `FULLSEND_GITLAB_ROLE`, `FULLSEND_GITLAB_ROLE_SECRET`, and
 `FULLSEND_GITLAB_ROLE_SOURCE`.
 GitLab CI templates (`fullsend-poll.yml`, `fullsend-agent.yml`) source
 `run-poll-job.sh` and `run-agent-job.sh`, which resolve credentials via
-`select-gitlab-role-token.sh`. In `run-agent-job.sh`,
+`select-gitlab-role-token.sh`. Both job scripts first source
+`pin-ci-job-identity.sh`, which takes project, pipeline, and ref from
+the `CI_JOB_TOKEN` job record (`GET /api/v4/job`) rather than from the
+overridable `CI_PROJECT_ID` / `CI_PIPELINE_ID` / `CI_COMMIT_REF_PROTECTED`
+env vars, and fails closed unless the server-side `.source` matches that
+job's disjoint allowlist (poller = `schedule` only, agent = `api` only;
+`parent_pipeline` is not admitted) and the job ref is the project's
+protected default branch. YAML `workflow:` and job `rules:` also deny
+truthy `CI_DEBUG_TRACE` values (the gitlab-runner `ParseBool` truthy set:
+`1`, `t`/`T`, `true`/`TRUE`/`True`) before any admit rule, because secrets
+materialize at job init. In `run-agent-job.sh`,
 the STAGE pipeline variable that would otherwise select the role is not
 yet authenticated when the job starts, so the *pre-verification*
-bootstrap calls (resource-group PUT, pipeline-metadata GET, bot-identity
-`/user` call) always resolve the Poller credential
-(`FULLSEND_GITLAB_POLLER_TOKEN`), regardless of stage — this avoids
-handing a forged dispatch a higher-privilege token before the
-pipeline-source/bot-identity check and HMAC verification pass. The
-template only re-resolves the credential for the job's actual stage —
-analyst stages use `FULLSEND_GITLAB_ANALYST_TOKEN`, coder stages use
+bootstrap calls (resource-group PUT, bot-identity `/user` call) always
+resolve the Poller credential (`FULLSEND_GITLAB_POLLER_TOKEN`), regardless
+of stage — this avoids handing a forged dispatch a higher-privilege token
+before HMAC verification passes. The template only re-resolves the
+credential for the job's actual stage — analyst stages use
+`FULLSEND_GITLAB_ANALYST_TOKEN`, coder stages use
 `FULLSEND_GITLAB_CODER_TOKEN` — once `DISPATCH_VERIFIED` is true: the
 `api`-sourced dispatch passed HMAC verification. This is required for
 every job:
@@ -272,12 +281,13 @@ every job:
 analyst/coder secret is a real higher-privilege credential
 as well, and an unverified STAGE must not be
 allowed to select it there either. A missing `FULLSEND_DISPATCH_SECRET`
-now fails the job closed instead of silently
-skipping HMAC verification, and a
+now fails the job closed in every gate mode instead of silently
+skipping HMAC verification. A
 `parent_pipeline`-sourced dispatch (legacy child-pipeline installs;
-current installs only ever dispatch via `api`) has no HMAC to check, so
-`DISPATCH_VERIFIED` stays false. The job
-now fails closed at that point (`exit 1`), rather than continuing on the
+current installs only ever dispatch via `api`) is already denied at the
+identity pin before reaching this gate, so it never contributes a
+`DISPATCH_VERIFIED=true`. The job fails closed at that point
+(`exit 1`) in every gate mode, rather than continuing on the
 lower-privileged Poller credential. An earlier revision of this template
 continued the job on the Poller credential instead, but that was not
 sufficient: `fullsend run` resolves its own GitLab credential internally
@@ -289,14 +299,32 @@ selection, so continuing on the Poller credential in the shell did not
 stop the CLI from promoting the STAGE-derived role token anyway. Failing
 the whole job closed, before `fullsend run` or the `STAGE=fix`
 review-body pre-fetch below ever execute, is the only way to keep an
-unverified STAGE from reaching a role-specific credential. This closes a
-gap where a forged dispatch that spoofed the pipeline source (via an
-overridden `CI_API_V4_URL`, the documented residual risk in ADR 0067 and
-`run-agent-job.sh`) could otherwise obtain a higher-privilege role
-token before any credential separation existed to matter. Poll jobs have
-no such pre-verification window and resolve `FULLSEND_GITLAB_POLLER_TOKEN`
-once. The Go CLI then overrides `GITLAB_TOKEN` / `PUSH_TOKEN` from the
-registered role credential; historical gate values do not
+unverified STAGE from reaching a role-specific credential. The identity
+pin plus HMAC close the gap where a forged dispatch that spoofed the
+pipeline source via overridable CI variables (an overridden
+`CI_API_V4_URL`, the residual risk previously documented here and in
+ADR 0067) could otherwise obtain a higher-privilege role token. The
+GitLab-side `ci_pipeline_variables_minimum_override_role=owner`
+restriction remains the required control against `CI_JOB_TOKEN` /
+`CI_API_V4_URL` outranking; it is applied at install/converge time by
+this repo (not a separate issue); the in-job pin is defense-in-depth.
+`repos.EnsureGitLabPipelineVariableOverrideRole`
+(`internal/repos/gitlab_pipeline_var_restriction.go`) reads and converges
+this setting at install/converge time for both fresh installs and
+repair of already-installed repos, idempotently. Active enforcement
+(actually calling `SetPipelineVariablesMinimumOverrideRole`) is gated
+behind `FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced` and defaults
+to report-only: restricting to `owner` also blocks the Developer-level
+poller/dispatcher's own `CreatePipeline` call
+(`internal/poll/dispatch.go`) unless the poller identity is separately
+raised to Owner, and that credential-cost tradeoff — which touches
+`PollerCanCreatePipeline` / `EnsureGitLabPollerPipelineAccess` in
+`internal/repos/gitlab_pipeline_access.go` — is still open, tracked in
+#7769. Flip the env var to `enforced` fleet-wide only after that
+follow-up ships. Poll jobs
+resolve `FULLSEND_GITLAB_POLLER_TOKEN` once, after the schedule-only pin.
+The Go CLI then overrides `GITLAB_TOKEN` / `PUSH_TOKEN` from the
+registered role credential; leftover `disabled`/`rollback` gates do not
 restore `FULLSEND_FORGE_TOKEN`.
 
 The `STAGE=fix` review-body pre-fetch is a separate case: it looks up
@@ -653,6 +681,7 @@ These two are described independently in four documents:
 - GitLab `Developer` + `api` is still coarse. Do not document these
   tokens as least-privilege API grants.
 - `CI_DEBUG_TRACE` remains forbidden on jobs that hold any of these
-  variables.
+  variables. YAML `workflow:` and job `rules:` deny it before any admit
+  rule so the job never starts; the script-level guard is defense-in-depth.
 - When changing credential routing, rotation, or cutover, follow the
   [credential-routing security checklist](#credential-routing-security-checklist).
