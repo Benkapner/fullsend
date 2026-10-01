@@ -82,6 +82,21 @@ func TestWaitForOpenShellFirstPoll_AlreadyCancelled(t *testing.T) {
 	assert.Empty(t, *waited, "a cancelled run must not start the wait")
 }
 
+func TestWaitForOpenShellFirstPoll_CancelledAfterTheWindow(t *testing.T) {
+	// Bootstrap already took longer than the window: there is nothing to
+	// wait for, but a cancelled run must still stop here.
+	readyAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	waited := useSettleClock(t, readyAt.Add(30*time.Second))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got, err := waitForOpenShellFirstPoll(ctx, readyAt, nil)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, got)
+	assert.Empty(t, *waited)
+}
+
 func TestWaitForOpenShellFirstPoll_CancelledDuringWait(t *testing.T) {
 	readyAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	origNow, origAfter := settleNowFn, settleAfterFn

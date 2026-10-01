@@ -20,7 +20,9 @@ import (
 // "terminated". Waiting past that first poll keeps both clear of it; the 2 s
 // over the poll interval covers the supervisor's startup before the loop.
 //
-// Remove this once fullsend pins an OpenShell release that includes #3819.
+// The 12 s assumes the default 10 s interval; fullsend never sets
+// OPENSHELL_POLICY_POLL_INTERVAL_SECS. Remove this once fullsend pins an
+// OpenShell release that includes #3819.
 const openShellFirstPollSettle = 12 * time.Second
 
 // settleNowFn returns the current time for waitForOpenShellFirstPoll.
@@ -34,15 +36,15 @@ var settleAfterFn = time.After
 // waitForOpenShellFirstPoll waits for whatever remains of
 // openShellFirstPollSettle since readyAt and returns how long it waited.
 // It returns immediately when that much time has already passed, so slow
-// bootstraps pay nothing, and it stops early with ctx's error when the run
-// is cancelled.
+// bootstraps pay nothing. A cancelled run gets ctx's error, before or during
+// the wait.
 func waitForOpenShellFirstPoll(ctx context.Context, readyAt time.Time, printer *ui.Printer) (time.Duration, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	remaining := openShellFirstPollSettle - settleNowFn().Sub(readyAt)
 	if remaining <= 0 {
 		return 0, nil
-	}
-	if err := ctx.Err(); err != nil {
-		return 0, err
 	}
 	if printer != nil {
 		printer.StepInfo(fmt.Sprintf("Waiting %.1fs for the sandbox's first policy poll (OpenShell #3809)", remaining.Seconds()))
