@@ -54,10 +54,6 @@ if [ -n "${FULLSEND_POLL_JOB_URL:-}" ]; then
   esac
 fi
 
-# Bot token from the registered role credential when the
-# migration gate is migrating/enforced; otherwise the shared
-# FULLSEND_FORGE_TOKEN (ADR-0067 / gitlab-role-credentials.md).
-
 # Inference credential setup — write a file-based credential config
 # for Vertex AI so GOOGLE_APPLICATION_CREDENTIALS is available in the
 # sandbox. Uses direct federated identity (no SA impersonation) — the
@@ -95,11 +91,10 @@ fi
 # forged dispatch obtain the higher-privilege coder/analyst
 # credential before it's authenticated. Poller's own responsibility
 # already covers pipeline dispatch/resource-group management, and
-# the script's existing gate-mode fallback (shared token in
-# disabled/rollback, poller secret only in migrating/enforced —
-# no shared-token fallback in migrating) applies unchanged. The
-# real per-STAGE role token is re-selected further down, once
-# verification passes.
+# select-gitlab-role-token.sh resolves the poller credential
+# unconditionally here — there is no migration gate or shared-token
+# fallback to reason about. The real per-STAGE role token is
+# re-selected further down, once verification passes.
 # shellcheck disable=SC2034  # consumed by sourced select-gitlab-role-token.sh
 FULLSEND_JOB_KIND=poller
 . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/select-gitlab-role-token.sh"
@@ -650,13 +645,13 @@ if [ "${STAGE}" = "fix" ]; then
   # by the poller (BOT_USER_ID, populated from bot-identity
   # verification) and never by this fix stage's own coder identity
   # (FULLSEND_JOB_TOKEN). Reusing either would never match a real
-  # review note once analyst/coder resolve to distinct tokens
-  # (migrating with both secrets present, or enforced), silently
-  # breaking the bot-triggered review->fix loop. Resolve BOT_ID by
-  # temporarily re-selecting the analyst credential for this one
-  # lookup; FULLSEND_JOB_TOKEN is restored immediately after so
-  # GITLAB_TOKEN, PUSH_TOKEN, the TARGET_BRANCH lookup below, and
-  # the eventual git push still use this stage's own coder token.
+  # review note, since analyst/coder always resolve to distinct
+  # tokens, silently breaking the bot-triggered review->fix loop.
+  # Resolve BOT_ID by temporarily re-selecting the analyst
+  # credential for this one lookup; FULLSEND_JOB_TOKEN is restored
+  # immediately after so GITLAB_TOKEN, PUSH_TOKEN, the TARGET_BRANCH
+  # lookup below, and the eventual git push still use this stage's
+  # own coder token.
   BOT_ID=""
   _FIX_STAGE_JOB_TOKEN="${FULLSEND_JOB_TOKEN}"
   _FIX_STAGE_JOB_TOKEN_NAME="${FULLSEND_JOB_TOKEN_NAME:-}"
