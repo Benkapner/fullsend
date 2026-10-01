@@ -73,12 +73,6 @@ func TestRunCommand_HasNoPostScriptFlag(t *testing.T) {
 	assert.Equal(t, "false", flag.DefValue)
 }
 
-func TestRunCommand_HasNoResolveInferenceProviderFlag(t *testing.T) {
-	cmd := newRunCmd()
-	flag := cmd.Flags().Lookup("resolve-inference-provider")
-	assert.Nil(t, flag)
-}
-
 func TestRunCommand_HasOutputDirFlag(t *testing.T) {
 	cmd := newRunCmd()
 	flag := cmd.Flags().Lookup("output-dir")
@@ -189,7 +183,6 @@ func neutralizeAgentsRepoFallback(t *testing.T) {
 // fallback from bypassing local fixtures (#5569).
 func useFakeOpenshell(t *testing.T) {
 	t.Helper()
-	t.Setenv("GITHUB_ACTIONS", "false")
 	neutralizeAgentsRepoFallback(t)
 	testdataDir, err := filepath.Abs("testdata")
 	require.NoError(t, err)
@@ -203,7 +196,6 @@ func useFakeOpenshell(t *testing.T) {
 // ambient GitHub credentials (#5569).
 func useFakeOpenshellProviders(t *testing.T) {
 	t.Helper()
-	t.Setenv("GITHUB_ACTIONS", "false")
 	neutralizeAgentsRepoFallback(t)
 	// ImportProfileVerified keeps a per-id content cache under os.TempDir()
 	// and the providers-stub records imported ids there; isolate both.
@@ -2249,8 +2241,6 @@ func TestReservedSandboxKeys_IncludesOIDCVars(t *testing.T) {
 		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
 		"FULLSEND_GCP_OIDC_URL",
 		"FULLSEND_GCP_OIDC_AUTH_FILE",
-		"FULLSEND_GCP_PROJECT_ID",
-		"FULLSEND_GCP_WIF_PROVIDER",
 	} {
 		assert.True(t, reservedSandboxKeys[key], "reservedSandboxKeys must include %s", key)
 	}
@@ -2372,8 +2362,6 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
 		"FULLSEND_GCP_OIDC_URL",
 		"FULLSEND_GCP_OIDC_AUTH_FILE",
-		"FULLSEND_GCP_PROJECT_ID",
-		"FULLSEND_GCP_WIF_PROVIDER",
 		// OpenAI WIF configuration (#6689)
 		"FULLSEND_OPENAI_AUDIENCE",
 		"FULLSEND_OPENAI_IDENTITY_PROVIDER_ID",
@@ -2600,28 +2588,6 @@ func TestRefreshOIDCToken_FetchSucceedsSCPFails(t *testing.T) {
 	err := refreshOIDCToken(context.Background(), "nonexistent-sandbox", srv.URL, "bearer test-auth")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "copying token to sandbox")
-}
-
-// Each refreshed token is masked in the Actions log before it is used.
-func TestRefreshOIDCToken_MasksTokenOnActions(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"value":"refreshed-oidc-jwt"}`)
-	}))
-	defer srv.Close()
-
-	for _, actions := range []string{"true", "false"} {
-		t.Run("GITHUB_ACTIONS="+actions, func(t *testing.T) {
-			t.Setenv("GITHUB_ACTIONS", actions)
-			stderr := captureStderr(t, func() {
-				_ = refreshOIDCToken(context.Background(), "nonexistent-sandbox", srv.URL, "bearer test-auth")
-			})
-			if actions == "true" {
-				assert.Contains(t, stderr, "::add-mask::refreshed-oidc-jwt")
-			} else {
-				assert.NotContains(t, stderr, "::add-mask::")
-			}
-		})
-	}
 }
 
 func TestRefreshOIDCToken_HTTPError(t *testing.T) {

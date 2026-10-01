@@ -227,6 +227,32 @@ func TestRunAgentJobScript_DebugTraceAborts(t *testing.T) {
 	assert.Contains(t, string(out), "CI_DEBUG_TRACE enabled")
 }
 
+func TestRunAgentJobScript_RejectsUserinfoAPIURL(t *testing.T) {
+	root := t.TempDir()
+	writeGitLabScript(t, root, ".gitlab/ci/scripts/select-gitlab-role-token.sh")
+	script := writeGitLabScript(t, root, gitlabRunAgentJobScriptPath)
+
+	cmd := exec.Command("bash", "-c", "set -euo pipefail; . \"$SCRIPT\"")
+	cmd.Env = []string{
+		"SCRIPT=" + script,
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"CI_PROJECT_DIR=" + root,
+		"FULLSEND_FORGE_TOKEN=shared-pat",
+		"CI_SERVER_URL=https://gitlab.example",
+		"CI_SERVER_HOST=gitlab.example",
+		// "${host%:*}" alone strips everything up to the last colon, so
+		// this would previously resolve to hostname "gitlab.example" (a
+		// match against CI_SERVER_HOST) even though the request actually
+		// goes to "attacker.example" — "gitlab.example:443" is HTTP
+		// userinfo here, not the host.
+		"CI_API_V4_URL=https://gitlab.example:443@attacker.example/api/v4",
+	}
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, string(out), "invalid GitLab API host")
+}
+
 func TestInstallFullsendCLIScript_DebugTraceAborts(t *testing.T) {
 	root := t.TempDir()
 	writeGitLabScript(t, root, ".gitlab/ci/scripts/trust-ci-server-ca.sh")
