@@ -64,25 +64,38 @@
 fullsend_validate_mr_source_ref() {
   _fs_kind=$1
   _fs_name=$2
-  # A third "extended" argument widens the allowlist for git ref names
-  # (branches), which git-check-ref-format permits to contain "+", "=",
-  # and "@" outside the "@{" reflog syntax — e.g. semver/Dependabot
-  # branch names like "release/1.0.0+build.1". Source project paths
-  # (path_with_namespace) are GitLab identifiers, not git refs: GitLab
-  # never allows "+", "=", or "@" there, and this validator's caller
-  # also uses it to keep the credentialed fetch URL construction
-  # narrower than GitLab's own parser — widening it for paths would
-  # only reopen URL/userinfo syntax smuggling (see
+  # A third "extended" argument selects git's own ref-naming rules for
+  # branch names instead of the plain allowlist below. A hand-rolled
+  # character allowlist (even one that adds "+", "=", and "@") keeps
+  # rejecting legal git branch names — e.g. issue-number punctuation
+  # like "feature/#123", "!" as in "feature/abc!", or non-ASCII
+  # characters as in "fix/naïve" — that `git check-ref-format` accepts.
+  # Delegating to `git check-ref-format` with the name quoted as a
+  # single argument (so it is never split or glob-expanded) validates
+  # against the real git-check-ref-format(1) rules instead of an
+  # approximation of them. check-ref-format alone does not reject a
+  # leading "-", since that is a shell/argument-injection concern, not
+  # a ref-format rule, so a leading "-" is still rejected explicitly.
+  # Source project paths (path_with_namespace) are GitLab identifiers,
+  # not git refs: GitLab never allows "+", "=", or "@" there, and this
+  # validator's caller also uses it to keep the credentialed fetch URL
+  # construction narrower than GitLab's own parser — widening it for
+  # paths would only reopen URL/userinfo syntax smuggling (see
   # TestCheckoutMRSource_InvalidSourceProjectPathFailsClosed), not fix
   # a real rejection. Only branch validation passes "extended".
   if [ "${3:-}" = "extended" ]; then
     case "${_fs_name}" in
-      ""|-*|/*|*..*|*'@{'*|*[!A-Za-z0-9._/+=@-]*)
+      ""|-*)
         echo "ERROR: invalid MR ${_fs_kind} '${_fs_name}'" >&2
         unset _fs_kind _fs_name
         return 1
         ;;
     esac
+    if ! git check-ref-format "refs/heads/${_fs_name}" >/dev/null 2>&1; then
+      echo "ERROR: invalid MR ${_fs_kind} '${_fs_name}'" >&2
+      unset _fs_kind _fs_name
+      return 1
+    fi
   else
     case "${_fs_name}" in
       ""|-*|/*|*..*|*[!A-Za-z0-9._/-]*)

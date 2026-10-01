@@ -697,6 +697,92 @@ func TestCheckoutMRSource_PlusInBranchNameCheckedOut(t *testing.T) {
 	assertCheckedOutReviewedSource(t, env, out)
 }
 
+// TestCheckoutMRSource_IssueNumberPunctuationInBranchNameCheckedOut proves
+// that fullsend_validate_mr_source_ref's "extended" branch validation,
+// which now delegates to `git check-ref-format` instead of a hand-rolled
+// character allowlist, accepts legal git branch names carrying "#" and
+// "!" (e.g. issue-number branch names like "feature/#123" or
+// "feature/abc!") that no finite allowlist addition previously covered.
+func TestCheckoutMRSource_IssueNumberPunctuationInBranchNameCheckedOut(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	initGitRepo(t, work)
+	require.NoError(t, os.WriteFile(filepath.Join(work, ".fullsend-config-marker"), []byte("trusted\n"), 0o644))
+	commitFile(t, work, "README.md", "default branch\n", "main commit")
+	branch := "feature/#123"
+	gitCmd(t, work, "checkout", "-b", branch)
+	sourceSHA := commitFile(t, work, "reviewed.txt", "reviewed-file\n", "feature commit")
+
+	serverRoot := filepath.Join(root, "gitlab")
+	projectPath := "group/project"
+	bare := filepath.Join(serverRoot, projectPath+".git")
+	require.NoError(t, os.MkdirAll(filepath.Dir(bare), 0o755))
+	gitCmd(t, work, "clone", "--bare", ".", bare)
+
+	runner := filepath.Join(root, "runner")
+	gitCmd(t, root, "clone", "--depth=1", "--branch", "main", bare, runner)
+	require.NoError(t, os.WriteFile(filepath.Join(runner, ".fullsend-config-marker"), []byte("trusted-runner\n"), 0o644))
+
+	env := checkoutEnv{
+		script:            checkoutMRSourceScript(t),
+		projectDir:        runner,
+		serverRoot:        serverRoot,
+		targetProjectPath: projectPath,
+		sourceProjectPath: projectPath,
+		sourceSHA:         sourceSHA,
+		sourceBranch:      branch,
+		targetID:          "10",
+		sourceID:          "10",
+	}
+
+	resolveExtra, pathPrefix := stubResolveMRSource(t, env.sourceBranch, env.sourceSHA, env.sourceProjectPath)
+	out, err := runCheckoutScript(t, env, resolveExtra, pathPrefix)
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	assertCheckedOutReviewedSource(t, env, out)
+}
+
+// TestCheckoutMRSource_NonASCIIBranchNameCheckedOut proves that
+// fullsend_validate_mr_source_ref's "extended" branch validation accepts
+// legal non-ASCII git branch names (e.g. "fix/naïve"), which the
+// previous [A-Za-z0-9._/+=@-] allowlist rejected outright.
+func TestCheckoutMRSource_NonASCIIBranchNameCheckedOut(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	initGitRepo(t, work)
+	require.NoError(t, os.WriteFile(filepath.Join(work, ".fullsend-config-marker"), []byte("trusted\n"), 0o644))
+	commitFile(t, work, "README.md", "default branch\n", "main commit")
+	branch := "fix/naïve"
+	gitCmd(t, work, "checkout", "-b", branch)
+	sourceSHA := commitFile(t, work, "reviewed.txt", "reviewed-file\n", "feature commit")
+
+	serverRoot := filepath.Join(root, "gitlab")
+	projectPath := "group/project"
+	bare := filepath.Join(serverRoot, projectPath+".git")
+	require.NoError(t, os.MkdirAll(filepath.Dir(bare), 0o755))
+	gitCmd(t, work, "clone", "--bare", ".", bare)
+
+	runner := filepath.Join(root, "runner")
+	gitCmd(t, root, "clone", "--depth=1", "--branch", "main", bare, runner)
+	require.NoError(t, os.WriteFile(filepath.Join(runner, ".fullsend-config-marker"), []byte("trusted-runner\n"), 0o644))
+
+	env := checkoutEnv{
+		script:            checkoutMRSourceScript(t),
+		projectDir:        runner,
+		serverRoot:        serverRoot,
+		targetProjectPath: projectPath,
+		sourceProjectPath: projectPath,
+		sourceSHA:         sourceSHA,
+		sourceBranch:      branch,
+		targetID:          "10",
+		sourceID:          "10",
+	}
+
+	resolveExtra, pathPrefix := stubResolveMRSource(t, env.sourceBranch, env.sourceSHA, env.sourceProjectPath)
+	out, err := runCheckoutScript(t, env, resolveExtra, pathPrefix)
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	assertCheckedOutReviewedSource(t, env, out)
+}
+
 func TestCheckoutMRSource_ResolveFailureFailsClosed(t *testing.T) {
 	env := seedSameProjectOrigin(t)
 	bin := t.TempDir()
