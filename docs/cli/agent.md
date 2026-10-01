@@ -146,6 +146,8 @@ command refuses an unknown one up front. The hosted mint serves these:
 | `retro` | `actions:read`, `contents:read`, `pull_requests:write`, `issues:write`, `metadata:read` | vertex-ai, github-ro, github-artifacts |
 | `prioritize` | `contents:read`, `issues:write`, `organization_projects:write`, `metadata:read` | vertex-ai, github-ro |
 
+A `review` agent also gets `readonly_repo: true`: the checked-out repository is made read-only in the sandbox, so a reviewer cannot modify the code it reviews. That matches `harness/review.yaml` in fullsend-ai/agents.
+
 Pick the role whose permissions fit what the agent does. An unknown role fails
 immediately with this table, rather than returning `403` from the mint the
 first time the agent runs. To use a role the hosted mint does not serve, you
