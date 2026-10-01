@@ -205,10 +205,10 @@ type ReviewFinding struct {
 	Description string `json:"description"`
 	Remediation string `json:"remediation,omitempty"`
 	Actionable  bool   `json:"actionable,omitempty"`
-	// Id is an opaque stable identifier (f_ plus alphanumeric) assigned
+	// ID is an opaque stable identifier (f_ plus alphanumeric) assigned
 	// upstream. This command copies it onto the inline comment; it does
 	// not mint ids. Empty until the agents repo starts emitting it.
-	Id string `json:"id,omitempty"`
+	ID string `json:"id,omitempty"`
 }
 
 // reviewActionToEvent maps a ReviewResult action to a GitHub PR review event.
@@ -546,8 +546,8 @@ func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][
 // File-level comments use this same helper, so they carry the stamp too.
 func formatFindingComment(f ReviewFinding) string {
 	var b strings.Builder
-	if findingIDRe.MatchString(f.Id) {
-		fmt.Fprintf(&b, "<!-- finding:%s -->\n", f.Id)
+	if findingIDRe.MatchString(f.ID) {
+		fmt.Fprintf(&b, "<!-- finding:%s -->\n", f.ID)
 	}
 	fmt.Fprintf(&b, "**[%s]** %s", f.Severity, f.Category)
 	b.WriteString("\n\n")

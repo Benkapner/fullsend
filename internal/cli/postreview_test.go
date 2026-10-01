@@ -76,7 +76,7 @@ func TestParseReviewResult_Findings(t *testing.T) {
 	require.Len(t, result.Findings, 1)
 	assert.Equal(t, "low", result.Findings[0].Severity)
 	assert.True(t, result.Findings[0].Actionable)
-	assert.Equal(t, "f_abc123", result.Findings[0].Id)
+	assert.Equal(t, "f_abc123", result.Findings[0].ID)
 }
 
 func TestReviewActionToEvent(t *testing.T) {
@@ -1241,7 +1241,7 @@ func TestFormatFindingComment(t *testing.T) {
 
 	t.Run("valid id", func(t *testing.T) {
 		f := ReviewFinding{
-			Id:          "f_abc123",
+			ID:          "f_abc123",
 			Severity:    "high",
 			Category:    "logic-error",
 			Description: "Missing nil check.",
@@ -1253,7 +1253,7 @@ func TestFormatFindingComment(t *testing.T) {
 
 	t.Run("invalid id is not stamped", func(t *testing.T) {
 		f := ReviewFinding{
-			Id:          "<!-- finding:../x -->",
+			ID:          "<!-- finding:../x -->",
 			Severity:    "high",
 			Category:    "logic-error",
 			Description: "Missing nil check.",
@@ -1267,9 +1267,9 @@ func TestFormatFindingComment(t *testing.T) {
 
 func TestFindingsToReviewComments_StampsFindingID(t *testing.T) {
 	findings := []ReviewFinding{
-		{Id: "f_inline", File: "a.go", Line: 10, Severity: "high", Category: "bug", Description: "In hunk"},
-		{Id: "f_file", File: "a.go", Line: 50, Severity: "low", Category: "style", Description: "Outside hunk"},
-		{Id: "../x", File: "a.go", Line: 12, Severity: "medium", Category: "bug", Description: "Bad id"},
+		{ID: "f_inline", File: "a.go", Line: 10, Severity: "high", Category: "bug", Description: "In hunk"},
+		{ID: "f_file", File: "a.go", Line: 50, Severity: "low", Category: "style", Description: "Outside hunk"},
+		{ID: "../x", File: "a.go", Line: 12, Severity: "medium", Category: "bug", Description: "Bad id"},
 	}
 	diffHunks := map[string][][2]int{
 		"a.go": {{5, 15}},
