@@ -533,6 +533,24 @@ func TestResolvePersonaModels_BareIDTableIsDeterministic(t *testing.T) {
 // A persona pinned to the parent's own effective model is accepted even
 // when that model is outside the alias table -- the anonymous path would
 // inherit it, so the named path must not be the one that fails.
+// A model carrying a newline (a frontmatter block scalar on the agent
+// definition, which reaches the model table unvalidated) is never trusted,
+// so a persona naming the same text is refused with a quoted error rather
+// than registered and echoed raw to host stderr (#7981 review).
+func TestPiTrustedSpecs_RejectsMalformedSpecs(t *testing.T) {
+	t.Setenv(piProviderEnv, "")
+	injected := "google-vertex/gemini-2.5-pro\n::warning::injected"
+	models := map[string]string{"default": injected, "opus": "anthropic-vertex/claude-opus-4-6"}
+	trusted := piTrustedSpecs(models, map[string][]string{"openai": {"gpt-5\n::warning::x"}}, "", nil)
+	assert.Equal(t, map[string]string{"anthropic-vertex/claude-opus-4-6": "anthropic-vertex/claude-opus-4-6"}, trusted)
+
+	_, _, _, err := resolvePersonaModels(
+		[]piPersona{{Name: "checker", Model: injected}},
+		nil, map[string]*string{"checker": strp(injected)}, models, trusted)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "\n::warning::", "the spec is quoted, never raw")
+}
+
 func TestPiTrustedSpecs_IncludesEffectiveParent(t *testing.T) {
 	t.Setenv(piProviderEnv, "")
 	trusted := piTrustedSpecs(testModels, map[string][]string{"google-vertex": {"gemini-3.8-flash"}}, "claude-sonnet-5", nil)
@@ -599,6 +617,17 @@ func TestPiConfiguredOpenAIIDs(t *testing.T) {
 		ids := piConfiguredOpenAIIDs(
 			[]piPersona{{Name: "checker", Model: "gpt-9"}, {Name: "style", Model: "sonnet"}},
 			map[string]*string{"default": strp("anthropic-vertex/claude-opus-4-6")}, models,
+		)
+		assert.Empty(t, ids)
+	})
+
+	t.Run("a model carrying a newline is never admitted", func(t *testing.T) {
+		// A YAML block scalar can put a second line in frontmatter model:;
+		// admitted, it would be trusted and echoed raw to host stderr,
+		// where a CI runner may read it as a workflow command.
+		ids := piConfiguredOpenAIIDs(
+			[]piPersona{{Name: "checker", Model: "openai/gpt-5\n::warning::injected"}},
+			map[string]*string{"default": strp("openai/gpt-5.6-luna x")}, models,
 		)
 		assert.Empty(t, ids)
 	})

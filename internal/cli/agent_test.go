@@ -2196,6 +2196,57 @@ allowed_remote_resources:
 	assert.Contains(t, err.Error(), "writing config")
 }
 
+// TestRunAgentSet_OpenAISubagentWarningAbsolutePaths: the runner keeps an
+// absolute agent: or provider path as written, so the configure-time check
+// must too, or it reads the wrong file and warns falsely or not at all.
+func TestRunAgentSet_OpenAISubagentWarningAbsolutePaths(t *testing.T) {
+	const warnText = "declares no openai provider"
+	for _, tc := range []struct {
+		name      string
+		absAgent  bool
+		providers func(dir string) string
+		warn      bool
+	}{
+		{name: "absolute openai provider path counts", providers: func(dir string) string {
+			return "  - " + filepath.Join(dir, "providers", "my-oai.yaml") + "\n"
+		}},
+		{name: "absolute agent path still finds the persona", absAgent: true,
+			providers: func(string) string { return "  - vertex-ai\n" }, warn: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, d := range []string{"harness", "agents", "providers", "skills/probe/sub-agents"} {
+				require.NoError(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "agents", "mix.md"), []byte("You probe.\n"), 0o644))
+			agentPath := "agents/mix.md"
+			if tc.absAgent {
+				agentPath = filepath.Join(dir, "agents", "mix.md")
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "skills", "probe", "SKILL.md"),
+				[]byte("---\nname: probe\ndescription: probe\n---\nProbe.\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "skills", "probe", "sub-agents", "checker.md"),
+				[]byte("---\nname: checker\nmodel: sonnet\n---\nCheck.\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "providers", "my-oai.yaml"),
+				[]byte("name: my-oai\ntype: fullsend-openai\ncredentials:\n  OPENAI_API_KEY: \"\"\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "mix.yaml"),
+				[]byte("agent: "+agentPath+"\nrole: test\nmodel: opus\nskills:\n  - skills/probe\nproviders:\n"+tc.providers(dir)), 0o644))
+			writePerRepoConfig(t, dir, "agents:\n  - name: mix\n    source: harness/mix.yaml\n")
+
+			var out bytes.Buffer
+			require.NoError(t, runAgentSet(dir, "mix", agentSetFlags{
+				runtime: "pi", runtimeSet: true,
+				subagentSet: true, subagentArgs: []string{"checker=openai/gpt-5.6-luna"},
+			}, ui.New(&out)))
+			if tc.warn {
+				assert.Contains(t, out.String(), warnText)
+			} else {
+				assert.NotContains(t, out.String(), warnText)
+			}
+		})
+	}
+}
+
 // TestRunAgentSet_OpenAISubagentWarnsWithoutProvider covers #7981's
 // configure-time check: routing a pi child to openai while the agent's
 // local harness declares no openai provider warns in one line, and every

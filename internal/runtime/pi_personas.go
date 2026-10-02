@@ -469,6 +469,13 @@ func piConfiguredOpenAIChildren(personas []piPersona, subagentsCfg map[string]*s
 			return
 		}
 		spec := resolveSpec(model)
+		// Only a well-formed reference is admitted: these ids extend the
+		// trusted set and are echoed to host stderr, so a frontmatter
+		// value carrying a newline or other control text must never pass
+		// (it then fails canonicalise, whose error quotes it).
+		if !config.ValidModelRef(spec) {
+			return
+		}
 		if head, id, ok := strings.Cut(spec, "/"); ok && id != "" && strings.EqualFold(head, piOpenAIProvider) {
 			out = append(out, OpenAIChild{Source: source, Spec: piOpenAIProvider + "/" + id, Configured: configured})
 		}
@@ -525,19 +532,26 @@ func piConfiguredOpenAIIDs(personas []piPersona, subagentsCfg map[string]*string
 // built before any persona is resolved and never widened by one.
 func piTrustedSpecs(models map[string]string, providerModels map[string][]string, parentModel string, configAliases map[string]string) map[string]string {
 	trusted := make(map[string]string)
+	// Only well-formed references are trusted. A resolved child model is
+	// echoed to host stderr and listed in errors, and the agent
+	// definition's frontmatter model reaches this table unvalidated, so a
+	// value carrying a newline must never become an accepted spec.
+	add := func(spec string) {
+		if config.ValidModelRef(spec) {
+			trusted[strings.ToLower(spec)] = spec
+		}
+	}
 	for _, spec := range models {
-		trusted[strings.ToLower(spec)] = spec
+		add(spec)
 	}
 	for provider, ids := range providerModels {
 		for _, id := range ids {
-			full := provider + "/" + id
-			trusted[strings.ToLower(full)] = full
+			add(provider + "/" + id)
 		}
 	}
 	if p := strings.TrimSpace(parentModel); p != "" {
 		// Canonicalised the way the parent itself is launched.
-		spec := translatePiModel(p, configAliases)
-		trusted[strings.ToLower(spec)] = spec
+		add(translatePiModel(p, configAliases))
 	}
 	return trusted
 }

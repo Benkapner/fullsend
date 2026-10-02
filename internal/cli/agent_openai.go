@@ -40,7 +40,7 @@ func warnOpenAISubagentWithoutProvider(cfg config.ConfigReader, absDir, agentNam
 	if source == "" || urlutil.IsURL(source) {
 		return
 	}
-	h, err := harness.Load(filepath.Join(absDir, source))
+	h, err := harness.Load(underDir(absDir, source))
 	if err != nil || len(h.Overlays) > 0 || len(h.Forge) > 0 {
 		// A base: harness does not load here; an overlay or a forge:
 		// block may add providers. Either way the effective list is not
@@ -52,7 +52,7 @@ func warnOpenAISubagentWithoutProvider(cfg config.ConfigReader, absDir, agentNam
 	// model cannot be served. Personas are still discovered so a key is
 	// checked against the same set the run uses.
 	var children []string
-	for _, c := range agentruntime.OpenAIChildren("pi", filepath.Join(absDir, h.Agent), subagents,
+	for _, c := range agentruntime.OpenAIChildren("pi", underDir(absDir, h.Agent), subagents,
 		resolvedSkillDirs(absDir, h), agentName, pr.ConfigModelAliases()) {
 		if c.Configured {
 			children = append(children, c.String())
@@ -77,12 +77,18 @@ func resolvedSkillDirs(absDir string, h *harness.Harness) []string {
 		if urlutil.IsURL(src) {
 			continue
 		}
-		if !filepath.IsAbs(src) {
-			src = filepath.Join(absDir, src)
-		}
-		dirs = append(dirs, src)
+		dirs = append(dirs, underDir(absDir, src))
 	}
 	return dirs
+}
+
+// underDir resolves a harness path the way the runner does: an absolute
+// path as written, a relative one against the fullsend directory.
+func underDir(absDir, p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(absDir, p)
 }
 
 // agentHarnessSource returns the harness source of the named agent's
@@ -110,7 +116,7 @@ func harnessDeclaresOpenAIProvider(absDir string, providers []string) (declares,
 		case harness.IsURL(p):
 			return false, false
 		case harness.IsProviderPath(p):
-			data, err := os.ReadFile(filepath.Join(absDir, p))
+			data, err := os.ReadFile(underDir(absDir, p))
 			if err != nil {
 				continue
 			}
