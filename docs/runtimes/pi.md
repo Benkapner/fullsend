@@ -496,37 +496,72 @@ created but before the agent starts — rather than at the first dispatch, when 
 half-finished review would already have cost you. A malformed key or model *reference* is
 caught earlier still, by config validation, before the sandbox exists.
 
-#### An OpenAI persona needs the `openai` provider declared
+#### Route a persona to OpenAI
 
-An `openai/<id>` value — on `subagents.<persona>`, `subagents.default`, or a persona's own
-frontmatter `model:` — needs the harness to declare the `openai` provider, the same way a
-codex agent or a pi agent whose own `model:` is an OpenAI id does. The runner looks at every
-configured child as well as the parent when it decides whether a run needs the OpenAI
-credential, so a Vertex parent (`opus`, say) with one OpenAI persona gets it created
-automatically:
+Any parent can run an OpenAI persona: `opus` on Vertex with `challenger` on
+`openai/gpt-5.6-luna` works the same way as an OpenAI parent with Vertex personas. The rule:
+**the harness must declare the `openai` provider.** The runner creates the OpenAI credential
+for a run when the parent, a `subagents.<persona>` entry, `subagents.default`, or a persona's
+frontmatter `model:` resolves to `openai/` (after [`models.aliases`](#per-repo-alias-overrides)).
+It creates none otherwise, so declaring `openai` costs nothing on runs that never use it.
+
+The `review` and `retro` harnesses in `fullsend-ai/agents` already declare `openai`. A harness
+you wrote needs it in `providers:`:
 
 ```yaml
-# harness/review.yaml
-agent: agents/review.md
-model: opus
 providers:
-  - openai     # declared once; only materializes a credential when something needs it
+  - providers/vertex-ai.yaml
+  - openai
 ```
 
-```yaml
-# .fullsend/config.yaml
-agents:
-  - name: review
-    subagents:
-      checker: openai/gpt-5.6-luna
+Then route the persona:
+
+```bash
+fullsend agent set review --fullsend-dir .fullsend --runtime pi --model opus \
+  --subagent challenger=openai/gpt-5.6-luna
 ```
 
-If the harness does not declare `openai`, Bootstrap fails naming the fix: declare `openai`
-in the harness's `providers:` list, or run the parent itself on an `openai/` model. A model
-an `Agent` call chooses at dispatch time (rather than a persona or `subagents` entry) is
-never trusted this way — only configuration the repo controls before the sandbox starts is,
-so a model the dispatching agent invents cannot grant itself a provider the harness never
-declared.
+```console
+  ✓ Set agent "review": runtime="pi" model="opus" effort="" (empty = inherit) subagents: challenger=openai/gpt-5.6-luna
+```
+
+A run creates the run-scoped OpenAI provider before the sandbox and resolves the persona to
+it. This excerpt is from a run with an `opus` parent:
+
+```console
+  • Resolving OpenAI credential for provider: openai
+  ✓ OpenAI credential ready (OPENAI_API_KEY from the runner environment)
+  • Ensuring run-scoped provider: openai-134a650f14a3
+  ✓ Provider ready: openai-134a650f14a3 (static, expires in 1h0m0s, 0.1s)
+  …
+subagents: challenger → openai/gpt-5.6-luna (from subagents.challenger)
+```
+
+If the agent's harness is a local file that does not declare `openai`, `agent set` warns.
+The config is still written, so you can edit the harness afterwards:
+
+```console
+  ✓ Set agent "my-review": runtime="pi" model="opus" effort="" (empty = inherit) subagents: challenger=openai/gpt-5.6-luna
+  ! subagents.challenger → openai/gpt-5.6-luna resolves to the openai provider, but harness/my-review.yaml declares no openai provider; runs will fail until you add "openai" to its providers list
+```
+
+A run of that agent stops before the sandbox is created:
+
+```console
+  ✗ Sub-agent model needs the openai provider
+Error: sub-agent model resolves to the openai provider, but the harness declares no openai provider: subagents.challenger → openai/gpt-5.6-luna; declare "openai" in the harness providers list, or run the parent on an openai/ model
+```
+
+Only configured children count. A `model: "openai/…"` argument on an `Agent` call is not known
+before the run starts, so under a parent that is not on OpenAI it is refused mid-run with
+`provider "openai" is not available in this run`, followed by the same fix. Route the child
+through a persona or `subagents.default` instead.
+
+| You see | Do this |
+|---|---|
+| `! … resolves to the openai provider, but harness/<file> declares no openai provider` (from `agent set`) | Add `- openai` to that harness's `providers:` list. |
+| `Error: sub-agent model resolves to the openai provider, but the harness declares no openai provider` | Same: declare `openai` in the harness, or move the persona off `openai/`. |
+| `provider "openai" is not available in this run (declare "openai" in the harness providers …` | Set the model on a persona (`--subagent <persona>=openai/<id>`) or on `subagents.default`, not on the `Agent` call. |
 
 Once a run registers personas, the orchestrator dispatches one by name —
 `subagent_type: correctness` — and omits `model`; a `model` argument passed anyway is
