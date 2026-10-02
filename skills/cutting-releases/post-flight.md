@@ -28,9 +28,7 @@ all downstream consumers.
 gh release view <tag>
 ```
 
-Check that the title, changelog, and binary assets look correct. Until
-fullsend#7955 merges, a final's changelog covers only the RC-to-final
-commits; SKILL.md step 11.1 regenerates it.
+Check that the title, changelog, and binary assets look correct.
 Verify the release is not marked as a draft.
 
 ## B2. Verify agents validation and tag
@@ -56,8 +54,7 @@ blocked before publishing: no binaries, no GitHub Release, no moved
 `v0` tag, and no agents tag. Step B above will show nothing to verify.
 Pick the recovery from "When a release run fails" in the SKILL.md
 Notes: a flake, an agents-only fix and a fullsend fix each need a
-different action. The same section covers `release` failing with
-`422 already_exists`.
+different action.
 
 If only `tag-agents` failed, the fullsend release shipped but agents
 was not tagged; fix that job's cause and re-run it.

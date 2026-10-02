@@ -179,21 +179,19 @@ digests. The final tag waits until this repin PR is merged.
 
 ### 9. Tag and push the final release
 
-> **Until fullsend#7955 merges,** the final must point at a different
-> commit from the RC: with both tags on one commit, GoReleaser builds as
-> the RC and fails with `422 already_exists` (see Notes). If fullsend
-> `main` has not moved since `<rc-sha>`, merge a docs-only commit first.
-
-Pick `<final-sha>` (normally the `main` head) and check that the images
-have not changed since the RC:
+Tag the final at `<final-sha>`, normally `<rc-sha>` itself: the
+release workflow pins GoReleaser's current tag to the pushed ref, so a
+final can share the RC's commit. If you move the final to a later
+commit instead, first check that the images have not changed since the
+RC:
 
 ```
 git log --oneline <rc-sha>..<final-sha> -- images/sandbox images/code .github/workflows/sandbox-images.yml
 ```
 
 If it prints anything, do not tag the final: cut `rc.N+1` at
-`<final-sha>` (step 6) and repin again. Otherwise tag with the step 6
-message minus `-rc.N`:
+`<final-sha>` (step 6) and repin again. Tag with the step 6 message
+minus `-rc.N`:
 
 ```
 git tag -a vX.Y.Z <final-sha> -m "<message>"
@@ -217,22 +215,8 @@ After post-flight confirms the release is published, write a short user-facing
 summary highlighting the changes that matter most to end users.
 
 1. **Gather the raw changelog.** Run `gh release view <tag> --json body -q .body`
-   to get the auto-generated release body. Until fullsend#7955 merges,
-   GoReleaser compares the final against its RC (the run log's
-   `using tags` line shows `previous=vX.Y.Z-rc.N`), so the body covers
-   only the RC-to-final commits. Regenerate it against the previous
-   final first:
-
-   ```
-   gh api repos/fullsend-ai/fullsend/releases/generate-notes \
-     -f tag_name=vX.Y.Z -f previous_tag_name=<previous-final> --jq .body \
-     | gh release edit vX.Y.Z --notes-file -
-   ```
-
-   With no `.github/release.yml`, this gives GitHub's flat "What's
-   Changed" list, including `docs`/`ci`/`chore` PRs. To keep
-   GoReleaser's grouping instead, rebuild the body in that format from
-   `<previous-final>..vX.Y.Z` (as was done for v0.44.0).
+   to get the auto-generated release body. For a final it is expected to
+   span the previous final to this one, not just the RC.
 
 2. **Research the actual changes.** Do not rely on PR titles or one-line
    summaries — they often undersell or misrepresent user impact. Launch an
@@ -322,19 +306,14 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
     For a final, confirm `gh release view vX.Y.Z` reports no release,
     delete the tag (`git tag -d vX.Y.Z && git push origin
     :refs/tags/vX.Y.Z`), then cut `rc.N+1`.
-  - *`release` fails with `422 already_exists` on a final:* GoReleaser
-    resolves the tag with `git tag --points-at HEAD`; when the final
-    shares a commit with its RC it builds as the RC and fails re-uploading
-    the RC's assets (v0.44.0). A rerun of an already-published final gives
-    the same error, so check both: `gh run view <run-id> --log | grep -m1
-    'using tags'` must show `current=vX.Y.Z-rc.N` (the line carries colour
-    codes), and `gh release view vX.Y.Z` must report no release. Then
-    delete the tag as above and re-tag at a commit other than `<rc-sha>`
-    (step 9). If a release exists, the final shipped: keep the tag and fix
-    the step that failed.
 
   Re-pushing a final tag rebuilds its `:X.Y.Z` images; that is harmless,
   since the fleet pins RC digests.
+- **Same-commit finals:** before fullsend#7955 (v0.44.0), a final on the
+  same commit as its RC failed in `release` with `422 already_exists`,
+  because GoReleaser picked the RC tag. The workflow now pins the
+  current tag to the pushed ref and, for a final, the previous tag to
+  the last final; no release has exercised this yet.
 - **The `fullsend-ai/agents` repo** is tagged with the same version last,
   by the `tag-agents` job, using an org-owned GitHub App token
   (`RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`). It tags the agents
