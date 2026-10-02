@@ -39,7 +39,8 @@ Next:
    [Before you begin](#before-you-begin) for the full prerequisite list.
    (GitLab repositories are scaffolded instead with
    `fullsend repos install --forge gitlab`.) The command above generates an
-   agent on the default route, Claude on Vertex — for OpenAI, or a mix of the
+   agent on the default route, Claude on Vertex (when the repository's default
+   runtime is `claude` or unset) — for OpenAI, or a mix of the
    two, see [Pick a route](#pick-a-route).
 2. **Fill in the prompt.** `agents/lint-docs.md` is the only file with
    sections left for you to fill — it ships with marked sections because
@@ -80,7 +81,7 @@ row that matches the agent you want; CI is covered below the table.
 
 | Route | `agent new` flags | harness `providers:` | Env beyond the GitHub variables |
 |-------|-------------------|-----------------------|----------------------------------|
-| Claude on Vertex | `--runtime claude`, or none when the repository's default runtime is `claude` | `vertex-ai`, `github-ro` (`github` for `--role coder`), `openai` | `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, `GOOGLE_APPLICATION_CREDENTIALS` |
+| Claude on Vertex | `--runtime claude`, or none when the repository's default runtime is `claude` or unset | `vertex-ai`, `github-ro` (`github` for `--role coder`), `openai` | `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, `GOOGLE_APPLICATION_CREDENTIALS` |
 | codex on OpenAI | `--runtime codex --model openai/<id>` | `github-ro` (`github` for `--role coder`), `openai` | `OPENAI_API_KEY` |
 | pi on Vertex | `--runtime pi` | `vertex-ai`, `github-ro` (`github` for `--role coder`), `openai` | `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, `GOOGLE_APPLICATION_CREDENTIALS` |
 | pi on OpenAI | `--runtime pi --model openai/<id>` | `github-ro` (`github` for `--role coder`), `openai` | `OPENAI_API_KEY` |
@@ -101,7 +102,8 @@ Notes on the last two rows:
   `agent set --subagent` points sub-agents at it, and you add `Agent` to the
   `tools:` list in `agents/<name>.md` so the agent can dispatch them; without
   it, no sub-agent is found and no OpenAI credential is created. `default`
-  routes an `Agent` call that names no persona and omits `model`; a persona
+  routes an `Agent` call that names no persona and omits `model`, and any
+  persona with no model of its own; a persona
   name, such as `challenger` from a review skill, covers that persona only.
   An explicit `model` argument on an anonymous call (for example,
   `model: "sonnet"`) still wins and is not rerouted to OpenAI — omit `model`
@@ -120,16 +122,19 @@ Notes on the last two rows:
   `subagents: default → openai/gpt-5.6-luna (children that name no persona)`.
   See [pi § Route a persona to OpenAI](../../runtimes/pi.md#route-a-persona-to-openai).
 
-In CI you set none of these variables; the dispatch workflow supplies them
-from the repository's settings:
+In CI you set none of these variables yourself. The dispatch workflow and
+`fullsend run` take them from what the setup commands record:
 
-- **Vertex route:** the `FULLSEND_GCP_*` secrets that
+- **Vertex route:** the `FULLSEND_GCP_*` secrets and the
+  `FULLSEND_GCP_REGION` variable that
   [`fullsend inference provision`](../../cli/inference.md) sets up for
   Workload Identity Federation.
-- **OpenAI route:** the three `FULLSEND_OPENAI_*` variables that
+- **OpenAI route:** the Workload Identity Federation identifiers that
   [`fullsend inference openai request` and `import`](../../cli/inference.md)
-  set up for Workload Identity Federation, or a `FULLSEND_OPENAI_API_KEY`
-  secret — see
+  record. `request` writes the document an OpenAI administrator answers;
+  `import` writes their reply into `.fullsend/config.yaml`, which you commit
+  (or, with `--variables`, into three `FULLSEND_OPENAI_*` repository
+  variables). A `FULLSEND_OPENAI_API_KEY` secret works instead — see
   [`fullsend run` § OpenAI credentials on pi and codex](../../cli/run.md#openai-credentials-on-pi-and-codex).
 
 ## How a run works
@@ -155,8 +160,8 @@ sequenceDiagram
   Mint-->>Runner: short-lived token for the harness role
   Runner->>Gateway: register providers, create sandbox
   loop until the agent writes its result
-    Sandbox->>Gateway: model or GitHub request, placeholder credential
-    Gateway->>Model: same request (real GitHub or OpenAI credential swapped in)
+    Sandbox->>Gateway: model or GitHub request
+    Gateway->>Model: same request (GitHub and OpenAI placeholders swapped for the real credential)
     Model-->>Sandbox: response
   end
   Sandbox-->>Runner: agent-result.json
@@ -169,14 +174,14 @@ The dispatch workflow matches the comment against the `trigger:` of every
 registered harness and starts `fullsend run` for each match. `fullsend run`
 gets a short-lived GitHub token for the harness's `role:` from the mint (a
 local run without `--mint-url` or `FULLSEND_MINT_URL` skips this and uses
-your `GH_TOKEN`), sets up
-the providers on the OpenShell gateway, and starts the sandbox. For GitHub
-and OpenAI the agent never holds a real credential: the gateway gives it a
-placeholder and swaps in the real value on each request a declared provider
-covers. On the Vertex route the GCP credentials file is copied into the
-sandbox, and the model calls use it directly. After the sandbox exits, `fullsend run` re-mints a token (again only with a
-mint) and hands it to the post-script, which posts the reply. Scripts cannot
-mint their own.
+your `GH_TOKEN`), sets up the providers on the OpenShell gateway, and starts
+the sandbox. For GitHub and OpenAI the agent never holds a real credential:
+the gateway gives it a placeholder and swaps in the real value on each
+request a declared provider covers. On the Vertex route the GCP credentials
+file is copied into the sandbox, and the model calls use it directly. After
+the sandbox exits, `fullsend run` re-mints a token (again only with a mint)
+and hands it to the post-script, which posts the reply. Scripts cannot mint
+their own.
 
 **What lives where.** Your repository holds everything that is specific to
 the agent: the harness, the agent's prompt, the result schema, the sandbox
@@ -227,7 +232,7 @@ in the code block below the table, not in a cell.
 | Error | Cause | Fix |
 |-------|-------|-----|
 | `API Error: Error code policy_denied` on the first model call (0 tokens, ~2s) | The gateway denied the agent's *binary*, not the model. Built-in profiles already allow the runtime binaries; this comes from a custom profile | Check that profile's `binaries:` list (for Claude, both `**/claude` and `**/claude.exe`) — see the grep command below |
-| Agent crashes at 0s, sandbox can't reach the model | `vertex-ai` is missing from `providers:`, or `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` are unset | Add `vertex-ai` to `providers:`; set the variables (`--env-file` or CI `env:`) |
+| Agent crashes at 0s, sandbox can't reach the model | `vertex-ai` is missing from `providers:`, or `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` are set but empty | Add `vertex-ai` to `providers:`. Locally, give the variables real values in `--env-file`; in CI, run `fullsend inference provision` (see [Pick a route](#pick-a-route)) |
 | `Provider "..." declared in harness but no definition found in ...`, then the agent crashes at 0s | A `providers:` entry names neither a built-in bare name nor a file that exists | Use a [built-in name](#pick-a-route), or commit `providers/<name>.yaml` under your own name |
 | Agent never fires, no error anywhere | The harness has no `trigger:` | `agent new` always writes one; a hand-written harness needs one too — see [Triggers](../../cli/agent.md#triggers) |
 | `"role field is required"` | `role:` is missing from the harness | Add `role:` |
@@ -235,7 +240,7 @@ in the code block below the table, not in a cell.
 | `unknown role "..."` from `agent new` | Same as above, caught at generation time | See the role table in [`agent new`](../../cli/agent.md#roles) |
 | `validating files: policy: stat .../policies/base.yaml: no such file or directory` | The harness points at a policy file that isn't committed next to it | Commit `policies/base.yaml` with the agent, or point `policy:` at a committed or pinned URL |
 | `host_files[0]: GOOGLE_APPLICATION_CREDENTIALS is empty; mark the mount optional or provide a credential file` | pi on `openai/`, Vertex sub-agent block uncommented, no credentials file set | Set `GOOGLE_APPLICATION_CREDENTIALS` — see [Pick a route](#pick-a-route). Don't mark the mount optional |
-| `validating env:` followed by unresolved host variables at `fullsend run` | A `${VAR}` in the harness is unset | Supply it via `--env-file` locally, or the workflow `env:` block in CI |
+| `validating env:` followed by unresolved host variables at `fullsend run` | A `${VAR}` in the harness is unset | Supply it via `--env-file` locally. In CI, the variables a generated harness uses come from the setup commands in [Pick a route](#pick-a-route) |
 | `provider credentials are not declared by profile 'fullsend-github-ro'` (or `'fullsend-github'`) | A stale `profiles/fullsend-github*.yaml` from fullsend v0.44.0 or earlier is still listed alongside the bare `github-ro`/`github` provider | Finish [Upgrading agents generated before built-in providers](#upgrading-agents-generated-before-built-in-providers) |
 | The same error on your machine, with bare names and no `fullsend-github*` profile left | The OpenShell gateway still holds an older profile with that id; `fullsend run` cannot replace a profile while a provider uses it | Delete and re-create the providers — see the command below |
 | `provider profile 'fullsend-github-ro' requires static credentials: GH_TOKEN` at `fullsend run` | `GH_TOKEN` is unset or empty on the machine running `fullsend run` | Put a real token in your env file, e.g. `echo "GH_TOKEN=$(gh auth token)" >> .env.local` |
@@ -248,7 +253,7 @@ in the code block below the table, not in a cell.
 | Agent not found | Verify registration | `fullsend agent list` |
 | Agent not triggered by events | Verify the `trigger` expression | See [Verifying your trigger](cel-triggers-reference.md#verifying-your-trigger) |
 | `allowed_remote_resources` error | URL agents need a matching prefix | `fullsend agent add` sets this automatically |
-| `fullsend run` fails locally | Missing GCP credentials or sandbox image | See [Running agents locally](running-agents-locally.md) |
+| `fullsend run` fails locally | Missing route credentials (GCP on the Vertex route, `OPENAI_API_KEY` on the OpenAI route) or sandbox image | See [Running agents locally](running-agents-locally.md) |
 | Integrity hash mismatch | Remote content changed | `fullsend agent update <name>` |
 
 ```bash
@@ -570,11 +575,11 @@ fullsend run my-agent \
   --env-file .env.local
 ```
 
-The `--env-file` supplies variables your harness references (e.g. `GH_TOKEN`, `ANTHROPIC_VERTEX_PROJECT_ID`). See [Running agents locally](running-agents-locally.md) for prerequisites (GCP credentials, sandbox image) and troubleshooting.
+The `--env-file` supplies variables your harness references: `GH_TOKEN` and the GitHub variables on every route, plus `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` and `GOOGLE_APPLICATION_CREDENTIALS` on the Vertex route or `OPENAI_API_KEY` on the OpenAI route (see [Pick a route](#pick-a-route)). See [Running agents locally](running-agents-locally.md) for prerequisites and troubleshooting.
 
 Most agents need additional flags for credentials and target repo — see [Running agents locally](running-agents-locally.md) for the full list.
 
-**Testing without a model.** The `dummy` runtime runs the real sandbox and the real post-script but replaces the model with a scripted result, so you can exercise the whole pipeline without spending any inference. It needs no model credentials: no `OPENAI_API_KEY`, and no `GOOGLE_APPLICATION_CREDENTIALS` unless the harness requires the file (a `pi` harness with the Vertex block uncommented does). A harness generated for the Vertex route still passes `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` into the sandbox, so set those two to any value.
+**Testing without a model.** The `dummy` runtime runs the real sandbox and the real post-script but replaces the model with a scripted result, so you can exercise the whole pipeline without spending any inference. It needs no model credentials: no `OPENAI_API_KEY`, and no `GOOGLE_APPLICATION_CREDENTIALS` unless the harness requires the file (a `pi` harness with the Vertex block uncommented does). A harness generated for the Vertex route, or a `pi` harness with the Vertex block uncommented, passes `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` into the sandbox, so set those two to any value.
 
 Write the script at `.fullsend/behaviour/current-scenario.yaml`. This one writes a result matching the `lint-docs` schema (`status`, `summary`, `comment`):
 
