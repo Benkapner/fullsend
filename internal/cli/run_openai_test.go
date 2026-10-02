@@ -1059,6 +1059,9 @@ func TestWarnReservedProviderNameOverrides(t *testing.T) {
 			{Def: harness.ProviderDef{Name: "github"}, FromURL: true},
 			{Def: harness.ProviderDef{Name: "myorg-vertex"}, LocalPath: "/ws/providers/myorg-vertex.yaml"},
 			{Def: harness.ProviderDef{Name: "gitleaks"}, LocalPath: "/ws/providers/x\n::error::forged.yaml"},
+			{Def: harness.ProviderDef{Name: "github-artifacts"}, LocalPath: "/ws/providers/##[error]a.yaml"},
+			{Def: harness.ProviderDef{Name: "package-registries"}, LocalPath: "/ws/providers/##[warning]b.yaml"},
+			{Def: harness.ProviderDef{Name: "atlassian-cloud"}, LocalPath: "/ws/providers/##[add-mask]c.yaml"},
 		},
 		ui.New(&buf))
 	out := buf.String()
@@ -1073,6 +1076,10 @@ func TestWarnReservedProviderNameOverrides(t *testing.T) {
 	assert.NotContains(t, out, "myorg-")
 	assert.NotContains(t, out, "\n::error::", "a path cannot start a new log line")
 	assert.Contains(t, out, `x\n::error::forged.yaml`, "the newline is escaped")
+	assert.NotContains(t, out, "##[", "a path cannot carry a legacy workflow command")
+	for _, cmd := range []string{"error]a", "warning]b", "add-mask]c"} {
+		assert.Contains(t, out, `#\#[`+cmd, "the path stays readable with the command neutralized")
+	}
 }
 
 func TestEnsureOpenAIProvider_RefusesUnredactableCredential(t *testing.T) {

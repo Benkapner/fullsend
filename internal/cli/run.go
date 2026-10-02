@@ -6555,8 +6555,10 @@ func warnReservedProviderNameOverrides(localDefs []harness.ProviderDef, resolved
 		if rp.FromURL {
 			warn(rp.Def.Name, "the URL-resolved copy")
 		} else {
-			// %q: a repository file name must not inject lines into the log.
-			warn(rp.Def.Name, fmt.Sprintf("the copy at %q", rp.LocalPath))
+			// A repository file name must not inject log lines (%q escapes
+			// newlines and control characters) or a legacy "##[" workflow
+			// command, which the runner matches anywhere in a line.
+			warn(rp.Def.Name, "the copy at "+strings.ReplaceAll(fmt.Sprintf("%q", rp.LocalPath), "##[", `#\#[`))
 		}
 	}
 }
