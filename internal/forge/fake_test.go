@@ -902,6 +902,10 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		{"DeleteIssueComment", func(fc *FakeClient) error {
 			return fc.DeleteIssueComment(ctx, "o", "r", 1)
 		}},
+		{"GetIssueComment", func(fc *FakeClient) error {
+			_, err := fc.GetIssueComment(ctx, "o", "r", 1)
+			return err
+		}},
 		{"ListDirectoryContents", func(fc *FakeClient) error {
 			_, err := fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
 			return err
@@ -1392,6 +1396,24 @@ func TestFakeClient_ReactionErrorInjection(t *testing.T) {
 
 	_, err := fc.AddIssueReaction(context.Background(), "org", "repo", 7, "eyes")
 	assert.Error(t, err)
+}
+
+func TestFakeClient_GetIssueComment(t *testing.T) {
+	fc := NewFakeClient()
+	created, err := fc.CreateIssueComment(context.Background(), "org", "repo", 7, "playback-current: 1")
+	require.NoError(t, err)
+
+	got, err := fc.GetIssueComment(context.Background(), "org", "repo", created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, created.ID, got.ID)
+	assert.Equal(t, "playback-current: 1", got.Body)
+}
+
+func TestFakeClient_GetIssueComment_NotFound(t *testing.T) {
+	fc := NewFakeClient()
+	_, err := fc.GetIssueComment(context.Background(), "org", "repo", 404)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestFakeClient_AddIssueCommentReaction(t *testing.T) {

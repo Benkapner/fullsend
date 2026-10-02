@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -799,12 +800,12 @@ func TestParsePlaybackCommentRef(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		input      string
-		wantOK     bool
-		wantCLI    string
-		wantPath   string
-		wantMethod string
+		name          string
+		input         string
+		wantOK        bool
+		wantOwner     string
+		wantRepo      string
+		wantCommentID int
 	}{
 		{
 			name:   "empty",
@@ -812,36 +813,44 @@ func TestParsePlaybackCommentRef(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name:       "legacy single-line defaults to gh",
-			input:      "/repos/org/repo/issues/comments/42",
-			wantOK:     true,
-			wantCLI:    "gh",
-			wantPath:   "/repos/org/repo/issues/comments/42",
-			wantMethod: "PATCH",
+			name:          "legacy single-line defaults to gh",
+			input:         "/repos/org/repo/issues/comments/42",
+			wantOK:        true,
+			wantOwner:     "org",
+			wantRepo:      "repo",
+			wantCommentID: 42,
 		},
 		{
-			name:       "legacy single-line with trailing newline",
-			input:      "/repos/org/repo/issues/comments/42\n",
-			wantOK:     true,
-			wantCLI:    "gh",
-			wantPath:   "/repos/org/repo/issues/comments/42",
-			wantMethod: "PATCH",
+			name:          "legacy single-line with trailing newline",
+			input:         "/repos/org/repo/issues/comments/42\n",
+			wantOK:        true,
+			wantOwner:     "org",
+			wantRepo:      "repo",
+			wantCommentID: 42,
 		},
 		{
-			name:       "github two-line",
-			input:      "gh\n/repos/org/repo/issues/comments/42",
-			wantOK:     true,
-			wantCLI:    "gh",
-			wantPath:   "/repos/org/repo/issues/comments/42",
-			wantMethod: "PATCH",
+			name:          "github two-line",
+			input:         "gh\n/repos/org/repo/issues/comments/42",
+			wantOK:        true,
+			wantOwner:     "org",
+			wantRepo:      "repo",
+			wantCommentID: 42,
 		},
 		{
-			name:       "gitlab two-line",
-			input:      "glab\n/projects/org%2Frepo/issues/1/notes/99",
-			wantOK:     true,
-			wantCLI:    "glab",
-			wantPath:   "/projects/org%2Frepo/issues/1/notes/99",
-			wantMethod: "PUT",
+			name:          "gitlab two-line",
+			input:         "glab\n/projects/org%2Frepo/issues/1/notes/99",
+			wantOK:        true,
+			wantOwner:     "org",
+			wantRepo:      "repo",
+			wantCommentID: 99,
+		},
+		{
+			name:          "gitlab nested group",
+			input:         "glab\n/projects/group%2Fsubgroup%2Frepo/merge_requests/3/notes/7",
+			wantOK:        true,
+			wantOwner:     "group/subgroup",
+			wantRepo:      "repo",
+			wantCommentID: 7,
 		},
 		{
 			name:   "cli but no path",
@@ -878,6 +887,26 @@ func TestParsePlaybackCommentRef(t *testing.T) {
 			input:  "gh\n/repos/org/repo/issues/comments/42\nextra-line",
 			wantOK: false,
 		},
+		{
+			name:   "github path with non-numeric comment id rejected",
+			input:  "gh\n/repos/org/repo/issues/comments/abc",
+			wantOK: false,
+		},
+		{
+			name:   "gitlab path missing project segment rejected",
+			input:  "glab\n/projects//issues/1/notes/99",
+			wantOK: false,
+		},
+		{
+			name:   "gitlab path with empty decoded owner rejected",
+			input:  "glab\n/projects/%2Ffoo/issues/1/notes/99",
+			wantOK: false,
+		},
+		{
+			name:   "gitlab path with unencoded project id rejected",
+			input:  "glab\n/projects/myproject/issues/1/notes/99",
+			wantOK: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -885,9 +914,9 @@ func TestParsePlaybackCommentRef(t *testing.T) {
 			ref, ok := parsePlaybackCommentRef(tt.input)
 			assert.Equal(t, tt.wantOK, ok)
 			if ok {
-				assert.Equal(t, tt.wantCLI, ref.cli)
-				assert.Equal(t, tt.wantPath, ref.path)
-				assert.Equal(t, tt.wantMethod, ref.method)
+				assert.Equal(t, tt.wantOwner, ref.owner)
+				assert.Equal(t, tt.wantRepo, ref.repo)
+				assert.Equal(t, tt.wantCommentID, ref.commentID)
 			}
 		})
 	}
@@ -898,7 +927,7 @@ func TestReadPlaybackComment(t *testing.T) {
 
 	t.Run("no comment file", func(t *testing.T) {
 		t.Parallel()
-		_, _, ok := readPlaybackComment(context.Background(), t.TempDir(), defaultForgeAPI)
+		_, _, ok := readPlaybackComment(context.Background(), t.TempDir(), forge.NewFakeClient())
 		assert.False(t, ok)
 	})
 
@@ -906,7 +935,15 @@ func TestReadPlaybackComment(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, playbackCommentFile), []byte("invalid"), 0o644))
-		_, _, ok := readPlaybackComment(context.Background(), dir, defaultForgeAPI)
+		_, _, ok := readPlaybackComment(context.Background(), dir, forge.NewFakeClient())
+		assert.False(t, ok)
+	})
+
+	t.Run("nil client", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, playbackCommentFile), []byte("gh\n/repos/org/repo/issues/comments/1"), 0o644))
+		_, _, ok := readPlaybackComment(context.Background(), dir, nil)
 		assert.False(t, ok)
 	})
 
@@ -914,10 +951,9 @@ func TestReadPlaybackComment(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, playbackCommentFile), []byte("gh\n/repos/org/repo/issues/comments/1"), 0o644))
-		failAPI := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-			return nil, fmt.Errorf("network error")
-		}
-		_, _, ok := readPlaybackComment(context.Background(), dir, failAPI)
+		fc := forge.NewFakeClient()
+		fc.Errors = map[string]error{"GetIssueComment": fmt.Errorf("network error")}
+		_, _, ok := readPlaybackComment(context.Background(), dir, fc)
 		assert.False(t, ok)
 	})
 
@@ -925,10 +961,9 @@ func TestReadPlaybackComment(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, playbackCommentFile), []byte("gh\n/repos/org/repo/issues/comments/1"), 0o644))
-		fakeAPI := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-			return []byte("some unrelated body"), nil
-		}
-		_, _, ok := readPlaybackComment(context.Background(), dir, fakeAPI)
+		fc := forge.NewFakeClient()
+		fc.IssueComments = map[string][]forge.IssueComment{"org/repo/0": {{ID: 1, Body: "some unrelated body"}}}
+		_, _, ok := readPlaybackComment(context.Background(), dir, fc)
 		assert.False(t, ok)
 	})
 
@@ -936,10 +971,9 @@ func TestReadPlaybackComment(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, playbackCommentFile), []byte("gh\n/repos/org/repo/issues/comments/1"), 0o644))
-		fakeAPI := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-			return []byte("playback-current: abc"), nil
-		}
-		_, _, ok := readPlaybackComment(context.Background(), dir, fakeAPI)
+		fc := forge.NewFakeClient()
+		fc.IssueComments = map[string][]forge.IssueComment{"org/repo/0": {{ID: 1, Body: "playback-current: abc"}}}
+		_, _, ok := readPlaybackComment(context.Background(), dir, fc)
 		assert.False(t, ok)
 	})
 
@@ -947,10 +981,9 @@ func TestReadPlaybackComment(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, playbackCommentFile), []byte("gh\n/repos/org/repo/issues/comments/1"), 0o644))
-		fakeAPI := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-			return []byte("playback-current: 0"), nil
-		}
-		_, _, ok := readPlaybackComment(context.Background(), dir, fakeAPI)
+		fc := forge.NewFakeClient()
+		fc.IssueComments = map[string][]forge.IssueComment{"org/repo/0": {{ID: 1, Body: "playback-current: 0"}}}
+		_, _, ok := readPlaybackComment(context.Background(), dir, fc)
 		assert.False(t, ok)
 	})
 
@@ -958,29 +991,28 @@ func TestReadPlaybackComment(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, playbackCommentFile), []byte("gh\n/repos/org/repo/issues/comments/42"), 0o644))
-		fakeAPI := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-			return []byte("playback-current: 3"), nil
-		}
-		val, ref, ok := readPlaybackComment(context.Background(), dir, fakeAPI)
+		fc := forge.NewFakeClient()
+		fc.IssueComments = map[string][]forge.IssueComment{"org/repo/0": {{ID: 42, Body: "playback-current: 3"}}}
+		val, ref, ok := readPlaybackComment(context.Background(), dir, fc)
 		require.True(t, ok)
 		assert.Equal(t, 3, val)
-		assert.Equal(t, "gh", ref.cli)
-		assert.Equal(t, "/repos/org/repo/issues/comments/42", ref.path)
-		assert.Equal(t, "PATCH", ref.method)
+		assert.Equal(t, "org", ref.owner)
+		assert.Equal(t, "repo", ref.repo)
+		assert.Equal(t, 42, ref.commentID)
 	})
 
 	t.Run("gitlab ref", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, playbackCommentFile), []byte("glab\n/projects/org%2Frepo/issues/1/notes/99"), 0o644))
-		fakeAPI := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-			return []byte("playback-current: 5"), nil
-		}
-		val, ref, ok := readPlaybackComment(context.Background(), dir, fakeAPI)
+		fc := forge.NewFakeClient()
+		fc.IssueComments = map[string][]forge.IssueComment{"org/repo/0": {{ID: 99, Body: "playback-current: 5"}}}
+		val, ref, ok := readPlaybackComment(context.Background(), dir, fc)
 		require.True(t, ok)
 		assert.Equal(t, 5, val)
-		assert.Equal(t, "glab", ref.cli)
-		assert.Equal(t, "PUT", ref.method)
+		assert.Equal(t, "org", ref.owner)
+		assert.Equal(t, "repo", ref.repo)
+		assert.Equal(t, 99, ref.commentID)
 	})
 }
 
@@ -989,42 +1021,46 @@ func TestUpdatePlaybackComment(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		t.Parallel()
-		var capturedArgs []string
-		fakeAPI := func(_ context.Context, cli string, args ...string) ([]byte, error) {
-			capturedArgs = append([]string{cli}, args...)
-			return []byte("ok"), nil
-		}
-		ref := playbackCommentRef{cli: "gh", path: "/repos/org/repo/issues/comments/42", method: "PATCH"}
-		err := updatePlaybackComment(context.Background(), ref, 4, fakeAPI)
+		fc := forge.NewFakeClient()
+		fc.IssueComments = map[string][]forge.IssueComment{"org/repo/0": {{ID: 42, Body: "playback-current: 1"}}}
+		ref := playbackCommentRef{owner: "org", repo: "repo", commentID: 42}
+		err := updatePlaybackComment(context.Background(), fc, ref, 4)
 		require.NoError(t, err)
-		assert.Contains(t, capturedArgs, "--method")
-		assert.Contains(t, capturedArgs, "PATCH")
-		assert.Contains(t, capturedArgs, "-f")
+		require.Len(t, fc.UpdatedComments, 1)
+		assert.Equal(t, "org", fc.UpdatedComments[0].Owner)
+		assert.Equal(t, "repo", fc.UpdatedComments[0].Repo)
+		assert.Equal(t, 42, fc.UpdatedComments[0].CommentID)
+		assert.Equal(t, "playback-current: 4", fc.UpdatedComments[0].Body)
 	})
 
 	t.Run("api error", func(t *testing.T) {
 		t.Parallel()
-		failAPI := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-			return nil, fmt.Errorf("api call failed")
-		}
-		ref := playbackCommentRef{cli: "gh", path: "/repos/org/repo/issues/comments/42", method: "PATCH"}
-		err := updatePlaybackComment(context.Background(), ref, 4, failAPI)
+		fc := forge.NewFakeClient()
+		fc.Errors = map[string]error{"UpdateIssueComment": fmt.Errorf("api call failed")}
+		ref := playbackCommentRef{owner: "org", repo: "repo", commentID: 42}
+		err := updatePlaybackComment(context.Background(), fc, ref, 4)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "updating playback comment")
 	})
 
-	t.Run("gitlab ref uses PUT", func(t *testing.T) {
+	t.Run("nil client", func(t *testing.T) {
 		t.Parallel()
-		var capturedArgs []string
-		fakeAPI := func(_ context.Context, cli string, args ...string) ([]byte, error) {
-			capturedArgs = append([]string{cli}, args...)
-			return nil, nil
-		}
-		ref := playbackCommentRef{cli: "glab", path: "/projects/org%2Frepo/issues/1/notes/99", method: "PUT"}
-		err := updatePlaybackComment(context.Background(), ref, 7, fakeAPI)
+		ref := playbackCommentRef{owner: "org", repo: "repo", commentID: 42}
+		err := updatePlaybackComment(context.Background(), nil, ref, 4)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "updating playback comment")
+	})
+
+	t.Run("gitlab ref", func(t *testing.T) {
+		t.Parallel()
+		fc := forge.NewFakeClient()
+		fc.IssueComments = map[string][]forge.IssueComment{"org/repo/0": {{ID: 99, Body: "playback-current: 1"}}}
+		ref := playbackCommentRef{owner: "org", repo: "repo", commentID: 99}
+		err := updatePlaybackComment(context.Background(), fc, ref, 7)
 		require.NoError(t, err)
-		assert.Contains(t, capturedArgs, "PUT")
-		assert.Equal(t, "glab", capturedArgs[0])
+		require.Len(t, fc.UpdatedComments, 1)
+		assert.Equal(t, 99, fc.UpdatedComments[0].CommentID)
+		assert.Equal(t, "playback-current: 7", fc.UpdatedComments[0].Body)
 	})
 }
 
@@ -1043,33 +1079,27 @@ func TestDummyPlaybackRuntime_RunWithPlaybackComment(t *testing.T) {
 		0o644,
 	))
 
-	apiCallCount := 0
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{"org/repo/0": {{ID: 1, Body: "playback-current: 1"}}}
 	rt := DummyPlaybackRuntime{
 		ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
 			return "", "", 0, nil
 		},
 		UploadFn:    func(_, _, _ string) error { return nil },
 		GitCommitFn: func(_ string, _ *Playlist) error { return nil },
-		ForgeAPIFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
-			apiCallCount++
-			// First call is readPlaybackComment (GET)
-			if apiCallCount == 1 {
-				return []byte("playback-current: 1"), nil
-			}
-			// Second call is updatePlaybackComment (PATCH)
-			return []byte("ok"), nil
-		},
 	}
 
 	exit, err := rt.Run(context.Background(), RunParams{
 		SandboxName: "sandbox",
 		FullsendDir: fullsendDir,
 		RepoDir:     t.TempDir(),
+		ForgeClient: fc,
 	}, ui.New(io.Discard), time.Now(), nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
-	assert.Equal(t, 2, apiCallCount, "should call API for read + update")
+	require.Len(t, fc.UpdatedComments, 1, "should update the tracking comment after serving the entry")
+	assert.Equal(t, "playback-current: 2", fc.UpdatedComments[0].Body)
 }
 
 func TestDummyPlaybackRuntime_RunTrackingCommentInvalidPosition(t *testing.T) {
@@ -1087,13 +1117,12 @@ func TestDummyPlaybackRuntime_RunTrackingCommentInvalidPosition(t *testing.T) {
 		0o644,
 	))
 
+	fc := forge.NewFakeClient()
+	// Return position beyond the playlist length.
+	fc.IssueComments = map[string][]forge.IssueComment{"org/repo/0": {{ID: 1, Body: "playback-current: 99"}}}
 	rt := DummyPlaybackRuntime{
 		ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
 			return "", "", 0, nil
-		},
-		ForgeAPIFn: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-			// Return position beyond the playlist length
-			return []byte("playback-current: 99"), nil
 		},
 	}
 
@@ -1101,6 +1130,7 @@ func TestDummyPlaybackRuntime_RunTrackingCommentInvalidPosition(t *testing.T) {
 		SandboxName: "sandbox",
 		FullsendDir: fullsendDir,
 		RepoDir:     t.TempDir(),
+		ForgeClient: fc,
 	}, ui.New(io.Discard), time.Now(), nil)
 
 	assert.Equal(t, 1, exit)
@@ -1397,21 +1427,15 @@ func TestDummyPlaybackRuntime_RunUpdateCommentError(t *testing.T) {
 		0o644,
 	))
 
-	apiCallCount := 0
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{"org/repo/0": {{ID: 1, Body: "playback-current: 1"}}}
+	fc.Errors = map[string]error{"UpdateIssueComment": fmt.Errorf("update failed")}
 	rt := DummyPlaybackRuntime{
 		ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
 			return "", "", 0, nil
 		},
 		UploadFn:    func(_, _, _ string) error { return nil },
 		GitCommitFn: func(_ string, _ *Playlist) error { return nil },
-		ForgeAPIFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
-			apiCallCount++
-			if apiCallCount == 1 {
-				return []byte("playback-current: 1"), nil
-			}
-			// Second call (update) fails
-			return nil, fmt.Errorf("update failed")
-		},
 	}
 
 	// The update error should be a warning, not a failure
@@ -1419,6 +1443,7 @@ func TestDummyPlaybackRuntime_RunUpdateCommentError(t *testing.T) {
 		SandboxName: "sandbox",
 		FullsendDir: fullsendDir,
 		RepoDir:     t.TempDir(),
+		ForgeClient: fc,
 	}, ui.New(io.Discard), time.Now(), nil)
 	require.NoError(t, err, "update comment failure should be a warning, not a hard error")
 	assert.Equal(t, 0, exit)

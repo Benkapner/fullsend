@@ -819,6 +819,10 @@ type Client interface {
 	ListOpenIssues(ctx context.Context, owner, repo string, labels ...string) ([]Issue, error)
 	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]IssueComment, error)
 	CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*IssueComment, error)
+	// GetIssueComment fetches a single comment by ID. Returns ErrNotFound if
+	// the comment does not exist (or, on GitLab, if it could not be located
+	// by the ID-scan lookup UpdateIssueComment/DeleteIssueComment also use).
+	GetIssueComment(ctx context.Context, owner, repo string, commentID int) (*IssueComment, error)
 	UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error
 	DeleteIssueComment(ctx context.Context, owner, repo string, commentID int) error
 	MinimizeComment(ctx context.Context, nodeID, reason string) error

@@ -1580,6 +1580,23 @@ func (f *FakeClient) CreateIssueComment(_ context.Context, owner, repo string, n
 	return &comment, nil
 }
 
+func (f *FakeClient) GetIssueComment(_ context.Context, _, _ string, commentID int) (*IssueComment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("GetIssueComment"); e != nil {
+		return nil, e
+	}
+	for _, comments := range f.IssueComments {
+		for _, c := range comments {
+			if c.ID == commentID {
+				found := c
+				return &found, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("%w: comment %d", ErrNotFound, commentID)
+}
+
 func (f *FakeClient) UpdateIssueComment(_ context.Context, owner, repo string, commentID int, body string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

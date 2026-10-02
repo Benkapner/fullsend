@@ -3681,6 +3681,43 @@ func TestDeleteFiles_Atomic(t *testing.T) {
 	assert.True(t, treeCreated)
 }
 
+func TestGetIssueComment(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/org/repo/issues/comments/42", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         42,
+			"node_id":    "IC_42",
+			"html_url":   "https://github.com/org/repo/issues/1#issuecomment-42",
+			"body":       "playback-current: 3",
+			"user":       map[string]string{"login": "fullsend-bot"},
+			"created_at": "2026-01-01T00:00:00Z",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	comment, err := client.GetIssueComment(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, 42, comment.ID)
+	assert.Equal(t, "IC_42", comment.NodeID)
+	assert.Equal(t, "playback-current: 3", comment.Body)
+	assert.Equal(t, "fullsend-bot", comment.Author)
+}
+
+func TestGetIssueComment_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+}
+
 func TestDeleteIssueComment(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "DELETE", r.Method)

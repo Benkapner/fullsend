@@ -237,6 +237,93 @@ func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string,
 	}, nil
 }
 
+// GetIssueComment fetches a single note by its numeric ID. See
+// UpdateIssueComment for why this requires scanning: GitLab's Notes API
+// requires the noteable IID in the URL, but forge.Client only provides a
+// bare commentID. Returns forge.ErrNotFound (wrapped) if the note cannot
+// be located within the same open+500/closed(+merged) scan bound
+// documented on updateOrDeleteNote.
+func (c *LiveClient) GetIssueComment(ctx context.Context, owner, repo string, commentID int) (*forge.IssueComment, error) {
+	proj := projectPath(owner, repo)
+
+	nonOpenStates := []string{"closed"}
+	if c.noteTarget == "merge_requests" {
+		nonOpenStates = []string{"closed", "merged"}
+	}
+
+	tryFetchNote := func(noteableIID int) (*forge.IssueComment, error) {
+		notePath := fmt.Sprintf("/projects/%s/%s/%d/notes/%d", proj, c.noteTarget, noteableIID, commentID)
+		resp, err := c.get(ctx, notePath)
+		if err != nil {
+			return nil, err
+		}
+		var result struct {
+			ID        int    `json:"id"`
+			Body      string `json:"body"`
+			CreatedAt string `json:"created_at"`
+			Author    struct {
+				Username string `json:"username"`
+			} `json:"author"`
+		}
+		if err := decodeJSON(resp, &result); err != nil {
+			return nil, fmt.Errorf("decode note %d: %w", commentID, err)
+		}
+		htmlURL := fmt.Sprintf("%s/-/%s/%d#note_%d",
+			c.projectWebURL(owner, repo), c.noteTarget, noteableIID, result.ID)
+		return &forge.IssueComment{
+			ID:        result.ID,
+			HTMLURL:   htmlURL,
+			Body:      result.Body,
+			Author:    result.Author.Username,
+			CreatedAt: result.CreatedAt,
+		}, nil
+	}
+
+	scanState := func(state string, maxPages int) (*forge.IssueComment, error) {
+		for page := 1; page <= maxPages; page++ {
+			path := fmt.Sprintf("/projects/%s/%s?state=%s&per_page=100&page=%d&order_by=updated_at&sort=desc", proj, c.noteTarget, state, page)
+			resp, err := c.get(ctx, path)
+			if err != nil {
+				return nil, fmt.Errorf("list %s %s to find note %d: %w", state, c.noteTarget, commentID, err)
+			}
+			var noteables []struct {
+				IID int `json:"iid"`
+			}
+			if err := decodeJSON(resp, &noteables); err != nil {
+				return nil, fmt.Errorf("decode %s %s: %w", state, c.noteTarget, err)
+			}
+			for _, n := range noteables {
+				comment, err := tryFetchNote(n.IID)
+				if err == nil {
+					return comment, nil
+				}
+				if !forge.IsNotFound(err) {
+					return nil, err
+				}
+			}
+			if len(noteables) < 100 {
+				break
+			}
+		}
+		return nil, nil
+	}
+
+	if comment, err := scanState("opened", 10); err != nil || comment != nil {
+		return comment, err
+	}
+	for _, state := range nonOpenStates {
+		if comment, err := scanState(state, 5); err != nil || comment != nil {
+			return comment, err
+		}
+	}
+
+	targetLabel := "issue"
+	if c.noteTarget == "merge_requests" {
+		targetLabel = "merge request"
+	}
+	return nil, fmt.Errorf("get note %d: could not find %s containing this note: %w", commentID, targetLabel, forge.ErrNotFound)
+}
+
 // UpdateIssueComment updates the body of an existing note on an issue.
 // GitLab's note API requires the issue IID in the URL path, but the
 // forge.Client interface only provides the note ID. Since GitLab has no

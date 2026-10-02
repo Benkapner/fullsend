@@ -2907,6 +2907,61 @@ func TestUpdateIssueComment_FoundInClosedIssues(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestGetIssueComment_FoundInClosedIssues(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/issues", func(w http.ResponseWriter, r *http.Request) {
+		state := r.URL.Query().Get("state")
+		if state == "opened" {
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"iid": 1},
+			})
+			return
+		}
+		// closed issues
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"iid": 2},
+		})
+	})
+
+	// Note 99 not found on open issue 1.
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/issues/1/notes/99", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"404 Not Found"}`)
+	})
+
+	// Note 99 found on closed issue 2.
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/issues/2/notes/99", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         99,
+			"body":       "playback-current: 3",
+			"created_at": "2026-01-01T00:00:00Z",
+			"author":     map[string]string{"username": "fullsend-bot"},
+		})
+	})
+
+	comment, err := client.GetIssueComment(ctx, "own", "repo", 99)
+	require.NoError(t, err)
+	assert.Equal(t, 99, comment.ID)
+	assert.Equal(t, "playback-current: 3", comment.Body)
+	assert.Equal(t, "fullsend-bot", comment.Author)
+	assert.Contains(t, comment.HTMLURL, "/-/issues/2#note_99")
+}
+
+func TestGetIssueComment_NotFoundAnywhere(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/issues", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	_, err := client.GetIssueComment(ctx, "own", "repo", 999)
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err), "expected ErrNotFound, got: %v", err)
+}
+
 func TestDeleteIssueComment_NotFoundAnywhere(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()

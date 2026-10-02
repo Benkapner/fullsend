@@ -3082,6 +3082,37 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 	return result, nil
 }
 
+// GetIssueComment fetches a single comment by its numeric ID. GitHub
+// addresses comments globally (no issue number needed in the path).
+// Returns forge.ErrNotFound (wrapped) if the comment does not exist.
+func (c *LiveClient) GetIssueComment(ctx context.Context, owner, repo string, commentID int) (*forge.IssueComment, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, commentID))
+	if err != nil {
+		return nil, fmt.Errorf("get issue comment %d: %w", commentID, err)
+	}
+	var result struct {
+		ID      int    `json:"id"`
+		NodeID  string `json:"node_id"`
+		HTMLURL string `json:"html_url"`
+		Body    string `json:"body"`
+		User    struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode issue comment %d: %w", commentID, err)
+	}
+	return &forge.IssueComment{
+		ID:        result.ID,
+		NodeID:    result.NodeID,
+		HTMLURL:   result.HTMLURL,
+		Body:      result.Body,
+		Author:    result.User.Login,
+		CreatedAt: result.CreatedAt,
+	}, nil
+}
+
 // CreateIssueComment creates a new comment on an issue or pull request.
 func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
 	payload := map[string]string{"body": body}

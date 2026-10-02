@@ -27,6 +27,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/fetchsvc"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
@@ -3818,6 +3819,38 @@ roles:
 	assert.Contains(t, err.Error(), "config.forge")
 	assert.Contains(t, err.Error(), "gihub")
 	assert.Contains(t, err.Error(), "not a valid forge platform")
+}
+
+func TestResolvePlaybackForgeClient_GitHubReusesFallback(t *testing.T) {
+	fallback := gh.New("token")
+	printer := ui.New(io.Discard)
+
+	client := resolvePlaybackForgeClient("github", fallback, printer)
+	assert.Same(t, fallback, client)
+
+	// Empty forge platform defaults to the GitHub path too, matching
+	// dummy_playback.go's repoFromEnv default-to-GitHub convention.
+	client = resolvePlaybackForgeClient("", fallback, printer)
+	assert.Same(t, fallback, client)
+}
+
+func TestResolvePlaybackForgeClient_GitLabBuildsFromEnv(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	fallback := gh.New("token")
+	printer := ui.New(io.Discard)
+
+	client := resolvePlaybackForgeClient("gitlab", fallback, printer)
+	require.NotNil(t, client)
+	assert.NotSame(t, fallback, client)
+}
+
+func TestResolvePlaybackForgeClient_GitLabMissingTokenWarnsAndReturnsNil(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	fallback := gh.New("token")
+	printer := ui.New(io.Discard)
+
+	client := resolvePlaybackForgeClient("gitlab", fallback, printer)
+	assert.Nil(t, client)
 }
 
 func TestRunCommand_HasForgeFlag(t *testing.T) {
