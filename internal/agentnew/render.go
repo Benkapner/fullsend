@@ -130,8 +130,13 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 				// argument it never fetches. #7563.
 				"ISSUE_NUMBER":   "${ISSUE_NUMBER}",
 				"REPO_FULL_NAME": "${REPO_FULL_NAME}",
-				"GH_TOKEN":       "${GH_TOKEN}",
 				"FULLSEND_FORGE": "github",
+				// No GH_TOKEN here (#7883): github-ro.yaml / github.yaml now
+				// declare credentials, so OpenShell injects a placeholder for
+				// gh into the sandbox itself. Putting the raw value in
+				// env.sandbox too would hand the sandbox the real token and
+				// defeat the placeholder model; the runner keeps the raw
+				// value above for the post-script's own `gh` calls.
 			},
 		},
 	}

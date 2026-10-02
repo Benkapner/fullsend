@@ -110,6 +110,33 @@ func TestGeneratedHarnessMakesGCPCredentialMountOptional(t *testing.T) {
 	t.Error("generated harness is missing the GCP credential host file")
 }
 
+// TestGeneratedHarnessKeepsGHTokenOutOfSandbox pins #7883: the github-ro and
+// github providers deliver GH_TOKEN to the sandbox as a placeholder, so the
+// raw value belongs in env.runner (post-script) only. An env.sandbox entry
+// would hand the sandbox the real token.
+func TestGeneratedHarnessKeepsGHTokenOutOfSandbox(t *testing.T) {
+	for _, role := range RoleNames() {
+		t.Run(role, func(t *testing.T) {
+			files, err := Render(testOptions("lint-docs", role))
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			writeTree(t, dir, files)
+			h, err := harness.Load(filepath.Join(dir, "harness", "lint-docs.yaml"))
+			if err != nil {
+				t.Fatalf("generated harness does not load: %v", err)
+			}
+			if _, ok := h.Env.Sandbox["GH_TOKEN"]; ok {
+				t.Error("env.sandbox must not carry GH_TOKEN; the provider supplies a placeholder")
+			}
+			if got := h.Env.Runner["GH_TOKEN"]; got != "${GH_TOKEN}" {
+				t.Errorf("env.runner GH_TOKEN = %q, want ${GH_TOKEN} for the post-script", got)
+			}
+		})
+	}
+}
+
 // TestGeneratedHarnessHasNoDeprecatedShapes pins decision 6: no forge: block
 // (deprecated by ADR 0088) and no runner_env (deprecated by ADR 0055). Lint
 // would warn, and a generator must never emit a shape the repo has deprecated.
