@@ -551,3 +551,53 @@ func TestPiTrustedSpecs_IncludesEffectiveParent(t *testing.T) {
 		piTrustedSpecs(testModels, nil, "", nil))
 	require.Error(t, err)
 }
+
+// piConfiguredOpenAIIDs feeds piAgentManifestFor's conditional openai
+// allowlist (#7981): only a pre-configured child — a subagents.<persona>
+// override, subagents.default, or a persona's own frontmatter model: — may
+// extend it, never a model an Agent call chooses at dispatch time (which
+// never reaches this function at all).
+func TestPiConfiguredOpenAIIDs(t *testing.T) {
+	t.Run("collects subagents.default and subagents.<persona> entries", func(t *testing.T) {
+		ids := piConfiguredOpenAIIDs(nil, map[string]*string{
+			"default":     strp("openai/gpt-5.6-luna"),
+			"correctness": strp("openai/gpt-5-nano"),
+			"style":       strp("opus"), // not openai: excluded
+			"tombstoned":  nil,          // nil value: excluded
+		})
+		assert.ElementsMatch(t, []string{"gpt-5.6-luna", "gpt-5-nano"}, ids)
+	})
+
+	t.Run("collects a persona's own frontmatter model", func(t *testing.T) {
+		ids := piConfiguredOpenAIIDs([]piPersona{
+			{Name: "checker", Model: "openai/gpt-5.6-luna"},
+			{Name: "correctness", Model: "opus"},
+			{Name: "anonymous"},
+		}, nil)
+		assert.Equal(t, []string{"gpt-5.6-luna"}, ids)
+	})
+
+	t.Run("a config override beats frontmatter, matching resolution order", func(t *testing.T) {
+		ids := piConfiguredOpenAIIDs(
+			[]piPersona{{Name: "checker", Model: "openai/gpt-5.6-luna"}},
+			map[string]*string{"checker": strp("opus")},
+		)
+		assert.Empty(t, ids, "the override moves it off openai, so frontmatter must not be consulted")
+	})
+
+	t.Run("bare ids and non-openai specs are ignored", func(t *testing.T) {
+		ids := piConfiguredOpenAIIDs(
+			[]piPersona{{Name: "checker", Model: "gpt-5.6-luna"}}, // no provider prefix
+			map[string]*string{"default": strp("anthropic-vertex/claude-opus-4-6")},
+		)
+		assert.Empty(t, ids)
+	})
+
+	t.Run("duplicate ids are collapsed", func(t *testing.T) {
+		ids := piConfiguredOpenAIIDs(
+			[]piPersona{{Name: "checker", Model: "openai/gpt-5.6-luna"}},
+			map[string]*string{"default": strp("openai/gpt-5.6-luna")},
+		)
+		assert.Equal(t, []string{"gpt-5.6-luna"}, ids)
+	})
+}

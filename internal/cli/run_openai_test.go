@@ -528,6 +528,50 @@ func TestRunAgent_OpenAIProviderSkippedWhenRuntimeDoesNotNeedIt(t *testing.T) {
 	}
 }
 
+// TestRunAgent_OpenAIProviderNeededBySubagent covers #7981: a pi parent on
+// a Vertex model still needs the run-scoped OpenAI provider when the
+// repo's agents: entry configures a child (subagents.default here) that
+// resolves to the openai provider. Before the fix, NeedsOpenAIProvider
+// looked at the parent's model alone, so this harness/config combination
+// skipped the provider exactly like the "runtime does not need it" cases
+// above — leaving the sandbox with no OPENAI_API_KEY for a child the repo
+// explicitly asked to run on openai.
+func TestRunAgent_OpenAIProviderNeededBySubagent(t *testing.T) {
+	logPath := recordingProvidersStub(t)
+	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "GITHUB_ACTIONS"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
+	dir := writeOpenAIFullsendDirFor(t, false, "pi", "anthropic-vertex/claude-opus-4-6")
+	// Overwrite config.yaml with an agents: entry naming the code agent and
+	// giving it a subagents.default that resolves to openai, in addition to
+	// the bare-string form writeOpenAIFullsendDirFor already proved works.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(""+
+		"version: \"1\"\nruntime: pi\nagents:\n"+
+		"  - name: code\n    source: harness/code.yaml\n    subagents:\n      default: openai/gpt-5.6-luna\n"), 0o644))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	// The stub cannot bootstrap an agent past sandbox creation, but the
+	// provider block (what this test checks) must have completed first.
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "no OpenAI credential")
+
+	data, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	log := string(data)
+	assert.Contains(t, log, "provider create --name openai-",
+		"the Vertex parent's configured openai child still needs the run-scoped credential")
+	var sandboxLine string
+	for _, l := range strings.Split(strings.TrimSpace(log), "\n") {
+		if strings.HasPrefix(l, "sandbox create ") {
+			sandboxLine = l
+		}
+	}
+	require.NotEmpty(t, sandboxLine)
+	assert.Regexp(t, `--provider openai-[0-9a-f]{12}`, sandboxLine, "the run-scoped instance is attached to the sandbox")
+}
+
 func TestRunAgent_OpenAIProviderIsRunScopedAndDeleted(t *testing.T) {
 	cases := []struct {
 		name     string

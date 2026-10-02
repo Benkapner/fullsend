@@ -235,6 +235,18 @@ func resolvePersonaModels(
 			}
 		}
 		if _, ok := trustedSpecs[strings.ToLower(spec)]; !ok {
+			// Name the actual remedy for the openai case (#7981) instead of
+			// only listing what is accepted: a child pinned to the openai
+			// provider fails here either because the harness never declares
+			// it, or because it is a model an Agent call chose at dispatch
+			// time rather than a pre-configured persona/subagents entry,
+			// which is never trusted here regardless of the harness.
+			if head, _, ok := strings.Cut(spec, "/"); ok && strings.EqualFold(head, piOpenAIProvider) {
+				return "", fmt.Errorf("%s: resolved model %q is not available in this run; accepted: %s; "+
+					"declare %q in the harness's providers list to make the openai provider available, or "+
+					"run the parent itself on an %s/ model",
+					what, spec, strings.Join(trustedSpecNames(trustedSpecs), ", "), piOpenAIProvider, piOpenAIProvider)
+			}
 			return "", fmt.Errorf("%s: resolved model %q is not available in this run; accepted: %s",
 				what, spec, strings.Join(trustedSpecNames(trustedSpecs), ", "))
 		}
@@ -390,6 +402,48 @@ func piClaudeToolNames() []string {
 	}
 	slices.Sort(names)
 	return names
+}
+
+// piConfiguredOpenAIIDs collects the bare ids of every pre-configured child
+// — a subagents.<persona> override, subagents.default, or a discovered
+// persona's own frontmatter model: — that names the openai provider
+// (qualified "openai/<id>" form; openai has no alias table, so a bare id
+// never resolves to it). These are repo-controlled and known before the
+// sandbox starts, so piAgentManifestFor can safely extend the manifest's
+// openai allowlist with them the way piGoogleVertexModels and
+// piXaiVertexModels extend theirs for their providers — unlike a model
+// string an Agent call supplies at dispatch time, which must still be
+// rejected (#7981).
+//
+// A persona overridden by subagentsCfg is skipped here when scanning
+// frontmatter, matching resolvePersonaModels' own resolution order: the
+// config entry (already scanned via subagentsCfg) wins over frontmatter.
+func piConfiguredOpenAIIDs(personas []piPersona, subagentsCfg map[string]*string) []string {
+	seen := map[string]bool{}
+	var ids []string
+	add := func(raw string) {
+		base, _, _ := strings.Cut(strings.TrimSpace(raw), "@")
+		head, id, ok := strings.Cut(strings.TrimSpace(base), "/")
+		if !ok || id == "" || !strings.EqualFold(head, piOpenAIProvider) {
+			return
+		}
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	for _, v := range subagentsCfg {
+		if v != nil {
+			add(*v)
+		}
+	}
+	for _, p := range personas {
+		if subagentsCfg[p.Name] != nil {
+			continue
+		}
+		add(p.Model)
+	}
+	return ids
 }
 
 // piTrustedSpecs is the closed set a persona's model is checked against:

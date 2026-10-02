@@ -496,6 +496,38 @@ created but before the agent starts — rather than at the first dispatch, when 
 half-finished review would already have cost you. A malformed key or model *reference* is
 caught earlier still, by config validation, before the sandbox exists.
 
+#### An OpenAI persona needs the `openai` provider declared
+
+An `openai/<id>` value — on `subagents.<persona>`, `subagents.default`, or a persona's own
+frontmatter `model:` — needs the harness to declare the `openai` provider, the same way a
+codex agent or a pi agent whose own `model:` is an OpenAI id does. The runner looks at every
+configured child as well as the parent when it decides whether a run needs the OpenAI
+credential, so a Vertex parent (`opus`, say) with one OpenAI persona gets it created
+automatically:
+
+```yaml
+# harness/review.yaml
+agent: agents/review.md
+model: opus
+providers:
+  - openai     # declared once; only materializes a credential when something needs it
+```
+
+```yaml
+# .fullsend/config.yaml
+agents:
+  - name: review
+    subagents:
+      checker: openai/gpt-5.6-luna
+```
+
+If the harness does not declare `openai`, Bootstrap fails naming the fix: declare `openai`
+in the harness's `providers:` list, or run the parent itself on an `openai/` model. A model
+an `Agent` call chooses at dispatch time (rather than a persona or `subagents` entry) is
+never trusted this way — only configuration the repo controls before the sandbox starts is,
+so a model the dispatching agent invents cannot grant itself a provider the harness never
+declared.
+
 Once a run registers personas, the orchestrator dispatches one by name —
 `subagent_type: correctness` — and omits `model`; a `model` argument passed anyway is
 logged and ignored, because the runner's resolution is the authoritative one. `Explore`

@@ -53,3 +53,47 @@ func NeedsOpenAIProvider(backend, runModel, agentModel string, configAliases map
 		return false
 	}
 }
+
+// SubagentsNeedOpenAIProvider reports whether a pre-configured pi child —
+// a repo `subagents.<persona>` entry, `subagents.default`, or a discovered
+// persona's own frontmatter `model:` — resolves to the openai provider,
+// even when the parent's own model does not (#7981). NeedsOpenAIProvider
+// alone answers this only for the parent: pi is multi-provider per child,
+// not just per run, so a Vertex parent with an OpenAI persona previously
+// never caused the run-scoped OpenAI provider to be created, and
+// resolvePersonaModels then rejected the persona because the run never
+// requested the credential that would have made it available.
+//
+// Every backend other than "pi" has no subagents/persona concept of its
+// own: codex always needs the provider regardless (NeedsOpenAIProvider
+// already covers it), and the rest need none.
+//
+// This deliberately does not cover a model name chosen at dispatch time by
+// an Agent call's `model` argument — that value is not known before the
+// sandbox starts, so admitting it here would make the gate depend on what
+// the dispatching model decides to type rather than on configuration the
+// repo controls.
+func SubagentsNeedOpenAIProvider(backend string, subagentsCfg map[string]*string, skillDirs []string, agentName string, configAliases map[string]string) bool {
+	if backend != "pi" {
+		return false
+	}
+	for _, v := range subagentsCfg {
+		if v != nil && piModelProvider(*v, configAliases) == piOpenAIProvider {
+			return true
+		}
+	}
+	// discoverPersonas never returns a non-nil error; the shape is kept so
+	// it reads the same as its other call site.
+	personas, _, _ := discoverPersonas(skillDirs, agentName)
+	for _, p := range personas {
+		if subagentsCfg[p.Name] != nil {
+			// Already checked above; a config override wins over
+			// frontmatter and must not be double-counted.
+			continue
+		}
+		if p.Model != "" && piModelProvider(p.Model, configAliases) == piOpenAIProvider {
+			return true
+		}
+	}
+	return false
+}

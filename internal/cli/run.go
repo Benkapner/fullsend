@@ -1031,9 +1031,30 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if id, ok := configModelAliases[h.Model]; ok {
 		resolvedModel, modelRemapped = id, true
 	}
+	// Thread the agent's subagents config through early: both the
+	// provider-creation gate below and BootstrapInput (#7031, #7981) need
+	// it, and it is already known once the agents: entry is resolved.
+	var agentSubagents map[string]*string
+	if entryFound {
+		agentSubagents = entry.Subagents
+	}
 	agentDefModel := agentruntime.AgentDefinitionModel(h.Agent)
-	needsOpenAIProvider := agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
-	provider := runInferenceProvider(runtimeBackend.Runtime.Name(), needsOpenAIProvider)
+	// parentNeedsOpenAIProvider decides which inference credential the
+	// *parent's own call* needs (runInferenceProvider, just below) and must
+	// stay parent-only: a Vertex parent with an OpenAI persona still needs
+	// its own Vertex ADC validated, regardless of what its children run on.
+	parentNeedsOpenAIProvider := agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
+	provider := runInferenceProvider(runtimeBackend.Runtime.Name(), parentNeedsOpenAIProvider)
+	// needsOpenAIProvider additionally covers a pre-configured child —
+	// subagents.<persona>, subagents.default, or a discovered persona's own
+	// frontmatter model: — that resolves to the openai provider even when
+	// the parent does not: pi is multi-provider per child, not just per
+	// run, so without this a harness that declares openai next to vertex
+	// never gets the run-scoped credential a Vertex parent's OpenAI persona
+	// needs (#7981). This gates provider creation below, not the parent's
+	// own credential path above.
+	needsOpenAIProvider := parentNeedsOpenAIProvider || agentruntime.SubagentsNeedOpenAIProvider(
+		runtimeBackend.Runtime.Name(), agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
 	// Prepare credentials before env validation and expansion, so harness
 	// references to GOOGLE_APPLICATION_CREDENTIALS resolve to the prepared file.
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
@@ -2010,13 +2031,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			forgeEgressEntry = host + ":" + port
 		}
 	}
-	// Thread the agent's subagents config into BootstrapInput so the pi
-	// runtime can resolve each persona's model (#7031).
-	var agentSubagents map[string]*string
-	if entryFound {
-		agentSubagents = entry.Subagents
-	}
-	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry, configModelAliases, agentSubagents, resolvedModel, remoteRepositoryDir)
+	// agentSubagents is threaded into BootstrapInput so the pi runtime can
+	// resolve each persona's model (#7031); openAIProviderAttached tells it
+	// whether OPENAI_API_KEY actually landed in the sandbox this run, so a
+	// pre-configured child naming the openai provider can be trusted only
+	// when the credential it needs is really there (#7981).
+	openAIProviderAttached := len(openAIHandles) > 0
+	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry, configModelAliases, agentSubagents, resolvedModel, remoteRepositoryDir, openAIProviderAttached)
 	if err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err

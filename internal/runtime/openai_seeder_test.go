@@ -91,6 +91,54 @@ func TestNeedsOpenAIProvider(t *testing.T) {
 	}
 }
 
+// Not parallel: writePersonaFile/discoverPersonas touch no env vars, but
+// kept serial to mirror TestNeedsOpenAIProvider above and avoid surprises
+// if a case grows an env-dependent check later.
+func TestSubagentsNeedOpenAIProvider(t *testing.T) {
+	// noOpenAI has no persona whose frontmatter resolves to openai, so it
+	// isolates the subagentsCfg-only cases from frontmatter discovery.
+	noOpenAI := t.TempDir()
+	writePersonaFile(t, noOpenAI, "correctness", "---\nname: correctness\nmodel: opus\n---\nReview for correctness.\n")
+	writePersonaFile(t, noOpenAI, "style", "---\nname: style\n---\nReview for style.\n")
+
+	// withOpenAI adds a persona whose own frontmatter names openai, for the
+	// discovery-side cases.
+	withOpenAI := t.TempDir()
+	writePersonaFile(t, withOpenAI, "correctness", "---\nname: correctness\nmodel: opus\n---\nReview for correctness.\n")
+	writePersonaFile(t, withOpenAI, "checker", "---\nname: checker\nmodel: openai/gpt-5.6-luna\n---\nCheck something.\n")
+
+	for _, tc := range []struct {
+		name         string
+		backend      string
+		subagentsCfg map[string]*string
+		skillDirs    []string
+		want         bool
+	}{
+		{name: "not pi: always false regardless of config", backend: "codex",
+			subagentsCfg: map[string]*string{"x": strp("openai/gpt-5.6-luna")}},
+		{name: "no config, no openai persona frontmatter", backend: "pi",
+			skillDirs: []string{noOpenAI}, subagentsCfg: map[string]*string{"correctness": strp("opus")}},
+		{name: "a persona's own frontmatter names openai", backend: "pi",
+			skillDirs: []string{withOpenAI}, want: true},
+		{name: "subagents.default names openai", backend: "pi",
+			subagentsCfg: map[string]*string{"default": strp("openai/gpt-5.6-luna")}, want: true},
+		{name: "subagents.<persona> override names openai", backend: "pi",
+			skillDirs:    []string{noOpenAI},
+			subagentsCfg: map[string]*string{"style": strp("openai/gpt-5.6-luna")},
+			want:         true},
+		{name: "a config override away from openai beats an openai frontmatter", backend: "pi",
+			skillDirs:    []string{withOpenAI},
+			subagentsCfg: map[string]*string{"checker": strp("opus")}},
+		{name: "a tombstoned entry (nil) is not a model reference", backend: "pi",
+			subagentsCfg: map[string]*string{"default": nil}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SubagentsNeedOpenAIProvider(tc.backend, tc.subagentsCfg, tc.skillDirs, "code", nil)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 // piModelProvider is what both buildPiRunCommand's gates and
 // NeedsOpenAIProvider branch on, so the prefix it returns must already be
 // folded to lower case.

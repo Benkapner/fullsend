@@ -930,6 +930,88 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 	})
 }
 
+// A pre-configured child naming the openai provider — a subagents.<persona>
+// override, subagents.default, or a discovered persona's own frontmatter
+// model: — is trusted only when the run-scoped OpenAI provider actually
+// attached OPENAI_API_KEY to this sandbox; otherwise Bootstrap fails with a
+// remedy naming the actual fix, not just the accepted-specs list (#7981).
+// A Vertex parent (opus) with an OpenAI persona is exactly the scenario
+// that previously failed even once NeedsOpenAIProvider was fixed, since
+// nothing else admitted the configured openai spec into the trusted set.
+func TestPiAgentTool_OpenAISubagent(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	t.Setenv(piProviderEnv, "")
+	cfg := PiRuntime{}.ConfigDir()
+
+	skill := t.TempDir()
+	writePersonaFile(t, skill, "checker", "---\nname: checker\n---\nCheck something.\n")
+
+	// correctness=openai/gpt-5.6-luna is the issue's own repro
+	// (`agent set review --subagent correctness=openai/gpt-5.6-luna`): an
+	// explicit override, which makes a rejection fatal rather than a
+	// skip-and-warn (resolvePersonaModels only skips an *unreferenced*
+	// persona silently).
+	bootstrap := func(t *testing.T, attached bool) error {
+		t.Helper()
+		forgetPiManifestHash(t, "sb")
+		work := t.TempDir()
+		store := filepath.Join(work, "store")
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+		in := bootstrapInput{
+			sandboxName:            "sb",
+			agentPath:              writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview the PR."),
+			agentName:              "review",
+			skillDirs:              []string{skill},
+			agentSubagents:         map[string]*string{"checker": strp("openai/gpt-5.6-luna")},
+			openAIProviderAttached: attached,
+		}
+		err := PiRuntime{}.Bootstrap(in)
+		if err != nil {
+			return err
+		}
+		var m piManifest
+		require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
+		require.NotNil(t, m.Agent)
+		assert.Equal(t, "openai/gpt-5.6-luna", m.Agent.Personas["checker"].Model,
+			"the Vertex parent's OpenAI persona resolves once the credential is actually attached")
+		assert.Contains(t, m.Agent.ProviderModels[piOpenAIProvider], "gpt-5.6-luna",
+			"the configured id extends the openai allowlist the way a google-vertex/xai-vertex catalog does for theirs")
+		return nil
+	}
+
+	t.Run("resolves when the openai provider is attached", func(t *testing.T) {
+		require.NoError(t, bootstrap(t, true))
+	})
+
+	t.Run("fails with a named remedy when it is not", func(t *testing.T) {
+		err := bootstrap(t, false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `resolved model "openai/gpt-5.6-luna" is not available in this run`)
+		assert.Contains(t, err.Error(), `declare "openai" in the harness's providers list`,
+			"the error names the actual remedy instead of only listing accepted specs")
+		assert.Contains(t, err.Error(), "run the parent itself on an openai/ model")
+	})
+
+	t.Run("subagents.default is covered too", func(t *testing.T) {
+		forgetPiManifestHash(t, "sb")
+		work := t.TempDir()
+		store := filepath.Join(work, "store")
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+		in := bootstrapInput{
+			sandboxName:            "sb",
+			agentPath:              writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview the PR."),
+			agentName:              "review",
+			agentSubagents:         map[string]*string{"default": strp("openai/gpt-5.6-luna")},
+			openAIProviderAttached: true,
+		}
+		require.NoError(t, PiRuntime{}.Bootstrap(in))
+		var m piManifest
+		require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
+		require.NotNil(t, m.Agent)
+		assert.Equal(t, "openai/gpt-5.6-luna", m.Agent.SubagentDefault)
+	})
+}
+
 func TestPiAgentProbeCommand(t *testing.T) {
 	t.Parallel()
 	cmd := piAgentProbeCommand()
