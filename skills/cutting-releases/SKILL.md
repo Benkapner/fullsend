@@ -83,7 +83,14 @@ Summarize changes into categories (features, fixes, refactors). Exclude
 ### 6. Create the RC tag
 
 Every release starts as a release candidate — even one you expect to ship
-with no changes after the gate run. Build the tag message:
+with no changes after the gate run. Record the current commit — call it
+commit X:
+
+```
+git rev-parse HEAD
+```
+
+Build the tag message:
 
 - **Line 1 (subject):** The custom title from step 4, if one was given.
   If no custom title, **use the tag name itself** (e.g. `v0.9.0-rc.1`) —
@@ -94,13 +101,17 @@ with no changes after the gate run. Build the tag message:
 - **Line 2:** Blank.
 - **Lines 3+:** Summary of highlights organized by category.
 
+Name commit X explicitly and verify the tag landed on it before pushing:
+
 ```
-git tag -a v0.X.0-rc.1 -m "<message>"
+git tag -a v0.X.0-rc.1 <X> -m "<message>"
+git rev-parse v0.X.0-rc.1^{commit}
 ```
 
-Record the commit the RC was cut from (`git log -1 --format=%H`) — call it
-commit X. The final tag in step 9 must point at this same commit unless a
-new RC is required in the meantime.
+The second command's output must equal commit X.
+
+**Until fullsend#7955 merges**, the final tag in step 9 must point at a
+different, later commit Y — not commit X — see the interim rule there.
 
 The first line of the annotation becomes the release title suffix via
 GoReleaser's `name_template` (see `.goreleaser.yml`).
@@ -120,10 +131,12 @@ gh run list --workflow=release.yml --limit=1
 Expect the run to take a while before any artifact appears: agents'
 functional tests gate the publish step, so GoReleaser does not start
 until they pass (see the notes at the end of this file). Once the gate
-passes, GoReleaser publishes the `:X.Y.Z-rc.N` binaries and images and
-marks the GitHub release as a prerelease; `v0` does not move for a
-prerelease tag, but `tag-agents` still runs and tags
-`fullsend-ai/agents` at this same prerelease version (see Notes).
+passes, GoReleaser publishes the `:X.Y.Z-rc.N` **binaries** (it has no
+`dockers:` section in `.goreleaser.yml`) and marks the GitHub release as
+a prerelease; `v0` does not move for a prerelease tag, but `tag-agents`
+still runs and tags `fullsend-ai/agents` at this same prerelease version
+(see Notes). The `:X.Y.Z-rc.N` **images** are built separately, by the
+Sandbox Images workflow triggered by the same tag push — see step 8.1.
 
 **If the gate fails:** fix forward on `main`, increment N, and cut
 `rc.N+1` from the new commit (back to step 6). The failed RC's images stay
@@ -132,67 +145,103 @@ Notes).
 
 ### 8. Repin the fleet harness images
 
-Once the RC gate is green, repin the 7 harness images in
+Once the RC gate is green, repin the fleet harness images in
 `fullsend-ai/agents` to this RC's digests before tagging the final. The
 final tag in step 9 must wait until this repin PR is merged.
 
-1. **Resolve the RC digests.** The `sandbox-images.yml` workflow publishes
-   images tagged with the bare semver (no `v` prefix):
+1. **Resolve the RC digests.** First confirm the Sandbox Images workflow
+   run for this tag succeeded — GoReleaser does not build these images
+   (see step 7):
 
    ```
-   skopeo inspect --no-tags docker://ghcr.io/fullsend-ai/fullsend-sandbox:X.Y.Z-rc.N
-   skopeo inspect --no-tags docker://ghcr.io/fullsend-ai/fullsend-code:X.Y.Z-rc.N
+   gh run list --workflow=sandbox-images.yml --branch vX.Y.Z-rc.N --limit 1
    ```
 
-   Check each result's `org.opencontainers.image.revision` label equals
-   commit X. If it doesn't, the registry tag was overwritten by a later
-   build — do not proceed; investigate which commit actually built it.
-2. **Open a repin PR against `fullsend-ai/agents`** replacing the `image:`
-   line in the 7 harness files with the resolved digests:
-   - `fullsend-sandbox` → `harness/prioritize.yaml`, `harness/retro.yaml`,
-     `harness/scribe.yaml`, `harness/triage.yaml`
-   - `fullsend-code` → `harness/code.yaml`, `harness/fix.yaml`,
-     `harness/review.yaml`
+   The `sandbox-images.yml` workflow publishes images tagged with the
+   bare semver (no `v` prefix). On macOS, `skopeo inspect` fails with
+   "no image found in image index for ... darwin" unless you pass
+   `--override-os linux`:
 
-   Pin the multi-arch index digest only (`@sha256:...`) — never `:latest`
-   or a per-platform digest. Use
+   ```
+   skopeo inspect --override-os linux --no-tags docker://ghcr.io/fullsend-ai/fullsend-sandbox:X.Y.Z-rc.N | jq -r '.Digest, .Labels["org.opencontainers.image.revision"]'
+   skopeo inspect --override-os linux --no-tags docker://ghcr.io/fullsend-ai/fullsend-code:X.Y.Z-rc.N | jq -r '.Digest, .Labels["org.opencontainers.image.revision"]'
+   ```
+
+   `.Digest` is the multi-arch index digest to pin. Check the revision
+   label equals commit X. If it doesn't, a revision ≠ X means the tag
+   was rebuilt from another commit — do not proceed; investigate which
+   commit actually built it.
+2. **Open a repin PR against `fullsend-ai/agents`.** Don't assume a fixed
+   file list — discover the current harness files and repin whichever
+   ones reference `fullsend-sandbox` or `fullsend-code`, reading agents at
+   its released tag (not a local fullsend checkout or agents `main`,
+   either of which may have drifted from what the harness actually runs):
+
+   ```
+   for f in $(gh api "repos/fullsend-ai/agents/contents/harness?ref=vX.Y.Z-rc.N" --jq '.[].name'); do
+     gh api "repos/fullsend-ai/agents/contents/harness/$f?ref=vX.Y.Z-rc.N" --jq .content \
+       | base64 -d | grep -H --label="$f" -E 'image:.*fullsend-(sandbox|code)'
+   done
+   ```
+
+   Replace the `image:` line in each matching file with the resolved
+   digest. Pin the multi-arch index digest only (`@sha256:...`) — never
+   `:latest` or a per-platform digest. Use
    [fullsend-ai/agents#1570](https://github.com/fullsend-ai/agents/pull/1570)
    as the template for the PR diff and description.
-3. **Hold window.** Between pushing the RC tag and merging the repin PR,
+3. **Hold window.** Between pushing the RC tag and pushing the final tag,
    do not merge PRs in this repo touching `images/sandbox`, `images/code`,
-   or `.github/workflows/sandbox-images.yml`. A merge in that window can
-   change what the *next* build produces, and because the image build is
-   not reproducible (see Notes), that leaves no way to re-obtain the
-   digests being repinned if they need re-verifying.
+   or `.github/workflows/sandbox-images.yml`. Any such merge changes what
+   the *next* tag's build produces — because the image build is not
+   reproducible (see Notes), the step 9 `X..Y` check would then print
+   commits, forcing `rc.N+1` instead of shipping the final from the
+   already-repinned RC.
 4. **Wait for the repin PR to merge** before proceeding to step 9.
 
 ### 9. Tag and push the final release
 
-Confirm the final tag can point at commit X. If you are tagging later than
-the RC (commit Y, e.g. because the repin PR merge is the current `main`
-tip), run:
+> **Interim rule — remove once fullsend#7955 merges.** GoReleaser
+> resolves the tag to build via `git tag --points-at HEAD`; if the final
+> tag shares a commit with its RC, it finds both tags there, picks the
+> RC's, and fails publishing with `422 already_exists` (this is what
+> happened on `v0.44.0` — see Notes). Until #7955 lands, the final tag
+> MUST point at a commit Y that is different from the RC's commit X. If
+> no newer commit exists on `main` by the time the repin PR merges (the
+> repin merges in `fullsend-ai/agents`, which does not move fullsend
+> `main`), merge a docs-only commit first to create a Y, then continue
+> below.
+
+Let Y be the commit the final tag will point at (distinct from commit X)
+and run:
 
 ```
 git log --oneline X..Y -- images/sandbox images/code .github/workflows/sandbox-images.yml
 ```
 
 - **Prints nothing:** the fleet images haven't changed since the RC was
-  built, so the final tag can safely point at Y (or X).
+  built, so the final tag can safely point at Y.
 - **Prints commits:** a change since the RC could produce different
   images than the ones just repinned. Do not tag the final yet — cut
   `rc.N+1` at Y instead (back to step 6) and repin again.
 
-Once clear, tag and push the final at the confirmed commit, reusing the
-subject and highlights from step 6 with the `-rc.N` suffix dropped:
+Once clear, name commit Y explicitly and verify the tag landed on it
+before pushing, reusing the subject and highlights from step 6 with the
+`-rc.N` suffix dropped:
 
 ```
-git tag -a vX.Y.Z -m "<message>"
+git tag -a vX.Y.Z <Y> -m "<message>"
+git rev-parse vX.Y.Z^{commit}
 git push origin vX.Y.Z
 ```
 
+The second command's output must equal commit Y.
+
 Verify it starts the same way as step 7. This run moves `v0` and tags
 `fullsend-ai/agents` at the non-prerelease version once GoReleaser
-succeeds (see Notes).
+succeeds (see Notes). Because the RC gate ran against agents `main`
+*before* the repin PR merged, this is the **first** gate run against the
+repinned images — if it fails, fix forward and cut `rc.N+1` at a new
+commit (back to step 6) rather than retrying this tag.
 
 ### 10. Run post-flight verification
 
@@ -259,7 +308,11 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
 
 - **Pre-releases:** Tags with `-rc.N`, `-alpha.N`, or `-beta.N` suffixes are
   automatically marked as pre-releases by GoReleaser.
-- **Never delete a published tag.** If a release is bad, cut a new patch or RC.
+- **Never delete a tag that published artifacts.** If a shipped release
+  turns out bad, cut a new patch or RC instead of deleting it. The one
+  exception is a final tag that failed in the `release` job itself with
+  `422 already_exists` (see below) — nothing was published under that
+  tag, so it is safe to delete and re-cut.
 - **The changelog** is auto-generated from PR titles (which must follow conventional commit format). GoReleaser uses `changelog.use: github` in `.goreleaser.yml`, so merged PR titles — not individual commit subjects — are the source of release-note entries.
 - **The `v0` tag** is a moving tag consumed by downstream orgs for reusable
   workflows. It is automatically moved by the release workflow after
@@ -272,9 +325,22 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
   call) against the release tag. Only if those pass does the `release` job
   re-verify the tag and run GoReleaser. A failure at either step means
   **nothing is published** — no binaries, no GitHub Release, no moved
-  `v0` tag — and a Slack notification reports the release as blocked. The
-  fix is to resolve the cause and re-run the failed jobs; the tag stays
-  as it is.
+  `v0` tag — and a Slack notification reports the release as blocked. If
+  the cause is a flake or transient infrastructure issue, resolve it and
+  re-run the failed jobs — the tag stays as it is. If the fix needs a
+  code or pin change (e.g. the functional-tests gate pin drift described
+  in pre-flight step A3), the tag is now stale: cut `rc.N+1` from the
+  fixed commit instead (back to step 6), rather than re-running.
+- **A final tag can also fail in the `release` job itself**, after the
+  gate passes, with `422 already_exists`. This happens when the final
+  shares a commit with its RC: GoReleaser resolves the tag to build via
+  `git tag --points-at HEAD`, finds both tags on that commit, and picks
+  the RC's — then fails trying to re-upload its assets under the final
+  tag (this is what happened on `v0.44.0`). Nothing is published in this
+  case either, but re-running cannot fix it, because the commit itself is
+  the problem: delete the tag (`git push origin :refs/tags/vX.Y.Z`) and
+  re-tag at a commit Y ≠ X that passes the step 9 check (see the interim
+  rule there, fullsend#7955).
 - **The `fullsend-ai/agents` repo** is tagged with the same version last,
   by the `tag-agents` job, using an org-owned GitHub App token
   (`RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`). This is the only step

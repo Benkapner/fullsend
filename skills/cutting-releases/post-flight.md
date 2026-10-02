@@ -49,9 +49,19 @@ gh run view <run-id> --repo fullsend-ai/fullsend --json jobs \
 If `resolve-agents` or `validate-agents` failed, the release was
 blocked before publishing: no binaries, no GitHub Release, no moved
 `v0` tag, and no agents tag. Step B above will show nothing to verify.
-Investigate the failure, then use "Re-run failed jobs" on the existing
-run rather than re-tagging — the tag is already correct and must not be
-moved (re-verification would fail the release if it were).
+If the cause is a flake or transient infrastructure issue, resolve it
+and use "Re-run failed jobs" on the existing run — the tag is already
+correct and must not be moved (re-verification would fail the release
+if it were). If the fix needs a code or pin change, the tag is now
+stale: cut `rc.N+1` from the fixed commit instead (SKILL.md step 6)
+rather than re-running.
+
+If `release` itself failed with `422 already_exists`, the final tag
+shared a commit with its RC and nothing was published either — but
+re-running cannot fix it, since the commit itself is the problem:
+delete the tag (`git push origin :refs/tags/<tag>`) and re-tag at a
+commit Y that is different from the RC's commit and passes the SKILL.md
+step 9 check (see the interim rule there, fullsend#7955).
 
 If only `tag-agents` failed, the fullsend release shipped but agents
 was not tagged; fix that job's cause and re-run it.
@@ -70,17 +80,33 @@ gh api repos/fullsend-ai/agents/git/ref/tags/<tag> --jq '.object.sha'
 gh pr view <repin-pr-number> --repo fullsend-ai/agents --json mergeCommit --jq '.mergeCommit.oid'
 ```
 
-The two SHAs should match (or the tag SHA should be a descendant of the
-merge commit, if other PRs landed on agents `main` between the repin
-merge and the release). If the tag predates the repin merge, the shipped
-fleet config does not include the pinned images and the repin did not
-take effect for this release.
-
-For non-prerelease tags, verify the `v0` floating tag was moved on
-**both** repos — this repo's own `v0` as well as agents':
+The two SHAs should match. If other PRs landed on agents `main` between
+the repin merge and the release, the tag SHA may legitimately differ —
+confirm it is still a descendant of the merge commit rather than
+predating it:
 
 ```
+gh api repos/fullsend-ai/agents/compare/<merge-sha>...<tag-sha> --jq .status
+```
+
+`identical` or `ahead` is OK; anything else means the tag predates the
+repin merge, so the shipped fleet config does not include the pinned
+images and the repin did not take effect for this release.
+
+For non-prerelease tags, verify the `v0` floating tag was moved on
+**both** repos. For this repo, `git/ref/tags/vX.Y.Z` returns the tag
+*object*, not the commit, because the final is an annotated tag — so
+resolve the commit the final tag points at via the commits API instead
+of the ref before comparing it to `v0`:
+
+```
+gh api repos/fullsend-ai/fullsend/commits/vX.Y.Z --jq .sha
 gh api repos/fullsend-ai/fullsend/git/ref/tags/v0 --jq '.object.sha'
+```
+
+The two SHAs must match. For agents:
+
+```
 gh api repos/fullsend-ai/agents/git/ref/tags/v0 --jq '.object.sha'
 ```
 
@@ -94,13 +120,18 @@ The harness files in `fullsend-ai/agents` should be pinned to the
 final tag's own `:X.Y.Z` images. The image build is not reproducible
 (see SKILL.md Notes), so a final build from the same commit produces
 different digests than its RC; re-pinning to the final's digests would
-silently undo the verification done at RC time.
+silently undo the revision check done at RC time.
+
+Discover the harness files at the released tag rather than assuming a
+fixed list or reading a local checkout (either may have drifted from
+what actually shipped):
 
 ```
-grep -n 'image:' harness/{code,fix,prioritize,retro,review,scribe,triage}.yaml
+for f in $(gh api "repos/fullsend-ai/agents/contents/harness?ref=vX.Y.Z" --jq '.[].name'); do
+  gh api "repos/fullsend-ai/agents/contents/harness/$f?ref=vX.Y.Z" --jq .content \
+    | base64 -d | grep -H --label="$f" -E 'image:.*fullsend-(sandbox|code)'
+done
 ```
-
-(Run against a local clone or `gh api repos/fullsend-ai/agents/contents/harness/<file>.yaml` for each.)
 
 Confirm each digest matches what was resolved via `skopeo inspect` for
 the `X.Y.Z-rc.N` tag in SKILL.md step 8 — not a fresh `skopeo inspect` of
