@@ -883,13 +883,18 @@ def _extract_base_command(stage: str) -> str | None:
 
 
 def _redirect_vars_are_plain(command: str, stages: list[str]) -> bool:
-    """Return True if every variable-led redirection names a plain variable
-    that nothing in *command* can have assigned.
+    """Return True if *command* expands only plain variables and nothing in
+    it can have assigned one.
 
-    ``cat > "$OUT/result.json"`` is accepted; ``> ${A:-/dev/tc}p/h/80``,
-    ``> $_``, ``> $1`` and any command containing a variable-assigning
-    builtin (``export``, ``printf -v``, ``set --``, ...) are not.  Assignment
-    prefixes (``A=x``) already make the stage fail _extract_base_command.
+    Every ``$`` anywhere in *command* must start a plain ``$NAME`` or
+    ``${NAME}`` expansion.  That rules out assignment-capable expansions
+    (``${A:=/dev/tc}``) wherever they appear — in a redirection word after
+    a plain variable (``> ${EMPTY}${B:=/dev/tc}p/h/80``) or in an earlier
+    argument (``echo "${A:=/dev/tc}"``) — as well as ``$_``, ``$1`` and
+    ``$((...))``.  ``cat > "$OUT/result.json"`` is accepted.  A command
+    containing a variable-assigning builtin (``export``, ``printf -v``,
+    ``set --``, ...) is also rejected.  Assignment prefixes (``A=x``)
+    already make the stage fail _extract_base_command.
 
     Residual risk: a variable already in the environment when the command
     starts is trusted.  That environment comes from the harness, and a
@@ -901,8 +906,8 @@ def _redirect_vars_are_plain(command: str, stages: list[str]) -> bool:
     if "$'" in command:
         return False
     stripped = _strip_shell_quoting(command)
-    for m in _REDIRECT_VAR_PATTERN.finditer(stripped):
-        var = _PLAIN_PARAM_EXPANSION.match(stripped, m.end() - 1)
+    for m in re.finditer(r"\$", stripped):
+        var = _PLAIN_PARAM_EXPANSION.match(stripped, m.start())
         if var is None or (var.group(1) or var.group(2)) == "_":
             return False
     return not any(_extract_base_command(s) in _VAR_ASSIGNING_COMMANDS for s in stages)
@@ -1052,9 +1057,12 @@ def _unquoted_body_is_literal(body: str) -> bool:
     """Return True if an unquoted-delimiter heredoc body cannot run anything.
 
     Unquoted bodies undergo command substitution and arithmetic expansion;
-    only plain ``$NAME``/``${NAME}`` expansions are accepted.
+    only plain ``$NAME``/``${NAME}`` expansions are accepted.  Backslash-
+    newline is refused too: Bash joins those lines before comparing against
+    the delimiter (``E\\`` + ``OF`` terminates the heredoc), which
+    _find_heredoc_end, working on physical lines, would not see.
     """
-    if "`" in body:
+    if "`" in body or "\\\n" in body:
         return False
     return "$" not in _PLAIN_PARAM_EXPANSION.sub("", body)
 

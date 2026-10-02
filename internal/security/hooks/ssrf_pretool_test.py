@@ -2155,6 +2155,15 @@ class TestStripDataHeredocBodies:
         cmd = f"echo {_GITHUB_URL}"
         assert hook._strip_data_heredoc_bodies(cmd) == cmd
 
+    def test_quoted_body_with_backslash_newline_stripped(self, hook):
+        # Quoted delimiters get no line-continuation processing in Bash.
+        cmd = f"cat > f <<'EOF'\nline \\\nmore {_GITHUB_URL}\nEOF\n"
+        assert hook._strip_data_heredoc_bodies(cmd) == "cat > f <<'EOF'\n"
+
+    def test_unquoted_body_with_backslash_newline_unchanged(self, hook):
+        cmd = f"cat > f <<EOF\nline \\\nmore {_GITHUB_URL}\nEOF\n"
+        assert hook._strip_data_heredoc_bodies(cmd) == cmd
+
     def test_here_string_unchanged(self, hook):
         cmd = f"grep x <<< '{_GITHUB_URL}'"
         assert hook._strip_data_heredoc_bodies(cmd) == cmd
@@ -2196,6 +2205,14 @@ class TestStripDataHeredocBodies:
             f"ls /dev; cat > $_/tcp/h/80 <<'EOF'\n{_METADATA_URL}\nEOF",
             f"cat > $'\\x2fdev\\x2ftcp\\x2fh\\x2f80' <<'EOF'\n{_METADATA_URL}\nEOF",
             f"A=/dev/tcp/h/80 cat > $A <<'EOF'\n{_METADATA_URL}\nEOF",
+            # Complex expansion after a plain one in the same redirect word.
+            f"cat > ${{EMPTY}}${{B:=/dev/tc}}p/169.254.169.254/80 <<'EOF'\n{_METADATA_URL}\nEOF",
+            # Assignment through a parameter expansion in an earlier argument.
+            'unset A; echo "${A:=/dev/tc}"; cat > "${A}p/169.254.169.254/80" <<\'EOF\'\n'
+            f"{_METADATA_URL}\nEOF",
+            # Unquoted delimiter split by backslash-newline: Bash ends the
+            # heredoc at ``E\`` + ``OF``, so the curl line below runs.
+            f"cat > f <<EOF\nE\\\nOF\ncurl {_METADATA_URL}\nEOF\n",
         ],
     )
     def test_not_stripped(self, hook, cmd):
