@@ -39,7 +39,8 @@ Next:
    [Before you begin](#before-you-begin) for the full prerequisite list.
    The generated agent works on GitHub: its harness, prompt and post-script
    all use GitHub. On GitLab, scaffold with
-   `fullsend repos install --forge gitlab` and adapt those three files — see
+   `fullsend repos install --forge gitlab` and adapt those three files; for the
+   harness `role:` and its credentials, see
    [Custom roles](../getting-started/configuring-gitlab.md#custom-roles) and
    the [role-credential contract](../../contributing/gitlab-role-credentials.md).
    The command above generates an
@@ -129,10 +130,11 @@ Notes on the last two rows:
 In CI you set none of these variables yourself. The dispatch workflow and
 `fullsend run` take them from what the setup commands record:
 
-- **Vertex route:** the `FULLSEND_GCP_*` secrets and the
-  `FULLSEND_GCP_REGION` variable that
-  [`fullsend inference provision`](../../cli/inference.md) sets up for
-  Workload Identity Federation.
+- **Vertex route:** the `FULLSEND_GCP_PROJECT_ID` and
+  `FULLSEND_GCP_WIF_PROVIDER` secrets and the `FULLSEND_GCP_REGION` variable,
+  which [`fullsend github setup`](../getting-started/configuring-github.md)
+  writes. The Workload Identity Federation provider it records comes from
+  [`fullsend inference provision`](../../cli/inference.md).
 - **OpenAI route:** the Workload Identity Federation identifiers that
   [`fullsend inference openai request` and `import`](../../cli/inference.md)
   record. `request` writes the document an OpenAI administrator answers;
@@ -236,7 +238,7 @@ in the code block below the table, not in a cell.
 | Error | Cause | Fix |
 |-------|-------|-----|
 | `API Error: Error code policy_denied` on the first model call (0 tokens, ~2s) | The gateway denied the agent's *binary*, not the model. Built-in profiles already allow the runtime binaries; this comes from a custom profile | Check that profile's `binaries:` list (for Claude, both `**/claude` and `**/claude.exe`) — see the grep command below |
-| Agent crashes at 0s, sandbox can't reach the model | `vertex-ai` is missing from `providers:`, or `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` are set but empty | Add `vertex-ai` to `providers:`. Locally, give the variables real values in `--env-file`; in CI, run `fullsend inference provision` (see [Pick a route](#pick-a-route)) |
+| Agent crashes at 0s, sandbox can't reach the model | `vertex-ai` is missing from `providers:`, or `ANTHROPIC_VERTEX_PROJECT_ID` or `CLOUD_ML_REGION` is set but empty | Add `vertex-ai` to `providers:`. Locally, give the variables real values in `--env-file`; in CI, check the `FULLSEND_GCP_PROJECT_ID` secret and the `FULLSEND_GCP_REGION` variable — re-run `fullsend github setup`, or set one with `fullsend github set <owner/repo> <key> <value>` |
 | `Provider "..." declared in harness but no definition found in ...`, then the agent crashes at 0s | A `providers:` entry names neither a built-in bare name nor a file that exists | Use a [built-in name](#pick-a-route), or commit `providers/<name>.yaml` under your own name |
 | Agent never fires, no error anywhere | The harness has no `trigger:` | `agent new` always writes one; a hand-written harness needs one too — see [Triggers](../../cli/agent.md#triggers) |
 | `"role field is required"` | `role:` is missing from the harness | Add `role:` |
@@ -332,7 +334,7 @@ scratch.
 
 - **fullsend CLI** installed and available on your PATH.
 - **Repository scaffolded.** Run [`fullsend github setup`](../getting-started/configuring-github.md) first — it creates `.fullsend/config.yaml` and the dispatch workflow. It does **not** create `policies/`; [`fullsend agent new`](#quick-start) writes that one, and you commit it with the agent. Writing the harness by hand instead? [Minimum viable agent](#minimum-viable-agent) lists what to supply. GitLab repositories are scaffolded instead with `fullsend repos install --forge gitlab` and use role-specific project access tokens rather than GitHub Apps — see [Configuring GitLab](../getting-started/configuring-gitlab.md).
-- **Inference set up for CI (CI only).** For agents running in GitHub Actions, on the Vertex route run [`fullsend inference provision`](../../cli/inference.md) to set up Workload Identity Federation. On the OpenAI route run [`fullsend inference openai request` and `import`](../../cli/inference.md), or set a `FULLSEND_OPENAI_API_KEY` secret.
+- **Inference set up for CI (CI only).** For agents running in GitHub Actions, on the Vertex route run [`fullsend inference provision`](../../cli/inference.md) to set up Workload Identity Federation, then give the provider it prints to [`fullsend github setup`](../getting-started/configuring-github.md), which stores it with the project and region. On the OpenAI route run [`fullsend inference openai request` and `import`](../../cli/inference.md), or set a `FULLSEND_OPENAI_API_KEY` secret.
 - **GitHub Apps installed (CI only).** Your org needs the fullsend GitHub Apps — see [Configuring GitHub](../getting-started/configuring-github.md).
 
 ### How agents work
