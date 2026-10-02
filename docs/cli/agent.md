@@ -57,6 +57,10 @@ Next:
   3. Commit .fullsend, then comment `/fs-lint-docs` on an issue or pull request to run it in CI.
 ```
 
+Step 2 lists the Vertex route's variables. For an agent on an OpenAI model,
+see [Agents on OpenAI models](#agents-on-openai-models); to try the pipeline
+without a model, see [Try it without a model](#try-it-without-a-model).
+
 The generated tree:
 
 ```bash
@@ -371,25 +375,119 @@ to delete or keep.
 ### Running it
 
 Generation is step one. Fill in the marked sections of `agents/<name>.md`,
-then run it. A real run needs GCP credentials, a sandbox image, and the
-environment listed in
-[Running agents locally](../guides/user/running-agents-locally.md).
+then run it with `fullsend run`. What the run needs depends on where the model
+runs, which the runtime and the model decide together:
 
-You can exercise the whole pipeline without spending any inference by using
-the `dummy` runtime, which runs the real sandbox and the real post-script but
-replaces the model with a scripted result. Set `POST_<NAME>_DRY_RUN=1` so the
-post-script prints its comment instead of posting it:
+- **Runtime:** `--runtime` on `fullsend run`, else the agent's `config.yaml`
+  entry (`agent new --runtime` writes it), else the repository's `runtime:`,
+  else `claude`.
+- **Model:** `--model` on `fullsend run`, else the agent's `config.yaml`
+  entry, else the `model:` line in `harness/<name>.yaml`.
+
+Environment variables such as `FULLSEND_RUNTIME` and `FULLSEND_MODEL` sit
+between the flag and the config; the full order is in
+[Selecting a runtime and model](../runtimes.md#selecting-a-runtime-and-model).
+
+Those two decide the route — Claude on Vertex, or OpenAI — and so the
+credentials the run needs. The table in
+[Agents on OpenAI models](#agents-on-openai-models) maps them. On `pi`, the
+route follows the provider the model resolves to: a bare id takes
+`FULLSEND_PI_PROVIDER` (default `anthropic-vertex`), so
+`FULLSEND_PI_PROVIDER=openai` sends a bare id like `gpt-5.6-luna` over the
+OpenAI route — see [pi: Models and providers](../runtimes/pi.md#models-and-providers).
+
+Every route needs these variables:
+
+| Variable | Value |
+|----------|-------|
+| `GITHUB_ISSUE_URL` | The issue or pull request the agent works on, e.g. `https://github.com/OWNER/REPO/pull/99` |
+| `ISSUE_NUMBER` | Its number |
+| `REPO_FULL_NAME` | `OWNER/REPO` |
+| `GH_TOKEN` | A real token, e.g. `"$(gh auth token)"`. A GitHub connectivity check runs before the agent, and a placeholder fails it with `Bad credentials (HTTP 401)` |
+
+Also set `POST_<NAME>_DRY_RUN=1` while you test, so the post-script prints its
+comment instead of posting it. `<NAME>` is the agent name in upper case with
+`-` turned into `_`: `POST_LINT_DOCS_DRY_RUN` for `lint-docs`. Leave it unset
+only when you mean to post.
+
+Then the route's own:
+
+- **Vertex:** `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, and
+  `GOOGLE_APPLICATION_CREDENTIALS` pointing at a GCP credentials file. The
+  credentials file is checked before the sandbox is created, so the run stops
+  there without it:
+
+  ```
+    ✗ Inference credential validation failed
+  Error: host_files[0]: Vertex inference requires GOOGLE_APPLICATION_CREDENTIALS to point to an existing file
+  ```
+
+  See [Get Google Cloud Platform credentials](../guides/user/running-agents-locally.md#get-google-cloud-platform-credentials).
+- **OpenAI:** `OPENAI_API_KEY` — see
+  [Get an OpenAI key](../guides/user/running-agents-locally.md#get-an-openai-key-gpt-on-pi-or-codex).
+  No GCP variables are needed. Generate the agent for this route with
+  `--runtime codex` or `--runtime pi` and an `openai/` model, as
+  [Agents on OpenAI models](#agents-on-openai-models) shows.
+
+  A `pi` agent on an `openai/` model whose sub-agents run on Claude needs the
+  Vertex route's variables as well, through the commented Vertex block that
+  section describes. With the block uncommented, a missing credentials file
+  stops the run before it starts. A harness written by hand without that
+  block is not checked: the sub-agent fails mid-run (see
+  [Troubleshooting](#troubleshooting)). In CI, `fullsend run` prepares Vertex
+  credentials for such sub-agents when `FULLSEND_GCP_PROJECT_ID` and
+  `FULLSEND_GCP_WIF_PROVIDER` are both set.
+
+`--forge github` is not needed for a generated agent: its harness already
+sets `FULLSEND_FORGE: github` and `ISSUE_URL` in `env.runner`. The flag
+matters for the default agents in
+[Running agents locally](../guides/user/running-agents-locally.md#run-default-agents),
+whose harnesses take the forge from it and stop with `ISSUE_URL must be set`
+without one.
+
+#### Try it without a model
+
+The `dummy` runtime runs the real sandbox and the real post-script but
+replaces the model with a scripted result, so you can exercise the whole
+pipeline without spending any inference. It needs no model credentials: no
+`GOOGLE_APPLICATION_CREDENTIALS` and no `OPENAI_API_KEY`.
+
+The script lives at `.fullsend/behaviour/current-scenario.yaml`. This one
+writes a result that matches the `lint-docs` schema
+(`schemas/lint-docs-result.schema.json`: `status`, `summary`, `comment`):
+
+```yaml
+ops:
+  - description: Write the agent result
+    op: write_fixture
+    args: output/agent-result.json, fixtures/agent-result.json
+    content: |
+      {
+        "status": "findings",
+        "summary": "2 broken links added in docs/",
+        "comment": "### Broken links\n\n- `docs/a.md:14` -> `../missing.md`\n- `docs/b.md:3` -> `/docs/gone.md`"
+      }
+```
+
+`write_fixture` writes `content` to the path before the comma. The path after
+the comma is used only by the behaviour-test suite, so any value works for a
+local run. The other ops are listed in
+[Behaviour testing](../guides/dev/behaviour-testing.md#dummy-agent-tables).
+
+Run it. `lint-docs` was generated for the Vertex route, so its harness passes
+`ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` into the sandbox; `dummy`
+never uses them, but they must be set, so give them any value. An agent
+generated for the OpenAI route has no Vertex variables and needs neither:
 
 ```bash
-export GOOGLE_APPLICATION_CREDENTIALS=~/.config/gcloud/application_default_credentials.json
 POST_LINT_DOCS_DRY_RUN=1 \
   GITHUB_ISSUE_URL="https://github.com/OWNER/REPO/pull/99" \
   ISSUE_NUMBER=99 \
   REPO_FULL_NAME=OWNER/REPO \
   GH_TOKEN="$(gh auth token)" \
-  ANTHROPIC_VERTEX_PROJECT_ID=... CLOUD_ML_REGION=us-east5 \
+  ANTHROPIC_VERTEX_PROJECT_ID=unused CLOUD_ML_REGION=unused \
   fullsend run lint-docs --fullsend-dir .fullsend \
-    --runtime dummy --forge github --target-repo .
+    --runtime dummy --target-repo .
 ```
 
 The tail of a successful run:
@@ -397,64 +495,61 @@ The tail of a successful run:
 ```
     Agent exit code: 0
     Agent runs: 1
+    Trace ID: d3ef0291-57de-4889-be45-c944abd6239e
 
+  • Collecting OpenShell logs
+  ✓ Collected 2 OpenShell log source(s) to .../logs
   • Cleaning up sandbox
-  ✓ Sandbox deleted (45.7s)
+  ✓ Sandbox deleted (0.7s)
   • Running post-script: .fullsend/scripts/post-lint-docs.sh
-::stop-commands::0e3a20110bf83ae618cd260cbd0e67e4
+::stop-commands::691d4dd37ed96a3461f8e2f26c1995f1
 **2 broken links added in docs/**
 
 ### Broken links
 
 - `docs/a.md:14` -> `../missing.md`
 - `docs/b.md:3` -> `/docs/gone.md`
-::0e3a20110bf83ae618cd260cbd0e67e4::
+::691d4dd37ed96a3461f8e2f26c1995f1::
 post-lint-docs: dry run, not posting
-  ✓ Post-script completed (0.1s)
+  ✓ Post-script completed (0.0s)
+  ✓ Download directory removed: .../fs-lin-e65af9bc482b
 ```
 
-The `::stop-commands::` lines around the preview stop GitHub Actions from
-reading anything the model wrote as a workflow command. The token is
-random on every run, so the model cannot predict the line that closes the
-block.
+That block is the whole contract working: the sandbox started, the agent
+wrote its result, and the post-script found it and rendered the comment. The
+`::stop-commands::` lines around the preview stop GitHub Actions from reading
+anything the model wrote as a workflow command. The token is random on every
+run, so the model cannot predict the line that closes the block.
 
-With `--runtime claude`, the same agent against a real pull request — the
-model does the work, the schema gate runs, and the post-script still only
-prints:
+#### Run it with a model
+
+Drop `--runtime dummy` and supply the route's variables. The run then uses
+the runtime resolved as described at the top of [Running it](#running-it). With
+`--runtime claude`, the same agent against a real pull request — the model
+does the work, the schema gate runs, and the post-script still only prints:
 
 ```
-  ✓ Extracted 1 output file(s)
+  ✓ Extracted 1 output file(s) (0.4s)
+  ...
   • Running validation: .fullsend/scripts/validate-output-schema.sh
-  ✓ Validation passed: PASS: output validated against schema
+  ✓ Validation passed: Validating: output/agent-result.json against .fullsend/schemas/link-check-result.schema.json
+PASS: output validated against schema (0.4s)
+  ...
     Agent exit code: 0
     Agent runs: 1
     Validation: passed
+  ...
   • Running post-script: .fullsend/scripts/post-link-check.sh
-post-link-check: status=ok, nothing to post
-  ✓ Post-script completed (0.3s)
+post-link-check: status=ok, nothing to post (dry run: did not check for an earlier findings comment to replace)
+  ✓ Post-script completed (0.2s)
 ```
 
 That run is the reference agent from
 [fullsend-ai/agents](https://github.com/fullsend-ai/agents) `examples/link-check/`,
 not the generated stub — the stub has sections still to fill in, so it has no
-work to do. Both runtimes exercise the same harness, sandbox, validation loop
-and post-script; only the agent's own reasoning differs.
-
-The `dummy` runtime reads a scripted result from
-`.fullsend/behaviour/current-scenario.yaml`; write one that produces
-`output/agent-result.json` to try this. That last block is the whole contract
-working: the sandbox started, the agent wrote its result, and the post-script
-found it and rendered the comment.
-
-Three things that stop a local run before it starts, all of them easy to hit:
-
-- `--forge github` is required. Without it no forge overlay applies, so the
-  environment the harness expects is never assembled.
-- `GOOGLE_APPLICATION_CREDENTIALS` must point at a real file. The harness
-  copies it into the sandbox, so the run fails validation without it — even
-  under `dummy`, which does no inference.
-- `GH_TOKEN` must be a real token. A GitHub connectivity check runs before the
-  agent, and a placeholder fails it with `Bad credentials (HTTP 401)`.
+work to do. Every runtime goes through the same harness, sandbox and post-script,
+and the validation loop when the harness has one (`agent new
+--validation-loop`); only the agent's own reasoning differs.
 
 In CI, commit `.fullsend/` and fire the agent with whatever its trigger
 describes — for the default preset, comment `/fs-<name>` on an issue or pull
@@ -480,6 +575,9 @@ request.
 | `provider credentials are not declared by profile 'fullsend-github-ro': GH_TOKEN` (or `'fullsend-github'`) in CI | Your committed `profiles/fullsend-github-ro.yaml` or `profiles/fullsend-github.yaml` was written by fullsend v0.44.0 or earlier and declares no credential. CI replaces `providers/` with the upstream copy, which now passes `GH_TOKEN`, but uses the `profiles/` you committed | Upgrade your local `fullsend` to the release your CI runs. Then replace the GitHub providers and profiles you have with that release's copies, together so local runs keep a matching pair, and commit them: `TAG=v$(fullsend --version \| awk '{print $3}'); for f in providers/github-ro providers/github profiles/fullsend-github-ro profiles/fullsend-github; do if [ -f .fullsend/$f.yaml ]; then curl -fsSL https://raw.githubusercontent.com/fullsend-ai/fullsend/$TAG/internal/scaffold/fullsend-repo/$f.yaml -o .fullsend/$f.yaml; fi; done`. While there, delete any `GH_TOKEN` line under `env.sandbox` in your harnesses (keep the `env.runner` one): the provider now hands the sandbox a placeholder, and that line would give it the real token |
 | The same error from `fullsend run` on your machine, with profiles that already declare `GH_TOKEN` | The OpenShell gateway still holds an older profile with that id. `fullsend run` cannot replace a profile while a provider uses it ([#7973](https://github.com/fullsend-ai/fullsend/issues/7973)) | Delete the providers that use either GitHub profile, then re-run: `openshell provider list \| awk '$2=="fullsend-github-ro" \|\| $2=="fullsend-github"{print $1}' \| xargs -r openshell provider delete`. Each run re-creates the providers it needs |
 | `provider profile 'fullsend-github-ro' requires static credentials: GH_TOKEN` at `fullsend run` | `GH_TOKEN` is unset or empty on the machine running `fullsend run`. The `github-ro` and `github` providers pass it to the sandbox as a placeholder | Put a real token in the env file you pass to `fullsend run`, for example `echo "GH_TOKEN=$(gh auth token)" >> .env.local`. The file is read literally, so a `$(...)` written inside it is not run |
+| `Vertex inference requires GOOGLE_APPLICATION_CREDENTIALS to point to an existing file` (or `a regular file`, `a non-empty file`) | A Vertex-route run (see [Running it](#running-it)) with `GOOGLE_APPLICATION_CREDENTIALS` unset, or pointing at a missing path, a directory or an empty file | Point it at a GCP credentials file — [Get Google Cloud Platform credentials](../guides/user/running-agents-locally.md#get-google-cloud-platform-credentials) |
+| `reading behaviour script .../behaviour/current-scenario.yaml: ... no such file or directory` | `--runtime dummy` with no scripted result. The sandbox has already started when this fires | Write the file — [Try it without a model](#try-it-without-a-model) has one |
+| `The file at /tmp/.gcp-credentials.json does not exist, or it is not a file` in a sub-agent's output, while the run exits 0 | A hand-written harness for a `pi` agent on an `openai/` model, without the Vertex block that [Agents on OpenAI models](#agents-on-openai-models) describes, dispatched a Claude sub-agent, which runs on Vertex, with `GOOGLE_APPLICATION_CREDENTIALS` unset. Nothing checks for it before the run starts ([#7980](https://github.com/fullsend-ai/fullsend/issues/7980)) | Set `GOOGLE_APPLICATION_CREDENTIALS`, `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` as on the Vertex route, or keep the sub-agents on `openai/` models |
 
 ## `agent add`
 
