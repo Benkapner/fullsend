@@ -3082,6 +3082,41 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 	return result, nil
 }
 
+// GetIssueComment fetches a single comment by its numeric ID. GitHub
+// addresses comments globally (no issue number needed in the path).
+// owner and repo are percent-escaped into the request path: callers are
+// expected to pass validated identifiers, but escaping keeps a stray
+// delimiter in either field from being interpreted as a path or query
+// separator instead of literal owner/repo data.
+// Returns forge.ErrNotFound (wrapped) if the comment does not exist.
+func (c *LiveClient) GetIssueComment(ctx context.Context, owner, repo string, commentID int) (*forge.IssueComment, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", url.PathEscape(owner), url.PathEscape(repo), commentID))
+	if err != nil {
+		return nil, fmt.Errorf("get issue comment %d: %w", commentID, err)
+	}
+	var result struct {
+		ID      int    `json:"id"`
+		NodeID  string `json:"node_id"`
+		HTMLURL string `json:"html_url"`
+		Body    string `json:"body"`
+		User    struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode issue comment %d: %w", commentID, err)
+	}
+	return &forge.IssueComment{
+		ID:        result.ID,
+		NodeID:    result.NodeID,
+		HTMLURL:   result.HTMLURL,
+		Body:      result.Body,
+		Author:    result.User.Login,
+		CreatedAt: result.CreatedAt,
+	}, nil
+}
+
 // CreateIssueComment creates a new comment on an issue or pull request.
 func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
 	payload := map[string]string{"body": body}
@@ -3112,10 +3147,11 @@ func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string,
 	}, nil
 }
 
-// UpdateIssueComment updates the body of an existing issue comment.
+// UpdateIssueComment updates the body of an existing issue comment. See
+// GetIssueComment for why owner and repo are percent-escaped.
 func (c *LiveClient) UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error {
 	payload := map[string]string{"body": body}
-	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, commentID), payload)
+	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", url.PathEscape(owner), url.PathEscape(repo), commentID), payload)
 	if err != nil {
 		return fmt.Errorf("update issue comment %d: %w", commentID, err)
 	}

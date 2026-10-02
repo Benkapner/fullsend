@@ -902,6 +902,10 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		{"DeleteIssueComment", func(fc *FakeClient) error {
 			return fc.DeleteIssueComment(ctx, "o", "r", 1)
 		}},
+		{"GetIssueComment", func(fc *FakeClient) error {
+			_, err := fc.GetIssueComment(ctx, "o", "r", 1)
+			return err
+		}},
 		{"ListDirectoryContents", func(fc *FakeClient) error {
 			_, err := fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
 			return err
@@ -1391,6 +1395,83 @@ func TestFakeClient_ReactionErrorInjection(t *testing.T) {
 	fc.Errors = map[string]error{"AddIssueReaction": errors.New("boom")}
 
 	_, err := fc.AddIssueReaction(context.Background(), "org", "repo", 7, "eyes")
+	assert.Error(t, err)
+}
+
+func TestFakeClient_GetIssueComment(t *testing.T) {
+	fc := NewFakeClient()
+	created, err := fc.CreateIssueComment(context.Background(), "org", "repo", 7, "playback-current: 1")
+	require.NoError(t, err)
+
+	got, err := fc.GetIssueComment(context.Background(), "org", "repo", created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, created.ID, got.ID)
+	assert.Equal(t, "playback-current: 1", got.Body)
+}
+
+func TestFakeClient_GetIssueComment_NotFound(t *testing.T) {
+	fc := NewFakeClient()
+	_, err := fc.GetIssueComment(context.Background(), "org", "repo", 404)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFakeClient_GetNoteOnParent(t *testing.T) {
+	fc := NewFakeClient()
+	created, err := fc.CreateIssueComment(context.Background(), "org", "repo", 7, "playback-current: 1")
+	require.NoError(t, err)
+
+	got, err := fc.GetNoteOnParent(context.Background(), "org", "repo", "merge_requests", 7, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, created.ID, got.ID)
+	require.Len(t, fc.GetNoteOnParentCalls, 1)
+	assert.Equal(t, NoteOnParentRecord{
+		Owner: "org", Repo: "repo", ParentType: "merge_requests", ParentIID: 7, NoteID: created.ID,
+	}, fc.GetNoteOnParentCalls[0])
+}
+
+func TestFakeClient_GetNoteOnParent_NotFound(t *testing.T) {
+	fc := NewFakeClient()
+	_, err := fc.GetNoteOnParent(context.Background(), "org", "repo", "issues", 1, 404)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFakeClient_GetNoteOnParent_Error(t *testing.T) {
+	fc := NewFakeClient()
+	fc.Errors = map[string]error{"GetNoteOnParent": errors.New("boom")}
+	_, err := fc.GetNoteOnParent(context.Background(), "org", "repo", "issues", 1, 1)
+	assert.Error(t, err)
+}
+
+func TestFakeClient_UpdateNoteOnParent(t *testing.T) {
+	fc := NewFakeClient()
+	created, err := fc.CreateIssueComment(context.Background(), "org", "repo", 7, "playback-current: 1")
+	require.NoError(t, err)
+
+	err = fc.UpdateNoteOnParent(context.Background(), "org", "repo", "merge_requests", 7, created.ID, "playback-current: 2")
+	require.NoError(t, err)
+	require.Len(t, fc.UpdateNoteOnParentCalls, 1)
+	assert.Equal(t, NoteOnParentRecord{
+		Owner: "org", Repo: "repo", ParentType: "merge_requests", ParentIID: 7, NoteID: created.ID, Body: "playback-current: 2",
+	}, fc.UpdateNoteOnParentCalls[0])
+
+	got, err := fc.GetIssueComment(context.Background(), "org", "repo", created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "playback-current: 2", got.Body)
+}
+
+func TestFakeClient_UpdateNoteOnParent_NotFound(t *testing.T) {
+	fc := NewFakeClient()
+	err := fc.UpdateNoteOnParent(context.Background(), "org", "repo", "issues", 1, 404, "x")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFakeClient_UpdateNoteOnParent_Error(t *testing.T) {
+	fc := NewFakeClient()
+	fc.Errors = map[string]error{"UpdateNoteOnParent": errors.New("boom")}
+	err := fc.UpdateNoteOnParent(context.Background(), "org", "repo", "issues", 1, 1, "x")
 	assert.Error(t, err)
 }
 

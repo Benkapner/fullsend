@@ -570,18 +570,36 @@ treated as companion files:
 ### Playback comment tracking
 
 When a `.fullsend/playback-comment-url` file exists, the runtime reads the
-current playlist position from a forge comment (via `gh api` or `glab api`)
-instead of the local `playlist.yaml`. After serving a result, it updates the
-comment with the new position. The file format is `<cli>\n<api-path>` (e.g.
-`gh\n/repos/owner/repo/issues/comments/123`). Legacy single-line files
-default to `gh`.
+current playlist position from a forge comment through `RunParams.ForgeClient`
+instead of the local `playlist.yaml` — per the forge-abstraction rule, it
+never shells out to `gh`/`glab` itself. After serving a result, it updates
+the comment through the same client. The file format is `<cli>\n<api-path>`
+(e.g. `gh\n/repos/owner/repo/issues/comments/123` or
+`glab\n/projects/owner%2Frepo/merge_requests/7/notes/99`). Legacy
+single-line files default to `gh`.
+
+The API path is parsed into structured fields rather than replayed as a CLI
+argument: only the two known REST path shapes are accepted, and the owner
+and repository fields are restricted to the identifier charset GitHub/GitLab
+themselves allow. For GitLab, the noteable type (`issues` or
+`merge_requests`) and IID are also preserved and used to address the note
+directly through `forge.GitLabExtensions`, rather than through
+`GetIssueComment`/`UpdateIssueComment`'s bounded ID-only scan — a scan
+driven by the resolved client's own fixed noteable type, which cannot find
+a note whose actual parent differs from that type (e.g. an issue tracking
+reference during MR CI).
 
 ### Security
 
 - Path traversal: entry names are validated to stay within the results
   directory.
-- Argument injection: the `playback-comment-url` API path must start with `/`
-  to prevent flag injection into `gh`/`glab` CLI calls.
+- Request-target validation: the `playback-comment-url` API path must match
+  one of the two known REST path shapes exactly, and the owner/repository
+  fields may not contain URL delimiters, encoded separators, or control
+  characters — a looser pattern could redirect the request to a different
+  path or smuggle query data once interpolated back into a request path.
+  The GitHub client's comment-fetching and comment-updating methods also
+  percent-escape owner and repo as a second layer of defense.
 - Context propagation: forge API calls use `context.WithTimeout` to prevent
   indefinite blocking.
 

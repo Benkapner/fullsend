@@ -3681,6 +3681,104 @@ func TestDeleteFiles_Atomic(t *testing.T) {
 	assert.True(t, treeCreated)
 }
 
+func TestGetIssueComment(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/org/repo/issues/comments/42", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         42,
+			"node_id":    "IC_42",
+			"html_url":   "https://github.com/org/repo/issues/1#issuecomment-42",
+			"body":       "playback-current: 3",
+			"user":       map[string]string{"login": "fullsend-bot"},
+			"created_at": "2026-01-01T00:00:00Z",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	comment, err := client.GetIssueComment(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, 42, comment.ID)
+	assert.Equal(t, "IC_42", comment.NodeID)
+	assert.Equal(t, "playback-current: 3", comment.Body)
+	assert.Equal(t, "fullsend-bot", comment.Author)
+}
+
+func TestGetIssueComment_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+}
+
+func TestGetIssueComment_DecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("{not valid json"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode issue comment")
+}
+
+// TestGetIssueComment_EscapesOwnerAndRepo guards against a crafted owner
+// or repo value redirecting the request to a different path or smuggling
+// query data (e.g. an unescaped "?" terminating the path early). Both
+// fields are exercised independently.
+func TestGetIssueComment_EscapesOwnerAndRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/org%3Fevil/repo/issues/comments/42", r.URL.EscapedPath())
+		assert.Empty(t, r.URL.RawQuery, "a stray delimiter in owner must not start a query string")
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "body": "ok"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org?evil", "repo", 42)
+	require.NoError(t, err)
+}
+
+func TestGetIssueComment_EscapesRepoField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/org/repo%3Fx=/issues/comments/42", r.URL.EscapedPath())
+		assert.Empty(t, r.URL.RawQuery, "a stray delimiter in repo must not start a query string")
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "body": "ok"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org", "repo?x=", 42)
+	require.NoError(t, err)
+}
+
+// TestUpdateIssueComment_EscapesOwnerAndRepo is UpdateIssueComment's
+// counterpart to TestGetIssueComment_EscapesOwnerAndRepo.
+func TestUpdateIssueComment_EscapesOwnerAndRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PATCH", r.Method)
+		assert.Equal(t, "/repos/org%3Fevil/repo%3Fx=/issues/comments/42", r.URL.EscapedPath())
+		assert.Empty(t, r.URL.RawQuery, "a stray delimiter in owner/repo must not start a query string")
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "body": "updated"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.UpdateIssueComment(context.Background(), "org?evil", "repo?x=", 42, "updated")
+	require.NoError(t, err)
+}
+
 func TestDeleteIssueComment(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "DELETE", r.Method)
