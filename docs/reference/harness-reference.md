@@ -23,8 +23,8 @@ model: opus                         # LLM model override
 effort: high                        # Reasoning effort (low, medium, high, xhigh, max); claude runtime only
 readonly_repo: false                # Mount repo as read-only in sandbox
 providers:                           # Network access via provider profiles
-  - vertex-ai                       # References providers/vertex-ai.yaml
-  - github                          # References providers/github.yaml
+  - vertex-ai                       # Bare builtin name: resolves to fullsend's embedded definition
+  - github                          # Same; or a providers/<name>.yaml path for a local/custom definition
 
 # ── Skills & plugins ──────────────────────────────────────────
 skills:
@@ -111,9 +111,9 @@ overlays:
   pre_script: scripts/pre-gh.sh
   post_script: scripts/post-gh.sh
   skills: [skills/github-specific]    # Merged with top-level
-  providers: [providers/github.yaml]  # Concatenated with top-level
+  providers: [providers/myorg-github.yaml]  # Concatenated with top-level
   openshell:
-    profiles: [profiles/github.yaml]  # Concatenated with top-level
+    profiles: [profiles/myorg-github.yaml]  # Concatenated with top-level
   host_files:                         # Overlay-specific host files
     - src: env/github.env
       dest: /run/secrets/forge.env

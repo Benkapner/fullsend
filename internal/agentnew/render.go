@@ -85,9 +85,7 @@ func Render(opts Options) ([]File, error) {
 		{Path: "scripts/post-" + opts.Name + ".sh", Data: postScript, Mode: 0o755},
 	}
 
-	// A pi agent on an openai/ model keeps the Vertex files: its
-	// commented-out sub-agent block names them.
-	shared, err := sharedAssets(role, opts.ValidationLoop, opts.UsesVertex() || opts.Runtime == "pi")
+	shared, err := sharedAssets(opts.ValidationLoop)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +113,6 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 	}
 	var hostFiles []harness.HostFile
 	providers := append([]string(nil), role.Providers...)
-	profiles := append([]string(nil), role.Profiles...)
 	// GCP credentials and the Vertex env block are load-bearing for claude
 	// and for pi on a Vertex model, and a hard failure for an agent that
 	// calls only OpenAI: every ${VAR} in env.sandbox must be set on the
@@ -129,7 +126,6 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 		}
 	} else {
 		providers = slices.DeleteFunc(providers, func(p string) bool { return p == vertexProvider })
-		profiles = slices.DeleteFunc(profiles, func(p string) bool { return p == vertexProfile })
 	}
 
 	h := &harness.Harness{
@@ -140,7 +136,6 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 		Image:          opts.Image,
 		Policy:         "policies/base.yaml",
 		Providers:      providers,
-		OpenShell:      &harness.OpenShellConfig{Profiles: profiles},
 		HostFiles:      hostFiles,
 		Model:          opts.Model,
 		Effort:         opts.Effort,
@@ -216,7 +211,6 @@ func vertexSubagentBlock() ([]byte, error) {
 		When: "true",
 		ForgeConfig: harness.ForgeConfig{
 			Providers: []string{vertexProvider},
-			OpenShell: &harness.OpenShellConfig{Profiles: []string{vertexProfile}},
 			HostFiles: vertexHostFiles(false),
 			Env:       &harness.EnvConfig{Sandbox: vertexSandboxEnv()},
 		},

@@ -71,13 +71,9 @@ slug: my-org-lint-docs
 image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:f8255971fec8a72a60adb20f501e55098f237e699dc829f0894647c0de2a19c2
 policy: policies/base.yaml
 providers:
-  - providers/vertex-ai.yaml
-  - providers/github-ro.yaml
+  - vertex-ai
+  - github-ro
   - openai
-openshell:
-  profiles:
-    - profiles/fullsend-vertex-ai.yaml
-    - profiles/fullsend-github-ro.yaml
 host_files:
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
@@ -115,14 +111,6 @@ trigger: |
     && event.transition.comment.command == "/fs-lint-docs"
     && (!has(event.state.change_proposal) || !event.state.change_proposal.is_fork)
 === policies/base.yaml mode=644 (shared, written only when absent)
-<copied verbatim from the embedded scaffold>
-=== profiles/fullsend-github-ro.yaml mode=644 (shared, written only when absent)
-<copied verbatim from the embedded scaffold>
-=== profiles/fullsend-vertex-ai.yaml mode=644 (shared, written only when absent)
-<copied verbatim from the embedded scaffold>
-=== providers/github-ro.yaml mode=644 (shared, written only when absent)
-<copied verbatim from the embedded scaffold>
-=== providers/vertex-ai.yaml mode=644 (shared, written only when absent)
 <copied verbatim from the embedded scaffold>
 === schemas/lint-docs-result.schema.json mode=644
 {

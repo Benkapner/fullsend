@@ -656,7 +656,8 @@ fullsend-repo/                      (embedded template)
 ├── skills/                         → Layered (runtime, not installed)
 ├── schemas/                        → Layered (runtime, not installed)
 ├── harness/                        → Layered (runtime, not installed)
-├── providers/                      → Layered (runtime, not installed)
+├── providers/                      → Built into the binary (not installed or layered)
+├── profiles/                       → Built into the binary (not installed or layered)
 ├── scripts/                        → Layered (runtime, not installed)
 ├── env/                            → Layered (runtime, not installed)
 ├── templates/
@@ -664,12 +665,13 @@ fullsend-repo/                      (embedded template)
 └── (other files)                   → Installed to config repo
 ```
 
-**Three categories:**
+**Four categories:**
 
 | Category | Installed? | Source | Purpose |
 |----------|-----------|--------|---------|
 | **Installed** | Yes | Scaffold → `.fullsend` repo | Workflows, configs, static files |
-| **Layered** | No (runtime) or yes with `--vendor` | Upstream `@main` sparse checkout, or vendored at install | agents/, skills/, harness/, plugins/, providers/, scripts/, schemas/, env/ |
+| **Layered** | No (runtime) or yes with `--vendor` | Upstream `@main` sparse checkout, or vendored at install | agents/, skills/, harness/, plugins/, scripts/, schemas/, env/ |
+| **Built in** | No | Embedded in the `fullsend` binary; `fullsend run` resolves a bare provider name to it | providers/, profiles/ |
 | **Upstream-only** | No (layered) or yes with `--vendor` | Referenced directly or vendored at install | .github/actions/, .github/scripts/ |
 
 Runtime skips upstream fetch when `.defaults/action.yml` is present (vendored); layered installs sparse-checkout `fullsend-ai/fullsend@main` into `.defaults/`.

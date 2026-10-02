@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1425,6 +1426,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepFail("Failed to load provider definitions")
 			return fmt.Errorf("loading provider definitions: %w", err)
 		}
+		warnReservedProviderNameOverrides(localDefs, result.Providers, printer)
+		listedReservedProfiles := warnReservedProfileCopies(result.Profiles, printer)
 
 		// A bare provider name with no local or URL-resolved definition
 		// falls back to the definition the scaffold embeds in this binary
@@ -1452,8 +1455,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// provider must not outlive the run (#6689).
 		created := make(map[string]struct{}, len(allDefs))
 		sharedDefs := allDefs[:0:0]
+		handledEmbeddedProfiles := make(map[string]struct{}, len(allDefs))
 		for _, pd := range allDefs {
 			if !strings.EqualFold(pd.Type, openAIProviderType) {
+				if _, done := handledEmbeddedProfiles[pd.Type]; !done && isReservedProfileID(pd.Type) {
+					handledEmbeddedProfiles[pd.Type] = struct{}{}
+					// A listed copy of a reserved profile was imported above
+					// and stays live for this release (warned about by
+					// warnReservedProfileCopies); importing the embedded one
+					// now would replace it under the same id (#7268).
+					if _, listed := listedReservedProfiles[pd.Type]; !listed {
+						if err := ensureEmbeddedProfile(ctx, pd.Type, printer); err != nil {
+							return err
+						}
+					}
+				}
 				sharedDefs = append(sharedDefs, pd)
 				continue
 			}
@@ -1491,7 +1507,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepInfo(fmt.Sprintf("Provider %q declared by the harness but not needed by runtime %s with model %s; skipped", pd.Name, runtimeBackend.Runtime.Name(), model))
 				continue
 			}
-			if err := ensureOpenAIProfile(ctx, pd.Type, printer); err != nil {
+			if err := ensureEmbeddedProfile(ctx, pd.Type, printer); err != nil {
 				return err
 			}
 			handle, err := ensureOpenAIProvider(ctx, pd, sandboxName, openAIConfigIDs(runCfg), runtimeBackend, printer)
@@ -6489,6 +6505,62 @@ func mergeProviderDefs(localDefs []harness.ProviderDef, urlProviders []resolve.R
 	return allDefs, shadowed
 }
 
+// builtinProviderNames are the provider names fullsend ships an embedded
+// definition and profile for (internal/scaffold/fullsend-repo/providers,
+// internal/scaffold/fullsend-repo/profiles). A bare name in a harness's
+// providers: list that matches one of these resolves to the embedded
+// provider definition (appendEmbeddedProviderDefs); the profile id the
+// definition declares, "fullsend-"+name, is reserved for the embedded copy
+// of the profile (#7268 — see isReservedProfileID, rejectReservedProfileID,
+// warnReservedProviderNameOverrides, ensureEmbeddedProfile).
+var builtinProviderNames = []string{
+	"vertex-ai", "github", "github-ro", "github-artifacts",
+	"gitleaks", "package-registries", "atlassian-cloud", "openai",
+}
+
+// isBuiltinProviderName reports whether name is one fullsend ships an
+// embedded provider definition for.
+func isBuiltinProviderName(name string) bool {
+	return slices.Contains(builtinProviderNames, name)
+}
+
+// isReservedProfileID reports whether id is the profile id fullsend's
+// embedded copy of a builtin provider's profile declares.
+func isReservedProfileID(id string) bool {
+	for _, n := range builtinProviderNames {
+		if "fullsend-"+n == id {
+			return true
+		}
+	}
+	return false
+}
+
+// warnReservedProviderNameOverrides warns about every provider definition
+// the run uses under a name fullsend ships an embedded definition for:
+// a file in the workspace's providers/ directory, a path-form harness entry
+// (what agent new wrote on v0.44.0), or a URL-resolved one. The name is
+// reserved so a stale copy can never silently shadow a fix shipped in the
+// binary (#7268, #7973). For one release the copy is still used and this
+// only warns; a later release makes it an error.
+func warnReservedProviderNameOverrides(localDefs []harness.ProviderDef, resolved []resolve.ResolvedProvider, printer *ui.Printer) {
+	warn := func(name, source string) {
+		if isBuiltinProviderName(name) {
+			printer.StepWarn(fmt.Sprintf("provider %q: the name is reserved for the definition built into fullsend, and a future release rejects %s. It is still used for now. Declare the bare name %q and delete the copy, or rename it to a name fullsend does not ship", name, source, name))
+		}
+	}
+	for _, d := range localDefs {
+		warn(d.Name, "the copy in the workspace providers/ directory")
+	}
+	for _, rp := range resolved {
+		if rp.FromURL {
+			warn(rp.Def.Name, "the URL-resolved copy")
+		} else {
+			// %q: a repository file name must not inject lines into the log.
+			warn(rp.Def.Name, fmt.Sprintf("the copy at %q", rp.LocalPath))
+		}
+	}
+}
+
 // rejectReservedProfileID fails when the run resolved a provider profile
 // whose id the runner reserves for its embedded copy. Directory profiles
 // are not checked because they are no longer imported (#7095).
@@ -6499,6 +6571,27 @@ func rejectReservedProfileID(id string, resolved []resolve.ResolvedProfile) erro
 		}
 	}
 	return nil
+}
+
+// warnReservedProfileCopies warns once for each reserved profile id that
+// the harness lists its own copy of (openshell.profiles, by path or URL),
+// whether or not a provider in this run uses it, and returns those ids.
+// For one release the listed copy stays live: the caller does not import
+// the embedded profile over it. fullsend-openai is skipped here because it
+// is already an error (rejectReservedProfileID) (#7268).
+func warnReservedProfileCopies(resolved []resolve.ResolvedProfile, printer *ui.Printer) map[string]struct{} {
+	listed := make(map[string]struct{})
+	for _, rp := range resolved {
+		if rp.ID == openAIProviderType || !isReservedProfileID(rp.ID) {
+			continue
+		}
+		if _, seen := listed[rp.ID]; seen {
+			continue
+		}
+		listed[rp.ID] = struct{}{}
+		printer.StepWarn(fmt.Sprintf("provider profile %q will be rejected in a future release: the id is reserved for the copy built into fullsend. Your copy is still used for now. Remove it from openshell.profiles and declare the bare provider name %q instead", rp.ID, strings.TrimPrefix(rp.ID, "fullsend-")))
+	}
+	return listed
 }
 
 // appendEmbeddedProviderDefs adds the scaffold's embedded definition for
@@ -6530,13 +6623,17 @@ func appendEmbeddedProviderDefs(localDefs []harness.ProviderDef, resolved []reso
 			continue // not a scaffold-shipped provider; the caller warns
 		}
 		def, err := harness.ParseProviderDef(data)
-		if err != nil || def.Name != name || !strings.EqualFold(def.Type, openAIProviderType) {
-			// Only the OpenAI definition is filled in: its credential is
-			// resolved by the runner, so the file carries no secret reference
-			// and the embedded copy is exactly what CI layers in. The other
-			// scaffold providers keep their existing "no definition" warning.
+		if err != nil || def.Name != name {
 			continue
 		}
+		// Filling in an embedded definition is safe even when it carries a
+		// ${VAR} credential reference (github, github-ro: GH_TOKEN). The
+		// reference is fixed in this binary, not supplied by the repository
+		// or a URL, so it is created with fromURL=false like any local
+		// definition; it expands from the operator's own environment; and in
+		// CI it is byte-identical to the copy workspace preparation used to
+		// layer in. OpenAI's credential is resolved in process instead
+		// (ensureOpenAIProvider) (#7268).
 		printer.StepInfo(fmt.Sprintf("Provider %q: using the definition shipped with fullsend (no providers/%s.yaml in the workspace)", name, name))
 		localDefs = append(localDefs, def)
 		have[name] = true
@@ -6637,9 +6734,10 @@ func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profile
 	var mismatches []string
 	for _, rp := range providers {
 		// Profile types the runner imports from its embedded scaffold
-		// itself (ensureOpenAIProfile) are known even when nothing on disk
+		// itself (ensureEmbeddedProfile) are known even when nothing on disk
 		// declares them.
-		if strings.EqualFold(rp.Def.Type, openAIProviderType) {
+		// The OpenAI path normalizes the spelling; the others must match.
+		if strings.EqualFold(rp.Def.Type, openAIProviderType) || isReservedProfileID(rp.Def.Type) {
 			continue
 		}
 		if !profileIDs[rp.Def.Type] {

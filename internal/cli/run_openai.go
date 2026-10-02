@@ -484,15 +484,19 @@ func dropSkippedProviders(names []string, skipped map[string]struct{}) []string 
 	return out
 }
 
-// ensureOpenAIProfile imports the provider profile for a fullsend-openai
-// provider from the scaffold embedded in this binary. The profile is not
-// layered into .fullsend/profiles at run time — importing that directory
-// wholesale would replace the canonical profiles the fleet resolves from
-// fullsend-ai/agents — and a repository install ships only a .gitkeep, so
-// the runner brings its own, version-matched copy. ImportProfileVerified
-// drops the content cache, re-sends, and confirms the gateway lists it, so
-// a hash match against a recreated (empty) gateway cannot skip the import.
-func ensureOpenAIProfile(ctx context.Context, profileID string, printer *ui.Printer) error {
+// ensureEmbeddedProfile imports a provider profile from the scaffold
+// embedded in this binary — fullsend-openai's for the run-scoped OpenAI
+// provider, and (since #7268) every other builtin provider's reserved
+// profile id (isReservedProfileID) — so a bare provider name resolves
+// end to end with no openshell.profiles entry in the harness. The profile
+// is not layered into .fullsend/profiles at run time — importing that
+// directory wholesale would replace the canonical profiles the fleet
+// resolves from fullsend-ai/agents — and a repository install ships only a
+// .gitkeep, so the runner brings its own, version-matched copy.
+// ImportProfileVerified drops the content cache, re-sends, and confirms the
+// gateway lists it, so a hash match against a recreated (empty) gateway
+// cannot skip the import.
+func ensureEmbeddedProfile(ctx context.Context, profileID string, printer *ui.Printer) error {
 	data, err := scaffold.FullsendRepoFile("profiles/" + profileID + ".yaml")
 	if err != nil {
 		return fmt.Errorf("provider profile %q is not shipped by this fullsend build: %w", profileID, err)

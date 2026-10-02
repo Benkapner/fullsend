@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -637,7 +638,7 @@ func profileListingStub(t *testing.T, listing string) string {
 func TestEnsureOpenAIProfile(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	argsLog := profileListingStub(t, "Available Provider Profiles:\n    fullsend-openai  Fullsend OpenAI  endpoints: 1\n    nvidia  NVIDIA  endpoints: 1  inference")
-	require.NoError(t, ensureOpenAIProfile(context.Background(), "fullsend-openai", ui.New(io.Discard)))
+	require.NoError(t, ensureEmbeddedProfile(context.Background(), "fullsend-openai", ui.New(io.Discard)))
 	lines := readArgLines(t, argsLog)
 	require.Len(t, lines, 3, "delete, import, then confirm the listing: %q", lines)
 	assert.Equal(t, "provider profile delete fullsend-openai", lines[0])
@@ -646,13 +647,13 @@ func TestEnsureOpenAIProfile(t *testing.T) {
 
 	// Second call: the content cache is deliberately not trusted, so the
 	// embedded profile is sent again and the gateway asked again.
-	require.NoError(t, ensureOpenAIProfile(context.Background(), "fullsend-openai", ui.New(io.Discard)))
+	require.NoError(t, ensureEmbeddedProfile(context.Background(), "fullsend-openai", ui.New(io.Discard)))
 	lines = readArgLines(t, argsLog)
 	require.Len(t, lines, 6, "%q", lines)
 	assert.Equal(t, "provider profile delete fullsend-openai", lines[3])
 	assert.Equal(t, "provider list-profiles -o json", lines[5])
 
-	err := ensureOpenAIProfile(context.Background(), "no-such-profile", ui.New(io.Discard))
+	err := ensureEmbeddedProfile(context.Background(), "no-such-profile", ui.New(io.Discard))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not shipped by this fullsend build")
 }
@@ -661,7 +662,7 @@ func TestEnsureOpenAIProfile_StaleCacheReimports(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	// A cache that says "imported" against a gateway that does not list it.
 	argsLog := profileListingStub(t, "Available Provider Profiles:\n    nvidia  NVIDIA  endpoints: 1  inference")
-	err := ensureOpenAIProfile(context.Background(), "fullsend-openai", ui.New(io.Discard))
+	err := ensureEmbeddedProfile(context.Background(), "fullsend-openai", ui.New(io.Discard))
 	require.Error(t, err, "the stub never lists it, so the re-import cannot be confirmed either")
 	assert.Contains(t, err.Error(), "not on the gateway after import")
 	lines := readArgLines(t, argsLog)
@@ -961,17 +962,24 @@ func TestCheckProviderProfileIntegrity_KnowsEmbeddedOpenAIProfile(t *testing.T) 
 	providers := []resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "openai", Type: openAIProviderType}}}
 	err := checkProviderProfileIntegrity(providers, nil)
 	require.NoError(t, err, "the runner imports fullsend-openai itself, so a path-form provider needs no profiles: entry")
+	err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "openai", Type: "Fullsend-OpenAI"}}}, nil)
+	require.NoError(t, err, "the OpenAI path normalizes the spelling, so a mixed-case type is known too")
+	err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "gh", Type: "fullsend-github-ro"}}}, nil)
+	require.NoError(t, err, "every reserved id is imported from the embed when nothing lists it")
+	err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "gh", Type: "Fullsend-GitHub-RO"}}}, nil)
+	require.Error(t, err, "only the OpenAI spelling is normalized; nothing imports a mixed-case reserved id")
 	err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "x", Type: "no-such-profile"}}}, nil)
 	require.Error(t, err)
 }
 
 func TestAppendEmbeddedProviderDefs(t *testing.T) {
-	defs := appendEmbeddedProviderDefs(nil, nil, []string{"openai", "vertex-ai", "no-such-provider", "https://x/p.yaml"}, ui.New(io.Discard))
+	defs := appendEmbeddedProviderDefs(nil, nil, []string{"openai", "vertex-ai", "github-ro", "no-such-provider", "https://x/p.yaml"}, ui.New(io.Discard))
 	names := make([]string, 0, len(defs))
 	for _, d := range defs {
 		names = append(names, d.Name+":"+d.Type)
 	}
-	assert.Equal(t, []string{"openai:fullsend-openai"}, names, "only the scaffold-shipped OpenAI definition is filled in; other bare names keep their warning")
+	assert.Equal(t, []string{"openai:fullsend-openai", "vertex-ai:fullsend-vertex-ai", "github-ro:fullsend-github-ro"}, names,
+		"every scaffold-shipped builtin definition is filled in (#7268); a name with no scaffold file (no-such-provider) or that is a URL keeps its warning")
 	local := []harness.ProviderDef{{Name: "openai", Type: "custom-type"}}
 	defs = appendEmbeddedProviderDefs(local, nil, []string{"openai"}, ui.New(io.Discard))
 	require.Len(t, defs, 1)
@@ -984,6 +992,87 @@ func TestRejectReservedProfileID(t *testing.T) {
 	err := rejectReservedProfileID(openAIProviderType, []resolve.ResolvedProfile{{ID: "fullsend-openai"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reserved")
+}
+
+// TestWarnReservedProfileCopies: every listed copy of a reserved profile is
+// warned about once and reported, whether or not a provider uses it;
+// fullsend-openai (already an error) and non-reserved ids are not (#7268).
+func TestWarnReservedProfileCopies(t *testing.T) {
+	var buf bytes.Buffer
+	listed := warnReservedProfileCopies([]resolve.ResolvedProfile{
+		{ID: "fullsend-github-ro"},
+		{ID: "fullsend-gitleaks", FromURL: true},
+		{ID: "fullsend-github-ro"},
+		{ID: "fullsend-openai"},
+		{ID: "myorg-github-ro"},
+	}, ui.New(&buf))
+	assert.Equal(t, map[string]struct{}{"fullsend-github-ro": {}, "fullsend-gitleaks": {}}, listed)
+	out := buf.String()
+	assert.Equal(t, 1, strings.Count(out, `"fullsend-github-ro" will be rejected`), "one warning per id")
+	assert.Contains(t, out, `declare the bare provider name "gitleaks"`)
+	assert.Contains(t, out, "still used for now")
+	assert.NotContains(t, out, "fullsend-openai")
+	assert.NotContains(t, out, "myorg-")
+}
+
+// TestBuiltinProviderNamesMatchEmbed keeps builtinProviderNames from
+// drifting from the scaffold it describes: every embedded provider
+// definition is listed, each declares the "fullsend-"+name profile type that
+// isReservedProfileID reserves, and that profile is embedded too (#7268).
+func TestBuiltinProviderNamesMatchEmbed(t *testing.T) {
+	var embedded []string
+	require.NoError(t, scaffold.WalkFullsendRepoAll(func(path string, data []byte) error {
+		name, ok := strings.CutPrefix(path, "providers/")
+		if !ok || !strings.HasSuffix(name, ".yaml") {
+			return nil
+		}
+		name = strings.TrimSuffix(name, ".yaml")
+		embedded = append(embedded, name)
+		def, err := harness.ParseProviderDef(data)
+		require.NoError(t, err, path)
+		assert.Equal(t, name, def.Name, path)
+		assert.Equal(t, "fullsend-"+name, def.Type, path)
+		_, err = scaffold.FullsendRepoFile("profiles/" + def.Type + ".yaml")
+		assert.NoError(t, err, "%s declares profile %s, which the scaffold does not embed", path, def.Type)
+		return nil
+	}))
+	assert.ElementsMatch(t, embedded, builtinProviderNames)
+}
+
+func TestIsReservedProfileID(t *testing.T) {
+	for _, id := range []string{"fullsend-openai", "fullsend-vertex-ai", "fullsend-github", "fullsend-github-ro", "fullsend-github-artifacts", "fullsend-gitleaks", "fullsend-package-registries", "fullsend-atlassian-cloud"} {
+		assert.True(t, isReservedProfileID(id), "%s should be reserved", id)
+	}
+	assert.False(t, isReservedProfileID("fullsend-gitlab-forge"))
+	assert.False(t, isReservedProfileID("myorg-github-ro"))
+}
+
+func TestWarnReservedProviderNameOverrides(t *testing.T) {
+	var buf bytes.Buffer
+	warnReservedProviderNameOverrides(
+		[]harness.ProviderDef{
+			{Name: "github-ro", Type: "custom-type"},
+			{Name: "myorg-github-ro", Type: "custom-type"},
+		},
+		[]resolve.ResolvedProvider{
+			{Def: harness.ProviderDef{Name: "vertex-ai"}, LocalPath: "/ws/providers/vertex-ai.yaml"},
+			{Def: harness.ProviderDef{Name: "github"}, FromURL: true},
+			{Def: harness.ProviderDef{Name: "myorg-vertex"}, LocalPath: "/ws/providers/myorg-vertex.yaml"},
+			{Def: harness.ProviderDef{Name: "gitleaks"}, LocalPath: "/ws/providers/x\n::error::forged.yaml"},
+		},
+		ui.New(&buf))
+	out := buf.String()
+	assert.Contains(t, out, `provider "github-ro"`)
+	assert.Contains(t, out, "the copy in the workspace providers/ directory")
+	assert.Contains(t, out, `provider "vertex-ai"`, "a path-form entry is a reserved-name copy too")
+	assert.Contains(t, out, `"/ws/providers/vertex-ai.yaml"`)
+	assert.Contains(t, out, `provider "github"`, "a URL-resolved definition is a reserved-name copy too")
+	assert.Contains(t, out, "the URL-resolved copy")
+	assert.Contains(t, out, "future release")
+	assert.Contains(t, out, "still used for now")
+	assert.NotContains(t, out, "myorg-")
+	assert.NotContains(t, out, "\n::error::", "a path cannot start a new log line")
+	assert.Contains(t, out, `x\n::error::forged.yaml`, "the newline is escaped")
 }
 
 func TestEnsureOpenAIProvider_RefusesUnredactableCredential(t *testing.T) {
