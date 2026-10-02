@@ -101,9 +101,11 @@ Notes on the last two rows:
   `agent set --subagent` points sub-agents at it, and you add `Agent` to the
   `tools:` list in `agents/<name>.md` so the agent can dispatch them; without
   it, no sub-agent is found and no OpenAI credential is created. `default`
-  covers every
-  `Agent` call that names no persona; a persona name, such as `challenger`
-  from a review skill, covers that persona only:
+  routes an `Agent` call that names no persona and omits `model`; a persona
+  name, such as `challenger` from a review skill, covers that persona only.
+  An explicit `model` argument on an anonymous call (for example,
+  `model: "sonnet"`) still wins and is not rerouted to OpenAI — omit `model`
+  when you want the configured default:
 
   ```bash
   fullsend agent set lint-docs --fullsend-dir .fullsend --runtime pi \
