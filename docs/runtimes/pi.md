@@ -494,7 +494,8 @@ each one at Bootstrap and checks it against the same closed set a `model` argume
 through, so a model this run cannot serve fails the run at Bootstrap — after the sandbox is
 created but before the agent starts — rather than at the first dispatch, when a
 half-finished review would already have cost you. A malformed key or model *reference* is
-caught earlier still, by config validation, before the sandbox exists.
+caught earlier still, by config validation, before the sandbox exists, and so is an `openai/`
+value when the harness declares no `openai` provider ([below](#route-a-persona-to-openai)).
 
 #### Route a persona to OpenAI
 
