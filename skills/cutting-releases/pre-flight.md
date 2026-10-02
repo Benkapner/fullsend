@@ -76,10 +76,12 @@ a stale one only fails at tag time (as on `v0.44.0-rc.1`). Show what
 changed in the file since the pin:
 
 ```
-PIN=$(grep -oE 'functional-tests\.yml@[a-f0-9]{40}' .github/workflows/release.yml)
-gh api "repos/fullsend-ai/agents/compare/${PIN#*@}...main" \
+grep -oE 'functional-tests\.yml@[a-f0-9]{40}' .github/workflows/release.yml
+gh api "repos/fullsend-ai/agents/compare/<pin-sha>...main" \
   --jq '.files[] | select(.filename == ".github/workflows/functional-tests.yml") | .patch'
 ```
+
+`<pin-sha>` is the 40-character SHA after the `@`.
 
 Bump the pin before `rc.1` only if the pinned copy lacks something the
 gate needs: tool versions, schema, secrets or permissions. Additive

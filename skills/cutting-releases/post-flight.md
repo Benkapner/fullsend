@@ -28,7 +28,9 @@ all downstream consumers.
 gh release view <tag>
 ```
 
-Check that the title, changelog, and binary assets look correct.
+Check that the title, changelog, and binary assets look correct. Until
+fullsend#7955 merges, a final's changelog covers only the RC-to-final
+commits; SKILL.md step 11.1 regenerates it.
 Verify the release is not marked as a draft.
 
 ## B2. Verify agents validation and tag
@@ -40,14 +42,16 @@ release tag, and only then does `release` run GoReleaser. `tag-agents`
 pushes the version tag to agents last. Every failure path sends a Slack
 notification.
 
-Verify the four jobs succeeded in the release workflow run:
+Verify the release jobs succeeded:
 
 ```
 gh run view <run-id> --repo fullsend-ai/fullsend --json jobs \
-  --jq '.jobs[] | select(.name | test("resolve-agents|validate-agents|release|tag-agents")) | {name, conclusion}'
+  --jq '.jobs[] | select(.name | test("^(resolve-agents|validate-agents|recheck-tag|release|tag-agents)")) | {name, conclusion}'
 ```
 
-If `resolve-agents` or `validate-agents` failed, the release was
+`validate-agents / gate` is skipped on tag pushes; that is expected.
+If `resolve-agents`, `validate-agents` or `recheck-tag` failed (the
+last means the tag moved during the gate), the release was
 blocked before publishing: no binaries, no GitHub Release, no moved
 `v0` tag, and no agents tag. Step B above will show nothing to verify.
 Pick the recovery from "When a release run fails" in the SKILL.md
@@ -71,6 +75,8 @@ the repin merge:
 ```
 gh api repos/fullsend-ai/agents/compare/<repin-merge-sha>...<tag> --jq .status
 ```
+
+`<repin-merge-sha>` was recorded in SKILL.md step 8.4.
 
 `identical` or `ahead` passes; anything else means the release shipped
 without the repinned images.

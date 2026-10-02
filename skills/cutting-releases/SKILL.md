@@ -31,11 +31,12 @@ git checkout main && git pull --tags --force
 
 ### 2. Determine the version
 
-Check the latest **final** tag — RC/alpha/beta tags sort above their
-final, so exclude anything with a `-` suffix:
+Check the latest **final** tags (the first lines of the output) —
+RC/alpha/beta tags sort above their final, so exclude anything with a
+`-` suffix:
 
 ```
-git tag --sort=-v:refname | grep -v -- - | head -5
+git tag --sort=-v:refname | grep -v -- -
 ```
 
 Decide the next **target final version** following semver. Every release is
@@ -115,7 +116,8 @@ gh run list --workflow=release.yml --branch vX.Y.Z-rc.N --limit=1
 ```
 
 Expect about 15 minutes before anything is published: the gate runs
-agents' release tier, one functional-test case per agent (see Notes).
+agents' release tier, one functional-test case per agent (the full
+suite takes about 45; see Notes).
 When it passes, GoReleaser publishes the `vX.Y.Z-rc.N` binaries as a
 prerelease. `v0` does not move, but `tag-agents` tags
 `fullsend-ai/agents` at `vX.Y.Z-rc.N`. The images come from the
@@ -149,25 +151,31 @@ digests. The final tag waits until this repin PR is merged.
    skopeo inspect --override-os linux --no-tags docker://ghcr.io/fullsend-ai/fullsend-code:X.Y.Z-rc.N
    ```
 
-   Pin each result's `Digest` (the multi-arch index digest). Its
-   `org.opencontainers.image.revision` label must equal `<rc-sha>`; if
-   not, the tag was rebuilt from another commit — stop and investigate.
+   Record each result's `Digest` (the multi-arch index digest) as the
+   sandbox and code RC digests; B3 in post-flight checks against them.
+   Its `org.opencontainers.image.revision` label must equal `<rc-sha>`;
+   if not, the tag was rebuilt from another commit — stop and
+   investigate.
 
-3. **Open the repin PR against `fullsend-ai/agents`**, using
-   [fullsend-ai/agents#1570](https://github.com/fullsend-ai/agents/pull/1570)
-   as the template. List the harness files that pin these images on
-   agents `main`:
+3. **Hand off the repin PR against `fullsend-ai/agents`.** List the
+   harness files that pin these images on agents `main`:
 
    ```
    for f in $(gh api "repos/fullsend-ai/agents/contents/harness?ref=main" --jq '.[].name'); do gh api "repos/fullsend-ai/agents/contents/harness/$f?ref=main" --jq ".content|@base64d|split(\"\n\")[]|select(test(\"image:.*fullsend-(sandbox|code)\"))|\"$f: \"+."; done
    ```
 
    Expect one line per harness that pins an image; empty output or an
-   error means discovery failed — stop. Replace each `image:` with the
-   matching index digest (`@sha256:...`), never a tag or a per-platform
-   digest.
+   error means discovery failed — stop. This skill can't clone or open
+   PRs in agents, so use `AskUserQuestion` to give the user the
+   discovered lines and both RC digests, and ask them to open the repin
+   PR with
+   [fullsend-ai/agents#1570](https://github.com/fullsend-ai/agents/pull/1570)
+   as the template: each `image:` gets the matching index digest
+   (`@sha256:...`), never a tag or a per-platform digest.
 
-4. **Wait for the repin PR to merge.**
+4. **Wait for the repin PR to merge,** and record its merge commit as
+   `<repin-merge-sha>` (`gh pr view <n> --repo fullsend-ai/agents
+   --json mergeCommit --jq .mergeCommit.oid`); post-flight B2 needs it.
 
 ### 9. Tag and push the final release
 
@@ -217,9 +225,14 @@ summary highlighting the changes that matter most to end users.
 
    ```
    gh api repos/fullsend-ai/fullsend/releases/generate-notes \
-     -f tag_name=vX.Y.Z -f previous_tag_name=<previous-final> --jq .body > notes.md
-   gh release edit vX.Y.Z --notes-file notes.md
+     -f tag_name=vX.Y.Z -f previous_tag_name=<previous-final> --jq .body \
+     | gh release edit vX.Y.Z --notes-file -
    ```
+
+   With no `.github/release.yml`, this gives GitHub's flat "What's
+   Changed" list, including `docs`/`ci`/`chore` PRs. To keep
+   GoReleaser's grouping instead, rebuild the body in that format from
+   `<previous-final>..vX.Y.Z` (as was done for v0.44.0).
 
 2. **Research the actual changes.** Do not rely on PR titles or one-line
    summaries — they often undersell or misrepresent user impact. Launch an
@@ -288,8 +301,9 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
   which runs agents' functional tests (via a cross-repo reusable workflow
   call) against the release tag. A cross-repo call runs agents' release
   tier: one case per agent, blocking on case exits and deterministic
-  checks only. Only if those pass does the `release` job re-verify the
-  tag and run GoReleaser. A failure at either step means no binaries or
+  checks only. Only if those pass does `recheck-tag` re-verify that the
+  tag still points at the triggering commit, and `release` run
+  GoReleaser. A failure at any of these steps means no binaries or
   GitHub Release are published and `v0` does not move; a Slack
   notification reports the release as blocked.
 - **Images are built per tag push, not per release.** Sandbox Images
