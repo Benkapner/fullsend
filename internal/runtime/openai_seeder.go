@@ -54,54 +54,33 @@ func NeedsOpenAIProvider(backend, runModel, agentModel string, configAliases map
 	}
 }
 
-// SubagentsNeedOpenAIProvider reports whether a pre-configured pi child —
-// a repo `subagents.<persona>` entry, `subagents.default`, or a discovered
-// persona's own frontmatter `model:` — resolves to the openai provider,
-// even when the parent's own model does not (#7981). NeedsOpenAIProvider
-// alone answers this only for the parent: pi is multi-provider per child,
-// not just per run, so a Vertex parent with an OpenAI persona previously
-// never caused the run-scoped OpenAI provider to be created, and
-// resolvePersonaModels then rejected the persona because the run never
-// requested the credential that would have made it available.
+// OpenAIChildren lists the pre-configured pi children whose model resolves
+// to the openai provider: a repo `subagents.<persona>` entry,
+// `subagents.default`, or a discovered persona's own frontmatter `model:`,
+// each resolved through models.aliases (#7981). Each entry names where the
+// model came from and the spec it resolves to, sorted, for an error message.
 //
-// Every backend other than "pi" has no subagents/persona concept of its
-// own: codex always needs the provider regardless (NeedsOpenAIProvider
-// already covers it), and the rest need none.
+// NeedsOpenAIProvider answers only for the parent. pi is multi-provider per
+// child, so a Vertex parent with an OpenAI persona needs the run-scoped
+// OpenAI provider too; the runner creates it when this list is non-empty,
+// and fails before the sandbox exists when the harness declares no openai
+// provider to create. piAgentManifestFor admits the same specs into the
+// children's openai allowlist, so the gate and the allowlist cannot drift.
 //
-// This deliberately does not cover a model name chosen at dispatch time by
-// an Agent call's `model` argument — that value is not known before the
-// sandbox starts, so admitting it here would make the gate depend on what
-// the dispatching model decides to type rather than on configuration the
-// repo controls.
-//
-// Resolution uses piChildModelProvider, not piModelProvider: a child
-// reference can carry a persona "@suffix", or name a repo models.aliases
-// entry case-insensitively or by the alias's own bare id, all of which
-// resolvePersonaModels' canonicalise already accepts when Bootstrap resolves
-// the same reference. Using the parent-only piModelProvider here would miss
-// those forms and skip creating the credential a persona pinned to them
-// would then need (#7981).
-func SubagentsNeedOpenAIProvider(backend string, subagentsCfg map[string]*string, skillDirs []string, agentName string, configAliases map[string]string) bool {
+// A model an Agent call names at dispatch time is not covered: it is not
+// known before the sandbox starts. Every backend other than pi has no
+// per-child provider (codex always needs the provider; the rest never do),
+// so the list is empty for them.
+func OpenAIChildren(backend string, subagentsCfg map[string]*string, skillDirs []string, agentName string, configAliases map[string]string) []string {
 	if backend != "pi" {
-		return false
+		return nil
 	}
-	for _, v := range subagentsCfg {
-		if v != nil && piChildModelProvider(*v, configAliases) == piOpenAIProvider {
-			return true
-		}
-	}
-	// discoverPersonas never returns a non-nil error; the shape is kept so
-	// it reads the same as its other call site.
+	// discoverPersonas never returns a non-nil error; Bootstrap runs the
+	// same discovery on the same directories.
 	personas, _, _ := discoverPersonas(skillDirs, agentName)
-	for _, p := range personas {
-		if subagentsCfg[p.Name] != nil {
-			// Already checked above; a config override wins over
-			// frontmatter and must not be double-counted.
-			continue
-		}
-		if p.Model != "" && piChildModelProvider(p.Model, configAliases) == piOpenAIProvider {
-			return true
-		}
+	var out []string
+	for _, c := range piConfiguredOpenAIChildren(personas, subagentsCfg, configAliases) {
+		out = append(out, c.source+" → "+c.spec)
 	}
-	return false
+	return out
 }

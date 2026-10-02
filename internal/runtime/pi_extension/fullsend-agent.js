@@ -267,7 +267,14 @@ export function resolveModel(agent, spec, parentSpec) {
   const allowed = allowedProviders(agent, parentSpec);
   // The normalized name, not the one written: "xai/grok-4.6" is a spec for
   // the xai-vertex provider and must be reported as one.
-  if (!allowed.has(provider)) return reject(`provider "${provider}" is not available in this run`);
+  if (!allowed.has(provider)) {
+    // The openai credential is attached only for a run whose parent or a
+    // configured child needs it (#7981), so name how to get one.
+    if (provider === "openai") {
+      return reject(`provider "openai" is not available in this run (declare "openai" in the harness providers and set the model on a persona or subagents.default in agents[].subagents, or run the parent on an openai/ model)`);
+    }
+    return reject(`provider "${provider}" is not available in this run`);
+  }
   const canonical = servableSpecs(agent, parentSpec).get(normalized.toLowerCase());
   if (canonical) return canonical;
   return reject(`"${rest}" is not a model this run serves on "${provider}"`);

@@ -1045,16 +1045,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// its own Vertex ADC validated, regardless of what its children run on.
 	parentNeedsOpenAIProvider := agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
 	provider := runInferenceProvider(runtimeBackend.Runtime.Name(), parentNeedsOpenAIProvider)
-	// needsOpenAIProvider additionally covers a pre-configured child —
-	// subagents.<persona>, subagents.default, or a discovered persona's own
-	// frontmatter model: — that resolves to the openai provider even when
-	// the parent does not: pi is multi-provider per child, not just per
-	// run, so without this a harness that declares openai next to vertex
-	// never gets the run-scoped credential a Vertex parent's OpenAI persona
-	// needs (#7981). This gates provider creation below, not the parent's
-	// own credential path above.
-	needsOpenAIProvider := parentNeedsOpenAIProvider || agentruntime.SubagentsNeedOpenAIProvider(
-		runtimeBackend.Runtime.Name(), agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
+	// openAIChildren are the configured pi children (subagents.<persona>,
+	// subagents.default, a persona's frontmatter model:) that resolve to
+	// the openai provider. They need the run-scoped OpenAI provider even
+	// when the parent does not (#7981), so they widen the provider gate
+	// below; the parent's own credential path above stays parent-only.
+	openAIChildren := agentruntime.OpenAIChildren(runtimeBackend.Runtime.Name(), agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
+	needsOpenAIProvider := parentNeedsOpenAIProvider || len(openAIChildren) > 0
 	// Prepare credentials before env validation and expansion, so harness
 	// references to GOOGLE_APPLICATION_CREDENTIALS resolve to the prepared file.
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
@@ -1593,6 +1590,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 
 		allProviderNames = applyRunScopedProviderNames(dropSkippedProviders(sandboxProviderNames(h.Providers, result.Providers), skippedProviders), runScopedProviders)
+	}
+
+	// A configured openai child with no openai provider to attach would
+	// only fail at Bootstrap, after the sandbox exists. Fail here instead,
+	// naming the child and the fix (#7981). A parent on an openai model is
+	// not this check's concern: its own launch path reports that case.
+	if len(openAIChildren) > 0 && !parentNeedsOpenAIProvider && len(openAIHandles) == 0 {
+		printer.StepFail("Sub-agent model needs the openai provider")
+		return fmt.Errorf("sub-agent model resolves to the openai provider, but the harness declares no openai provider: %s; "+
+			"declare \"openai\" in the harness providers list, or run the parent on an openai/ model",
+			strings.Join(openAIChildren, ", "))
 	}
 
 	workItemID := resolveWorkItemID()

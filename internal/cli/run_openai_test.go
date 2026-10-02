@@ -572,6 +572,36 @@ func TestRunAgent_OpenAIProviderNeededBySubagent(t *testing.T) {
 	assert.Regexp(t, `--provider openai-[0-9a-f]{12}`, sandboxLine, "the run-scoped instance is attached to the sandbox")
 }
 
+// TestRunAgent_OpenAISubagentWithoutOpenAIProviderFailsBeforeSandbox
+// covers the other half of #7981: when a configured child needs the openai
+// provider and the harness declares none, the run fails before the sandbox
+// is created, naming the child and the fix, instead of at Bootstrap.
+func TestRunAgent_OpenAISubagentWithoutOpenAIProviderFailsBeforeSandbox(t *testing.T) {
+	logPath := recordingProvidersStub(t)
+	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "GITHUB_ACTIONS"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
+	dir := writeOpenAIFullsendDirFor(t, false, "pi", "anthropic-vertex/claude-opus-4-6")
+	// The same harness with the openai provider removed.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\nmodel: anthropic-vertex/claude-opus-4-6\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(""+
+		"version: \"1\"\nruntime: pi\nagents:\n"+
+		"  - name: code\n    source: harness/code.yaml\n    subagents:\n      default: openai/gpt-5.6-luna\n"), 0o644))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "subagents.default → openai/gpt-5.6-luna")
+	assert.Contains(t, err.Error(), `declare "openai" in the harness providers list`)
+
+	data, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(data), "sandbox create ", "the run stops before a sandbox exists")
+	assert.NotContains(t, string(data), "provider create --name openai-")
+}
+
 func TestRunAgent_OpenAIProviderIsRunScopedAndDeleted(t *testing.T) {
 	cases := []struct {
 		name     string

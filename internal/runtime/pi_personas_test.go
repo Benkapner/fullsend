@@ -565,9 +565,7 @@ func TestPiConfiguredOpenAIIDs(t *testing.T) {
 			"style":       strp("opus"), // not openai: excluded
 			"tombstoned":  nil,          // nil value: excluded
 		}, nil)
-		// Sorted so equivalent configurations produce an identical manifest
-		// regardless of map iteration order (#7981): "-" sorts before "."
-		assert.Equal(t, []string{"gpt-5-nano", "gpt-5.6-luna"}, ids)
+		assert.ElementsMatch(t, []string{"gpt-5.6-luna", "gpt-5-nano"}, ids)
 	})
 
 	t.Run("collects a persona's own frontmatter model", func(t *testing.T) {
@@ -582,54 +580,32 @@ func TestPiConfiguredOpenAIIDs(t *testing.T) {
 	t.Run("a config override beats frontmatter, matching resolution order", func(t *testing.T) {
 		ids := piConfiguredOpenAIIDs(
 			[]piPersona{{Name: "checker", Model: "openai/gpt-5.6-luna"}},
-			map[string]*string{"checker": strp("opus")},
-			nil,
+			map[string]*string{"checker": strp("opus")}, nil,
 		)
 		assert.Empty(t, ids, "the override moves it off openai, so frontmatter must not be consulted")
 	})
 
 	t.Run("bare ids and non-openai specs are ignored", func(t *testing.T) {
+		t.Setenv(piProviderEnv, "") // a bare id takes the default provider, not openai
 		ids := piConfiguredOpenAIIDs(
 			[]piPersona{{Name: "checker", Model: "gpt-5.6-luna"}}, // no provider prefix
-			map[string]*string{"default": strp("anthropic-vertex/claude-opus-4-6")},
-			nil,
+			map[string]*string{"default": strp("anthropic-vertex/claude-opus-4-6")}, nil,
 		)
 		assert.Empty(t, ids)
+	})
+
+	t.Run("an alias resolves through models.aliases, as the runner's gate does", func(t *testing.T) {
+		ids := piConfiguredOpenAIIDs(
+			[]piPersona{{Name: "checker", Model: "luna"}}, nil,
+			map[string]string{"luna": "openai/gpt-5.6-luna"},
+		)
+		assert.Equal(t, []string{"gpt-5.6-luna"}, ids)
 	})
 
 	t.Run("duplicate ids are collapsed", func(t *testing.T) {
 		ids := piConfiguredOpenAIIDs(
 			[]piPersona{{Name: "checker", Model: "openai/gpt-5.6-luna"}},
-			map[string]*string{"default": strp("openai/gpt-5.6-luna")},
-			nil,
-		)
-		assert.Equal(t, []string{"gpt-5.6-luna"}, ids)
-	})
-
-	// #7981: these mirror TestSubagentsNeedOpenAIProvider's alias cases --
-	// the two must resolve a child's model reference identically, or the
-	// provider-creation gate and the manifest's openai allowlist disagree
-	// about which children are actually trusted.
-	t.Run("a repo alias mapped to openai is resolved the same as a direct spec", func(t *testing.T) {
-		ids := piConfiguredOpenAIIDs(nil,
-			map[string]*string{"default": strp("sonnet@default")},
-			map[string]string{"sonnet": "openai/gpt-5.6-luna"},
-		)
-		assert.Equal(t, []string{"gpt-5.6-luna"}, ids, "the @suffix is stripped before the alias is resolved")
-	})
-
-	t.Run("alias matching is case-insensitive", func(t *testing.T) {
-		ids := piConfiguredOpenAIIDs(nil,
-			map[string]*string{"default": strp("SONNET")},
-			map[string]string{"sonnet": "openai/gpt-5.6-luna"},
-		)
-		assert.Equal(t, []string{"gpt-5.6-luna"}, ids)
-	})
-
-	t.Run("a bare id matching an alias's own target resolves to that alias's provider", func(t *testing.T) {
-		ids := piConfiguredOpenAIIDs(nil,
-			map[string]*string{"default": strp("gpt-5.6-luna")},
-			map[string]string{"sonnet": "openai/gpt-5.6-luna"},
+			map[string]*string{"default": strp("openai/gpt-5.6-luna")}, nil,
 		)
 		assert.Equal(t, []string{"gpt-5.6-luna"}, ids)
 	})

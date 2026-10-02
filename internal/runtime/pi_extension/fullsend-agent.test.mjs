@@ -232,6 +232,21 @@ test("resolveModel: a Grok spec is normalized and then checked against the close
   }
 });
 
+test("resolveModel: an openai spec under a non-openai parent is refused naming the remedy (#7981)", () => {
+  const { manifest } = fixture();
+  const parent = "anthropic-vertex/claude-opus-4-6";
+  // A configured openai child puts its id in providerModels, but that does
+  // not let an Agent call's model argument pick openai: only a persona or
+  // subagents.default routes a child there.
+  const a = { ...manifest.agent, providerModels: { ...manifest.agent.providerModels, openai: ["gpt-5.6-luna"] } };
+  assert.throws(
+    () => resolveModel(a, "openai/gpt-5.6-luna", parent),
+    /provider "openai" is not available in this run \(declare "openai" in the harness providers and set the model on a persona or subagents\.default/,
+  );
+  // An openai parent serves its own provider, so the same call resolves.
+  assert.equal(resolveModel(a, "openai/gpt-5.6-luna", "openai/gpt-5.6-luna"), "openai/gpt-5.6-luna");
+});
+
 test("childTools: Explore is read-only, everything else is the parent's built-ins minus Agent/Task", () => {
   const { manifest } = fixture();
   assert.deepEqual(childTools(manifest.agent, "Explore"), ["read", "grep", "find", "ls"]);

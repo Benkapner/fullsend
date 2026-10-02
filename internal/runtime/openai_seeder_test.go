@@ -91,10 +91,10 @@ func TestNeedsOpenAIProvider(t *testing.T) {
 	}
 }
 
-// Not parallel: writePersonaFile/discoverPersonas touch no env vars, but
-// kept serial to mirror TestNeedsOpenAIProvider above and avoid surprises
-// if a case grows an env-dependent check later.
-func TestSubagentsNeedOpenAIProvider(t *testing.T) {
+// OpenAIChildren is the runner's provider gate and pre-sandbox check for a
+// configured pi child on the openai provider (#7981). Each source triggers
+// it alone, and each entry names where the model came from.
+func TestOpenAIChildren(t *testing.T) {
 	// noOpenAI has no persona whose frontmatter resolves to openai, so it
 	// isolates the subagentsCfg-only cases from frontmatter discovery.
 	noOpenAI := t.TempDir()
@@ -107,50 +107,57 @@ func TestSubagentsNeedOpenAIProvider(t *testing.T) {
 	writePersonaFile(t, withOpenAI, "correctness", "---\nname: correctness\nmodel: opus\n---\nReview for correctness.\n")
 	writePersonaFile(t, withOpenAI, "checker", "---\nname: checker\nmodel: openai/gpt-5.6-luna\n---\nCheck something.\n")
 
+	// withAlias names a repo alias in frontmatter; models.aliases maps it
+	// to openai, which only the alias-resolving path can see.
+	withAlias := t.TempDir()
+	writePersonaFile(t, withAlias, "checker", "---\nname: checker\nmodel: luna\n---\nCheck something.\n")
+	aliases := map[string]string{"luna": "openai/gpt-5.6-luna"}
+
 	for _, tc := range []struct {
 		name          string
 		backend       string
 		subagentsCfg  map[string]*string
 		skillDirs     []string
 		configAliases map[string]string
-		want          bool
+		want          []string
 	}{
-		{name: "not pi: always false regardless of config", backend: "codex",
+		{name: "not pi: always empty regardless of config", backend: "codex",
 			subagentsCfg: map[string]*string{"x": strp("openai/gpt-5.6-luna")}},
 		{name: "no config, no openai persona frontmatter", backend: "pi",
 			skillDirs: []string{noOpenAI}, subagentsCfg: map[string]*string{"correctness": strp("opus")}},
 		{name: "a persona's own frontmatter names openai", backend: "pi",
-			skillDirs: []string{withOpenAI}, want: true},
+			skillDirs: []string{withOpenAI},
+			want:      []string{`persona "checker" frontmatter model → openai/gpt-5.6-luna`}},
+		{name: "a persona's frontmatter alias resolves to openai through models.aliases", backend: "pi",
+			skillDirs: []string{withAlias}, configAliases: aliases,
+			want: []string{`persona "checker" frontmatter model → openai/gpt-5.6-luna`}},
+		{name: "the same alias without models.aliases is not openai", backend: "pi",
+			skillDirs: []string{withAlias}},
 		{name: "subagents.default names openai", backend: "pi",
-			subagentsCfg: map[string]*string{"default": strp("openai/gpt-5.6-luna")}, want: true},
+			subagentsCfg: map[string]*string{"default": strp("openai/gpt-5.6-luna")},
+			want:         []string{"subagents.default → openai/gpt-5.6-luna"}},
 		{name: "subagents.<persona> override names openai", backend: "pi",
 			skillDirs:    []string{noOpenAI},
 			subagentsCfg: map[string]*string{"style": strp("openai/gpt-5.6-luna")},
-			want:         true},
+			want:         []string{"subagents.style → openai/gpt-5.6-luna"}},
+		{name: "a subagents value alias resolves through models.aliases", backend: "pi",
+			subagentsCfg: map[string]*string{"default": strp("luna")}, configAliases: aliases,
+			want: []string{"subagents.default → openai/gpt-5.6-luna"}},
 		{name: "a config override away from openai beats an openai frontmatter", backend: "pi",
 			skillDirs:    []string{withOpenAI},
 			subagentsCfg: map[string]*string{"checker": strp("opus")}},
 		{name: "a tombstoned entry (nil) is not a model reference", backend: "pi",
 			subagentsCfg: map[string]*string{"default": nil}},
-		// #7981: a child reference resolved through a repo models.aliases
-		// entry must be detected the same way Bootstrap's resolvePersonaModels
-		// resolves it (piChildModelProvider), or the credential this gate
-		// decides to create disagrees with what Bootstrap goes on to trust.
-		{name: "a repo alias mapped to openai, with the persona '@suffix' stripped first", backend: "pi",
-			subagentsCfg:  map[string]*string{"default": strp("sonnet@default")},
-			configAliases: map[string]string{"sonnet": "openai/gpt-5.6-luna"}, want: true},
-		{name: "alias resolution is case-insensitive", backend: "pi",
-			subagentsCfg:  map[string]*string{"default": strp("SONNET")},
-			configAliases: map[string]string{"sonnet": "openai/gpt-5.6-luna"}, want: true},
-		{name: "a bare id matching an alias's own target resolves to that alias's provider", backend: "pi",
-			subagentsCfg:  map[string]*string{"default": strp("gpt-5.6-luna")},
-			configAliases: map[string]string{"sonnet": "openai/gpt-5.6-luna"}, want: true},
-		{name: "a repo alias mapped away from openai is not detected as one", backend: "pi",
-			subagentsCfg:  map[string]*string{"default": strp("sonnet")},
-			configAliases: map[string]string{"sonnet": "anthropic-vertex/claude-sonnet-5"}},
+		{name: "several sources are listed sorted", backend: "pi",
+			skillDirs:    []string{withOpenAI},
+			subagentsCfg: map[string]*string{"default": strp("openai/gpt-5.6-luna")},
+			want: []string{
+				`persona "checker" frontmatter model → openai/gpt-5.6-luna`,
+				"subagents.default → openai/gpt-5.6-luna",
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := SubagentsNeedOpenAIProvider(tc.backend, tc.subagentsCfg, tc.skillDirs, "code", tc.configAliases)
+			got := OpenAIChildren(tc.backend, tc.subagentsCfg, tc.skillDirs, "code", tc.configAliases)
 			assert.Equal(t, tc.want, got)
 		})
 	}

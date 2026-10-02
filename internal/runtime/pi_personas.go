@@ -370,130 +370,65 @@ func piClaudeToolNames() []string {
 	return names
 }
 
-// piChildAliasTables builds the alias and bare-id lookup tables a
-// persona/subagents model reference resolves against — the same ones
-// resolvePersonaModels' canonicalise checks a child's model against. modelsTable
-// is an alias → spec table (the manifest's own, or piAliasModelsTable's
-// repo-aliases-only one for a caller that has no agent definition yet).
-// Factored out so the provider-creation gate (SubagentsNeedOpenAIProvider,
-// piConfiguredOpenAIIDs) and Bootstrap build identical tables instead of
-// resolving a child's model reference two different ways (#7981).
-func piChildAliasTables(modelsTable map[string]string) (byAlias, byBareID map[string]string) {
-	byAlias = make(map[string]string, len(modelsTable))
-	byBareID = make(map[string]string, len(modelsTable))
-	aliases := make([]string, 0, len(modelsTable))
-	for alias := range modelsTable {
-		aliases = append(aliases, alias)
-	}
-	slices.Sort(aliases)
-	for _, alias := range aliases {
-		spec := modelsTable[alias]
-		if spec == "" || alias == "default" {
-			continue
-		}
-		byAlias[strings.ToLower(alias)] = spec
-		id := spec
-		if i := strings.LastIndex(spec, "/"); i >= 0 {
-			id = spec[i+1:]
-		}
-		if _, taken := byBareID[strings.ToLower(id)]; !taken {
-			byBareID[strings.ToLower(id)] = spec
-		}
-	}
-	return byAlias, byBareID
+// piOpenAIChild is one pre-configured child whose model resolves to the
+// openai provider: source says where the model came from, spec is the
+// resolved "openai/<id>".
+type piOpenAIChild struct {
+	source string
+	spec   string
 }
 
-// piResolveChildModelSpec resolves one persona/subagents model reference to
-// the pi spec it names, against the alias/bare-id tables piChildAliasTables
-// built. The "@suffix" strip mirrors piAgentModels: ValidModelRef admits
-// `opus@20250101`. A bare value that matches neither table, or an already
-// qualified "provider/id" spec (normalised for the xai short forms), passes
-// through unresolved — the caller decides whether that is servable.
-func piResolveChildModelSpec(model string, byAlias, byBareID map[string]string) string {
-	base, _, _ := strings.Cut(strings.TrimSpace(model), "@")
-	base = strings.TrimSpace(base)
-	spec := base
-	if !strings.Contains(base, "/") {
-		key := strings.ToLower(base)
-		if s, ok := byAlias[key]; ok {
-			spec = s
-		} else if s, ok := byBareID[key]; ok {
-			spec = s
-		}
-	} else if head, _, _ := strings.Cut(base, "/"); true {
-		// A qualified spec names its own provider, so read it from the
-		// string rather than the environment.
-		if s, ok := normalizeXaiVertexModel(strings.ToLower(head), base); ok {
-			spec = s
-		}
-	}
-	return spec
-}
-
-// piChildModelProvider resolves a persona/subagents model reference the same
-// way resolvePersonaModels' canonicalise does and returns its spec's
-// lowercase provider prefix, or "" when the reference is bare and resolves
-// to nothing in the repo's alias table (resolvePersonaModels then refuses it
-// outright, so no provider is ever credited for it). Shared with
-// resolvePersonaModels (via piResolveChildModelSpec) so the provider-
-// creation gate can never disagree with Bootstrap about which provider a
-// child reference names (#7981): piModelProvider alone does not strip a
-// persona's "@suffix" or fold a bare value against the alias table the way
-// a qualified "provider/id" spec is folded, so it missed exactly the
-// references (an alias-mapped id with a trailing "@default", a differently
-// cased alias, or a bare id matching an alias's own target) that
-// resolvePersonaModels' canonicalise already accepted.
-func piChildModelProvider(raw string, configAliases map[string]string) string {
-	byAlias, byBareID := piChildAliasTables(piAliasModelsTable(configAliases))
-	spec := piResolveChildModelSpec(raw, byAlias, byBareID)
-	provider, _, ok := strings.Cut(spec, "/")
-	if !ok {
-		return ""
-	}
-	return strings.ToLower(provider)
-}
-
-// piConfiguredOpenAIIDs collects the bare ids of every pre-configured child
-// — a subagents.<persona> override, subagents.default, or a discovered
-// persona's own frontmatter model: — that resolves to the openai provider,
-// directly or through a repo models.aliases entry. These are repo-controlled
-// and known before the sandbox starts, so piAgentManifestFor can safely
-// extend the manifest's openai allowlist with them the way piGoogleVertexModels
-// and piXaiVertexModels extend theirs for their providers — unlike a model
-// string an Agent call supplies at dispatch time, which must still be
-// rejected (#7981).
-//
-// A persona overridden by subagentsCfg is skipped here when scanning
-// frontmatter, matching resolvePersonaModels' own resolution order: the
-// config entry (already scanned via subagentsCfg) wins over frontmatter. ids
-// are returned sorted, so equivalent configurations produce an identical
-// manifest regardless of the map iteration order subagentsCfg/personas were
-// built in.
-func piConfiguredOpenAIIDs(personas []piPersona, subagentsCfg map[string]*string, configAliases map[string]string) []string {
-	byAlias, byBareID := piChildAliasTables(piAliasModelsTable(configAliases))
-	seen := map[string]bool{}
-	var ids []string
-	add := func(raw string) {
-		spec := piResolveChildModelSpec(raw, byAlias, byBareID)
-		head, id, ok := strings.Cut(spec, "/")
-		if !ok || id == "" || !strings.EqualFold(head, piOpenAIProvider) {
+// piConfiguredOpenAIChildren is the single resolver behind OpenAIChildren
+// (the runner's provider gate) and piConfiguredOpenAIIDs (the children's
+// openai allowlist) (#7981). It follows resolvePersonaModels' order: a
+// subagents.<persona> entry wins over that persona's frontmatter, and a
+// tombstoned (nil) entry is no reference. subagents.default counts on its
+// own, since anonymous children use it. Each model is resolved the way the
+// parent's is (translatePiModel: models.aliases, then the provider prefix).
+// Sorted by source.
+func piConfiguredOpenAIChildren(personas []piPersona, subagentsCfg map[string]*string, configAliases map[string]string) []piOpenAIChild {
+	var out []piOpenAIChild
+	add := func(source, model string) {
+		base, _, _ := strings.Cut(strings.TrimSpace(model), "@")
+		base = strings.TrimSpace(base)
+		if base == "" {
 			return
 		}
-		if !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
+		spec := translatePiModel(base, configAliases)
+		if head, id, ok := strings.Cut(spec, "/"); ok && id != "" && strings.EqualFold(head, piOpenAIProvider) {
+			out = append(out, piOpenAIChild{source: source, spec: piOpenAIProvider + "/" + id})
 		}
 	}
-	for _, v := range subagentsCfg {
+	for key, v := range subagentsCfg {
 		if v != nil {
-			add(*v)
+			add("subagents."+key, *v)
 		}
 	}
 	for _, p := range personas {
 		if subagentsCfg[p.Name] != nil {
 			continue
 		}
-		add(p.Model)
+		add(fmt.Sprintf("persona %q frontmatter model", p.Name), p.Model)
+	}
+	slices.SortFunc(out, func(a, b piOpenAIChild) int { return strings.Compare(a.source, b.source) })
+	return out
+}
+
+// piConfiguredOpenAIIDs is the bare ids of piConfiguredOpenAIChildren,
+// deduplicated, for the manifest's openai allowlist. These are
+// repo-controlled and known before the sandbox starts, so piAgentManifestFor
+// extends the allowlist with them the way piGoogleVertexModels and
+// piXaiVertexModels extend theirs — but only once the run-scoped OpenAI
+// provider is attached.
+func piConfiguredOpenAIIDs(personas []piPersona, subagentsCfg map[string]*string, configAliases map[string]string) []string {
+	seen := map[string]bool{}
+	var ids []string
+	for _, c := range piConfiguredOpenAIChildren(personas, subagentsCfg, configAliases) {
+		id := strings.TrimPrefix(c.spec, piOpenAIProvider+"/")
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
 	}
 	slices.Sort(ids)
 	return ids
