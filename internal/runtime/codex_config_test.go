@@ -126,6 +126,9 @@ func TestRenderCodexConfig_PinsProviderAndHygieneKeys(t *testing.T) {
 		// codex turns its multi-agent tools on by default; no sub-agent
 		// roster is wired on codex.
 		"[agents]\nenabled = false",
+		// codex checks this feature before agents.enabled; when it is on the
+		// V2 collaboration tools come back.
+		"plugins = false\nmulti_agent_v2 = false",
 		`wire_api = "responses"`,
 		`base_url = "` + codexBaseURL + `"`,
 		`refresh_interval_ms = 30000`,

@@ -116,7 +116,12 @@ const codexAuthTimeoutMS = 5000
 // wait_agent, ...), which are on by default. fullsend wires no sub-agent
 // roster on codex, and a child's token usage is not in the parent's
 // turn.completed. `[features] multi_agent = false` is not enough: the model's
-// catalog entry overrides it (verified on 0.157.0 and 0.158.0).
+// catalog entry overrides it (verified on 0.157.0, 0.158.0 and 0.159.3).
+//
+// `[features] multi_agent_v2 = false` states codex's default so that
+// `[agents] enabled = false` holds: codex checks this feature first, and when
+// it is on the V2 collaboration tools come back for every model (verified on
+// 0.159.3). On its own the key removes nothing.
 //
 // `web_search` must be stated: codex's default is "cached", not off.
 // `history.persistence` governs `history.jsonl` (the prompt history) only —
@@ -146,6 +151,7 @@ enabled = false
 
 [features]
 plugins = false
+multi_agent_v2 = false
 
 [agents]
 enabled = false
