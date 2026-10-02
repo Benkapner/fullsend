@@ -112,8 +112,9 @@ fullsend agent new my-agent --fullsend-dir .fullsend --role triage
 It writes the files below, registers the agent in `config.yaml`, and checks
 that the result loads. You then edit `agents/my-agent.md`, the instructions the
 agent follows; everything else is ready to run. See
-[`fullsend agent new`](../../cli/agent.md#agent-new) for the flags, the role
-table, and a validated walkthrough.
+[`fullsend agent new`](../../cli/agent.md#agent-new) for the flags and the role
+table, and [Bring Your Own Agent](bring-your-own-agent.md) for a validated
+walkthrough.
 
 ```
 .fullsend/
