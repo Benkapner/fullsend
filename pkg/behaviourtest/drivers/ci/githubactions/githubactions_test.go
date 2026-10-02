@@ -1026,6 +1026,73 @@ func TestWaitForHarnessAgentRound_CompletedRouteStillWaitsForPendingHarnessDispa
 	assert.Equal(t, 100, run.ID, "the earliest run must be selected once its matrix job appears, not the later already-resolved run")
 }
 
+// completedProducersNoMatrixThenMatrixJobsClient wraps FakeClient so
+// ListWorkflowRunJobs returns targetRun's completed Route job, completed
+// Harness dispatch job, and a skipped static stage job — with no matrix
+// job or empty-matrix placeholder visible yet — for the first callsLeft
+// calls, then falls back to the FakeClient's configured job list. It
+// models downstream job visibility lagging the producer jobs' completion.
+type completedProducersNoMatrixThenMatrixJobsClient struct {
+	*forge.FakeClient
+	mu        sync.Mutex
+	targetRun int
+	callsLeft int
+}
+
+func (c *completedProducersNoMatrixThenMatrixJobsClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
+	if runID == c.targetRun {
+		c.mu.Lock()
+		if c.callsLeft > 0 {
+			c.callsLeft--
+			c.mu.Unlock()
+			return []forge.WorkflowJob{
+				{ID: 90, Name: "dispatch / Route", Status: "completed", Conclusion: "success"},
+				{ID: 91, Name: "dispatch / Review", Status: "completed", Conclusion: "skipped"},
+				{ID: 93, Name: "dispatch / Harness dispatch", Status: "completed", Conclusion: "success"},
+			}, nil
+		}
+		c.mu.Unlock()
+	}
+	return c.FakeClient.ListWorkflowRunJobs(ctx, owner, repo, runID)
+}
+
+// TestWaitForHarnessAgentRound_CompletedProducersWithoutMatrixStillWait is
+// a regression test for the #7996 review: completed Route and Harness
+// dispatch jobs do not prove the matrix has resolved, because downstream
+// job visibility can lag producer completion. Run 100 (earliest,
+// in_progress) shows both producers completed but no matrix job or
+// empty-matrix placeholder on the first poll; the requested matrix job
+// appears on the next poll. The round must wait and select run 100 rather
+// than skipping it for the later, already-successful run 200.
+func TestWaitForHarnessAgentRound_CompletedProducersWithoutMatrixStillWait(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 200, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T01:00:00Z"},
+			{ID: 100, Status: "in_progress", CreatedAt: "2026-01-02T00:00:00Z"},
+		},
+	}
+	fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		100: {
+			{ID: 90, Name: "dispatch / Route", Status: "completed", Conclusion: "success"},
+			{ID: 91, Name: "dispatch / Review", Status: "completed", Conclusion: "skipped"},
+			{ID: 93, Name: "dispatch / Harness dispatch", Status: "completed", Conclusion: "success"},
+			{ID: 92, Name: "dispatch / Harness run (review)", Status: "completed", Conclusion: "success"},
+		},
+		200: {{ID: 2, Name: "dispatch / Harness run (review)", Status: "completed", Conclusion: "success"}},
+	}
+	client := &completedProducersNoMatrixThenMatrixJobsClient{FakeClient: fake, targetRun: 100, callsLeft: 1}
+
+	d := newTestDriver(client)
+	run, err := d.WaitForHarnessAgentRound(context.Background(), "org", "repo", "review", after, nil)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, 100, run.ID, "the earliest run must be selected once its matrix job appears, not the later already-resolved run")
+}
+
 func TestWaitForHarnessAgent_FromRepositoryArtifact(t *testing.T) {
 	t.Parallel()
 
@@ -2551,9 +2618,19 @@ func TestHasSupersedingAgentRun(t *testing.T) {
 		CreatedAt: "2026-01-02T00:09:00Z",
 	}
 
+	// Still executing, and the only match so far is a completed failed
+	// built-in "Triage" job. Its matrix has not resolved, so a same-named
+	// custom harness matrix job can still appear; the built-in failure
+	// alone must not rule the run out as superseding (#7996 review).
+	newerFailedBuiltinUnexpanded := forge.WorkflowRun{
+		ID: 209, Status: "in_progress",
+		CreatedAt: "2026-01-02T00:10:00Z",
+	}
+
 	client := forge.NewFakeClient()
 	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
 		100: {{ID: 1, Name: "dispatch / Harness run (triage)", Status: "completed", Conclusion: "failure"}},
+		209: {{ID: 12, Name: "dispatch / Triage", Status: "completed", Conclusion: "failure"}},
 		200: {{ID: 2, Name: "dispatch / Harness run (triage)", Status: "in_progress"}},
 		201: {{ID: 3, Name: "dispatch / Harness run (triage)", Status: "completed", Conclusion: "success"}},
 		202: {{ID: 4, Name: "dispatch / Harness run (triage)", Status: "completed", Conclusion: "failure"}},
@@ -2601,6 +2678,9 @@ func TestHasSupersedingAgentRun(t *testing.T) {
 	assert.True(t, d.hasSupersedingAgentRun(context.Background(), "org", "repo", "triage", failed,
 		[]forge.WorkflowRun{failed, newerCancelledBuiltinUnexpanded}, &lookupErrs),
 		"newer run matching only a cancelled built-in stage job, with its matrix still unresolved, is inconclusive")
+	assert.True(t, d.hasSupersedingAgentRun(context.Background(), "org", "repo", "triage", failed,
+		[]forge.WorkflowRun{failed, newerFailedBuiltinUnexpanded}, &lookupErrs),
+		"newer run matching only a failed built-in stage job, with its matrix still unresolved, is inconclusive")
 
 	errClient := forge.NewFakeClient()
 	errClient.Errors["ListWorkflowRunJobs"] = fmt.Errorf("jobs API error")

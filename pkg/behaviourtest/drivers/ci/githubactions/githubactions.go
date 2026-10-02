@@ -1004,39 +1004,22 @@ func harnessMatrixExpanded(jobs []forge.WorkflowJob) bool {
 //
 // Route and the Harness dispatch job (harnessDispatchJobSuffix) are
 // independent: Route decides whether built-in stages are scheduled, while
-// Harness dispatch computes and expands the custom-harness matrix. A
-// completed Route does not prove the custom matrix has resolved — it can
-// still be in progress — so once the matrix has not yet expanded, Harness
-// dispatch's own completion must be checked rather than treating a
-// completed Route as sufficient evidence (#7996 review).
+// Harness dispatch computes and expands the custom-harness matrix. Neither
+// job's completion proves the matrix has resolved: downstream job
+// visibility can lag the producer jobs' completion. Until expanded matrix
+// jobs or the empty-matrix placeholder are visible
+// (harnessMatrixExpanded), the matrix is therefore unresolved regardless of
+// the Route and Harness dispatch jobs' states (#7996 review).
 func harnessMatrixUnresolved(jobs []forge.WorkflowJob) bool {
-	if harnessMatrixExpanded(jobs) {
-		for _, j := range jobs {
-			if strings.HasSuffix(j.Name, "Route") && j.Status != "completed" {
-				return true
-			}
-		}
-		return false
-	}
-	routeCompleted := false
-	for _, j := range jobs {
-		if strings.HasSuffix(j.Name, "Route") {
-			if j.Status != "completed" {
-				return true
-			}
-			routeCompleted = true
-			break
-		}
-	}
-	if !routeCompleted {
+	if !harnessMatrixExpanded(jobs) {
 		return true
 	}
 	for _, j := range jobs {
-		if strings.HasSuffix(j.Name, harnessDispatchJobSuffix) {
-			return j.Status != "completed"
+		if strings.HasSuffix(j.Name, "Route") && j.Status != "completed" {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // runHasAgentJob reports whether the given workflow run contains a job
@@ -1422,7 +1405,7 @@ func (d *Driver) hasSupersedingAgentRun(ctx context.Context, owner, repo, agent 
 			if job.Status != "completed" || job.Conclusion == "success" {
 				return true
 			}
-			if isWeakJobMatch(job) && other.Status != "completed" && harnessMatrixUnresolved(jobs) {
+			if (isWeakJobMatch(job) || isBuiltinRoleMatch(job, agent)) && other.Status != "completed" && harnessMatrixUnresolved(jobs) {
 				return true
 			}
 			continue

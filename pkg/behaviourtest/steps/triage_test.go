@@ -28,7 +28,7 @@ func TestWhenIssueLabeled_TruncatesScenarioStartToSecondPrecision(t *testing.T) 
 	// the boundary can never exceed a same-second forge timestamp.
 	w := &world.World{IssueNumber: 1, SCM: &fakeDispatchSCM{}}
 	require.NoError(t, whenIssueLabeled(w, "ready-for-triage"))
-	assert.Equal(t, w.ScenarioStart, w.ScenarioStart.Truncate(time.Second),
+	assert.Equal(t, w.ScenarioStart.Truncate(time.Second), w.ScenarioStart,
 		"ScenarioStart should already be truncated to whole-second precision")
 	assert.Zero(t, w.ScenarioStart.Nanosecond())
 }
