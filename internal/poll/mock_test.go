@@ -133,7 +133,7 @@ type mockClient struct {
 	pipelineCalls    []pipelineCall
 	pipelineErrAfter int // fail after N successful calls (0 = always fail if pipelineErr set)
 
-	// wrapperContent is dispatch()'s GetFileContent response for the GitLab
+	// wrapperContent is dispatch()'s GetFileContentAtRef response for the GitLab
 	// pipeline wrapper, defaulting to typedWrapperFixture() so existing
 	// tests keep exercising the typed transport. wrapperNotFound simulates
 	// a legacy installation with no committed wrapper; wrapperErr simulates
@@ -373,27 +373,6 @@ func (m *mockClient) GetFileContentAtRef(_ context.Context, owner, repo, path, r
 	}
 	cp := make([]byte, len(data))
 	copy(cp, data)
-	return cp, nil
-}
-
-// GetFileContent is not called by production code in this package anymore —
-// usesTypedDispatch reads the GitLab pipeline wrapper via GetFileContentAtRef
-// pinned to the dispatch ref (see that method above) — but remains here to
-// satisfy the GitLabClient interface.
-func (m *mockClient) GetFileContent(_ context.Context, _, _, path string) ([]byte, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if path != fullsendPipelineIncludePath {
-		return nil, forge.ErrNotFound
-	}
-	if m.wrapperErr != nil {
-		return nil, m.wrapperErr
-	}
-	if m.wrapperNotFound {
-		return nil, forge.ErrNotFound
-	}
-	cp := make([]byte, len(m.wrapperContent))
-	copy(cp, m.wrapperContent)
 	return cp, nil
 }
 

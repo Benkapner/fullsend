@@ -3,6 +3,7 @@ package repos
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -1563,6 +1564,15 @@ func convergeSchedules(ctx context.Context,
 	// missing schedule can't start (or a disabled one resume) polling
 	// under a stale template ahead of compatible scaffold delivery.
 	typed, typedErr := GitLabUsesTypedDispatch(ctx, client, owner, repo)
+	if errors.Is(typedErr, errGitLabIncompatibleWrapper) {
+		// The installed wrapper's content is incompatible; a scaffold
+		// repair (collected by convergeRepo only when no action is an
+		// "error") is what fixes it. Defer schedule mutations instead of
+		// failing, so the repair can land. API/read failures below stay
+		// hard errors.
+		detail := fmt.Sprintf("deferring pipeline schedule creation/reactivation until the installed GitLab wrapper is repaired: %v", typedErr)
+		return append(actions, scheduleDeferredActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
+	}
 	if typedErr != nil {
 		detail := fmt.Sprintf("checking effective GitLab dispatch transport for schedule creation: %v", typedErr)
 		return append(actions, scheduleErrorActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)

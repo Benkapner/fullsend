@@ -99,6 +99,18 @@ func ActivateGitLabTypedDispatch(ctx context.Context, client forge.Client, owner
 // succeeded; a single error action otherwise.
 func activateGitLabTypedDispatch(ctx context.Context, client forge.Client, owner, repo string) []ComponentAction {
 	if _, err := ActivateGitLabTypedDispatch(ctx, client, owner, repo, false); err != nil {
+		if errors.Is(err, errGitLabIncompatibleWrapper) {
+			// The committed wrapper's content is incompatible; the scaffold
+			// repair delivering a compatible one is what resolves it, and
+			// an "error" action would make convergence bail out before
+			// that repair. Defer activation instead. API/read failures
+			// remain errors.
+			return []ComponentAction{{
+				Component: "gitlab-ci-inputs",
+				Action:    "none",
+				Detail:    fmt.Sprintf("typed GitLab activation deferred until the installed GitLab wrapper is repaired: %v", err),
+			}}
+		}
 		return []ComponentAction{{
 			Component: "gitlab-ci-inputs",
 			Action:    "error",

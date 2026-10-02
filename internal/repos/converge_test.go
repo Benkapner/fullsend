@@ -13,6 +13,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func newConvergeManifest(repos ...string) *Manifest {
@@ -3364,6 +3366,81 @@ fullsend-poll:
 	if len(fc.CreatedSchedules) == 0 {
 		t.Errorf("expected schedules to be created once compatible templates land, got %d", len(fc.CreatedSchedules))
 	}
+}
+
+// TestConverge_GitLab_MissingScheduleDeferredWhileInstalledWrapperIncompatible
+// guards against an installed wrapper whose typed contract is incompatible
+// (here: lacking the literal-scheduled marker) turning the transport check
+// into a per-repo schedule error. That error made convergeRepo return before
+// collecting scaffold repairs, so the incompatible wrapper could never be
+// repaired and the missing schedule never restored. The schedule must be
+// deferred (a nonfatal "none" action) while the compatible target scaffold
+// is still delivered, and created on a later run once the wrapper landed.
+func TestConverge_GitLab_MissingScheduleDeferredWhileInstalledWrapperIncompatible(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	populateGitLabInstalled(fc, "acme", "api")
+	delete(fc.PipelineSchedules, "acme/api")
+	fc.PipelineVarOverrideRoles["acme/api"] = forge.PipelineVarOverrideNoOneAllowed
+
+	files, err := BuildScaffoldFiles(InstallConfig{
+		Owner:       "acme",
+		Repo:        "api",
+		Forge:       ForgeGitLab,
+		Roles:       []string{"triage"},
+		UpstreamRef: "v3.0.0",
+		UpstreamTag: "v3.0.0",
+	})
+	require.NoError(t, err)
+	var wrapper []byte
+	for _, f := range files {
+		fc.FileContents["acme/api/"+f.Path] = f.Content
+		if f.Path == fullsendPipelineInclude {
+			wrapper = f.Content
+		}
+	}
+	require.NotNil(t, wrapper)
+	populateGitLabTypedRoot(t, fc, "acme", "api", wrapper)
+
+	incompatible := []byte(strings.ReplaceAll(string(wrapper), "# fullsend-input-contract: literal-scheduled-v2", ""))
+	require.NotEqual(t, string(wrapper), string(incompatible))
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = incompatible
+
+	cfg := gitlabConvergeCfg("acme/api")
+	cfg.Manifest.GitLab.FullsendRef = "v3.0.0"
+
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	require.NoError(t, err)
+	require.Empty(t, result.Failed(), "an incompatible installed wrapper must defer schedules, not fail the repo")
+
+	var sawSchedule bool
+	for _, a := range result.Results[0].Actions {
+		if !strings.HasPrefix(a.Component, "schedule:") {
+			continue
+		}
+		sawSchedule = true
+		assert.Equal(t, "none", a.Action, "%s: %s", a.Component, a.Detail)
+	}
+	assert.True(t, sawSchedule, "expected schedule component actions")
+	assert.Empty(t, fc.CreatedSchedules, "no schedule may be created while the installed wrapper is incompatible")
+
+	sc.mu.Lock()
+	var repaired bool
+	for _, f := range sc.files {
+		if f.Path == fullsendPipelineInclude {
+			repaired = true
+			assert.Contains(t, string(f.Content), "# fullsend-input-contract: literal-scheduled-v2")
+		}
+	}
+	sc.mu.Unlock()
+	require.True(t, repaired, "scaffold repair for the incompatible wrapper must still be delivered")
+
+	// Once the repaired wrapper lands, the deferred schedules are created.
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = wrapper
+	result2, err := Converge(context.Background(), cfg, newTestClientFactory(fc), (&spyScaffoldCommit{}).fn(), noopProgress)
+	require.NoError(t, err)
+	require.Empty(t, result2.Failed())
+	assert.NotEmpty(t, fc.CreatedSchedules)
 }
 
 func TestActivatePipelineSchedules_ErrorPaths(t *testing.T) {

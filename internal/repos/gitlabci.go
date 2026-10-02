@@ -3,6 +3,7 @@ package repos
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -1320,6 +1321,13 @@ func gitlabWrapperHasPartialDispatchInputs(content []byte) bool {
 	return gitlabWrapperDeclaresSpecInputs(content) && !gitlabWrapperHasDispatchInputs(content)
 }
 
+// errGitLabIncompatibleWrapper marks a wrapper whose transport contract is
+// incompatible (an incomplete typed contract, or a typed contract lacking
+// the literal-scheduled marker). Callers that inspect the *installed*
+// wrapper can use errors.Is to tell this content problem — which a scaffold
+// repair resolves — apart from an API/read failure.
+var errGitLabIncompatibleWrapper = errors.New("incompatible GitLab wrapper contract")
+
 // requireCompleteGitLabDispatchContract rejects a wrapper that declares an
 // incomplete spec:inputs pipeline-input contract — neither a supported
 // legacy (variable-based) wrapper nor a valid typed one. See
@@ -1327,7 +1335,7 @@ func gitlabWrapperHasPartialDispatchInputs(content []byte) bool {
 // typed-transport detection.
 func requireCompleteGitLabDispatchContract(content []byte) error {
 	if gitlabWrapperHasPartialDispatchInputs(content) {
-		return fmt.Errorf("GitLab wrapper declares an incomplete spec:inputs pipeline-input dispatch contract (missing one or more of the %d required inputs); this is neither a supported legacy wrapper nor a valid typed one and must not be delivered or activated", len(gitlabDispatchInputNames))
+		return fmt.Errorf("%w: GitLab wrapper declares an incomplete spec:inputs pipeline-input dispatch contract (missing one or more of the %d required inputs); this is neither a supported legacy wrapper nor a valid typed one and must not be delivered or activated", errGitLabIncompatibleWrapper, len(gitlabDispatchInputNames))
 	}
 	return nil
 }
@@ -1464,17 +1472,38 @@ var gitlabAgentInputVariableBridge = map[string]string{
 // either GitLab's plain-scalar variable syntax or its extended
 // ({value:, expand:}) form.
 func gitlabVariableBridgesInput(variables *yaml.Node, varName, inputName string) bool {
+	return gitlabVariableBridgesInputExpand(variables, varName, inputName, false)
+}
+
+// gitlabVariableBridgesInputNonExpanding is the strict form of
+// gitlabVariableBridgesInput: it additionally requires the extended
+// ({value:, expand: false}) mapping with an explicit boolean false, so
+// caller-controlled dispatch metadata is never variable-expanded before
+// dispatch authentication. A scalar bridge, a missing expand key, or
+// expand: true all fail.
+func gitlabVariableBridgesInputNonExpanding(variables *yaml.Node, varName, inputName string) bool {
+	return gitlabVariableBridgesInputExpand(variables, varName, inputName, true)
+}
+
+func gitlabVariableBridgesInputExpand(variables *yaml.Node, varName, inputName string, requireNoExpand bool) bool {
 	want := "$[[ inputs." + inputName + " ]]"
 	value := findMappingValue(variables, varName)
 	if value == nil {
 		return false
 	}
 	if value.Kind == yaml.ScalarNode {
-		return value.Value == want
+		return !requireNoExpand && value.Value == want
 	}
 	if value.Kind == yaml.MappingNode {
 		inner := findMappingValue(value, "value")
-		return inner != nil && inner.Kind == yaml.ScalarNode && inner.Value == want
+		if inner == nil || inner.Kind != yaml.ScalarNode || inner.Value != want {
+			return false
+		}
+		if !requireNoExpand {
+			return true
+		}
+		expand := findMappingValue(value, "expand")
+		return expand != nil && expand.Kind == yaml.ScalarNode && expand.Tag == "!!bool" && expand.Value == "false"
 	}
 	return false
 }
@@ -1483,7 +1512,9 @@ func gitlabVariableBridgesInput(variables *yaml.Node, varName, inputName string)
 // template declares a job whose variables: block bridges every dispatch
 // input into its corresponding job variable using the exact
 // "$[[ inputs.<name> ]]" form run-agent-job.sh and HMAC verification
-// depend on.
+// depend on. Every bridge must be an extended mapping with an explicit
+// expand: false, so caller-controlled metadata is not variable-expanded
+// before dispatch authentication.
 //
 // gitlabWrapperHasDispatchInputs only checks that the agent's spec:inputs
 // header declares the required input names — a complete header with a
@@ -1517,7 +1548,7 @@ func gitlabAgentBridgesDispatchInputs(content []byte) bool {
 		}
 		complete := true
 		for varName, inputName := range gitlabAgentInputVariableBridge {
-			if !gitlabVariableBridgesInput(variables, varName, inputName) {
+			if !gitlabVariableBridgesInputNonExpanding(variables, varName, inputName) {
 				complete = false
 				break
 			}
@@ -1579,7 +1610,7 @@ func gitlabPollAndAgentTemplatesLanded(ctx context.Context, client forge.Client,
 
 func validateGitLabTypedContract(wrapper []byte) error {
 	if !bytes.Contains(wrapper, []byte("# fullsend-input-contract: literal-scheduled-v2")) {
-		return fmt.Errorf("pinned typed GitLab scaffold lacks the literal-variable and variable-free schedule contract; upgrade the pin before activation")
+		return fmt.Errorf("%w: pinned typed GitLab scaffold lacks the literal-variable and variable-free schedule contract; upgrade the pin before activation", errGitLabIncompatibleWrapper)
 	}
 	return nil
 }

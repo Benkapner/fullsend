@@ -499,3 +499,39 @@ func TestActivationDefersOnBadlyForwardedRootInput(t *testing.T) {
 	assert.Equal(t, "legacy", fc.PipelineSchedules["acme/widgets"][0].Variables[forge.VarPollMode],
 		"activation must not migrate schedules while the root's forwarding map drops a required input")
 }
+
+// TestGitLabAgentBridgeRequiresExplicitNoExpand guards the landed-agent
+// check: every dispatch bridge must be an extended mapping with an explicit
+// boolean expand: false, otherwise caller-controlled metadata could be
+// variable-expanded before dispatch authentication. The root STAGE
+// compatibility check (gitlabVariableBridgesInput) stays permissive.
+func TestGitLabAgentBridgeRequiresExplicitNoExpand(t *testing.T) {
+	agent, err := scaffold.GitLabPerRepoFile(fullsendAgentTemplatePath)
+	require.NoError(t, err)
+	require.True(t, gitlabAgentBridgesDispatchInputs(agent), "the shipped agent template must satisfy the strict check")
+
+	const bridge = "      value: $[[ inputs.event_payload_chunk_00 ]]\n      expand: false\n"
+	require.Contains(t, string(agent), bridge)
+	for name, replacement := range map[string]string{
+		"scalar bridge":       "      $[[ inputs.event_payload_chunk_00 ]]\n",
+		"missing expand":      "      value: $[[ inputs.event_payload_chunk_00 ]]\n",
+		"expand true":         "      value: $[[ inputs.event_payload_chunk_00 ]]\n      expand: true\n",
+		"string expand false": "      value: $[[ inputs.event_payload_chunk_00 ]]\n      expand: 'false'\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			content := strings.Replace(string(agent), "EVENT_PAYLOAD_CHUNK_00:\n"+bridge, "EVENT_PAYLOAD_CHUNK_00:\n"+replacement, 1)
+			if name == "scalar bridge" {
+				content = strings.Replace(string(agent), "EVENT_PAYLOAD_CHUNK_00:\n"+bridge, "EVENT_PAYLOAD_CHUNK_00: $[[ inputs.event_payload_chunk_00 ]]\n", 1)
+			}
+			require.NotEqual(t, string(agent), content, "fixture must differ from the shipped template")
+			assert.False(t, gitlabAgentBridgesDispatchInputs([]byte(content)))
+		})
+	}
+
+	// Root STAGE compatibility remains permissive for scalar and extended forms.
+	var doc yaml.Node
+	require.NoError(t, yaml.Unmarshal([]byte("STAGE: $[[ inputs.stage ]]\nOTHER: {value: '$[[ inputs.stage ]]'}\n"), &doc))
+	variables := doc.Content[0]
+	assert.True(t, gitlabVariableBridgesInput(variables, "STAGE", "stage"))
+	assert.True(t, gitlabVariableBridgesInput(variables, "OTHER", "stage"))
+}

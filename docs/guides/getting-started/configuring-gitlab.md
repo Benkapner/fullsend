@@ -72,6 +72,15 @@ branch, including when a repair MR is still open. Dry runs never mutate them.
 Typed jobs derive slash/event mode from the schedule description; legacy
 variable wrappers retain their existing restriction and schedule variables.
 
+Version skew between the poller and the installed wrapper behaves as follows:
+
+| Poller | Installed wrapper | Result |
+| --- | --- | --- |
+| New | Typed | Dispatches with pipeline inputs. |
+| New | Legacy | Detects the legacy wrapper and falls back to pipeline variables. |
+| Old (sends variables) | Legacy | Dispatches with pipeline variables, as before. |
+| Old (sends variables) | Typed, after activation set `no_one_allowed` | Cannot dispatch: GitLab rejects the variables. Upgrade the poller. |
+
 The transport declares eleven metadata inputs and nine base64 chunks, at
 most 1000 characters each. All three template layers validate the chunk
 alphabet and length; fixed code reconstructs the payload as data. Variable

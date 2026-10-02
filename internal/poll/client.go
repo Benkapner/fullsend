@@ -39,14 +39,6 @@ type GitLabClient interface {
 	// tag, or SHA). Returns forge.ErrNotFound if the file or ref does
 	// not exist. Used to load the HMAC-signed poll-state document.
 	GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
-	// GetFileContent retrieves a file from the default branch. Returns
-	// forge.ErrNotFound if the file does not exist. Part of the broader
-	// forge.Client file-read surface this interface narrows; usesTypedDispatch
-	// reads the committed GitLab pipeline wrapper via GetFileContentAtRef
-	// instead, pinned to the same ref dispatch() creates the pipeline
-	// against, so detection and pipeline creation agree on which contract
-	// that ref declares.
-	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
 	// GetBranchRef returns the HEAD commit SHA for the named branch.
 	// Returns forge.ErrNotFound if the branch does not exist. Used to
 	// pin the CAS parent SHA at poll-state load time.
