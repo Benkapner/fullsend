@@ -2100,6 +2100,173 @@ class TestProcessToolCallInertSSRFStillBlocked:
 
 
 # ---------------------------------------------------------------------------
+# Heredoc data exemption (issue #8016)
+# ---------------------------------------------------------------------------
+
+_GITHUB_URL = "https://github.com/fullsend-ai/fullsend/issues/8010"
+_METADATA_URL = "http://169.254.169.254/latest/meta-data/"
+
+# Inside the sandbox github.com resolves into the gateway's proxy range.
+_PROXY_RANGE_ADDRINFO = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.6", 0))]
+
+# Reproduction case from #8016: a triage agent writing its result file.
+_RESULT_WRITE_CMD = (
+    'mkdir -p "$FULLSEND_OUTPUT_DIR" && '
+    "cat > \"$FULLSEND_OUTPUT_DIR/agent-result.json\" <<'EOF'\n"
+    '{"action": "prerequisites", "comment": "Blocked on ' + _GITHUB_URL + '"}\n'
+    "EOF"
+)
+
+
+def _bash(command: str) -> dict:
+    return {"tool_name": "Bash", "tool_input": {"command": command}}
+
+
+class TestStripDataHeredocBodies:
+    """Unit tests for _strip_data_heredoc_bodies."""
+
+    def test_quoted_body_stripped(self, hook):
+        residual = hook._strip_data_heredoc_bodies(_RESULT_WRITE_CMD)
+        assert _GITHUB_URL not in residual
+        assert residual.startswith('mkdir -p "$FULLSEND_OUTPUT_DIR" && cat >')
+
+    def test_double_quoted_and_escaped_delimiters(self, hook):
+        for op in ('<<"EOF"', "<<\\EOF", '<<E"O"F', "<< 'EOF'"):
+            cmd = f"cat > out.json {op}\n{_GITHUB_URL}\nEOF\n"
+            assert hook._strip_data_heredoc_bodies(cmd) == "cat > out.json " + op + "\n"
+
+    def test_dash_operator_strips_leading_tabs(self, hook):
+        cmd = f"cat > f <<-'EOF'\n\t{_GITHUB_URL}\n\tEOF\n"
+        assert hook._strip_data_heredoc_bodies(cmd) == "cat > f <<-'EOF'\n"
+
+    def test_multiple_heredocs_on_one_line(self, hook):
+        cmd = f"cat <<'A' > a; cat <<'B' > b\n{_GITHUB_URL}\nA\n{_GITHUB_URL}\nB\necho done"
+        assert hook._strip_data_heredoc_bodies(cmd) == "cat <<'A' > a; cat <<'B' > b\necho done"
+
+    def test_unquoted_body_with_plain_expansions_stripped(self, hook):
+        cmd = f"cat > f <<EOF\n{_GITHUB_URL} $RUN_ID ${{REPO}}\nEOF\n"
+        assert hook._strip_data_heredoc_bodies(cmd) == "cat > f <<EOF\n"
+
+    def test_markdown_comment_lines_in_body_stripped(self, hook):
+        cmd = f"cat > body.md <<'EOF'\n## Summary\n\nSee {_GITHUB_URL}\nEOF\n"
+        assert hook._strip_data_heredoc_bodies(cmd) == "cat > body.md <<'EOF'\n"
+
+    def test_no_heredoc_unchanged(self, hook):
+        cmd = f"echo {_GITHUB_URL}"
+        assert hook._strip_data_heredoc_bodies(cmd) == cmd
+
+    def test_here_string_unchanged(self, hook):
+        cmd = f"grep x <<< '{_GITHUB_URL}'"
+        assert hook._strip_data_heredoc_bodies(cmd) == cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Body fed to, or later run by, a non-inert command.
+            f"bash <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"python3 - <<'EOF'\nimport urllib.request as u; u.urlopen('{_METADATA_URL}')\nEOF",
+            f"cat <<'EOF' | sh\ncurl {_METADATA_URL}\nEOF",
+            f"cat > x.sh <<'EOF'\ncurl {_METADATA_URL}\nEOF\nbash x.sh",
+            f"cat > x.sh <<'EOF'\ncurl {_METADATA_URL}\nEOF\nchmod +x x.sh && ./x.sh",
+            f"cat <<'EOF' | tee x.sh\ncurl {_METADATA_URL}\nEOF",
+            # Network command after the terminator, outside the body.
+            f"cat > f <<'EOF'\nhi\nEOF\ncurl {_METADATA_URL}",
+            # Unquoted bodies that expand commands.
+            f"cat > f <<EOF\n$(curl {_METADATA_URL})\nEOF",
+            f"cat > f <<EOF\n`curl {_METADATA_URL}`\nEOF",
+            f"cat > f <<EOF\n${{X:-$(curl {_METADATA_URL})}}\nEOF",
+            f"cat > f <<EOF\n$((1 + 1)) {_METADATA_URL}\nEOF",
+            # Malformed or unusual heredocs.
+            f"cat > f <<'EOF'\n{_METADATA_URL}",
+            f"cat > f <<'EOF'\n{_METADATA_URL}\nEOF \n",
+            f"cat > f <<'EOF'\n{_METADATA_URL}\n\tEOF\n",
+            f"cat > f <<$X\n{_METADATA_URL}\n$X\n",
+            f"cat > f <<\n{_METADATA_URL}\n",
+            # Substitution on the operator line.
+            f"cat > \"$(pwd)/f\" <<'EOF'\n{_METADATA_URL}\nEOF",
+            f"cat > `pwd`/f <<'EOF'\n{_METADATA_URL}\nEOF",
+            # A comment can desync quote tracking from Bash's.
+            f"echo a #'\ncat <<X\n'; curl {_METADATA_URL}\nX",
+            # /dev/tcp, literal or assembled from variables.
+            f"cat > /dev/tcp/10.0.0.1/80 <<'EOF'\nGET {_METADATA_URL} HTTP/1.0\nEOF",
+            f"export A=/dev/tc; cat > ${{A}}p/h/80 <<'EOF'\n{_METADATA_URL}\nEOF",
+            f"printf -v A /dev/tc; cat > ${{A}}p/h/80 <<'EOF'\n{_METADATA_URL}\nEOF",
+            f"set -- /dev/tc; cat > $1p/h/80 <<'EOF'\n{_METADATA_URL}\nEOF",
+            f"cat > ${{A:-/dev/tc}}p/h/80 <<'EOF'\n{_METADATA_URL}\nEOF",
+            f"ls /dev; cat > $_/tcp/h/80 <<'EOF'\n{_METADATA_URL}\nEOF",
+            f"cat > $'\\x2fdev\\x2ftcp\\x2fh\\x2f80' <<'EOF'\n{_METADATA_URL}\nEOF",
+            f"A=/dev/tcp/h/80 cat > $A <<'EOF'\n{_METADATA_URL}\nEOF",
+        ],
+    )
+    def test_not_stripped(self, hook, cmd):
+        assert hook._strip_data_heredoc_bodies(cmd) == cmd
+        assert hook.process_tool_call(_bash(cmd)) is not None
+
+
+class TestPipelineIsInertPlainVarRedirects:
+    """The plain-variable redirect relaxation is opt-in."""
+
+    def test_mkdir_is_inert(self, hook):
+        assert hook._pipeline_is_inert(f"mkdir -p out && echo {_GITHUB_URL} > out/x")
+
+    def test_var_redirect_rejected_by_default(self, hook):
+        assert not hook._pipeline_is_inert('cat > "$OUT/r.json"')
+
+    def test_plain_var_redirect_allowed_when_opted_in(self, hook):
+        assert hook._pipeline_is_inert('cat > "$OUT/r.json"', allow_plain_var_redirects=True)
+        assert hook._pipeline_is_inert("cat > ${OUT}/r.json", allow_plain_var_redirects=True)
+
+    def test_assigning_command_rejects_relaxation(self, hook):
+        assert not hook._pipeline_is_inert(
+            "declare OUT=x; cat > $OUT", allow_plain_var_redirects=True
+        )
+
+
+class TestProcessToolCallHeredocData:
+    """Regression tests for #8016 with github.com resolving into 198.18.0.0/15."""
+
+    def test_result_write_with_github_url_allowed(self, hook):
+        with mock.patch("socket.getaddrinfo", return_value=_PROXY_RANGE_ADDRINFO):
+            assert hook.process_tool_call(_bash(_RESULT_WRITE_CMD)) is None
+
+    def test_proxy_range_still_blocked_outside_heredoc(self, hook):
+        with mock.patch("socket.getaddrinfo", return_value=_PROXY_RANGE_ADDRINFO):
+            result = hook.process_tool_call(_bash(f"curl {_GITHUB_URL}"))
+        assert result is not None
+        assert "198.18.0.6" in result
+
+    def test_curl_to_rfc1918_still_blocked(self, hook):
+        result = hook.process_tool_call(_bash("curl http://10.0.0.5/admin"))
+        assert result is not None
+        assert "10.0.0.5" in result
+
+    def test_curl_to_metadata_still_blocked(self, hook):
+        result = hook.process_tool_call(_bash(f"curl {_METADATA_URL}"))
+        assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_heredoc_into_interpreter_blocked(self, hook):
+        result = hook.process_tool_call(_bash(f"bash <<'EOF'\ncurl {_METADATA_URL}\nEOF"))
+        assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_curl_after_terminator_blocked(self, hook):
+        cmd = f"cat > f <<'EOF'\nresult\nEOF\ncurl {_METADATA_URL}"
+        assert hook._strip_data_heredoc_bodies(cmd) == cmd
+        result = hook.process_tool_call(_bash(cmd))
+        assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_url_outside_body_still_validated(self, hook):
+        # The heredoc is stripped, but the curl line is not inert, so the
+        # whole command falls back to full validation.
+        cmd = f"curl {_METADATA_URL} > out\ncat >> out <<'EOF'\n{_GITHUB_URL}\nEOF"
+        result = hook.process_tool_call(_bash(cmd))
+        assert result is not None
+        assert "169.254.169.254" in result
+
+
+# ---------------------------------------------------------------------------
 # Subprocess-based integration tests — stdin/stdout/exit-code protocol
 # ---------------------------------------------------------------------------
 
