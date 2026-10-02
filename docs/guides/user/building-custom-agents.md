@@ -287,7 +287,7 @@ Inline rules and provider-composed rules coexist — composition is additive. If
 
 ### Policy design principles
 
-- **Vertex AI is always required** — the agent needs it to talk to the LLM. Use the `vertex-ai` provider.
+- **The agent needs network access to whichever LLM provider it runs inference through.** Use the `vertex-ai` provider for the default Claude/Vertex setup. An agent running on the `pi` or `codex` runtime with an OpenAI model uses the `openai` provider instead — see [Get an OpenAI key](running-agents-locally.md#get-an-openai-key-gpt-on-pi-or-codex). Such an agent's GCP credentials mount (the `${GOOGLE_APPLICATION_CREDENTIALS}` entry under `host_files:` in Step 2) must be `optional: true` or removed; with `GOOGLE_APPLICATION_CREDENTIALS` unset, a required mount stops the run with `GOOGLE_APPLICATION_CREDENTIALS is empty; mark the mount optional or provide a credential file`. A `pi` agent on an OpenAI model whose sub-agents run on Vertex needs both providers and the mount, left required (no `optional: true`), so an unset `GOOGLE_APPLICATION_CREDENTIALS` stops the run before the sandbox starts instead of failing the sub-agents part-way through.
 - **Add network access only for what the agent needs.** If the agent doesn't need web search, don't allow it.
 - **Use `binaries` to restrict which programs can access each endpoint.** This prevents the agent from using unexpected tools to exfiltrate data.
 - **Prefer providers for shared services.** Use inline policies only for agent-specific endpoints.
@@ -477,7 +477,26 @@ The post-script runs on the trusted runner with full credentials, but reads outp
 
 Place your skill at `.fullsend/skills/my-skill/SKILL.md`, then reference it in both the agent frontmatter (`skills: [my-skill]`) and the harness (`skills: [skills/my-skill]`).
 
-## Step 7: Create the GitHub Actions workflow
+## Step 7: Run it in CI
+
+In a repository scaffolded with
+[`fullsend github setup`](../getting-started/configuring-github.md), you do not
+write a workflow. The dispatch workflow that setup installs runs every agent
+registered in `config.yaml` whose harness `trigger:` matches an event — see
+[Bring Your Own Agent](bring-your-own-agent.md). Dispatch needs a harness that has
+a `trigger:` ([CEL Triggers Reference](cel-triggers-reference.md)) and reads
+the inputs dispatch provides, such as `GITHUB_ISSUE_URL`. The examples in this
+guide do neither: the Step 2 harness and Step 5 scripts read `ISSUE_KEY` and
+`ISSUE_SOURCE`, which only the standalone workflow below sets. For a
+dispatched agent, start from `fullsend agent new`, whose harness and
+post-script already read what dispatch provides, then commit `.fullsend/` and
+fire the trigger.
+
+### A standalone workflow (only outside dispatch)
+
+The examples in this guide run from a workflow of your own like the one
+below. Write one only for an agent that dispatch does not run: one started by `workflow_dispatch`, or one
+in a repository that `fullsend github setup` did not scaffold.
 
 Create `.github/workflows/my-agent.yml`:
 
@@ -641,14 +660,17 @@ for more information.
 
 ## Step 8: Trigger the agent
 
-The workflow above uses `workflow_dispatch`, which means you trigger it manually:
+A dispatched agent runs when its `trigger:` matches — for a `/fs-my-agent`
+command trigger, comment that on an issue or pull request.
+
+The standalone workflow above uses `workflow_dispatch`, which means you trigger it manually:
 
 - **From the GitHub UI:** Actions → fullsend-my-agent → Run workflow → fill in `issue_key` and `issue_source`.
 - **From the CLI:** `gh workflow run my-agent.yml -f issue_key=123 -f issue_source=github`
 
 ### Slash-command dispatch (optional)
 
-If you want slash-command triggers (e.g., `/my-command` on a GitHub issue), create a dispatch workflow. This requires adding `actions: write` and `issues: write` permissions:
+This is for the standalone workflow only: a registered agent's `/fs-<name>` command is already handled by the dispatch workflow `fullsend github setup` installs. If you want slash-command triggers (e.g., `/my-command` on a GitHub issue) for a standalone workflow, create a dispatch workflow. This requires adding `actions: write` and `issues: write` permissions:
 
 ```yaml
 name: my-agent-dispatch
@@ -710,8 +732,8 @@ When creating a new agent, you need these files:
   skills/my-skill/SKILL.md               # Domain knowledge (optional)
 
 .github/workflows/
-  my-agent.yml                           # GitHub Actions workflow
-  my-agent-dispatch.yml                  # Slash command trigger (optional)
+  my-agent.yml                           # Standalone workflow (only outside dispatch)
+  my-agent-dispatch.yml                  # Slash command trigger for it (optional)
 ```
 
 ## Reference
