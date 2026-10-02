@@ -61,7 +61,7 @@ See [architecture.md](architecture.md).
 
 ### Agent Runtime
 
-The agent itself in execution — the LLM, its tool-use loop, and the interface to the model provider. This is the thing that actually reasons and acts; everything else in the architecture exists to support, constrain, or coordinate it. Claude Code is the default runtime; [pi](https://github.com/earendil-works/pi) and [Codex](https://github.com/openai/codex) are available as opt-in runtimes (`runtime: pi`, `runtime: codex`), and OpenCode is a stub. Other projects and the wider industry call this layer a [harness](#harness) — see that entry for the terminology split. See [runtimes.md](runtimes.md).
+The agent itself in execution — the LLM, its tool-use loop, and the interface to the model provider. This is the thing that actually reasons and acts; everything else in the architecture exists to support, constrain, or coordinate it. Claude Code is the default runtime; [pi](https://github.com/earendil-works/pi) and [Codex](https://github.com/openai/codex) are available as opt-in runtimes (`runtime: pi`, `runtime: codex`), and OpenCode is a stub. Other projects call this layer a [harness](#harness); see that entry for the naming difference. See [runtimes.md](runtimes.md).
 See [architecture.md](architecture.md) and [agent-infrastructure.md](problems/agent-infrastructure.md).
 
 ### AGENTS.md
@@ -70,7 +70,7 @@ Project-wide instructions for humans and agents (conventions, testing, architect
 
 ### Agent Spec
 
-The preferred term for the per-role [harness](#harness) YAML — skills, env, providers, sandbox profiles, and `base:` composition. Introduced to disambiguate from the general-industry sense of "harness" (the agent CLI itself, called [agent runtime](#agent-runtime) in fullsend). This is a documentation preference, not a rename: the YAML schema, field names, the `internal/harness/` package, and existing ADR titles still say "harness."
+The preferred docs term for the per-role [harness](#harness) YAML: skills, env, providers, sandbox profiles, and `base:` composition. It avoids confusion with the industry sense of "harness", which fullsend calls the [agent runtime](#agent-runtime). This is a docs preference, not a rename: the YAML schema, field names, the `internal/harness/` package, and ADR titles still say "harness".
 See [Harness](#harness), [Base Composition](#base-composition), and [harness-reference.md](reference/harness-reference.md).
 
 ### Always-on Skill
@@ -206,7 +206,9 @@ See [autonomy-spectrum.md](problems/autonomy-spectrum.md).
 
 ### Harness
 
-The same word names two adjacent layers, which makes cross-project comparisons confusing. In general industry usage (Anthropic's "agent harness" writing, meta-harness projects such as Omnigent, LLM gateways such as magpie), a harness is the agent CLI itself — Claude Code, Codex, or pi. fullsend calls this the [agent runtime](#agent-runtime). In fullsend, "harness" has historically referred to the per-role YAML config layer between the sandbox and the agent runtime — skills, env, providers, sandbox profiles, and `base:` composition. New docs prefer the term [agent spec](#agent-spec) for this layer. fullsend itself is what other projects call a [meta-harness](#meta-harness): a platform that configures, sandboxes, and orchestrates agent harnesses (runtimes).
+In fullsend, the configuration and context layer that prepares an agent for its task. It assembles skills, system prompts, codebase context, tool definitions, and behavioral instructions, turning a generic LLM into an agent with a specific role. Concretely, it is the per-role YAML between the sandbox and the [agent runtime](#agent-runtime): skills, env, providers, sandbox profiles, and `base:` composition. New docs call it the [agent spec](#agent-spec).
+
+Elsewhere in the industry (Anthropic's "agent harness" writing, meta-harness projects such as Omnigent), "harness" means the agent CLI itself — Claude Code, Codex, or pi — which fullsend calls the agent runtime. In those terms, fullsend is a [meta-harness](#meta-harness).
 See [architecture.md](architecture.md).
 
 ## I
@@ -232,7 +234,7 @@ See [#101](https://github.com/fullsend-ai/fullsend/issues/101) and [security-thr
 
 ### Meta-harness
 
-A platform that configures, sandboxes, and orchestrates [agent runtimes](#agent-runtime) — what the rest of the industry calls harnesses — rather than being one itself. fullsend is a meta-harness: it does not reason or act directly; it assembles the [harness](#harness) (soon [agent spec](#agent-spec)) for each role, provisions the [sandbox](#sandbox), and dispatches to an agent runtime such as Claude Code, Codex, or pi. Compare with other meta-harness projects such as Omnigent.
+A platform that configures, sandboxes, and orchestrates agent harnesses — [agent runtimes](#agent-runtime) in fullsend terms — rather than being one itself. fullsend is a meta-harness: it assembles the [agent spec](#agent-spec) for each role, provisions the [sandbox](#sandbox), and dispatches to a runtime such as Claude Code, Codex, or pi. Omnigent is another example.
 See [architecture.md](architecture.md).
 
 ### Model Armor
