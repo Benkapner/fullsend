@@ -45,6 +45,16 @@ func TestDispatchDetectionWindow_AtLeast4Minutes(t *testing.T) {
 		"dispatch detection window (%v) should be at least 4 minutes", dispatchTimeout)
 }
 
+func TestDispatchWait_AtLeast20Minutes(t *testing.T) {
+	t.Parallel()
+
+	// Raised from 12 to 20 minutes so longer-running playback scenarios
+	// (which replay a full dummy-agent pipeline rather than a single
+	// dispatch) have enough budget to complete without timing out.
+	assert.GreaterOrEqual(t, dispatchWait, 20*time.Minute,
+		"harness wait budget (%v) should be at least 20 minutes", dispatchWait)
+}
+
 func TestNextBackoff(t *testing.T) {
 	t.Parallel()
 
