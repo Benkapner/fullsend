@@ -382,7 +382,8 @@ runs, which the runtime and the model decide together:
   entry (`agent new --runtime` writes it), else the repository's `runtime:`,
   else `claude`.
 - **Model:** `--model` on `fullsend run`, else the agent's `config.yaml`
-  entry, else the `model:` line in `harness/<name>.yaml`.
+  entry, else the `model:` line in `harness/<name>.yaml`, else the one in
+  `agents/<name>.md`.
 
 Environment variables such as `FULLSEND_RUNTIME` and `FULLSEND_MODEL` sit
 between the flag and the config; the full order is in
@@ -394,7 +395,9 @@ credentials the run needs. The table in
 route follows the provider the model resolves to: a bare id takes
 `FULLSEND_PI_PROVIDER` (default `anthropic-vertex`), so
 `FULLSEND_PI_PROVIDER=openai` sends a bare id like `gpt-5.6-luna` over the
-OpenAI route — see [pi: Models and providers](../runtimes/pi.md#models-and-providers).
+OpenAI route. `agent new` ignores that variable, so a harness it generated
+with a bare id still passes the two Vertex variables into the sandbox; set
+them to any value — see [pi: Models and providers](../runtimes/pi.md#models-and-providers).
 
 Every route needs these variables:
 
@@ -425,16 +428,13 @@ Then the route's own:
   See [Get Google Cloud Platform credentials](../guides/user/running-agents-locally.md#get-google-cloud-platform-credentials).
 - **OpenAI:** `OPENAI_API_KEY` — see
   [Get an OpenAI key](../guides/user/running-agents-locally.md#get-an-openai-key-gpt-on-pi-or-codex).
-  No GCP variables are needed. Generate the agent for this route with
-  `--runtime codex` or `--runtime pi` and an `openai/` model, as
-  [Agents on OpenAI models](#agents-on-openai-models) shows.
-
-  A `pi` agent on an `openai/` model whose sub-agents run on Claude needs the
-  Vertex route's variables as well, through the commented Vertex block that
-  section describes. With the block uncommented, a missing credentials file
-  stops the run before it starts. A harness written by hand without that
-  block is not checked: the sub-agent fails mid-run (see
-  [Troubleshooting](#troubleshooting)). In CI, `fullsend run` prepares Vertex
+  No GCP variables are needed. How to generate an agent for this route, and
+  how a `pi` agent on it adds Vertex sub-agents, is in
+  [Agents on OpenAI models](#agents-on-openai-models). A harness that
+  carries the Vertex settings with the credentials mount marked
+  `optional: true` instead — for example one generated for Vertex and then
+  edited by hand to an `openai/` model — is not checked: a Vertex sub-agent
+  fails mid-run (see [Troubleshooting](#troubleshooting)). In CI, `fullsend run` prepares Vertex
   credentials for such sub-agents when `FULLSEND_GCP_PROJECT_ID` and
   `FULLSEND_GCP_WIF_PROVIDER` are both set.
 
@@ -575,9 +575,9 @@ request.
 | `provider credentials are not declared by profile 'fullsend-github-ro': GH_TOKEN` (or `'fullsend-github'`) in CI | Your committed `profiles/fullsend-github-ro.yaml` or `profiles/fullsend-github.yaml` was written by fullsend v0.44.0 or earlier and declares no credential. CI replaces `providers/` with the upstream copy, which now passes `GH_TOKEN`, but uses the `profiles/` you committed | Upgrade your local `fullsend` to the release your CI runs. Then replace the GitHub providers and profiles you have with that release's copies, together so local runs keep a matching pair, and commit them: `TAG=v$(fullsend --version \| awk '{print $3}'); for f in providers/github-ro providers/github profiles/fullsend-github-ro profiles/fullsend-github; do if [ -f .fullsend/$f.yaml ]; then curl -fsSL https://raw.githubusercontent.com/fullsend-ai/fullsend/$TAG/internal/scaffold/fullsend-repo/$f.yaml -o .fullsend/$f.yaml; fi; done`. While there, delete any `GH_TOKEN` line under `env.sandbox` in your harnesses (keep the `env.runner` one): the provider now hands the sandbox a placeholder, and that line would give it the real token |
 | The same error from `fullsend run` on your machine, with profiles that already declare `GH_TOKEN` | The OpenShell gateway still holds an older profile with that id. `fullsend run` cannot replace a profile while a provider uses it ([#7973](https://github.com/fullsend-ai/fullsend/issues/7973)) | Delete the providers that use either GitHub profile, then re-run: `openshell provider list \| awk '$2=="fullsend-github-ro" \|\| $2=="fullsend-github"{print $1}' \| xargs -r openshell provider delete`. Each run re-creates the providers it needs |
 | `provider profile 'fullsend-github-ro' requires static credentials: GH_TOKEN` at `fullsend run` | `GH_TOKEN` is unset or empty on the machine running `fullsend run`. The `github-ro` and `github` providers pass it to the sandbox as a placeholder | Put a real token in the env file you pass to `fullsend run`, for example `echo "GH_TOKEN=$(gh auth token)" >> .env.local`. The file is read literally, so a `$(...)` written inside it is not run |
-| `Vertex inference requires GOOGLE_APPLICATION_CREDENTIALS to point to an existing file` (or `a regular file`, `a non-empty file`) | A Vertex-route run (see [Running it](#running-it)) with `GOOGLE_APPLICATION_CREDENTIALS` unset, or pointing at a missing path, a directory or an empty file | Point it at a GCP credentials file — [Get Google Cloud Platform credentials](../guides/user/running-agents-locally.md#get-google-cloud-platform-credentials) |
+| `Vertex inference requires GOOGLE_APPLICATION_CREDENTIALS to point to an existing file` (or `a regular file`, `a non-empty file`) at `fullsend run` on your machine | A Vertex-route run (see [Running it](#running-it)) with `GOOGLE_APPLICATION_CREDENTIALS` unset, or pointing at a missing path, a directory or an empty file | Point it at a GCP credentials file — [Get Google Cloud Platform credentials](../guides/user/running-agents-locally.md#get-google-cloud-platform-credentials) |
 | `reading behaviour script .../behaviour/current-scenario.yaml: ... no such file or directory` | `--runtime dummy` with no scripted result. The sandbox has already started when this fires | Write the file — [Try it without a model](#try-it-without-a-model) has one |
-| `The file at /tmp/.gcp-credentials.json does not exist, or it is not a file` in a sub-agent's output, while the run exits 0 | A hand-written harness for a `pi` agent on an `openai/` model, without the Vertex block that [Agents on OpenAI models](#agents-on-openai-models) describes, dispatched a Claude sub-agent, which runs on Vertex, with `GOOGLE_APPLICATION_CREDENTIALS` unset. Nothing checks for it before the run starts ([#7980](https://github.com/fullsend-ai/fullsend/issues/7980)) | Set `GOOGLE_APPLICATION_CREDENTIALS`, `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` as on the Vertex route, or keep the sub-agents on `openai/` models |
+| `The file at /tmp/.gcp-credentials.json does not exist, or it is not a file` in a sub-agent's output, while the run exits 0 | A `pi` agent on an `openai/` model whose harness carries the Vertex settings with the credentials mount marked `optional: true` (not the Vertex block that [Agents on OpenAI models](#agents-on-openai-models) describes) dispatched a Vertex sub-agent (such as `sonnet`), with `GOOGLE_APPLICATION_CREDENTIALS` unset. Nothing checks for it before the run starts ([#7980](https://github.com/fullsend-ai/fullsend/issues/7980)) | Add the Vertex block from [Agents on OpenAI models](#agents-on-openai-models) and set the Vertex route's variables, or keep the sub-agents on `openai/` models |
 
 ## `agent add`
 
