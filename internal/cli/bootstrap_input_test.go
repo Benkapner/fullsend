@@ -66,6 +66,13 @@ func TestNewHarnessBootstrap_CarriesModelAliases(t *testing.T) {
 	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "", aliases, nil, "", "/sandbox/workspace/repo", false)
 	require.NoError(t, err)
 	assert.Equal(t, aliases, boot.ModelAliases())
+	assert.False(t, boot.OpenAIProviderAttached())
+
+	// The run passes whether the run-scoped openai provider was attached,
+	// and pi trusts a configured openai child only then (#7981).
+	attached, err := newHarnessBootstrap(h, "sandbox-1", "test", "", aliases, nil, "", "/sandbox/workspace/repo", true)
+	require.NoError(t, err)
+	assert.True(t, attached.OpenAIProviderAttached())
 }
 
 func TestNewHarnessBootstrap_WithSecurity(t *testing.T) {

@@ -602,6 +602,55 @@ func TestRunAgent_OpenAISubagentWithoutOpenAIProviderFailsBeforeSandbox(t *testi
 	assert.NotContains(t, string(data), "provider create --name openai-")
 }
 
+// TestRunAgent_OpenAIFrontmatterChildWithoutCredential covers the #7981
+// compatibility rule: a persona whose own frontmatter names openai widens
+// the provider gate, but a runner with no OpenAI credential does not fail
+// the run over it. Before #7981 Bootstrap skipped such a persona with a
+// warning, and it still does. A subagents entry on openai is something the
+// repo asked for, so there the missing credential stays fatal.
+func TestRunAgent_OpenAIFrontmatterChildWithoutCredential(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		subagents string
+		wantFatal bool
+	}{
+		{name: "frontmatter only: skipped, run continues"},
+		{name: "subagents entry: fatal", subagents: "    subagents:\n      checker: openai/gpt-5.6-luna\n", wantFatal: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logPath := recordingProvidersStub(t)
+			for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "GITHUB_ACTIONS", "OPENAI_API_KEY"} {
+				t.Setenv(k, "")
+			}
+			dir := writeOpenAIFullsendDirFor(t, false, "pi", "anthropic-vertex/claude-opus-4-6")
+			skill := filepath.Join(dir, "skills", "probe")
+			require.NoError(t, os.MkdirAll(filepath.Join(skill, "sub-agents"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("---\nname: probe\ndescription: probe\n---\nProbe.\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(skill, "sub-agents", "checker.md"),
+				[]byte("---\nname: checker\nmodel: openai/gpt-5.6-luna\n---\nCheck.\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"), []byte(
+				"agent: agents/code.md\nrole: test\nmodel: anthropic-vertex/claude-opus-4-6\nskills:\n  - skills/probe\nproviders:\n  - openai\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+				"version: \"1\"\nruntime: pi\nagents:\n  - name: code\n    source: harness/code.yaml\n"+tc.subagents), 0o644))
+
+			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+			require.Error(t, err, "the stub cannot bootstrap either way")
+			data, readErr := os.ReadFile(logPath)
+			require.NoError(t, readErr)
+			if tc.wantFatal {
+				assert.Contains(t, err.Error(), "no OpenAI credential")
+				assert.NotContains(t, string(data), "sandbox create ")
+				return
+			}
+			assert.NotContains(t, err.Error(), "no OpenAI credential")
+			assert.Contains(t, string(data), "sandbox create ", "the run reaches the sandbox")
+			assert.NotContains(t, string(data), "provider create --name openai-")
+			assert.NotRegexp(t, `--provider openai`, string(data), "nothing openai is attached")
+		})
+	}
+}
+
 func TestRunAgent_OpenAIProviderIsRunScopedAndDeleted(t *testing.T) {
 	cases := []struct {
 		name     string

@@ -525,44 +525,38 @@ func TestBuildPiRunCommand_OpenAI(t *testing.T) {
 	assert.Less(t, pin, secondGuard, "and before the second guard checks that dir")
 }
 
-// TestBuildPiRunCommand_OpenAIChildUnderNonOpenAIParent covers #7981: a
-// Vertex parent (opus) whose manifest carries a pre-configured child that
-// resolves to the openai provider (piConfiguredOpenAIIDs, gated on the
-// run-scoped credential actually having attached) must still get the full
-// openai launch hygiene — the config-dir integrity guard, the auth.json
-// seed and the OPENAI_BASE_URL/AZURE_OPENAI_API_KEY/OPENAI_API_KEY unset —
-// even though the *parent's own* model never resolves to openai. Before the
-// fix, `openai` was gated on the parent's provider alone, so this exact
-// manifest shape launched with none of it: a planted .env could redirect or
-// replace the credential an openai child's dispatch relies on.
-func TestBuildPiRunCommand_OpenAIChildUnderNonOpenAIParent(t *testing.T) {
+// TestBuildPiRunCommand_OpenAIChildrenUnderVertexParent covers #7981:
+// children spawn pi from the parent's environment and config dir, so a
+// Vertex parent whose manifest admits configured openai children gets the
+// same openai safeguards an openai parent does, alongside its own Vertex
+// hygiene. Without openai ids in the manifest nothing changes.
+func TestBuildPiRunCommand_OpenAIChildrenUnderVertexParent(t *testing.T) {
 	t.Setenv("FULLSEND_PI_MODEL", "")
 	t.Setenv(piProviderEnv, "")
-	m := &piManifest{
-		AgentName: "review", Model: "opus", Tools: []string{"bash"},
-		Agent: &piAgentManifest{Enabled: true, ProviderModels: map[string][]string{piOpenAIProvider: {"gpt-5.6-luna"}}},
-	}
 	params := piTestParams()
 	params.Model = "opus"
-	cmd := buildPiRunCommand(params, m, nil, "")
+	seed := "&& " + PiOpenAIAuthSeed(PiRuntime{}.ConfigDir())
+	guard := piOpenAIConfigGuard(PiRuntime{}.ConfigDir())
 
-	assert.Contains(t, cmd, "--model 'anthropic-vertex/claude-opus-4-6'", "the parent itself still runs on Vertex")
-	assert.Contains(t, cmd, "&& "+PiOpenAIAuthSeed(PiRuntime{}.ConfigDir()), "auth.json is seeded even though the parent is not on openai")
-	assert.Contains(t, cmd, "&& unset OPENAI_BASE_URL AZURE_OPENAI_API_KEY OPENAI_API_KEY", "openai env hygiene still runs")
-	assert.Contains(t, cmd, piOpenAIConfigGuard(PiRuntime{}.ConfigDir()), "config-dir integrity guard still runs")
-	// Vertex hygiene for the parent's own call still applies too; the two are
-	// not mutually exclusive.
+	withChildren := &piManifest{AgentName: "review", Model: "opus", Tools: []string{"bash"},
+		Agent: &piAgentManifest{Enabled: true, ProviderModels: map[string][]string{"openai": {"gpt-5.6-luna"}}}}
+	cmd := buildPiRunCommand(params, withChildren, nil, "")
+	assert.Contains(t, cmd, seed, "auth.json is seeded for the children")
+	assert.Equal(t, 2, strings.Count(cmd, guard), "config-dir guard runs before and after .env")
+	assert.Contains(t, cmd, "&& unset OPENAI_BASE_URL AZURE_OPENAI_API_KEY OPENAI_API_KEY", "OpenAI env cleared for the children")
 	assert.Contains(t, cmd, "unset ANTHROPIC_API_KEY", "the parent's own Vertex hygiene still runs")
+	assert.Contains(t, cmd, "--model 'anthropic-vertex/", "the parent stays on Vertex")
 
-	// A manifest with no openai entry in providerModels (no configured child
-	// resolves to it) must not trigger any of this for a Vertex parent.
-	plain := &piManifest{
-		AgentName: "review", Model: "opus", Tools: []string{"bash"},
-		Agent: &piAgentManifest{Enabled: true, ProviderModels: map[string][]string{"google-vertex": {"gemini-2.5-pro"}}},
+	for name, m := range map[string]*piManifest{
+		"no openai ids": {AgentName: "review", Model: "opus", Tools: []string{"bash"},
+			Agent: &piAgentManifest{Enabled: true, ProviderModels: map[string][]string{"google-vertex": {"gemini-3.8-flash"}}}},
+		"agent tool disabled": {AgentName: "review", Model: "opus", Tools: []string{"bash"},
+			Agent: &piAgentManifest{Enabled: false, ProviderModels: map[string][]string{"openai": {"gpt-5.6-luna"}}}},
+	} {
+		cmd := buildPiRunCommand(params, m, nil, "")
+		assert.NotContains(t, cmd, seed, name)
+		assert.NotContains(t, cmd, guard, name)
 	}
-	cmd = buildPiRunCommand(params, plain, nil, "")
-	assert.NotContains(t, cmd, "&& "+PiOpenAIAuthSeed(PiRuntime{}.ConfigDir()), "no openai hygiene without a configured openai child")
-	assert.NotContains(t, cmd, "&& unset OPENAI_BASE_URL")
 }
 
 // TestPiBinaryPin runs the pin under a real sh: pi resolves to the real

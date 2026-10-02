@@ -987,9 +987,9 @@ func TestPiAgentTool_OpenAISubagent(t *testing.T) {
 		err := bootstrap(t, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `resolved model "openai/gpt-5.6-luna" is not available in this run`)
-		assert.Contains(t, err.Error(), `declare "openai" in the harness's providers list`,
+		assert.Contains(t, err.Error(), `declare "openai" in the harness providers list`,
 			"the error names the actual remedy instead of only listing accepted specs")
-		assert.Contains(t, err.Error(), "run the parent itself on an openai/ model")
+		assert.Contains(t, err.Error(), "move the sub-agent off openai/")
 	})
 
 	t.Run("subagents.default is covered too", func(t *testing.T) {
@@ -1009,6 +1009,66 @@ func TestPiAgentTool_OpenAISubagent(t *testing.T) {
 		require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
 		require.NotNil(t, m.Agent)
 		assert.Equal(t, "openai/gpt-5.6-luna", m.Agent.SubagentDefault)
+	})
+
+	// A models.aliases entry mapping to openai is trusted through the model
+	// table, so without the provider it would register an openai persona
+	// whose launch skips the OpenAI safeguards. It is dropped instead, and
+	// the persona is skipped like any other unservable one.
+	aliasRun := func(t *testing.T, attached bool) piManifest {
+		t.Helper()
+		forgetPiManifestHash(t, "sb")
+		work := t.TempDir()
+		store := filepath.Join(work, "store")
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+		aliasSkill := t.TempDir()
+		writePersonaFile(t, aliasSkill, "checker", "---\nname: checker\nmodel: luna\n---\nCheck something.\n")
+		in := bootstrapInput{
+			sandboxName:            "sb",
+			agentPath:              writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview the PR."),
+			agentName:              "review",
+			skillDirs:              []string{aliasSkill},
+			modelAliases:           map[string]string{"luna": "openai/gpt-5.6-luna"},
+			openAIProviderAttached: attached,
+		}
+		require.NoError(t, PiRuntime{}.Bootstrap(in))
+		var m piManifest
+		require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
+		require.NotNil(t, m.Agent)
+		return m
+	}
+
+	t.Run("an openai alias is dropped when the provider is not attached", func(t *testing.T) {
+		m := aliasRun(t, false)
+		assert.NotContains(t, m.Agent.Models, "luna")
+		assert.NotContains(t, m.Agent.Personas, "checker", "the persona is skipped, not registered")
+		assert.Contains(t, m.Agent.SkippedPersonas, "checker")
+		assert.Empty(t, m.Agent.ProviderModels[piOpenAIProvider])
+	})
+
+	t.Run("an openai agent-definition model is not trusted for children when the parent moved off it", func(t *testing.T) {
+		forgetPiManifestHash(t, "sb")
+		work := t.TempDir()
+		store := filepath.Join(work, "store")
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+		in := bootstrapInput{
+			sandboxName:    "sb",
+			agentPath:      writeAgentFile(t, "---\nname: review\nmodel: openai/gpt-5.6-luna\n---\nReview the PR."),
+			agentName:      "review",
+			parentModel:    "opus",
+			agentSubagents: map[string]*string{"default": strp("openai/gpt-5.6-luna")},
+		}
+		err := PiRuntime{}.Bootstrap(in)
+		require.Error(t, err, "subagents.default on openai is configured, so it fails rather than being served")
+		assert.Contains(t, err.Error(), "move the sub-agent off openai/")
+	})
+
+	t.Run("an openai alias works when the provider is attached", func(t *testing.T) {
+		m := aliasRun(t, true)
+		assert.Equal(t, "openai/gpt-5.6-luna", m.Agent.Models["luna"])
+		assert.Equal(t, "openai/gpt-5.6-luna", m.Agent.Personas["checker"].Model)
+		assert.Equal(t, []string{"gpt-5.6-luna"}, m.Agent.ProviderModels[piOpenAIProvider],
+			"listed, so the launch applies the OpenAI safeguards")
 	})
 }
 

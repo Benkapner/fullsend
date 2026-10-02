@@ -177,27 +177,6 @@ test("resolveModel: an id is checked against a closed set, not just its provider
   assert.equal(resolveModel(a, "anthropic-vertex/claude-haiku-4-5", parent), "anthropic-vertex/claude-haiku-4-5", "a model-table entry");
 });
 
-// #7981: a pre-configured child (subagents.default here) naming the openai
-// provider has no models-table entry (openai has no alias table) and no
-// vendored -e extension, so it is admitted only through providerModels —
-// which Bootstrap populates only once the run-scoped credential actually
-// attached. Before allowedProviders read providerModels, omitting `model`
-// still reached this id through resolveModel's subagentDefault fallback,
-// but naming it explicitly was rejected as an unavailable provider — stricter
-// than the default the orchestrator never has to type.
-test("resolveModel: a providerModels-only provider (openai) is allowed when named explicitly, not just by omission", () => {
-  const { manifest } = fixture();
-  const a = { ...manifest.agent, providerModels: { ...manifest.agent.providerModels, openai: ["gpt-5.6-luna"] }, subagentDefault: "openai/gpt-5.6-luna" };
-  const parent = "anthropic-vertex/claude-opus-4-6";
-  assert.equal(resolveModel(a, "", parent), "openai/gpt-5.6-luna", "omitting model already reaches it via subagentDefault");
-  assert.equal(resolveModel(a, "openai/gpt-5.6-luna", parent), "openai/gpt-5.6-luna", "naming the same id explicitly must not be stricter");
-  assert.throws(
-    () => resolveModel(a, "openai/gpt-5-unlisted", parent),
-    /is not a model this run serves on "openai"/,
-    "the provider is allowed, but still only for the ids providerModels actually lists",
-  );
-});
-
 test("resolveModel: a Grok spec is normalized and then checked against the closed set", () => {
   const { manifest } = fixture();
   // A parent that is not on Grok, so nothing here is served merely because
@@ -232,19 +211,26 @@ test("resolveModel: a Grok spec is normalized and then checked against the close
   }
 });
 
-test("resolveModel: an openai spec under a non-openai parent is refused naming the remedy (#7981)", () => {
+test("resolveModel: openai under a non-openai parent needs a configured openai child (#7981)", () => {
   const { manifest } = fixture();
   const parent = "anthropic-vertex/claude-opus-4-6";
-  // A configured openai child puts its id in providerModels, but that does
-  // not let an Agent call's model argument pick openai: only a persona or
-  // subagents.default routes a child there.
-  const a = { ...manifest.agent, providerModels: { ...manifest.agent.providerModels, openai: ["gpt-5.6-luna"] } };
+  // No configured openai child: the provider is not attached, so a model
+  // argument cannot pick openai, and the refusal names how to get it.
   assert.throws(
-    () => resolveModel(a, "openai/gpt-5.6-luna", parent),
+    () => resolveModel(manifest.agent, "openai/gpt-5.6-luna", parent),
     /provider "openai" is not available in this run \(declare "openai" in the harness providers and set the model on a persona or subagents\.default/,
   );
-  // An openai parent serves its own provider, so the same call resolves.
-  assert.equal(resolveModel(a, "openai/gpt-5.6-luna", "openai/gpt-5.6-luna"), "openai/gpt-5.6-luna");
+  // A configured openai child puts its id in providerModels: that exact
+  // model is now servable by name, and any other openai id is not.
+  const a = { ...manifest.agent, providerModels: { ...manifest.agent.providerModels, openai: ["gpt-5.6-luna"] } };
+  assert.equal(resolveModel(a, "openai/gpt-5.6-luna", parent), "openai/gpt-5.6-luna");
+  assert.throws(
+    () => resolveModel(a, "openai/gpt-9", parent),
+    /"gpt-9" is not a model this run serves on "openai" \(it serves the openai models configured on a persona or subagents\.default/,
+  );
+  // An empty list admits nothing.
+  const empty = { ...manifest.agent, providerModels: { ...manifest.agent.providerModels, openai: [] } };
+  assert.throws(() => resolveModel(empty, "openai/gpt-5.6-luna", parent), /provider "openai" is not available in this run/);
 });
 
 test("childTools: Explore is read-only, everything else is the parent's built-ins minus Agent/Task", () => {

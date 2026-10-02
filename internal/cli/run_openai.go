@@ -674,6 +674,14 @@ func checkOpenAIEgressInspected(ctx context.Context, sandboxName string) error {
 		strings.Join(rules, ", "), openAIAPIHost)
 }
 
+// openAICredentialError marks an ensureOpenAIProvider failure to resolve
+// the credential itself, before anything was created on the gateway. The
+// runner tolerates it when only a persona's own frontmatter wanted the
+// provider (#7981).
+type openAICredentialError struct{ error }
+
+func (e openAICredentialError) Unwrap() error { return e.error }
+
 // ensureOpenAIProvider creates the run-scoped provider for one
 // fullsend-openai definition. backend is the runtime the run selected: when
 // it implements runtime.OpenAICredentialSeeder with a non-empty seed, the
@@ -688,7 +696,7 @@ func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxNa
 	cred, err := resolveOpenAICredential(ctx, os.Getenv, ids)
 	if err != nil {
 		printer.StepFail("OpenAI credential unavailable for provider " + pd.Name)
-		return openAIProviderHandle{}, fmt.Errorf("provider %q: %w", pd.Name, err)
+		return openAIProviderHandle{}, openAICredentialError{fmt.Errorf("provider %q: %w", pd.Name, err)}
 	}
 	// Two redaction layers: the exact value in the process-wide redactor
 	// (the token is opaque — no prefix pattern can be trusted; this is the
@@ -1016,4 +1024,15 @@ func cleanupRunScopedProvider(name string, keys []string, sandboxKept bool, prin
 		return
 	}
 	printer.StepWarn(fmt.Sprintf("Run-scoped provider %s expired in place instead of deleted (still reported attached after the sandbox was deleted: %v); remove it with `openshell provider delete %s`", name, delErr, name))
+}
+
+// anyConfiguredOpenAIChild reports whether a subagents entry (not just a
+// persona's frontmatter) resolves to the openai provider.
+func anyConfiguredOpenAIChild(children []runtime.OpenAIChild) bool {
+	for _, c := range children {
+		if c.Configured {
+			return true
+		}
+	}
+	return false
 }

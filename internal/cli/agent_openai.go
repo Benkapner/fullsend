@@ -23,8 +23,8 @@ import (
 //
 // It stays silent whenever it cannot tell: a runtime other than pi, an
 // agent whose harness is a URL (fleet harnesses declare openai) or is not
-// in this config, a harness that does not load, or a provider entry that is
-// a URL.
+// in this config, a harness that does not load or has overlays: or forge:
+// blocks, or a provider entry that is a URL.
 func warnOpenAISubagentWithoutProvider(cfg config.ConfigReader, absDir, agentName, runtimeName string, subagents map[string]*string, printer *ui.Printer) {
 	pr, ok := cfg.(config.PerRepoConfigReader)
 	if !ok {
@@ -36,18 +36,29 @@ func warnOpenAISubagentWithoutProvider(cfg config.ConfigReader, absDir, agentNam
 	if runtimeName != "pi" {
 		return
 	}
-	// Only the subagents values: discovering personas would mean resolving
-	// the harness's skills, and the run's own check covers frontmatter.
-	children := agentruntime.OpenAIChildren("pi", subagents, nil, agentName, pr.ConfigModelAliases())
-	if len(children) == 0 {
-		return
-	}
 	source := agentHarnessSource(cfg.AgentEntries(), agentName)
 	if source == "" || urlutil.IsURL(source) {
 		return
 	}
 	h, err := harness.Load(filepath.Join(absDir, source))
-	if err != nil {
+	if err != nil || len(h.Overlays) > 0 || len(h.Forge) > 0 {
+		// A base: harness does not load here; an overlay or a forge:
+		// block may add providers. Either way the effective list is not
+		// known.
+		return
+	}
+	// Only the subagents entries, the ones the repo asked for: a persona's
+	// frontmatter is left to the run, which skips that persona when its
+	// model cannot be served. Personas are still discovered so a key is
+	// checked against the same set the run uses.
+	var children []string
+	for _, c := range agentruntime.OpenAIChildren("pi", filepath.Join(absDir, h.Agent), subagents,
+		resolvedSkillDirs(absDir, h), agentName, pr.ConfigModelAliases()) {
+		if c.Configured {
+			children = append(children, c.String())
+		}
+	}
+	if len(children) == 0 {
 		return
 	}
 	declares, known := harnessDeclaresOpenAIProvider(absDir, h.Providers)
@@ -56,6 +67,22 @@ func warnOpenAISubagentWithoutProvider(cfg config.ConfigReader, absDir, agentNam
 	}
 	printer.StepWarn(fmt.Sprintf("%s resolves to the openai provider, but %s declares no openai provider; runs will fail until you add \"openai\" to its providers list",
 		strings.Join(children, ", "), source))
+}
+
+// resolvedSkillDirs is the harness's local skill directories as absolute
+// paths; URL skills are left out (they are not fetched here).
+func resolvedSkillDirs(absDir string, h *harness.Harness) []string {
+	var dirs []string
+	for _, src := range harness.SkillSources(h.Skills) {
+		if urlutil.IsURL(src) {
+			continue
+		}
+		if !filepath.IsAbs(src) {
+			src = filepath.Join(absDir, src)
+		}
+		dirs = append(dirs, src)
+	}
+	return dirs
 }
 
 // agentHarnessSource returns the harness source of the named agent's

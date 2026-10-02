@@ -391,19 +391,13 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	provider := piModelProvider(model, params.ModelAliases)
 	vertex := provider == piDefaultProvider
 	xaiVertex := provider == piXaiVertexProvider
-	// openai also covers a non-openai parent (Vertex, Grok) with a
-	// pre-configured child that resolves to the openai provider:
-	// m.Agent.ProviderModels[piOpenAIProvider] is populated only when
-	// Bootstrap actually attached the run-scoped credential for one
-	// (piAgentManifestFor, gated on BootstrapInput.OpenAIProviderAttached).
-	// Without this, a Vertex-parent run serving an OpenAI child launched the
-	// parent's shell with none of the openai safeguards below: no config-dir
-	// integrity guard, no auth.json seed, and no unset of OPENAI_BASE_URL /
-	// AZURE_OPENAI_API_KEY / OPENAI_API_KEY — an agent-writable .env could
-	// then redirect or replace the credential a child's dispatch relies on,
-	// and OPENAI_API_KEY would reach children unscrubbed (#7981).
-	openaiChild := m.Agent != nil && len(m.Agent.ProviderModels[piOpenAIProvider]) > 0
-	openai := provider == piOpenAIProvider || openaiChild
+	// The openai safeguards below (config-dir guard, placeholder seed,
+	// OPENAI_* cleanup) cover the children too: children spawn pi from this
+	// process's environment and config dir, so a run whose manifest admits
+	// configured openai children needs them under any parent (#7981).
+	// Bootstrap lists openai ids only when the provider is attached.
+	openai := provider == piOpenAIProvider ||
+		(agentEnabled && len(m.Agent.ProviderModels[piOpenAIProvider]) > 0)
 
 	parts := []string{"cd " + shellQuote(params.RepoDir)}
 	// Resolve the pi binary before the agent-writable .env is sourced and

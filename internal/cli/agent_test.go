@@ -2208,6 +2208,7 @@ func TestRunAgentSet_OpenAISubagentWarnsWithoutProvider(t *testing.T) {
 		providers string
 		runtime   string
 		subagent  string
+		extra     string
 		warn      bool
 	}{
 		{name: "no openai provider declared", source: "harness/mix.yaml", providers: "  - vertex-ai\n",
@@ -2222,6 +2223,14 @@ func TestRunAgentSet_OpenAISubagentWarnsWithoutProvider(t *testing.T) {
 			runtime: "claude", subagent: "checker=openai/gpt-5.6-luna"},
 		{name: "child not on openai", source: "harness/mix.yaml", providers: "  - vertex-ai\n",
 			runtime: "pi", subagent: "checker=sonnet"},
+		{name: "a key naming no persona is left to the run", source: "harness/mix.yaml", providers: "  - vertex-ai\n",
+			runtime: "pi", subagent: "typo=openai/gpt-5.6-luna"},
+		{name: "an overlay may add providers", source: "harness/mix.yaml", providers: "  - vertex-ai\n",
+			extra:   "overlays:\n  - when: 'true'\n    providers:\n      - openai\n",
+			runtime: "pi", subagent: "checker=openai/gpt-5.6-luna"},
+		{name: "a forge block may add providers", source: "harness/mix.yaml", providers: "  - vertex-ai\n",
+			extra:   "forge:\n  github:\n    providers:\n      - openai\n",
+			runtime: "pi", subagent: "checker=openai/gpt-5.6-luna"},
 		{name: "a URL provider entry is not fetched", source: "harness/mix.yaml", providers: "  - https://example.com/providers/x.yaml\n",
 			runtime: "pi", subagent: "checker=openai/gpt-5.6-luna"},
 		{name: "a URL harness is not fetched",
@@ -2234,8 +2243,15 @@ func TestRunAgentSet_OpenAISubagentWarnsWithoutProvider(t *testing.T) {
 				require.NoError(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
 			}
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "agents", "mix.md"), []byte("You probe.\n"), 0o644))
+			// The persona the --subagent key names, so the warning sees the
+			// same discovered set a run does.
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "skills", "probe", "sub-agents"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "skills", "probe", "SKILL.md"),
+				[]byte("---\nname: probe\ndescription: probe\n---\nProbe.\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "skills", "probe", "sub-agents", "checker.md"),
+				[]byte("---\nname: checker\nmodel: sonnet\n---\nCheck.\n"), 0o644))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "mix.yaml"),
-				[]byte("agent: agents/mix.md\nrole: test\nmodel: opus\nproviders:\n"+tc.providers), 0o644))
+				[]byte("agent: agents/mix.md\nrole: test\nmodel: opus\nskills:\n  - skills/probe\nproviders:\n"+tc.providers+tc.extra), 0o644))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "providers", "my-oai.yaml"),
 				[]byte("name: my-oai\ntype: fullsend-openai\ncredentials:\n  OPENAI_API_KEY: \"\"\n"), 0o644))
 			writePerRepoConfig(t, dir, "allowed_remote_resources:\n  - \"https://raw.githubusercontent.com/example/agents/\"\n"+

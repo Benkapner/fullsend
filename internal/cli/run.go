@@ -1050,7 +1050,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// the openai provider. They need the run-scoped OpenAI provider even
 	// when the parent does not (#7981), so they widen the provider gate
 	// below; the parent's own credential path above stays parent-only.
-	openAIChildren := agentruntime.OpenAIChildren(runtimeBackend.Runtime.Name(), agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
+	openAIChildren := agentruntime.OpenAIChildren(runtimeBackend.Runtime.Name(), h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
 	needsOpenAIProvider := parentNeedsOpenAIProvider || len(openAIChildren) > 0
 	// Prepare credentials before env validation and expansion, so harness
 	// references to GOOGLE_APPLICATION_CREDENTIALS resolve to the prepared file.
@@ -1529,6 +1529,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				return err
 			}
 			handle, err := ensureOpenAIProvider(ctx, pd, sandboxName, openAIConfigIDs(runCfg), runtimeBackend, printer)
+			var credErr openAICredentialError
+			if err != nil && !parentNeedsOpenAIProvider && !anyConfiguredOpenAIChild(openAIChildren) && errors.As(err, &credErr) {
+				// Only a persona's own frontmatter wanted openai. Before
+				// #7981 Bootstrap skipped such a persona with a warning; a
+				// runner with no OpenAI credential keeps that behaviour
+				// rather than failing a run nothing in the config asked
+				// to touch OpenAI.
+				skippedProviders[pd.Name] = struct{}{}
+				created[pd.Name] = struct{}{}
+				printer.StepWarn(fmt.Sprintf("Provider %q skipped: only persona frontmatter wanted it (%v); those personas will be skipped", pd.Name, err))
+				continue
+			}
 			if err != nil {
 				return err
 			}
@@ -1592,15 +1604,25 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		allProviderNames = applyRunScopedProviderNames(dropSkippedProviders(sandboxProviderNames(h.Providers, result.Providers), skippedProviders), runScopedProviders)
 	}
 
-	// A configured openai child with no openai provider to attach would
+	// A subagents entry on openai with no openai provider to attach would
 	// only fail at Bootstrap, after the sandbox exists. Fail here instead,
-	// naming the child and the fix (#7981). A parent on an openai model is
-	// not this check's concern: its own launch path reports that case.
-	if len(openAIChildren) > 0 && !parentNeedsOpenAIProvider && len(openAIHandles) == 0 {
-		printer.StepFail("Sub-agent model needs the openai provider")
-		return fmt.Errorf("sub-agent model resolves to the openai provider, but the harness declares no openai provider: %s; "+
-			"declare \"openai\" in the harness providers list, or run the parent on an openai/ model",
-			strings.Join(openAIChildren, ", "))
+	// naming the entry and the fix (#7981). A persona's own frontmatter
+	// model is left to Bootstrap, which skips that persona with a warning,
+	// as it always has. A parent on an openai model is not this check's
+	// concern: its own launch path reports that case.
+	if !parentNeedsOpenAIProvider && len(openAIHandles) == 0 {
+		var configured []string
+		for _, c := range openAIChildren {
+			if c.Configured {
+				configured = append(configured, c.String())
+			}
+		}
+		if len(configured) > 0 {
+			printer.StepFail("Sub-agent model needs the openai provider")
+			return fmt.Errorf("sub-agent model resolves to the openai provider, but the harness declares no openai provider: %s; "+
+				"declare \"openai\" in the harness providers list, or move the sub-agent off openai/",
+				strings.Join(configured, ", "))
+		}
 	}
 
 	workItemID := resolveWorkItemID()

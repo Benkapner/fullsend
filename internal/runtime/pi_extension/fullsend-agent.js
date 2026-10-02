@@ -64,13 +64,6 @@ const TOOL_ALIAS = "Task";
 // Providers pi serves without an extension and with the same Vertex ADC
 // the sandbox already carries.
 const BUILTIN_PROVIDERS = ["google-vertex"];
-// OPENAI_PROVIDER is pi's built-in provider that needs neither a models-table
-// entry (openai has no alias table) nor a vendored -e extension — unlike
-// google-vertex (BUILTIN_PROVIDERS, always on ambient ADC) and xai-vertex
-// (gated on the extension actually being in `extensions`), its providerModels
-// entry is the only signal of availability, and Bootstrap writes it only once
-// the run-scoped credential actually attached (#7981).
-const OPENAI_PROVIDER = "openai";
 // DEFAULT_KILL_GRACE_MS is how long a child gets to handle SIGTERM (kill
 // its own detached bash grandchildren and flush the session) before SIGKILL.
 export const DEFAULT_KILL_GRACE_MS = 3000;
@@ -133,8 +126,8 @@ function providerOf(spec) {
 // allowedProviders are the provider prefixes a child may name directly:
 // those of the manifest's model table, those whose extension the child is
 // given (directory basename, the way the sandbox image names them), pi's
-// credential-free built-ins on Vertex, the provider the parent is actually
-// running on, and openai when providerModels lists it.
+// credential-free built-ins on Vertex, and the provider the parent is
+// actually running on.
 //
 // The parent's live provider is in the set so that naming the parent's own
 // model explicitly is not stricter than omitting `model` (which inherits
@@ -145,34 +138,21 @@ function providerOf(spec) {
 // extension and is not in the model table — openai, whose key the runner
 // seeds into auth.json — could not dispatch a sub-agent on its own model
 // at all.
-//
-// openai is read from providerModels specifically, not every providerModels
-// key: a pre-configured child (a subagents.<persona> override, subagents.
-// default, or a persona's own frontmatter model:) can name it with no
-// models-table entry and no vendored extension, and Bootstrap lists its ids
-// here only once the run-scoped credential actually attached (#7981).
-// Omitting `model` already reaches it through resolveModel's subagentDefault/
-// personas fallback; naming that same, already-trusted id explicitly must not
-// be stricter than that. The other providerModels entries (google-vertex,
-// xai-vertex) are not read here: Bootstrap writes their catalogs
-// unconditionally, whether or not the extension that actually serves them
-// made it into this sandbox image, so — unlike openai — their presence in
-// providerModels is not proof the provider is really available; extensions
-// (probed on the host at Bootstrap) is what gates xai-vertex, and
-// BUILTIN_PROVIDERS is what gates google-vertex.
 function allowedProviders(agent, parentSpec) {
   const out = new Set(BUILTIN_PROVIDERS);
   if (typeof parentSpec === "string" && parentSpec.includes("/")) out.add(providerOf(parentSpec));
   for (const spec of Object.values(agent?.models ?? {})) {
     if (typeof spec === "string" && spec.includes("/")) out.add(providerOf(spec));
   }
+  // Bootstrap lists openai ids only for configured children, and only when
+  // the run-scoped openai provider is attached (#7981). The ids themselves
+  // are still checked exactly by servableSpecs.
+  const openaiIDs = agent?.providerModels?.openai;
+  if (Array.isArray(openaiIDs) && openaiIDs.length > 0) out.add("openai");
   for (const ext of agent?.extensions ?? []) {
     if (typeof ext !== "string" || ext.endsWith(".js") || ext.endsWith(".ts")) continue;
     const base = ext.replace(/\/+$/, "").split("/").pop();
     if (base) out.add(base.toLowerCase());
-  }
-  if (Array.isArray(agent?.providerModels?.[OPENAI_PROVIDER]) && agent.providerModels[OPENAI_PROVIDER].length > 0) {
-    out.add(OPENAI_PROVIDER);
   }
   return out;
 }
@@ -271,12 +251,16 @@ export function resolveModel(agent, spec, parentSpec) {
     // The openai credential is attached only for a run whose parent or a
     // configured child needs it (#7981), so name how to get one.
     if (provider === "openai") {
-      return reject(`provider "openai" is not available in this run (declare "openai" in the harness providers and set the model on a persona or subagents.default in agents[].subagents, or run the parent on an openai/ model)`);
+      return reject(`provider "openai" is not available in this run (declare "openai" in the harness providers and set the model on a persona or subagents.default in agents[].subagents, so the run attaches the openai credential)`);
     }
     return reject(`provider "${provider}" is not available in this run`);
   }
   const canonical = servableSpecs(agent, parentSpec).get(normalized.toLowerCase());
   if (canonical) return canonical;
+  if (provider === "openai") {
+    // Only the ids configured children use are served (#7981).
+    return reject(`"${rest}" is not a model this run serves on "openai" (it serves the openai models configured on a persona or subagents.default; set this one there)`);
+  }
   return reject(`"${rest}" is not a model this run serves on "${provider}"`);
 }
 

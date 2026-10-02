@@ -52,7 +52,7 @@ type BootstrapInput interface {
 	// OpenAIProviderAttached reports whether the run-scoped OpenAI
 	// provider was created for this run (the harness declares an
 	// openai-type provider and the run needs it, parent or child — see
-	// runtime.NeedsOpenAIProvider and runtime.SubagentsNeedOpenAIProvider).
+	// runtime.NeedsOpenAIProvider and runtime.OpenAIChildren).
 	// OPENAI_API_KEY is only present in the sandbox when this is true, so
 	// the pi runtime uses it to decide whether a pre-configured child
 	// naming the openai provider can be trusted (#7981): trusting it
