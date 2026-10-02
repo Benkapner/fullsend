@@ -55,13 +55,22 @@ blocked before publishing: no binaries, no GitHub Release, no moved
 If the cause is a flake or transient infrastructure issue, resolve it
 and use "Re-run failed jobs" on the existing run — the tag is already
 correct and must not be moved (re-verification would fail the release
-if it were). If the fix landed only in `fullsend-ai/agents`, a re-run
-does not pick it up — the run reuses the agents SHA it resolved at the
-start — so after confirming `gh release view <tag>` reports no release,
-delete the tag both locally and remotely and re-push it at the same
-commit to start a fresh run. If the fix needs a code or pin change in
-this repo, the tag is now blocked: confirm `gh release view <tag>`
-reports no release, then delete it both locally and remotely (`git tag -d <tag> && git
+if it were). If the fix landed only in `fullsend-ai/agents` (its `main`
+or its functional tests), re-run the **whole** workflow instead of just
+the failed jobs — `gh run rerun <run-id>` without `--failed`.
+`validate-agents` is called with only `fullsend_ref` (the release tag),
+never a pinned agents SHA, so re-running it re-resolves agents `main`
+from scratch and picks up the fix; `resolve-agents` also re-runs and
+records the current SHA for `tag-agents`'s fallback. The tag itself
+does not need to move. "Re-run failed jobs" does not give this
+guarantee — a job GitHub considers already successful is not
+re-executed, so it can keep seeing the agents state from the first
+attempt. Reserve deleting and re-pushing the tag for a fix that needs a
+code or pin change in this repo (including the pinned reusable workflow
+in `release.yml`): no rerun, failed-jobs or whole-workflow, can pick up
+a change that requires a different fullsend commit. In that case the
+tag is now blocked: confirm `gh release view <tag>` reports no release,
+then delete it both locally and remotely (`git tag -d <tag> && git
 push origin :refs/tags/<tag>`) — otherwise the next `git tag -a <tag>`
 fails because the old tag still exists — then cut `rc.N+1` from the
 fixed commit instead (SKILL.md step 6) rather than re-running.
