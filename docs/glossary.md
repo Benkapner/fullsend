@@ -234,7 +234,7 @@ See [#101](https://github.com/fullsend-ai/fullsend/issues/101) and [security-thr
 
 ### Meta-harness
 
-A platform that configures, sandboxes, and orchestrates agent harnesses — [agent runtimes](#agent-runtime) in fullsend terms — rather than being one itself. fullsend is a meta-harness: it assembles the [agent spec](#agent-spec) for each role, provisions the [sandbox](#sandbox), and dispatches to a runtime such as Claude Code, Codex, or pi. Omnigent is another example.
+A platform that configures, sandboxes, and orchestrates agent harnesses — [agent runtimes](#agent-runtime) in fullsend terms — rather than being one itself. Fullsend is a meta-harness: it assembles the [agent spec](#agent-spec) for each role, provisions the [sandbox](#sandbox), and dispatches to a runtime such as Claude Code, Codex, or pi. Omnigent is another example.
 See [architecture.md](architecture.md).
 
 ### Model Armor
