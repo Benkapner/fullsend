@@ -61,16 +61,26 @@ push origin :refs/tags/<tag>`) — otherwise the next `git tag -a <tag>`
 fails because the old tag still exists — then cut `rc.N+1` from the
 fixed commit instead (SKILL.md step 6) rather than re-running.
 
-If `release` itself failed with `422 already_exists`, the final tag
-shared a commit with its RC and nothing was published either — but
-re-running cannot fix it, since the commit itself is the problem:
-delete the tag both locally and remotely (`git tag -d <tag> && git push
-origin :refs/tags/<tag>`) — otherwise the next `git tag -a <tag>` fails
-because the old tag still exists — and re-tag at a commit Y that is
-different from the RC's commit and passes the SKILL.md step 9 check
-(see the interim rule there, fullsend#7955). The blocked final's images
-were already published and get overwritten when the tag is re-pushed;
-that's harmless, since the fleet only pins RC digests.
+If `release` itself failed with `422 already_exists`, confirm this is
+the RC-tag-selection failure before touching the tag — the same error
+also surfaces when `release` is re-run after it already published the
+final (e.g. a later step like `tag-agents` or the `v0` move failed and
+the whole job was re-run), in which case the final already shipped.
+Check the `release` job's GoReleaser logs for which tag it resolved and
+built — the RC-selection failure shows the RC tag, not the final — and
+confirm the final has no GitHub Release or binary assets yet (`gh
+release view <tag>`). Only when both are confirmed — the final shared a
+commit with its RC and nothing was published — does re-cutting apply,
+since re-running cannot fix it: delete the tag both locally and
+remotely (`git tag -d <tag> && git push origin :refs/tags/<tag>`) —
+otherwise the next `git tag -a <tag>` fails because the old tag still
+exists — and re-tag at a commit Y that is different from the RC's
+commit and passes the SKILL.md step 9 check (see the interim rule
+there, fullsend#7955). The blocked final's images were already
+published and get overwritten when the tag is re-pushed; that's
+harmless, since the fleet only pins RC digests. If the final already
+has a GitHub Release or binary assets, it already shipped — preserve
+the tag and investigate the later step that failed instead.
 
 If only `tag-agents` failed, the fullsend release shipped but agents
 was not tagged; fix that job's cause and re-run it.
@@ -141,14 +151,33 @@ fixed list or reading a local checkout (either may have drifted from
 what actually shipped):
 
 ```
-for f in $(gh api "repos/fullsend-ai/agents/contents/harness?ref=vX.Y.Z" --jq '.[].name'); do
-  gh api "repos/fullsend-ai/agents/contents/harness/$f?ref=vX.Y.Z" --jq .content \
-    | base64 -d | grep -H --label="$f" -E 'image:.*fullsend-(sandbox|code)'
-done || true
+HARNESS_FILES=$(gh api "repos/fullsend-ai/agents/contents/harness?ref=vX.Y.Z" --jq '.[].name') || exit 1
+[ -n "$HARNESS_FILES" ] || exit 1
+
+MATCH_COUNT=0
+for f in $HARNESS_FILES; do
+  CONTENT=$(gh api "repos/fullsend-ai/agents/contents/harness/$f?ref=vX.Y.Z" --jq .content) || exit 1
+  [ -n "$CONTENT" ] || exit 1
+  DECODED=$(printf '%s' "$CONTENT" | base64 -d) || exit 1
+  MATCHES=$(printf '%s\n' "$DECODED" | grep -E 'image:.*fullsend-(sandbox|code)')
+  GREP_STATUS=$?
+  [ "$GREP_STATUS" -le 1 ] || exit 1
+  if [ -n "$MATCHES" ]; then
+    printf '%s:\n%s\n' "$f" "$MATCHES"
+    MATCH_COUNT=$((MATCH_COUNT + 1))
+  fi
+done
+[ "$MATCH_COUNT" -gt 0 ] || exit 1
 ```
 
-(A non-zero exit from the loop just means the last file's `grep` didn't
-match — that's fine.)
+Check the directory listing, each content fetch, and the base64 decode
+independently — an API error, an empty response, or a bad decode is a
+discovery failure, not "no harness files," and must stop here rather
+than reporting an incomplete pin check as verified. Tolerate only
+`grep` exit status 1 (no match in that file); any other status is also
+an error. Require at least one matching harness file overall — zero
+matches means verification is broken, not that no harness references
+these images; do not mark B3 as passed in that case.
 
 Confirm each digest matches what was resolved via `skopeo inspect` for
 the `X.Y.Z-rc.N` tag in SKILL.md step 8 — not a fresh `skopeo inspect` of

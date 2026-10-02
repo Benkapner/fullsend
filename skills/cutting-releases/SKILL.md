@@ -180,14 +180,33 @@ final tag in step 9 must wait until this repin PR is merged.
    harness actually runs):
 
    ```
-   for f in $(gh api "repos/fullsend-ai/agents/contents/harness?ref=main" --jq '.[].name'); do
-     gh api "repos/fullsend-ai/agents/contents/harness/$f?ref=main" --jq .content \
-       | base64 -d | grep -H --label="$f" -E 'image:.*fullsend-(sandbox|code)'
-   done || true
+   HARNESS_FILES=$(gh api "repos/fullsend-ai/agents/contents/harness?ref=main" --jq '.[].name') || exit 1
+   [ -n "$HARNESS_FILES" ] || exit 1
+
+   MATCH_COUNT=0
+   for f in $HARNESS_FILES; do
+     CONTENT=$(gh api "repos/fullsend-ai/agents/contents/harness/$f?ref=main" --jq .content) || exit 1
+     [ -n "$CONTENT" ] || exit 1
+     DECODED=$(printf '%s' "$CONTENT" | base64 -d) || exit 1
+     MATCHES=$(printf '%s\n' "$DECODED" | grep -E 'image:.*fullsend-(sandbox|code)')
+     GREP_STATUS=$?
+     [ "$GREP_STATUS" -le 1 ] || exit 1
+     if [ -n "$MATCHES" ]; then
+       printf '%s:\n%s\n' "$f" "$MATCHES"
+       MATCH_COUNT=$((MATCH_COUNT + 1))
+     fi
+   done
+   [ "$MATCH_COUNT" -gt 0 ] || exit 1
    ```
 
-   (A non-zero exit from the loop just means the last file's `grep`
-   didn't match — that's fine.)
+   Check the directory listing, each content fetch, and the base64
+   decode independently — an API error, an empty response, or a bad
+   decode is a discovery failure, not "no harness files," and must stop
+   here rather than silently repinning nothing. Tolerate only `grep`
+   exit status 1 (no match in that file); any other status is also an
+   error. Require at least one matching harness file overall before
+   continuing — zero matches means discovery is broken, not that no
+   harness references these images.
 
    Replace the `image:` line in each matching file with the resolved
    digest. Pin the multi-arch index digest only (`@sha256:...`) — never
@@ -253,11 +272,12 @@ Verify it starts the same way as step 7. This run moves `v0` and tags
 succeeds (see Notes). Because the RC gate ran against agents `main`
 *before* the repin PR merged, this is the **first** gate run against the
 repinned images. For a flaked gate, re-run instead of re-tagging (see
-Notes). For a real gate failure or the `422 already_exists` failure (see
-Notes), the final tag is now blocked: delete it both locally and
-remotely before cutting `rc.N+1` at a new commit (back to step 6) —
-otherwise the next `git tag -a vX.Y.Z` here fails because the old tag
-still exists.
+Notes). For a real gate failure, the final tag is now blocked: delete it
+both locally and remotely before cutting `rc.N+1` at a new commit (back
+to step 6) — otherwise the next `git tag -a vX.Y.Z` here fails because
+the old tag still exists. For the `422 already_exists` failure, first
+confirm it is the RC-tag-selection case — not a rerun hitting an
+already-published final — before deleting anything (see Notes).
 
 ### 10. Run post-flight verification
 
@@ -330,10 +350,11 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
   automatically marked as pre-releases by GoReleaser.
 - **Never delete a tag that published artifacts.** If a shipped release
   turns out bad, cut a new patch or RC instead of deleting it. The
-  exception is a final tag that was blocked before publishing — either
+  exception is a final tag confirmed blocked before publishing — either
   the agents validation gate failed, or the `release` job itself failed
-  with `422 already_exists` (see below) — no binaries or GitHub Release
-  were published under it, so it is safe to delete and re-cut.
+  with `422 already_exists` and the confirmation steps below ruled out a
+  rerun of an already-published final (see below) — only then is it
+  safe to delete and re-cut.
 - **The changelog** is auto-generated from PR titles (which must follow conventional commit format). GoReleaser uses `changelog.use: github` in `.goreleaser.yml`, so merged PR titles — not individual commit subjects — are the source of release-note entries.
 - **The `v0` tag** is a moving tag consumed by downstream orgs for reusable
   workflows. It is automatically moved by the release workflow after
@@ -363,16 +384,26 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
   `git tag --points-at HEAD`, finds both tags on that commit, and builds
   as the rc tag — then fails re-uploading the RC's assets to the RC's
   own release, which already has them (this is what happened on
-  `v0.44.0`). Nothing is published in this case either, but re-running
-  cannot fix it, because the commit itself is the problem: delete the
-  blocked final tag both locally and remotely (`git tag -d vX.Y.Z &&
-  git push origin :refs/tags/vX.Y.Z`) — otherwise the next `git tag -a
-  vX.Y.Z` fails because the old tag still exists — and re-tag at a
-  commit Y ≠ X that passes the step 9 check (see the interim rule
-  there, fullsend#7955). The blocked final's `:X.Y.Z` images (built
-  independently by Sandbox Images — see below) were already published
-  and get overwritten when the tag is re-pushed; that's harmless, since
-  the fleet only pins RC digests (step 8), never a final's.
+  `v0.44.0`). **`422 already_exists` alone doesn't prove this**, though:
+  `release` can also hit its own already-uploaded assets on a rerun of a
+  prior successful publish (e.g. after a later step such as `tag-agents`
+  or the `v0` move failed and the whole job was re-run). Before touching
+  the tag, check the `release` job's GoReleaser logs for which tag it
+  resolved and built — the RC-selection failure shows the RC tag, not
+  the final — and confirm the final has no GitHub Release or binary
+  assets yet (`gh release view vX.Y.Z`). Only when both are confirmed is
+  nothing published in this case, and re-running cannot fix it because
+  the commit itself is the problem: delete the blocked final tag both
+  locally and remotely (`git tag -d vX.Y.Z && git push origin
+  :refs/tags/vX.Y.Z`) — otherwise the next `git tag -a vX.Y.Z` fails
+  because the old tag still exists — and re-tag at a commit Y ≠ X that
+  passes the step 9 check (see the interim rule there, fullsend#7955).
+  The blocked final's `:X.Y.Z` images (built independently by Sandbox
+  Images — see below) were already published and get overwritten when
+  the tag is re-pushed; that's harmless, since the fleet only pins RC
+  digests (step 8), never a final's. If the final already has a GitHub
+  Release or binary assets, it already shipped — preserve the tag and
+  investigate the later step that failed instead.
 - **The `fullsend-ai/agents` repo** is tagged with the same version last,
   by the `tag-agents` job, using an org-owned GitHub App token
   (`RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`). This is the only step
