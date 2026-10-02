@@ -176,12 +176,12 @@ final tag in step 9 must wait until this repin PR is merged.
    file list — discover the current harness files and repin whichever
    ones reference `fullsend-sandbox` or `fullsend-code`. Read agents
    `main`, which is what the repin PR edits and what the final will tag
-   (harness files live only in agents). The block runs in a subshell, so
-   its `exit 1` ends only the check; a non-zero status means discovery
-   failed:
+   (harness files live only in agents). The block runs under `bash` even
+   from zsh, which does not word-split `$HARNESS_FILES`, and its `exit 1`
+   ends only the check; a non-zero status means discovery failed:
 
    ```
-   (
+   bash <<'EOF'
    HARNESS_FILES=$(gh api "repos/fullsend-ai/agents/contents/harness?ref=main" --jq '.[].name') || exit 1
    [ -n "$HARNESS_FILES" ] || exit 1
 
@@ -199,7 +199,7 @@ final tag in step 9 must wait until this repin PR is merged.
      fi
    done
    [ "$MATCH_COUNT" -gt 0 ] || exit 1
-   )
+   EOF
    ```
 
    Check the directory listing, each content fetch, and the base64
@@ -393,8 +393,10 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
   prior successful publish (e.g. after a later step such as `tag-agents`
   or the `v0` move failed and the whole job was re-run). Before touching
   the tag, check the `release` job's GoReleaser logs for which tag it
-  resolved and built (`gh run view <release-run-id> --log | grep -m1 'using tags'`; its `current` value, e.g. `current=v0.44.0-rc.2`, is the tag GoReleaser built) — the RC-selection failure shows the RC tag, not
-  the final — and confirm the final has no GitHub Release or binary
+  resolved and built (`gh run view <release-run-id> --log | grep -m1
+  'using tags'`; its `current` value, e.g. `current=v0.44.0-rc.2`, is
+  the tag GoReleaser built) — the RC-selection failure shows the RC tag,
+  not the final — and confirm the final has no GitHub Release or binary
   assets yet (`gh release view vX.Y.Z`). Only when both are confirmed is
   nothing published in this case, and re-running cannot fix it because
   the commit itself is the problem: delete the blocked final tag both

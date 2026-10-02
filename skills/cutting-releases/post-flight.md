@@ -55,8 +55,13 @@ blocked before publishing: no binaries, no GitHub Release, no moved
 If the cause is a flake or transient infrastructure issue, resolve it
 and use "Re-run failed jobs" on the existing run — the tag is already
 correct and must not be moved (re-verification would fail the release
-if it were). If the fix needs a code or pin change, the tag is now
-blocked: delete it both locally and remotely (`git tag -d <tag> && git
+if it were). If the fix landed only in `fullsend-ai/agents`, a re-run
+does not pick it up — the run reuses the agents SHA it resolved at the
+start — so after confirming `gh release view <tag>` reports no release,
+delete the tag both locally and remotely and re-push it at the same
+commit to start a fresh run. If the fix needs a code or pin change in
+this repo, the tag is now blocked: confirm `gh release view <tag>`
+reports no release, then delete it both locally and remotely (`git tag -d <tag> && git
 push origin :refs/tags/<tag>`) — otherwise the next `git tag -a <tag>`
 fails because the old tag still exists — then cut `rc.N+1` from the
 fixed commit instead (SKILL.md step 6) rather than re-running.
@@ -67,7 +72,9 @@ also surfaces when `release` is re-run after it already published the
 final (e.g. a later step like `tag-agents` or the `v0` move failed and
 the whole job was re-run), in which case the final already shipped.
 Check the `release` job's GoReleaser logs for which tag it resolved and
-built (`gh run view <release-run-id> --log | grep -m1 'using tags'`; its `current` value, e.g. `current=v0.44.0-rc.2`, is the tag GoReleaser built) — the RC-selection failure shows the RC tag, not the final — and
+built (`gh run view <release-run-id> --log | grep -m1 'using tags'`;
+its `current` value, e.g. `current=v0.44.0-rc.2`, is the tag GoReleaser
+built) — the RC-selection failure shows the RC tag, not the final — and
 confirm the final has no GitHub Release or binary assets yet (`gh
 release view <tag>`). Only when both are confirmed — the final shared a
 commit with its RC and no binaries or GitHub Release were published — does re-cutting apply,
@@ -151,7 +158,7 @@ fixed list or reading a local checkout (either may have drifted from
 what actually shipped):
 
 ```
-(
+bash <<'EOF'
 HARNESS_FILES=$(gh api "repos/fullsend-ai/agents/contents/harness?ref=vX.Y.Z" --jq '.[].name') || exit 1
 [ -n "$HARNESS_FILES" ] || exit 1
 
@@ -169,10 +176,11 @@ for f in $HARNESS_FILES; do
   fi
 done
 [ "$MATCH_COUNT" -gt 0 ] || exit 1
-)
+EOF
 ```
 
-The block runs in a subshell, so its `exit 1` ends only the check.
+The block runs under `bash` even from zsh, and its `exit 1` ends only
+the check.
 
 Check the directory listing, each content fetch, and the base64 decode
 independently — an API error, an empty response, or a bad decode is a
