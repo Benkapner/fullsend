@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/poll"
@@ -38,6 +40,7 @@ func populateInstalledRepo(t testing.TB, fc *forge.FakeClient, owner, repo, ref,
 	t.Helper()
 	fc.VariableValues[owner+"/"+repo+"/FULLSEND_MINT_URL"] = mintURL
 	fc.VariableValues[owner+"/"+repo+"/FULLSEND_GCP_REGION"] = region
+	fc.VariableValues[owner+"/"+repo+"/FULLSEND_APP_SET"] = appsetup.DefaultAppSet
 
 	if fc.Secrets == nil {
 		fc.Secrets = make(map[string]bool)
@@ -207,6 +210,54 @@ func TestProbeRepoState_GitLab_LegacyDispatchMarker(t *testing.T) {
 	}
 }
 
+// failForgeTokenSecretExistsClient fails RepoSecretExists only for the
+// GitLab shared/role secrets that ProbeRepoState itself checks, leaving the
+// generic required-secret checks inside ProbeComponents (GCP project ID and
+// WIF provider) unaffected. This isolates ProbeRepoState's own error path
+// from the shared RepoSecretExists method used by both.
+type failForgeTokenSecretExistsClient struct {
+	*forge.FakeClient
+}
+
+func (c *failForgeTokenSecretExistsClient) RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error) {
+	switch name {
+	case forge.SecretForgeToken, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken:
+		return false, fmt.Errorf("denied")
+	}
+	return c.FakeClient.RepoSecretExists(ctx, owner, repo, name)
+}
+
+func TestProbeRepoState_GitLab_RepoSecretExistsError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	client := &failForgeTokenSecretExistsClient{FakeClient: fc}
+
+	_, err := ProbeRepoState(context.Background(), client, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	if err == nil {
+		t.Fatal("expected error when checking secret existence fails")
+	}
+	if !strings.Contains(err.Error(), "checking secret") {
+		t.Errorf("error = %q, want it to mention checking secret", err.Error())
+	}
+}
+
+func TestProbeRepoState_GitLab_InstalledViaRoleSecretAndWorkflow(t *testing.T) {
+	// A role-only install has no shared FULLSEND_FORGE_TOKEN and no pipeline
+	// schedule, but the workflow carrier plus any built-in role secret is
+	// sufficient install evidence.
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	fc.Secrets["acme/api/"+forge.SecretGitLabPollerToken] = true
+
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	if err != nil {
+		t.Fatalf("ProbeRepoState() error = %v", err)
+	}
+	if !state.Installed {
+		t.Fatal("Installed = false, want true (workflow carrier plus a role secret)")
+	}
+}
+
 func TestProbeRepoState_GitLab_NotInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
@@ -319,6 +370,68 @@ func TestStatus_MintURLDrift(t *testing.T) {
 				t.Errorf("drift actual = %q", s.Drifts[0].Actual)
 			}
 		}
+	}
+}
+
+// TestStatus_AppSetDrift verifies that when the manifest explicitly declares
+// app_set, status flags a repo whose FULLSEND_APP_SET variable has drifted from
+// the declared value. When app_set is not declared, status asserts presence only
+// and never flags a value difference (preserve semantics).
+func TestStatus_AppSetDrift(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := newTestManifest()
+	m.GitHub.AppSet = "custom-set"
+
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "acme-corp", "web-frontend", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+	// api-server matches the declared app_set; web-frontend has a stale value.
+	fc.VariableValues["acme-corp/api-server/FULLSEND_APP_SET"] = "custom-set"
+	fc.VariableValues["acme-corp/web-frontend/FULLSEND_APP_SET"] = "stale-set"
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Summary.Drifted != 1 {
+		t.Errorf("drifted = %d, want 1", result.Summary.Drifted)
+	}
+	for _, s := range result.Repos {
+		if s.Repo == "web-frontend" {
+			if len(s.Drifts) != 1 {
+				t.Fatalf("web-frontend: want 1 drift, got %d", len(s.Drifts))
+			}
+			if s.Drifts[0].Field != "FULLSEND_APP_SET" {
+				t.Errorf("drift field = %q, want FULLSEND_APP_SET", s.Drifts[0].Field)
+			}
+			if s.Drifts[0].Expected != "custom-set" {
+				t.Errorf("drift expected = %q, want custom-set", s.Drifts[0].Expected)
+			}
+		}
+	}
+}
+
+// TestStatus_AppSetNotDeclared_NoValueDrift verifies that a custom
+// FULLSEND_APP_SET is not reported as drift when the manifest does not declare
+// app_set.
+func TestStatus_AppSetNotDeclared_NoValueDrift(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := newTestManifest()
+
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "acme-corp", "web-frontend", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+	fc.VariableValues["acme-corp/web-frontend/FULLSEND_APP_SET"] = "some-custom-set"
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Summary.Drifted != 0 {
+		t.Errorf("drifted = %d, want 0 (app_set not declared → presence-only)", result.Summary.Drifted)
 	}
 }
 

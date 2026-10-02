@@ -123,7 +123,7 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 | Field | Purpose |
 |-------|---------|
 | `name` | Must match the filename (without `.md`) |
-| `tools` | Bash commands the agent can run. Restrict to what's needed. |
+| `tools` | The tools the agent may use, in Claude Code's names (`Read`, `Grep`, `Glob`, `LS`, `Bash(gh,jq)`, ...). Restrict to what's needed. On pi the names are translated, and two of them surprise people — see [What to write in `tools:`](../../runtimes/pi.md#what-to-write-in-tools) |
 | `model` | LLM model (`opus`, `sonnet`, etc.) |
 | `skills` | [Skill](../../glossary.md#skill) directories to mount (relative to `skills/`) |
 | `disallowedTools` | Bash patterns the agent is forbidden from running |
@@ -446,7 +446,11 @@ case "${STATUS}" in
     echo "Agent needs more information"
     ;;
   *)
-    echo "ERROR: Unknown or missing status '${STATUS}'"
+    # STATUS is model output: flatten CR/LF and cap it before logging, and
+    # use printf, which never expands backslash escapes, so a crafted value
+    # cannot start a new log line (a "::" workflow command).
+    shown="${STATUS//[$'\r\n']/ }"
+    printf '%s\n' "ERROR: Unknown or missing status '${shown:0:40}'"
     exit 1
     ;;
 esac
@@ -540,15 +544,6 @@ jobs:
           done
           rm -rf .defaults
 
-      - name: Authenticate to GCP via WIF
-        uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-          project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-
-      - name: Prepare sandbox credentials
-        run: bash .fullsend/scripts/prepare-sandbox-credentials.sh
-
       - name: Install fullsend CLI
         uses: fullsend-ai/fullsend@main
         with:
@@ -560,6 +555,8 @@ jobs:
           ISSUE_KEY: ${{ inputs.issue_key }}
           ISSUE_SOURCE: ${{ inputs.issue_source || 'github' }}
           REPO_FULL_NAME: ${{ github.repository }}
+          FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}  # value drift is detected and repaired by convergence
         run: |

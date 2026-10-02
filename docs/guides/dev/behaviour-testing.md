@@ -221,7 +221,7 @@ GODOG_CONCURRENCY=1 make behaviour-test
 Serial mode (`GODOG_CONCURRENCY=1`) is useful when debugging a single
 scenario or when `-v` output from multiple scenarios would interleave.
 
-In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same as admin e2e) for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. The install driver provisions repo-scoped inference WIF via `fullsend inference provision` before `github setup`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same as admin e2e) for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. Before `github setup`, the install driver resolves the repo-scoped inference WIF provider: it runs `fullsend inference status` and runs `fullsend inference provision` only when the provider is not healthy. Provisions are serialised across the process. The resolved provider is cached per repo name for the rest of the run, including after the repo is deleted and recreated, because the provider ID, its attribute condition and the Vertex AI grant are all keyed by `owner/repo`, not by repo ID (`Provisioner.ProvisionWIF` in `internal/dispatch/gcf/provisioner.go` creates the provider and the grant, and is the source of truth for these bindings). See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
 ### Repo allocation via unified Driver
 
@@ -229,7 +229,7 @@ The `Given the enrolled test repository` step allocates a repo via `Driver.Alloc
 
 1. Leases a slot from the internal pool (blocks until one is free or ctx is cancelled).
 2. If the repo already exists, deletes it (and any leftover `{name}-fork`) so the scenario cannot inherit labels, branches, PRs, workflow runs, or config from a previous lessee.
-3. Creates the repo (the forge's `auto_init` provides the initial commit) and runs `fullsend github setup` (and inference provision when configured).
+3. Creates the repo (the forge's `auto_init` provides the initial commit) and runs `fullsend github setup` (after resolving the inference WIF provider when configured).
 4. Caches the successful ensure for the duration of this lease so duplicate `EnsureRepo` calls skip redundant work.
 
 The After hook runs `CleanupScenario` (issues, PRs, ephemeral forks, hosting repos) and then `Driver.DeallocateRepo`, which deletes the leased base — after in-scenario debug collection has written workflow logs and agent artifacts under `BEHAVIOUR_ARTIFACT_DIR` — and returns the name to the pool. The next lessee of that name recreates the repo from scratch. Mint enrollment of the numbered *names* can remain pre-provisioned; the GitHub repos themselves are ephemeral around a lease. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases with an error.
@@ -238,7 +238,7 @@ Concurrent callers for the same repo are serialized via `singleflight.Group` —
 
 **Credential context separation:** The suite's e2e installation token and dispatch's per-repo `GITHUB_TOKEN` are distinct credential contexts with independent permission propagation graphs. After a pool repo is deleted and recreated, the suite can confirm the repo exists (via `GetRepo`), but it **cannot** observe or predict when dispatch-side collaborator permissions will be ready. Do not add `GetCollaboratorPermission` polling to the suite-side readiness checks — the suite's token resolves permissions through a different GitHub subsystem than dispatch's token. See the [package doc comment](../../../pkg/behaviourtest/drivers/install/doc.go) for details and the empirical evidence from [#6701](https://github.com/fullsend-ai/fullsend/issues/6701).
 
-**Suite duration:** Because each lease of `test-repo-NN` pays create + inference provision + `github setup` (not only the first use in a run), serial godog suites take longer than a shared-repo model. CI budgets **45 minutes** for the behaviour job (`timeout-minutes` and `go test -timeout`) to match.
+**Suite duration:** Because each lease of `test-repo-NN` pays create + `github setup` (not only the first use in a run), serial godog suites take longer than a shared-repo model. CI budgets **45 minutes** for the behaviour job (`timeout-minutes` and `go test -timeout`) to match.
 
 Runner env (defaults shown):
 
@@ -248,8 +248,9 @@ BEHAVIOUR_CI=githubactions        # also: gitlabci; future: tekton
 BEHAVIOUR_INSTALL_MODE=per-repo
 BEHAVIOUR_ARTIFACT_DIR=        # CI upload-artifact root for debug logs and run artifacts; temp dir when unset
 BEHAVIOUR_CONFIG_PRESET=       # optional local path or HTTPS URL forwarded as github setup --config
+PLAYBACK_RUNTIME=              # unset: normal "dummy" runtime; "dummy-playback": install.PlaybackDriver's installation runtime
 ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs) or stage (push to main)
-E2E_GCP_PROJECT_ID=...        # inference project; install runs inference provision per pool repo
+E2E_GCP_PROJECT_ID=...        # inference project; install resolves (and if needed provisions) inference WIF once per pool repo name
 E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to pool test-repo secrets)
 TEST_ACTOR_WRITE_PAT=...      # write-level human-like actor PAT (CI: same-named repo secret)
 TEST_ACTOR_TRIAGE_PAT=...     # triage-level human-like actor PAT
@@ -259,6 +260,8 @@ TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on b
 `ENVIRONMENT` is `dev` or `stage`. Local runs default to `dev` when unset. CI sets it to match the GitHub Environment on the behaviour job (`dev` on pull requests and the merge queue, `stage` on push to `main`).
 
 When `BEHAVIOUR_CONFIG_PRESET` is set to a local path or HTTPS URL, install drivers forward it as `fullsend github setup --config <value>` and omit `--runtime dummy` so the preset's `runtime: dummy` is inherited rather than pinned in the overlay. Unset (the default) leaves install behaviour unchanged.
+
+`PLAYBACK_RUNTIME` only affects provisioning: when set (e.g. to `dummy-playback`), the DEV and STAGE factories install repos with that runtime (passed as `GitHubSetupOpts.Runtime`) and attach `playbackInstallHooks`, which creates the per-repo playback tracking issue/comment after install. It does not itself select `install.PlaybackDriver` as the suite's `Driver` — that wrapper (which `World.IsPlaybackMode` and the shared playback step definitions rely on) is constructed separately by the caller wrapping the factory's returned `Driver` in `install.NewPlaybackDriver`.
 
 When `ENVIRONMENT=stage`, the suite selects the `RepoPoolCFMintStage` driver which deploys a durable CF Worker mint at `stage-mint.fullsend.sh` and uses the `halfsend` org with a non-vendored per-repo install (referencing main HEAD via `--fullsend-ref=main`). The `halfsend` org uses the same repo pool pattern as the DEV pool orgs.
 
@@ -372,6 +375,14 @@ If a scenario needs to seed additional files, use a filename that does not colli
 
 Reference: [`ensureRepoExists`](../../../pkg/behaviourtest/drivers/install/ensure.go) — see the `auto_init` comment and `CreateRepo` call.
 
+### Repo deletion can lag behind `GetRepo`
+
+After `DeleteRepo`, GitHub may keep serving a cached repository object for several seconds. A successful `GetRepo` immediately after delete does **not** mean the name is still taken — and it also does not mean the repo will still exist by the time `fullsend github setup` runs. Treating that stale success as "already ready" skips recreation and then 404s during setup.
+
+GitHub's reads are not monotonic here: a confirmed 404 can be followed by a stale 200, and a 404 does not guarantee `CreateRepo` will accept the name yet. So the install ensurer waits for a 404 (`awaitDeletion`) and then always calls `CreateRepo`, never trusting a single `GetRepo`. If creation fails because the name is still taken, it deletes the repository blocking creation, and any leftover `-fork`, with `deleteBlockingRepo`. It waits for that deletion to propagate, backs off exponentially, and retries `CreateRepo`. It fails the allocation if the name never becomes free within the attempt budget.
+
+Reference: [`ensureRepoExists`](../../../pkg/behaviourtest/drivers/install/ensure.go), [`deleteBlockingRepo`](../../../pkg/behaviourtest/drivers/install/ensure.go) and [`awaitDeletion`](../../../pkg/behaviourtest/drivers/install/ensure.go).
+
 ### Fork name derivation depends on `World.RepoName`
 
 The `Given a fork` step resolves the fork repo name by replacing the `test-repo` prefix with `World.RepoName`. For example, the logical Gherkin name `"test-repo-fork"` with a leased base `test-repo-07` resolves to `test-repo-07-fork`.
@@ -390,7 +401,7 @@ Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ens
 
 ### CI timeout budgeting for lazy provisioning
 
-Each lease of a pool repo adds approximately 3–5 minutes of overhead (delete leftover state + create + inference provision + `github setup` + Actions settle), including when a later scenario reuses the same `test-repo-NN` name. The behaviour job's `timeout-minutes` in `e2e.yml` and the `go test -timeout` in the Makefile must account for this overhead across all leases in the suite.
+Each lease of a pool repo adds approximately 3–5 minutes of overhead (delete leftover state + create + `github setup` + Actions settle; the first lease of each name also resolves inference WIF), including when a later scenario reuses the same `test-repo-NN` name. The behaviour job's `timeout-minutes` in `e2e.yml` and the `go test -timeout` in the Makefile must account for this overhead across all leases in the suite.
 
 Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within this budget. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection.
 
@@ -519,5 +530,7 @@ suiteRunner := godog.TestSuite{
 **`scm.Driver.ListOpenChangeProposals` / `scm.Driver.ListComments` additions:** `ListOpenChangeProposals(ctx, owner, repo) ([]forge.ChangeProposal, error)` returns the repository's **open** pull requests including each head branch; `ListComments(ctx, owner, repo, number) ([]forge.IssueComment, error)` returns the comments on an issue or pull request. The branch assertion steps and the scenario-cleanup namespace sweep call them. External `scm.Driver` implementations must add both methods.
 
 **`ci.Driver.WaitForFailedHarnessAgent` addition:** `WaitForFailedHarnessAgent(ctx, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error)` waits for the named agent's harness run to complete with a terminal failure conclusion (artifact-first detection, job-name fallback) and errors out early when the run succeeds instead. External `ci.Driver` implementations must add this method.
+
+**`scm.Driver.ListPullRequestReviews` addition (breaking change):** The `scm.Driver` interface now includes `ListPullRequestReviews(ctx, owner, repo, number) ([]forge.PullRequestReview, error)`, returning the formal reviews submitted on a change proposal. The GitHub and GitLab reference implementations pass through to the existing `forge.Client` method of the same name. This widens the required method set, so external `scm.Driver` implementations must add this method when upgrading past this release or they will no longer satisfy the interface.
 
 Bump the pinned version when behaviour step vocabulary or `pkg/behaviourtest` APIs change.

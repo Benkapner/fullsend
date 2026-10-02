@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -194,13 +195,11 @@ func TestGitHubSetupCmd_PerRepoDryRun_Vendor(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestGitHubSetupCmd_PerRepoRequiresInferenceProject(t *testing.T) {
-	// No existing .fullsend/config.yaml (first install, modeled via an
-	// empty FakeClient — loadExistingPerRepoConfig sees a 404 and
-	// returns a nil top layer) and no FULLSEND_GCP_PROJECT_ID secret:
-	// --inference-project has no source to resolve from, so setup must
-	// fail the required-value check in resolveInferenceReuse.
+func TestGitHubSetupCmd_PerRepoWithoutGCP(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
 	printer := ui.New(&discardWriter{})
 
 	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
@@ -208,6 +207,24 @@ func TestGitHubSetupCmd_PerRepoRequiresInferenceProject(t *testing.T) {
 		mintURL:      "https://mint-test-abc123.run.app",
 		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
 		changedFlags: map[string]bool{"mint-url": true},
+	})
+	require.NoError(t, err)
+	for _, secret := range client.CreatedSecrets {
+		assert.NotContains(t, secret.Name, "FULLSEND_GCP_")
+	}
+}
+
+func TestGitHubSetupCmd_PerRepoRequiresProjectWhenWIFConfigured(t *testing.T) {
+	// A WIF provider without a project is an incomplete Vertex pair.
+	client := forge.NewFakeClient()
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags:         map[string]bool{"mint-url": true, "inference-wif-provider": true},
 	})
 	require.Error(t, err)
 	errMsg := err.Error()
@@ -1193,6 +1210,194 @@ func TestRunGitHubSetupPerRepo_WritesReviewClientID(t *testing.T) {
 	assert.Equal(t, "Iv23li1nIorNLIQy6NWK", varNames["FULLSEND_REVIEW_CLIENT_ID"])
 }
 
+func TestRunGitHubSetupPerRepo_WritesAppSetWhenChanged(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+
+	err := runGitHubSetupPerRepo(context.Background(), client, ui.New(&discardWriter{}), githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceProject:     "my-project",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		inferenceRegion:      "global",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		appSet:               "custom-set",
+		changedFlags: map[string]bool{
+			"mint-url":               true,
+			"inference-project":      true,
+			"inference-wif-provider": true,
+			"inference-region":       true,
+			"app-set":                true,
+		},
+	})
+	require.NoError(t, err)
+
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, "custom-set", varNames["FULLSEND_APP_SET"])
+}
+
+// TestRunGitHubSetupPerRepo_PreservesExistingAppSet verifies that when --app-set
+// is not passed, an existing custom FULLSEND_APP_SET is preserved rather than
+// overwritten with the built-in default.
+func TestRunGitHubSetupPerRepo_PreservesExistingAppSet(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	client.VariableValues["acme/widget/FULLSEND_APP_SET"] = "existing-custom"
+
+	err := runGitHubSetupPerRepo(context.Background(), client, ui.New(&discardWriter{}), githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceProject:     "my-project",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		inferenceRegion:      "global",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		appSet:               "fullsend-ai", // default value; flag not changed
+		changedFlags: map[string]bool{
+			"mint-url":               true,
+			"inference-project":      true,
+			"inference-wif-provider": true,
+			"inference-region":       true,
+		},
+	})
+	require.NoError(t, err)
+
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, "existing-custom", varNames["FULLSEND_APP_SET"])
+}
+
+// TestRunGitHubSetupPerRepo_ReviewClientIDUsesPreservedAppSet verifies that
+// FULLSEND_REVIEW_CLIENT_ID is resolved against the same effective app set
+// that is persisted as FULLSEND_APP_SET, not the --app-set flag's default.
+// On a re-run where --app-set is not passed and the repo already carries a
+// custom app set, the old code resolved the review client ID against the
+// flag default (here "fullsend-ai") while persisting the preserved value
+// (here "existing-custom") — a mismatch that could point review-comment
+// provenance validation at the wrong GitHub App.
+func TestRunGitHubSetupPerRepo_ReviewClientIDUsesPreservedAppSet(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	client.VariableValues["acme/widget/FULLSEND_APP_SET"] = "existing-custom"
+	client.AppClientIDs = map[string]string{
+		"existing-custom-review": "preserved-client-id",
+		"fullsend-ai-review":     "wrong-default-client-id",
+	}
+
+	err := runGitHubSetupPerRepo(context.Background(), client, ui.New(&discardWriter{}), githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceProject:     "my-project",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		inferenceRegion:      "global",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		appSet:               "fullsend-ai", // default value; flag not changed
+		changedFlags: map[string]bool{
+			"mint-url":               true,
+			"inference-project":      true,
+			"inference-wif-provider": true,
+			"inference-region":       true,
+		},
+	})
+	require.NoError(t, err)
+
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, "existing-custom", varNames["FULLSEND_APP_SET"])
+	assert.Equal(t, "preserved-client-id", varNames["FULLSEND_REVIEW_CLIENT_ID"])
+}
+
+// TestRunGitHubSetupPerRepo_RejectsMalformedExistingAppSet verifies that a
+// malformed FULLSEND_APP_SET value already on the repo (not written through
+// fullsend's validated CLI/manifest paths) is not preserved as-is: it fails
+// appsetup.ValidateAppSet, so the effective app set falls back to the
+// built-in default instead of being used unchecked to build a GitHub App
+// slug for review-client-ID resolution.
+func TestRunGitHubSetupPerRepo_RejectsMalformedExistingAppSet(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	client.VariableValues["acme/widget/FULLSEND_APP_SET"] = "not valid!/app set"
+
+	err := runGitHubSetupPerRepo(context.Background(), client, ui.New(&discardWriter{}), githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceProject:     "my-project",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		inferenceRegion:      "global",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		appSet:               "fullsend-ai", // default value; flag not changed
+		changedFlags: map[string]bool{
+			"mint-url":               true,
+			"inference-project":      true,
+			"inference-wif-provider": true,
+			"inference-region":       true,
+		},
+	})
+	require.NoError(t, err)
+
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, appsetup.DefaultAppSet, varNames["FULLSEND_APP_SET"])
+}
+
+func TestRunGitHubSetupPerRepo_SkipsAppSetWriteOnReadError(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	// A pre-existing custom app set that must not be clobbered.
+	client.VariableValues["acme/widget/FULLSEND_APP_SET"] = "existing-custom"
+	// The read used to decide preserve-vs-default fails outright (not a
+	// missing-variable 404). The write must be skipped so the flag default
+	// never overwrites the possibly-custom existing value.
+	client.Errors = map[string]error{"GetRepoVariable": fmt.Errorf("boom")}
+
+	err := runGitHubSetupPerRepo(context.Background(), client, ui.New(&discardWriter{}), githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceProject:     "my-project",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		inferenceRegion:      "global",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		appSet:               "fullsend-ai", // default value; flag not changed
+		changedFlags: map[string]bool{
+			"mint-url":               true,
+			"inference-project":      true,
+			"inference-wif-provider": true,
+			"inference-region":       true,
+		},
+	})
+	require.NoError(t, err)
+
+	// No FULLSEND_APP_SET write should have been issued.
+	for _, v := range client.Variables {
+		if v.Name == "FULLSEND_APP_SET" {
+			t.Errorf("FULLSEND_APP_SET should not be written when the read fails, got %q", v.Value)
+		}
+	}
+}
+
 func TestRunGitHubSetupPerRepo_SkipsReviewClientIDOnLookupFailure(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	client := forge.NewFakeClient()
@@ -1551,22 +1756,6 @@ func TestRunGitHubSetupPerRepo_PartialReuse_ProjectOnly(t *testing.T) {
 	assert.Contains(t, secretNames, "FULLSEND_GCP_WIF_PROVIDER")
 }
 
-func TestRunGitHubSetupPerRepo_MissingFlagNoExistingSecret(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.AuthenticatedUser = "acme"
-	printer := ui.New(&discardWriter{})
-
-	// No existing secrets and no flags — should fail.
-	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
-		target:          "acme/widget",
-		mintURL:         "https://mint-test-abc123.run.app",
-		inferenceRegion: "global",
-		agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--inference-project is required")
-}
-
 func TestRunGitHubSetupPerRepo_MissingWIFNoExistingSecret(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "acme"
@@ -1623,10 +1812,11 @@ func TestRunGitHubSetupPerRepo_SecretCheckError(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
-		target:          "acme/widget",
-		mintURL:         "https://mint-test-abc123.run.app",
-		inferenceRegion: "global",
-		agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceRegion:      "global",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "API rate limit exceeded")
@@ -2075,7 +2265,7 @@ func TestResolveInferenceReuse_SecretCheckErrors(t *testing.T) {
 	t.Parallel()
 	client := forge.NewFakeClient()
 	client.Errors = map[string]error{"RepoSecretExists": fmt.Errorf("boom")}
-	_, _, err := resolveInferenceReuse(context.Background(), client, "acme", "widget", githubSetupConfig{}, nil)
+	_, _, err := resolveInferenceReuse(context.Background(), client, "acme", "widget", githubSetupConfig{inferenceWIFProvider: "provider"}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checking existing secret FULLSEND_GCP_PROJECT_ID")
 

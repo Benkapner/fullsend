@@ -650,7 +650,7 @@ func TestCommitRelativeResources_CommitsPolicyFile(t *testing.T) {
 		"agent: agents/triage.md\npolicy: policies/base.yaml\nrole: triage")
 	require.NoError(t, err)
 	assert.Equal(t, minimalAgentContent, string(scm.files["org/repo/agents/triage.md"]))
-	assert.Contains(t, string(scm.files["org/repo/policies/base.yaml"]), "Minimal policy")
+	assertBasePolicy(t, scm.files["org/repo/policies/base.yaml"])
 	assert.Equal(t, []string{"agents/triage.md", "policies/base.yaml"}, paths)
 }
 
@@ -1143,6 +1143,9 @@ func (f *fakeURLSCM) CommitFileToFork(context.Context, string, string, string, s
 	return nil
 }
 func (f *fakeURLSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
+}
+func (f *fakeURLSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
 	return nil, nil
 }
 func (f *fakeURLSCM) ListIssueReactions(context.Context, string, string, int) ([]forge.Reaction, error) {

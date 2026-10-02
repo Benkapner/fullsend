@@ -362,20 +362,8 @@ func formatRef(currentRef, expectedRef string) string {
 }
 
 func showGitLabRoleStatus(s repos.RepoStatus) bool {
-	if len(s.GitLabRoleDiagnostics) == 0 {
-		return false
-	}
-	switch s.GitLabRoleMode {
-	case string(gitlabroles.ModeMigrating), string(gitlabroles.ModeRollback), string(gitlabroles.ModeEnforced):
-		return true
-	case "":
-		// appendGitLabRoleStatus leaves GitLabRoleMode empty on a
-		// parse/read/registry error, but still records a diagnostic.
-		// Surface it in the table view too, not just JSON output.
-		return true
-	default:
-		return s.GitLabRolesPartial
-	}
+	// Surface role-credential diagnostics and parse/read/registry errors.
+	return len(s.GitLabRoleDiagnostics) > 0
 }
 
 func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
@@ -437,7 +425,7 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 		if !showGitLabRoleStatus(s) {
 			continue
 		}
-		fmt.Fprintf(out, "\n%s GitLab roles (mode=%s):\n", s.Owner+"/"+s.Repo, s.GitLabRoleMode)
+		fmt.Fprintf(out, "\n%s GitLab roles:\n", s.Owner+"/"+s.Repo)
 		for _, d := range s.GitLabRoleDiagnostics {
 			fmt.Fprintf(out, "  %s\n", d)
 		}
@@ -470,25 +458,20 @@ type reposInstallConfig struct {
 	inferenceRegion        string
 
 	// GitLab-specific
-	gitlabURL           string
-	gitlabBotToken      string
-	gitlabRoleMigration string
-	gitlabRoleRegistry  string
-	gitlabRoleTokens    []string
+	gitlabURL          string
+	gitlabRoleRegistry string
+	gitlabRoleTokens   []string
 
-	gitlabRoleRegistryJSON      string
-	gitlabRoleProvided          map[gitlabroles.Role]string
-	gitlabRoleModeFlag          gitlabroles.Mode
-	gitlabRoleCutover           bool
-	gitlabRoleCutoverDrained    bool
-	gitlabRoleRollbackConfirmed bool
-	rotateGitLabRoles           bool
-	rotateGitLabRoleNames       []string
-	rotateGitLabRoleFilter      []gitlabroles.Role
+	gitlabRoleRegistryJSON string
+	gitlabRoleProvided     map[gitlabroles.Role]string
+	rotateGitLabRoles      bool
+	rotateGitLabRoleNames  []string
+	rotateGitLabRoleFilter []gitlabroles.Role
 
 	// Per-repo overrides
 	fullsendRef            string
 	mintURL                string
+	appSet                 string
 	allowedRemoteResources []string
 	runtime                string
 
@@ -535,9 +518,6 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.repoFilter = args
 			opts.gitlabToken = getGitLabToken(cmd)
-			if opts.gitlabBotToken == "" {
-				opts.gitlabBotToken = os.Getenv(forge.VarGitLabBotToken)
-			}
 			if err := validateVendorFlags(opts.vendor, opts.fullsendBinary, opts.fullsendSource); err != nil {
 				return err
 			}
@@ -560,16 +540,12 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.inferenceRegion, "inference-region", "", "GCP region for inference (default: global)")
 	cmd.Flags().StringVar(&opts.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override")
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
+	cmd.Flags().StringVar(&opts.appSet, "app-set", "", "GitHub App set prefix (apps named {app-set}-{role}) persisted as FULLSEND_APP_SET for selected repos; GitHub-only")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
 	cmd.Flags().StringVar(&opts.runtime, "runtime", "", "agent runtime written to the per-repo config for repos added by this command (claude, pi, codex); repos already in the manifest keep their entry/defaults.runtime")
 	cmd.Flags().StringVar(&opts.gitlabURL, "gitlab-url", "", "GitLab instance URL (e.g. https://gitlab.example.com); sets gitlab.url in the manifest and implies --forge=gitlab when no forge is specified")
-	cmd.Flags().StringVar(&opts.gitlabBotToken, "gitlab-bot-token", "", "GitLab bot PAT for free-tier instances that don't support project access tokens")
-	cmd.Flags().StringVar(&opts.gitlabRoleMigration, "gitlab-role-migration", "", "GitLab role-credential gate: enforced or rollback (default: provision role credentials and cut over to enforced; passing enforced explicitly assumes in-flight shared-token jobs are drained, the same as ordinary install, and does not require --gitlab-role-cutover-drained; rollback is emergency recovery only and requires --gitlab-role-rollback-confirmed when leaving a role-required gate, migrating or enforced)")
 	cmd.Flags().StringVar(&opts.gitlabRoleRegistry, "gitlab-role-registry", "", "path to administrator GitLab role registry JSON (custom roles; never secret values)")
 	cmd.Flags().StringArrayVar(&opts.gitlabRoleTokens, "gitlab-role-token", nil, "administrator-provided GitLab role PAT (repeatable, role=token); values are never logged")
-	cmd.Flags().BoolVar(&opts.gitlabRoleCutover, "gitlab-role-cutover", false, "explicitly verify GitLab roles, enable enforced mode, and retire the shared credential (ordinary install already does this when roles are ready)")
-	cmd.Flags().BoolVar(&opts.gitlabRoleCutoverDrained, "gitlab-role-cutover-drained", false, "confirm in-flight shared-token jobs are drained; required with --gitlab-role-cutover")
-	cmd.Flags().BoolVar(&opts.gitlabRoleRollbackConfirmed, "gitlab-role-rollback-confirmed", false, "confirm reopening the shared GitLab credential path when changing a role-required gate (migrating or enforced) to rollback")
 	cmd.Flags().BoolVar(&opts.rotateGitLabRoles, "rotate-gitlab-roles", false, "force-rotate GitLab role credentials even if they are not near expiry")
 	cmd.Flags().StringArrayVar(&opts.rotateGitLabRoleNames, "rotate-gitlab-role", nil, "rotate a specific GitLab role (repeatable); default is all own-credential roles that are due")
 	addVendorFlags(cmd, &opts.vendor, &opts.fullsendBinary, &opts.fullsendSource)
@@ -599,6 +575,16 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		mu, muErr := url.Parse(opts.mintURL)
 		if muErr != nil || mu.Scheme != "https" || mu.Host == "" {
 			return fmt.Errorf("--mint-url must be a valid HTTPS URL, got %q", opts.mintURL)
+		}
+	}
+	if opts.appSet != "" {
+		if opts.forge == repos.ForgeGitLab || opts.gitlabURL != "" {
+			return fmt.Errorf("--app-set is a GitHub-only option and cannot be combined with GitLab installs")
+		}
+		if opts.appSet != repos.NoneSentinel {
+			if err := appsetup.ValidateAppSet(opts.appSet); err != nil {
+				return fmt.Errorf("--app-set: %w", err)
+			}
 		}
 	}
 	if opts.gitlabURL != "" {
@@ -690,8 +676,8 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 
 	// Phase 0: add repos not yet in the manifest.
 	var newlyAdded []string
+	var notInManifest []string
 	if len(opts.repoFilter) > 0 {
-		var notInManifest []string
 		for _, r := range opts.repoFilter {
 			if strings.ContainsAny(r, "*?[") {
 				continue
@@ -738,6 +724,15 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			if forgeName != repos.ForgeGitHub && opts.mintURL != "" {
 				printer.StepWarn(fmt.Sprintf("--mint-url is only used with GitHub repos; ignored for %s", forgeName))
 			}
+			if forgeName != repos.ForgeGitHub && opts.appSet != "" {
+				// Unlike --mint-url, --app-set is rejected outright rather
+				// than silently ignored: the explicit-forge/--gitlab-url
+				// path above (line ~580) already rejects --app-set for
+				// GitLab, and a forge inferred from the manifest's
+				// existing GitLab repos must reject it the same way
+				// instead of warning and dropping the flag.
+				return fmt.Errorf("--app-set is a GitHub-only option and cannot be combined with GitLab installs")
+			}
 			if forgeName != repos.ForgeGitHub && opts.vendorChanged && opts.vendor {
 				printer.StepWarn("--vendor only fully supported for GitHub repos; GitLab CI templates do not yet reference the vendored binary")
 			}
@@ -762,6 +757,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				if forgeName == repos.ForgeGitHub {
 					if opts.mintURL != "" && (manifest.GitHub == nil || opts.mintURL != manifest.GitHub.MintURL) {
 						entry.MintURL = opts.mintURL
+					}
+					// Record a per-repo app_set only when it differs from the
+					// manifest default, so the entry stays minimal. The "none"
+					// sentinel is written when it overrides a non-empty default.
+					if opts.appSet != "" && (manifest.GitHub == nil || opts.appSet != manifest.GitHub.AppSet) {
+						entry.AppSet = opts.appSet
 					}
 				}
 				if len(opts.allowedRemoteResources) > 0 {
@@ -821,6 +822,34 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					return nil
 				}
 			}
+		}
+	}
+
+	// Apply --app-set to every selected GitHub manifest entry, including
+	// entries that were already tracked before this invocation. This makes
+	// the flag a real per-repo override rather than a silent no-op on reruns.
+	// Reject a selection containing GitLab before changing the manifest: the
+	// app-set variable is meaningful only for GitHub installations.
+	if opts.appSet != "" {
+		targetedForges, forgeErr := manifest.DistinctForgesFor(opts.repoFilter)
+		if forgeErr != nil {
+			return fmt.Errorf("determining targeted forges for --app-set: %w", forgeErr)
+		}
+		for _, forgeName := range targetedForges {
+			if forgeName == repos.ForgeGitLab {
+				return fmt.Errorf("--app-set is a GitHub-only option and cannot be combined with GitLab installs")
+			}
+		}
+		updated, updateErr := repos.UpdateAppSet(repos.ManifestEditConfig{
+			Manifest:     manifest,
+			ManifestPath: opts.manifest,
+			DryRun:       opts.dryRun,
+		}, opts.repoFilter, opts.appSet)
+		if updateErr != nil {
+			return fmt.Errorf("updating app-set overrides: %w", updateErr)
+		}
+		if len(updated) > 0 && !opts.dryRun {
+			printer.StepDone(fmt.Sprintf("Updated app-set override for %d manifest entr%s", len(updated), map[bool]string{true: "y", false: "ies"}[len(updated) == 1]))
 		}
 	}
 
@@ -904,31 +933,43 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// Resolve the review app client ID for provenance validation.
 	// Best-effort: a missing client ID does not block installation.
 	// Skip the GitHub lookup when this run does not target any GitHub repo.
+	//
+	// reviewAppSet is the app set this ID was resolved for; it seeds the
+	// converge cache so repos on that app set skip a second lookup, and
+	// repos whose effective app set differs resolve their own.
+	reviewAppSet := appsetup.DefaultAppSet
+	if manifest.GitHub != nil && manifest.GitHub.AppSet != "" && manifest.GitHub.AppSet != repos.NoneSentinel {
+		reviewAppSet = manifest.GitHub.AppSet
+	}
 	var reviewAppClientID string
 	if forgeListIncludesGitHub(targetedForges) {
 		if fc, fcErr := clients.ConfigFor(repos.ForgeGitHub); fcErr == nil {
-			reviewAppClientID = resolveReviewAppClientID(ctx, fc.Client, appsetup.DefaultAppSet)
+			// Resolve the review app by its {app_set}-review slug. Prefer
+			// the manifest's GitHub app_set so a custom app set resolves
+			// its own review app rather than the built-in default.
+			reviewAppClientID = resolveReviewAppClientID(ctx, fc.Client, reviewAppSet)
 		}
 	}
 
 	convergeCfg := repos.ConvergeConfig{
-		Manifest:               manifest,
-		DryRun:                 opts.dryRun,
-		RepoFilter:             opts.repoFilter,
-		MaxConcurrency:         opts.concurrency,
-		Roles:                  opts.roles,
-		RolesExplicit:          opts.rolesChanged,
-		UpstreamRef:            upstreamRef,
-		UpstreamTag:            upstreamTag,
-		Direct:                 opts.direct,
-		Force:                  opts.force,
-		ReactivateSchedules:    opts.reactivateSchedules,
-		InferenceProject:       opts.inferenceProject,
-		InferenceProjectNumber: opts.inferenceProjectNumber,
-		InferenceRegion:        opts.inferenceRegion,
-		WIFProvider:            opts.inferenceWIFProvider,
-		ReviewAppClientID:      reviewAppClientID,
-		VendorOverride:         vendorOverride,
+		Manifest:                manifest,
+		DryRun:                  opts.dryRun,
+		RepoFilter:              opts.repoFilter,
+		MaxConcurrency:          opts.concurrency,
+		Roles:                   opts.roles,
+		RolesExplicit:           opts.rolesChanged,
+		UpstreamRef:             upstreamRef,
+		UpstreamTag:             upstreamTag,
+		Direct:                  opts.direct,
+		Force:                   opts.force,
+		ReactivateSchedules:     opts.reactivateSchedules,
+		InferenceProject:        opts.inferenceProject,
+		InferenceProjectNumber:  opts.inferenceProjectNumber,
+		InferenceRegion:         opts.inferenceRegion,
+		WIFProvider:             opts.inferenceWIFProvider,
+		ReviewAppClientID:       reviewAppClientID,
+		ReviewAppClientIDAppSet: reviewAppSet,
+		VendorOverride:          vendorOverride,
 	}
 
 	progressFn := func(repo, phase, msg string) {
@@ -1002,20 +1043,13 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 	}
 
-	// GitLab post-install: set up bot token and pipeline schedules for
-	// repos whose convergence result says an artifact is missing. Entry into
-	// the loop body is gated on
-	// NeedsGitLabPostInstall (true when either artifact is missing), but
-	// the two destructive actions inside are each gated on their own
-	// specific flag (NeedsGitLabBotToken / NeedsGitLabPipelineSchedules)
-	// rather than the combined flag — a repo re-run while its
-	// initialization MR is still open (#7417) keeps Installed true (the
-	// shim workflow is still absent from the default branch) even though
-	// some GitLab post-install artifacts already exist from a prior run.
-	// Running bot-token setup when only the token exists (or schedule
-	// setup when only the schedules exist) would still revoke/recreate
-	// the live fullsend-bot PAT or delete/recreate pipeline schedules
-	// that didn't need it, breaking in-flight pipelines.
+	// GitLab post-install: set up pipeline schedules for repos whose
+	// convergence result says they are missing. Entry into the loop body
+	// is gated on NeedsGitLabPostInstall (true when schedules are missing).
+	// Schedule setup itself is gated on NeedsGitLabPipelineSchedules so a
+	// repo re-run while its initialization MR is still open (#7417) does
+	// not delete and recreate live schedules. Shared-token bot-PAT setup
+	// was removed: role credentials are the only GitLab runtime path.
 	// failedRepoKeys tracks owner/repo pairs that have already failed in an
 	// earlier stage (post-install setup, poll-state provisioning) so the
 	// role-provisioning pass below can skip them instead of double-counting
@@ -1063,20 +1097,6 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				}
 				failedRepoKeys[repoFullName] = true
 				continue
-			}
-
-			if r.NeedsGitLabBotToken {
-				_, botErr := setupGitLabBotToken(ctx, fc.Client, glClient, printer, r.Owner, r.Repo, opts.gitlabBotToken)
-				if botErr != nil {
-					printer.StepWarn(fmt.Sprintf("[%s] Bot token setup failed: %v", repoFullName, botErr))
-					r.Error = botErr
-					postInstallFailedRepos = append(postInstallFailedRepos, r)
-					if r.Installed {
-						installedPostFail++
-					}
-					failedRepoKeys[repoFullName] = true
-					continue
-				}
 			}
 
 			if r.Installed && r.NeedsGitLabPipelineSchedules {
@@ -1197,43 +1217,6 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				roleFailedRepos = append(roleFailedRepos, item.r)
 				continue
 			}
-			if !opts.dryRun && opts.gitlabRoleModeFlag == gitlabroles.ModeRollback {
-				secretExists, secretErr := fc.Client.RepoSecretExists(ctx, item.r.Owner, item.r.Repo, forge.SecretForgeToken)
-				if secretErr != nil {
-					printer.StepWarn(fmt.Sprintf("[%s/%s] Could not check shared GitLab credential recovery state: %v", item.r.Owner, item.r.Repo, secretErr))
-					roleFail++
-					item.r.Error = secretErr
-					roleFailedRepos = append(roleFailedRepos, item.r)
-					if item.fresh {
-						roleFailInstalledCount++
-					}
-					continue
-				}
-				if !secretExists {
-					glClient, ok := fc.Client.(*gl.LiveClient)
-					if !ok {
-						err := fmt.Errorf("GitLab client type assertion failed during shared credential recovery")
-						printer.StepWarn(fmt.Sprintf("[%s/%s] %v", item.r.Owner, item.r.Repo, err))
-						roleFail++
-						item.r.Error = err
-						roleFailedRepos = append(roleFailedRepos, item.r)
-						if item.fresh {
-							roleFailInstalledCount++
-						}
-						continue
-					}
-					if _, err := setupGitLabBotToken(ctx, fc.Client, glClient, printer, item.r.Owner, item.r.Repo, opts.gitlabBotToken); err != nil {
-						printer.StepWarn(fmt.Sprintf("[%s/%s] Shared GitLab credential recovery failed: %v", item.r.Owner, item.r.Repo, err))
-						roleFail++
-						item.r.Error = err
-						roleFailedRepos = append(roleFailedRepos, item.r)
-						if item.fresh {
-							roleFailInstalledCount++
-						}
-						continue
-					}
-				}
-			}
 			if err := maybeRotateGitLabRoles(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
 				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab role rotation failed: %v", item.r.Owner, item.r.Repo, err))
 				roleFail++
@@ -1244,20 +1227,21 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				roleFailedRepos = append(roleFailedRepos, item.r)
 				continue
 			}
-			if err := maybeCutoverGitLabRoles(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
-				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab role cutover failed: %v", item.r.Owner, item.r.Repo, err))
+			if item.r.Error != nil {
+				continue
+			}
+			if err := ensureGitLabPollerPipelineAccess(ctx, fc.Client, gitLabTokenInventory(opts, fc.Client), printer, item.r.Owner, item.r.Repo, opts.dryRun); err != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab poller protected-ref pipeline access failed: %v", item.r.Owner, item.r.Repo, err))
 				roleFail++
 				item.r.Error = err
 				if item.fresh {
 					roleFailInstalledCount++
 				}
 				roleFailedRepos = append(roleFailedRepos, item.r)
-			}
-			if item.r.Error != nil {
 				continue
 			}
-			if err := ensureGitLabPollerPipelineAccess(ctx, fc.Client, gitLabTokenInventory(opts, fc.Client), printer, item.r.Owner, item.r.Repo, opts.dryRun); err != nil {
-				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab poller protected-ref pipeline access failed: %v", item.r.Owner, item.r.Repo, err))
+			if err := ensureGitLabPipelineVariableOverrideRole(ctx, fc.Client, printer, item.r.Owner, item.r.Repo, opts.dryRun); err != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab pipeline-variable override role failed: %v", item.r.Owner, item.r.Repo, err))
 				roleFail++
 				item.r.Error = err
 				if item.fresh {
@@ -1617,12 +1601,18 @@ type gcpInferenceProvisioner struct {
 	project string
 }
 
+// inferenceGCFClientFactory creates GCF clients for gcpInferenceProvisioner.
+// Overridden in tests.
+var inferenceGCFClientFactory = func(projectID string) gcf.GCFClient {
+	return gcf.NewLiveGCFClient(projectID)
+}
+
 func newGCPInferenceProvisioner(project string) *gcpInferenceProvisioner {
 	return &gcpInferenceProvisioner{project: project}
 }
 
 func (p *gcpInferenceProvisioner) Status(ctx context.Context, owner, repo string) (string, error) {
-	gcpClient := gcf.NewLiveGCFClient(p.project)
+	gcpClient := inferenceGCFClientFactory(p.project)
 	providerID := mintcore.BuildRepoProviderID(owner, repo)
 
 	projectNumber, err := gcpClient.GetProjectNumber(ctx, p.project)
@@ -1634,7 +1624,10 @@ func (p *gcpInferenceProvisioner) Status(ctx context.Context, owner, repo string
 	if err != nil {
 		return "", fmt.Errorf("checking WIF provider: %w", err)
 	}
-	if providerInfo == nil {
+	// A soft-deleted or disabled provider is still returned by
+	// providers.get but cannot exchange tokens; report it as not
+	// provisioned so the caller runs Provision, which restores it.
+	if providerInfo == nil || !providerInfo.Usable() {
 		return "", nil
 	}
 
@@ -1644,7 +1637,7 @@ func (p *gcpInferenceProvisioner) Status(ctx context.Context, owner, repo string
 }
 
 func (p *gcpInferenceProvisioner) Provision(ctx context.Context, owner, repo string) (string, error) {
-	gcpClient := gcf.NewLiveGCFClient(p.project)
+	gcpClient := inferenceGCFClientFactory(p.project)
 	provisioner := gcf.NewProvisioner(gcf.Config{
 		ProjectID:   p.project,
 		GitHubOrgs:  []string{owner},

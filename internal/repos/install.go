@@ -9,11 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"slices"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/maputil"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/preset"
@@ -83,6 +81,12 @@ type InstallConfig struct {
 	// repo variable so that pre-fetch-prior-review.sh can validate
 	// provenance of prior review comments.
 	ReviewAppClientID string
+
+	// AppSet is the GitHub App set prefix (apps named "{app_set}-{role}").
+	// When set, it is written as the FULLSEND_APP_SET repo variable so the
+	// scaffold workflows can derive bot identities. GitHub-only; empty for
+	// GitLab, where no FULLSEND_APP_SET variable is written.
+	AppSet string
 
 	// AgentRunnerTags is a list of GitLab CI runner tags embedded in the
 	// agent job so sandbox work is routed to the data-plane fleet.
@@ -566,6 +570,9 @@ func managedVarsForForge(cfg InstallConfig, mintURL string) ([]ManagedVar, error
 		if cfg.ReviewAppClientID != "" {
 			vars = append(vars, ManagedVar{Name: forge.VarReviewClientID, Value: cfg.ReviewAppClientID})
 		}
+		if cfg.AppSet != "" {
+			vars = append(vars, ManagedVar{Name: forge.VarAppSet, Value: cfg.AppSet})
+		}
 		return vars, nil
 	case ForgeGitLab:
 		var vars []ManagedVar
@@ -609,9 +616,8 @@ func installVarsForForge(cfg InstallConfig, mintURL string) (map[string]string, 
 }
 
 // installSecretsForForge returns the inference secrets to write.
-// Returns nil when InferenceProject is not set (the convergence
-// layer validates that InferenceProject is provided for repos
-// without existing secrets).
+// Returns nil when InferenceProject is not set; repositories without
+// Vertex inference credentials do not write GCP secrets.
 func installSecretsForForge(cfg InstallConfig, wifProvider string) map[string]string {
 	if cfg.InferenceProject == "" {
 		return nil
@@ -626,13 +632,15 @@ func installSecretsForForge(cfg InstallConfig, wifProvider string) map[string]st
 // requiredVariables lists the per-repo variables that must exist for a
 // complete installation. FULLSEND_GCP_REGION is excluded because it is
 // conditionally set (only when --inference-region is provided) and may
-// not be present when secrets are reused. Shared by install,
-// checkInstallComponents, and uninstall.
-var requiredVariables = []string{forge.VarMintURL}
+// not be present when secrets are reused. FULLSEND_APP_SET is required:
+// every GitHub install writes it (defaulting to the built-in app set), so
+// its absence on an existing repo is drift that convergence repairs.
+// Shared by install, checkInstallComponents, and uninstall.
+var requiredVariables = []string{forge.VarMintURL, forge.VarAppSet}
 
-// requiredSecrets lists the per-repo secrets that must exist for a
-// complete installation. Shared by install, checkInstallComponents,
-// and uninstall.
+// requiredSecrets lists the managed GCP inference secrets. Both may be
+// absent from an installation; probe checks pair consistency. Shared by
+// install, checkInstallComponents, and uninstall.
 var requiredSecrets = []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider}
 
 // gitlabRetiredLegacyVars is the set of GitLab poller CI/CD variables
@@ -748,32 +756,10 @@ func requiredVarsForForge(forgeName string) []string {
 	return requiredVariables
 }
 
-// requiredSecretsForForge returns the secret names that must exist for
-// the given forge. On GitLab, FULLSEND_FORGE_TOKEN is included because
-// secrets are stored as masked CI/CD variables and ListRepoVariables
-// returns them — excluding them from the required set would cause
-// orphan detection to flag them as false positives.
-//
-// GitLab role tokens (FULLSEND_GITLAB_*_TOKEN) and the role registry
-// stay optional in this required set so existing installations and
-// partial migrations do not fail health checks. Missing role secrets
-// under an enabled gate are reported by Diagnose / repos status, not
-// by requiredSecretsForForge. See internal/gitlabroles.
+// requiredSecretsForForge returns the secret names that must exist for the
+// given forge. GitLab runtime authentication is role-credential-only; role
+// readiness is checked by the GitLab role registry/status path.
 func requiredSecretsForForge(forgeName string) []string {
-	return requiredSecretsForForgeMode(forgeName, "", false)
-}
-
-func requiredSecretsForForgeMode(forgeName, migrationMode string, migrationExists bool) []string {
-	if forgeName == ForgeGitLab {
-		mode, err := gitlabroles.ParseMode(migrationMode)
-		if migrationExists && err == nil && mode == gitlabroles.ModeEnforced {
-			return requiredSecrets
-		}
-		if migrationExists && err != nil {
-			return requiredSecrets
-		}
-		return slices.Concat(requiredSecrets, []string{forge.SecretForgeToken})
-	}
 	return requiredSecrets
 }
 

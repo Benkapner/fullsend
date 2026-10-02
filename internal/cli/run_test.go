@@ -27,6 +27,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/fetchsvc"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
@@ -71,6 +72,12 @@ func TestRunCommand_HasNoPostScriptFlag(t *testing.T) {
 	flag := cmd.Flags().Lookup("no-post-script")
 	require.NotNil(t, flag)
 	assert.Equal(t, "false", flag.DefValue)
+}
+
+func TestRunCommand_HasNoResolveInferenceProviderFlag(t *testing.T) {
+	cmd := newRunCmd()
+	flag := cmd.Flags().Lookup("resolve-inference-provider")
+	assert.Nil(t, flag)
 }
 
 func TestRunCommand_HasOutputDirFlag(t *testing.T) {
@@ -183,6 +190,7 @@ func neutralizeAgentsRepoFallback(t *testing.T) {
 // fallback from bypassing local fixtures (#5569).
 func useFakeOpenshell(t *testing.T) {
 	t.Helper()
+	t.Setenv("GITHUB_ACTIONS", "false")
 	neutralizeAgentsRepoFallback(t)
 	testdataDir, err := filepath.Abs("testdata")
 	require.NoError(t, err)
@@ -196,6 +204,7 @@ func useFakeOpenshell(t *testing.T) {
 // ambient GitHub credentials (#5569).
 func useFakeOpenshellProviders(t *testing.T) {
 	t.Helper()
+	t.Setenv("GITHUB_ACTIONS", "false")
 	neutralizeAgentsRepoFallback(t)
 	// ImportProfileVerified keeps a per-id content cache under os.TempDir()
 	// and the providers-stub records imported ids there; isolate both.
@@ -2241,6 +2250,8 @@ func TestReservedSandboxKeys_IncludesOIDCVars(t *testing.T) {
 		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
 		"FULLSEND_GCP_OIDC_URL",
 		"FULLSEND_GCP_OIDC_AUTH_FILE",
+		"FULLSEND_GCP_PROJECT_ID",
+		"FULLSEND_GCP_WIF_PROVIDER",
 	} {
 		assert.True(t, reservedSandboxKeys[key], "reservedSandboxKeys must include %s", key)
 	}
@@ -2362,6 +2373,8 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
 		"FULLSEND_GCP_OIDC_URL",
 		"FULLSEND_GCP_OIDC_AUTH_FILE",
+		"FULLSEND_GCP_PROJECT_ID",
+		"FULLSEND_GCP_WIF_PROVIDER",
 		// OpenAI WIF configuration (#6689)
 		"FULLSEND_OPENAI_AUDIENCE",
 		"FULLSEND_OPENAI_IDENTITY_PROVIDER_ID",
@@ -2588,6 +2601,28 @@ func TestRefreshOIDCToken_FetchSucceedsSCPFails(t *testing.T) {
 	err := refreshOIDCToken(context.Background(), "nonexistent-sandbox", srv.URL, "bearer test-auth")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "copying token to sandbox")
+}
+
+// Each refreshed token is masked in the Actions log before it is used.
+func TestRefreshOIDCToken_MasksTokenOnActions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"value":"refreshed-oidc-jwt"}`)
+	}))
+	defer srv.Close()
+
+	for _, actions := range []string{"true", "false"} {
+		t.Run("GITHUB_ACTIONS="+actions, func(t *testing.T) {
+			t.Setenv("GITHUB_ACTIONS", actions)
+			stderr := captureStderr(t, func() {
+				_ = refreshOIDCToken(context.Background(), "nonexistent-sandbox", srv.URL, "bearer test-auth")
+			})
+			if actions == "true" {
+				assert.Contains(t, stderr, "::add-mask::refreshed-oidc-jwt")
+			} else {
+				assert.NotContains(t, stderr, "::add-mask::")
+			}
+		})
+	}
 }
 
 func TestRefreshOIDCToken_HTTPError(t *testing.T) {
@@ -3784,6 +3819,62 @@ roles:
 	assert.Contains(t, err.Error(), "config.forge")
 	assert.Contains(t, err.Error(), "gihub")
 	assert.Contains(t, err.Error(), "not a valid forge platform")
+}
+
+func TestResolvePlaybackForgeClient_GitHubBuildsFromCurrentCredential(t *testing.T) {
+	// fallbackForgeClient is built once, early in Run, from the pre-mint
+	// token. resolvePlaybackForgeClient is called later, after the agent
+	// token has been minted and GH_TOKEN replaced (mintAgentTokenAtLevel).
+	// It must pick up the *current* GH_TOKEN rather than reusing the
+	// stale fallback -- otherwise tracking-comment reads/updates run with
+	// the pre-mint credential even though minting succeeded.
+	t.Setenv("GH_TOKEN", "runtime-mint-token")
+	t.Setenv("GITHUB_TOKEN", "")
+	fallback := gh.New("pre-mint-token")
+	printer := ui.New(io.Discard)
+
+	client := resolvePlaybackForgeClient("github", fallback, printer)
+	require.NotNil(t, client)
+	assert.NotSame(t, fallback, client, "must build a fresh client from the current credential, not reuse the pre-mint fallback")
+
+	// Empty forge platform defaults to the GitHub path too, matching
+	// dummy_playback.go's repoFromEnv default-to-GitHub convention.
+	client = resolvePlaybackForgeClient("", fallback, printer)
+	require.NotNil(t, client)
+	assert.NotSame(t, fallback, client)
+}
+
+func TestResolvePlaybackForgeClient_GitHubFallsBackWhenCredentialUnresolvable(t *testing.T) {
+	// If the current credential cannot be resolved at all (env vars unset
+	// and `gh auth token` unavailable), degrade to the pre-mint fallback
+	// client with a warning rather than losing tracking entirely.
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("PATH", "/nonexistent")
+	fallback := gh.New("pre-mint-token")
+	printer := ui.New(io.Discard)
+
+	client := resolvePlaybackForgeClient("github", fallback, printer)
+	assert.Same(t, fallback, client)
+}
+
+func TestResolvePlaybackForgeClient_GitLabBuildsFromEnv(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	fallback := gh.New("token")
+	printer := ui.New(io.Discard)
+
+	client := resolvePlaybackForgeClient("gitlab", fallback, printer)
+	require.NotNil(t, client)
+	assert.NotSame(t, fallback, client)
+}
+
+func TestResolvePlaybackForgeClient_GitLabMissingTokenWarnsAndReturnsNil(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	fallback := gh.New("token")
+	printer := ui.New(io.Discard)
+
+	client := resolvePlaybackForgeClient("gitlab", fallback, printer)
+	assert.Nil(t, client)
 }
 
 func TestRunCommand_HasForgeFlag(t *testing.T) {
@@ -6956,7 +7047,6 @@ func TestRunAgent_GitLabSkipsMint(t *testing.T) {
 	t.Setenv(forge.SecretGitLabPollerToken, "glpat-test-poller")
 	t.Setenv(forge.SecretGitLabAnalystToken, "glpat-test-analyst")
 	t.Setenv(forge.SecretGitLabCoderToken, "glpat-test-coder")
-	t.Setenv(forge.VarGitLabRoleMigration, "")
 	t.Setenv(forge.VarGitLabRoleRegistry, "")
 
 	var buf bytes.Buffer
@@ -7000,7 +7090,6 @@ func TestRunAgent_GitLabMissingRoleFailsClosed(t *testing.T) {
 
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
 	t.Setenv(forge.SecretForgeToken, "")
-	t.Setenv(forge.VarGitLabRoleMigration, "")
 	t.Setenv(forge.VarGitLabRoleRegistry, "")
 	t.Setenv("GITLAB_TOKEN", "glpat-preset-by-user")
 
