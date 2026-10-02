@@ -446,7 +446,11 @@ case "${STATUS}" in
     echo "Agent needs more information"
     ;;
   *)
-    echo "ERROR: Unknown or missing status '${STATUS}'"
+    # STATUS is model output: flatten CR/LF and cap it before logging, and
+    # use printf, which never expands backslash escapes, so a crafted value
+    # cannot start a new log line (a "::" workflow command).
+    shown="${STATUS//[$'\r\n']/ }"
+    printf '%s\n' "ERROR: Unknown or missing status '${shown:0:40}'"
     exit 1
     ;;
 esac
