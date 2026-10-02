@@ -318,10 +318,10 @@ func TestSharedAssetsAreMarked(t *testing.T) {
 			t.Error("the openai bare name must not be copied as a scaffold file")
 		}
 	}
-	// retro is the two-forge-provider role: 3 path providers + 3 profiles.
-	// The openai bare name is skipped, not written.
-	if got := len(files); got != 4+1+6+1 {
-		t.Errorf("retro with --validation-loop produced %d files, want 12", got)
+	// 4 owned files, the policy and the validator. Providers and profiles
+	// are bare names resolved from the binary, so none is written (#7268).
+	if got := len(files); got != 4+1+1 {
+		t.Errorf("retro with --validation-loop produced %d files, want 6", got)
 	}
 }
 
@@ -358,12 +358,12 @@ func TestCodexHarnessOmitsVertexCredentials(t *testing.T) {
 	if !slices.Contains(h.Providers, OpenAIProviderName) {
 		t.Errorf("providers = %v, want to include %q", h.Providers, OpenAIProviderName)
 	}
-	if slices.Contains(h.Providers, vertexProvider) || slices.Contains(h.OpenShell.Profiles, vertexProfile) {
-		t.Errorf("codex harness must not declare Vertex: %v %v", h.Providers, h.OpenShell.Profiles)
+	if slices.Contains(h.Providers, vertexProvider) {
+		t.Errorf("codex harness must not declare Vertex: %v", h.Providers)
 	}
 	for _, f := range files {
-		if f.Path == vertexProvider || f.Path == vertexProfile {
-			t.Errorf("codex must not write the unused Vertex file %s", f.Path)
+		if strings.HasPrefix(f.Path, "providers/") || strings.HasPrefix(f.Path, "profiles/") {
+			t.Errorf("agent new must not write %s: built-in providers resolve from the binary", f.Path)
 		}
 	}
 	for _, hf := range h.HostFiles {
@@ -396,7 +396,7 @@ func TestDefaultHarnessDeclaresOpenAIAndVertex(t *testing.T) {
 	}
 	yaml := string(fileByPath(t, files, "harness/lint-docs.yaml").Data)
 	for _, want := range []string{
-		"providers/vertex-ai.yaml",
+		"- " + vertexProvider + "\n",
 		OpenAIProviderName,
 		"GOOGLE_APPLICATION_CREDENTIALS",
 		"CLAUDE_CODE_USE_VERTEX",
@@ -506,8 +506,8 @@ func TestRoleImageReachesTheHarness(t *testing.T) {
 		if !reflect.DeepEqual(h.Providers, role.Providers) {
 			t.Errorf("role %q: providers = %v, want %v", name, h.Providers, role.Providers)
 		}
-		if h.OpenShell == nil || !reflect.DeepEqual(h.OpenShell.Profiles, role.Profiles) {
-			t.Errorf("role %q: profiles = %v, want %v", name, h.OpenShell, role.Profiles)
+		if h.OpenShell != nil && len(h.OpenShell.Profiles) != 0 {
+			t.Errorf("role %q: openshell.profiles = %v, want none (built-in profiles come from the binary)", name, h.OpenShell.Profiles)
 		}
 		// readonly_repo must survive into the emitted YAML, not only sit on
 		// the Role struct: a generated review harness that ships writable
@@ -640,8 +640,11 @@ func TestPiOpenAIHarnessVertexBlock(t *testing.T) {
 	if err := h.ResolveOverlays(nil, "github", nil); err != nil {
 		t.Fatalf("resolving the uncommented overlay: %v", err)
 	}
-	if !slices.Contains(h.Providers, vertexProvider) || !slices.Contains(h.OpenShell.Profiles, vertexProfile) {
-		t.Errorf("uncommented block should add the Vertex provider and profile: %v %v", h.Providers, h.OpenShell.Profiles)
+	if !slices.Contains(h.Providers, vertexProvider) {
+		t.Errorf("uncommented block should add the Vertex provider: %v", h.Providers)
+	}
+	if h.OpenShell != nil && len(h.OpenShell.Profiles) != 0 {
+		t.Errorf("uncommented block should list no profile; the built-in one is imported: %v", h.OpenShell.Profiles)
 	}
 	for k, v := range vertexSandboxEnv() {
 		if h.Env.Sandbox[k] != v {

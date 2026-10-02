@@ -4,9 +4,6 @@ import (
 	"bytes"
 	_ "embed"
 	"fmt"
-
-	"github.com/fullsend-ai/fullsend/internal/harness"
-	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 // BasePolicy returns the base sandbox policy a generated agent's harness
@@ -21,45 +18,18 @@ func BasePolicy() []byte {
 //go:embed templates/policies/base.yaml
 var basePolicy []byte
 
-// sharedAssets returns the scaffold files a generated agent depends on but
-// does not own: the sandbox policy, the role's providers and profiles, and
-// the schema validator when the validation loop is enabled.
-//
-// These are written only when absent and are never overwritten, because they
-// are shared by every agent in the directory. They are needed at all because
-// a per-repo install vendors none of them: CollectPerRepoInstallFiles returns
-// only the shim workflow and one thin caller, and CI layers providers/ but
-// never policies/ or profiles/, so the copies written here are the ones every
-// run uses. The policy template here is the only in-repo copy (#7268).
-//
-// Providers and profiles come from the scaffold embed, so a generated
-// providers/ tree matches what CI layers in.
-//
-// withVertex is false for an agent that never references Vertex, not even
-// in a commented-out block, so its directory gains no Vertex files it does
-// not use.
-func sharedAssets(role Role, validationLoop, withVertex bool) ([]File, error) {
+// sharedAssets returns the files a generated agent depends on but does not
+// own: the sandbox policy, and the schema validator when the validation loop
+// is enabled. They are written only when absent and never overwritten,
+// because every agent in the directory shares them. A per-repo install
+// vendors no policy and the binary ships none, so this template is the only
+// in-repo copy (#7268). Providers and their profiles are not written: the
+// harness names them by bare name and the runner resolves them from the
+// binary.
+func sharedAssets(validationLoop bool) ([]File, error) {
 	files := []File{}
 
 	files = append(files, File{Path: "policies/base.yaml", Data: BasePolicy(), Mode: 0o644, Shared: true})
-
-	// Path-referenced providers and profiles are copied from the embedded
-	// scaffold. A bare name is skipped: the OpenAI provider is binary-only
-	// (appendEmbeddedProviderDefs fills it in at run time) and passing it to
-	// FullsendRepoFile would look for a file the scaffold does not ship.
-	for _, path := range append(append([]string{}, role.Providers...), role.Profiles...) {
-		if !harness.IsProviderPath(path) {
-			continue
-		}
-		if !withVertex && (path == vertexProvider || path == vertexProfile) {
-			continue
-		}
-		data, err := scaffold.FullsendRepoFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("reading %s from the embedded scaffold: %w", path, err)
-		}
-		files = append(files, File{Path: path, Data: data, Mode: 0o644, Shared: true})
-	}
 
 	if validationLoop {
 		script, err := templates.ReadFile("templates/scripts/validate-output-schema.sh")

@@ -122,14 +122,13 @@ table, and a validated walkthrough.
   schemas/my-agent-result.schema.json  # What the agent must produce
   scripts/post-my-agent.sh      # Turns the result into one comment
   policies/base.yaml            # Sandbox policy (written when absent)
-  providers/vertex-ai.yaml      # Network access the role needs (written when absent)
-  providers/github-ro.yaml
-  profiles/fullsend-vertex-ai.yaml
-  profiles/fullsend-github-ro.yaml
 ```
 
-The provider and profile pair depends on `--role`; the one shown is for
-`triage`. See the [role table](../../cli/agent.md#roles) for the others.
+The harness's `providers:` list is bare builtin names (`vertex-ai`,
+`github-ro` for `triage`) that resolve against fullsend's own embedded
+provider definitions and profiles, so no `providers/` or `profiles/` files
+are written. The provider pair depends on `--role`; see the [role
+table](../../cli/agent.md#roles) for the others.
 
 The agent runs automatically when matching events arrive. It runs on the
 hosted mint as long as it keeps a built-in `role:`; a distinct GitHub App

@@ -151,11 +151,8 @@ role: triage                        # a role the mint serves — not the agent's
 providers:
   - vertex-ai          # Required: model access (Anthropic API + GCP)
   - github             # GitHub API + Git transport
-
-openshell:
-  profiles:
-    - profiles/fullsend-vertex-ai.yaml  # must be listed explicitly to be imported
-    - profiles/fullsend-github.yaml
+  # Built-in names resolve to the definition and profile in the fullsend
+  # binary; no openshell.profiles entry is needed. See Step 3.
 
 host_files:
   # GCP credentials for Vertex AI (required for model access)
@@ -244,26 +241,36 @@ providers:
   - vertex-ai       # Anthropic API + GCP (required for model access)
   - github           # GitHub API + Git transport
   - package-registries  # npm, PyPI, Go modules (optional)
+```
+
+`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`,
+`package-registries`, `atlassian-cloud` and `openai` are the names fullsend
+ships: each resolves against the provider definition and profile built into
+the `fullsend` binary, with no `openshell.profiles` entry to add.
+These names are reserved for the built-in copies. If a harness still uses its
+own copy under one (a `providers/<name>.yaml` file, a path or URL entry, or an
+`openshell.profiles` entry with the `fullsend-<name>` id), `fullsend run` uses
+that copy and prints a warning; a later release rejects it. To customise one,
+copy it under your own name, as below.
+
+For a service not in that list, define your own provider under its own name
+and list its profile under `openshell.profiles` explicitly — the gateway
+only composes the profiles named there (or inherited via `base:`
+composition) into the effective network policy, not every file that happens
+to exist under `profiles/`:
+
+```yaml
+providers:
+  - my-service
 
 openshell:
   profiles:
-    - profiles/fullsend-vertex-ai.yaml
-    - profiles/fullsend-github.yaml
-    - profiles/fullsend-package-registries.yaml
-```
-
-Each provider has a profile that defines its endpoints and binaries. Every profile a provider needs must be listed under `openshell.profiles` (or inherited via `base:` composition) — the gateway only composes the profiles named there into the effective network policy, not every file that happens to exist under `profiles/`. This keeps endpoint definitions in one place and avoids copy-pasting network blocks across agents.
-
-The scaffold ships with profiles for common services. To see what's available:
-
-```bash
-ls .fullsend/providers/     # provider definitions (name + type)
-ls .fullsend/profiles/      # profile YAMLs (endpoints + binaries)
+    - profiles/my-service.yaml
 ```
 
 > **Note:** A profile YAML file in `profiles/` is **not** imported automatically by its presence alone. Only profiles listed in the harness under `openshell.profiles` (or resolved via base composition) are imported. To use a custom profile, add it to your harness's `openshell.profiles` list (e.g., `profiles/my-custom-profile.yaml`).
 
-For services not covered by existing profiles, you can either create a custom profile or use inline `network_policies` in your policy YAML (both approaches work — composition is additive).
+For services not covered by a builtin or custom profile, you can either create a custom profile or use inline `network_policies` in your policy YAML (both approaches work — composition is additive).
 
 ### Network access via inline policies (alternative)
 
@@ -550,11 +557,10 @@ jobs:
         run: |
           set -euo pipefail
           SRC=".defaults/internal/scaffold/fullsend-repo"
-          # Layer the scaffold's provider definitions so the providers
-          # configured in Step 2 resolve without vendoring copies into this
-          # repository. The policy (Step 3) and profiles are committed with
-          # the harness; this step layers neither.
-          LAYERED_DIRS="providers scripts"
+          # Layer the scaffold's shared scripts. The providers configured in
+          # Step 2 resolve from the fullsend binary, and the policy (Step 3)
+          # is committed with the harness, so neither is layered here.
+          LAYERED_DIRS="scripts"
           for dir in ${LAYERED_DIRS}; do
             if [[ -d "${SRC}/${dir}" ]]; then
               mkdir -p ".fullsend/${dir}"

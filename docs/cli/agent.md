@@ -37,10 +37,6 @@ fullsend agent new lint-docs --fullsend-dir .fullsend \
   schemas/lint-docs-result.schema.json
   scripts/post-lint-docs.sh
   policies/base.yaml
-  providers/vertex-ai.yaml
-  providers/github-ro.yaml
-  profiles/fullsend-vertex-ai.yaml
-  profiles/fullsend-github-ro.yaml
   ✓ Added agent "lint-docs"
 
 Next:
@@ -72,10 +68,6 @@ find .fullsend -type f | sort
 .fullsend/config.yaml
 .fullsend/harness/lint-docs.yaml
 .fullsend/policies/base.yaml
-.fullsend/profiles/fullsend-github-ro.yaml
-.fullsend/profiles/fullsend-vertex-ai.yaml
-.fullsend/providers/github-ro.yaml
-.fullsend/providers/vertex-ai.yaml
 .fullsend/schemas/lint-docs-result.schema.json
 .fullsend/scripts/post-lint-docs.sh
 ```
@@ -92,22 +84,63 @@ it ships with marked sections to fill in. Everything else is complete.
 | `schemas/<name>-result.schema.json` | always | yes |
 | `scripts/post-<name>.sh` (mode 0755) | always | yes |
 | `policies/base.yaml` | when absent | **no** |
-| `providers/*.yaml` (per role) | when absent | **no** |
-| `profiles/*.yaml` (per role) | when absent | **no** |
 | `scripts/validate-output-schema.sh` | with `--validation-loop`, when absent | **no** |
 | `config.yaml` `agents:` entry | unless `--no-register` | n/a |
 
-The policy, provider and profile files are shared by every agent in the
-directory. `agent new` writes them once, never overwrites them (not even with
-`--force`), and `fullsend github setup` does not create them — so commit
-them with the agent. In CI they behave differently, which matters when you
-want to change one:
+The generated harness's `providers:` entries are bare names (`vertex-ai`,
+`github-ro`, ...), not paths, and no `providers/` or `profiles/` files are
+written. `fullsend run` resolves each built-in name to the provider
+definition and profile in the `fullsend` binary, so a fix to one reaches
+you with the next `fullsend` release. `policies/base.yaml` is the one shared
+file: there is no built-in policy, so `agent new` writes one copy for every
+agent in the directory and never overwrites it (not even with `--force`).
+Commit it with the agent.
 
-| Directory | In CI | To customize |
-|-----------|-------|--------------|
+| What | In CI and locally | To customize |
+|------|-------------------|--------------|
 | `policies/` | Your committed copy is used as-is | Edit `policies/base.yaml`, or add another policy file and point the harness `policy:` at it |
-| `profiles/` | Your committed copy is used as-is | Edit the file |
-| `providers/` | Replaced with the scaffold's copies on every run | Add a provider under a new name; edits to a scaffold-named file are overwritten |
+| Built-in providers and their profiles | Resolved from the `fullsend` binary | Copy the provider and profile under your own name (for example `providers/myorg-github-ro.yaml` with `name: myorg-github-ro` and `type: myorg-github-ro`, and `profiles/myorg-github-ro.yaml` with `id: myorg-github-ro`), list the profile under `openshell.profiles`, and declare `myorg-github-ro` instead of the built-in name |
+
+The built-in names (`vertex-ai`, `github`, `github-ro`, `github-artifacts`,
+`gitleaks`, `package-registries`, `atlassian-cloud`, `openai`) and their
+`fullsend-<name>` profile ids are reserved. A harness that still uses its own
+copy under one of them keeps working for now: `fullsend run` uses the copy
+and prints a warning naming the migration below. A later release rejects
+it. `fullsend-openai` is already rejected.
+
+Bare names need the same `fullsend` release in CI as the one that
+generated the agent, or a newer one. The scaffolded workflows run the
+binary that matches the workflow commit, so this holds unless your workflow
+passes an older `fullsend_version`.
+
+### Migrating a generated agent to built-in providers
+
+`agent new` on v0.44.0 and earlier wrote `providers/*.yaml` and
+`profiles/fullsend-*.yaml`, and the harness referenced them by path. Those
+copies no longer receive fixes, and `fullsend run` warns about them:
+
+```text
+! provider "github-ro": the name is reserved for the definition built into fullsend, and a future release rejects the copy at "/path/to/repo/.fullsend/providers/github-ro.yaml". It is still used for now. Declare the bare name "github-ro" and delete the copy, or rename it to a name fullsend does not ship
+! provider profile "fullsend-github-ro" will be rejected in a future release: the id is reserved for the copy built into fullsend. Your copy is still used for now. Remove it from openshell.profiles and declare the bare provider name "github-ro" instead
+```
+
+Make all of these changes in one commit. A harness with only some of them
+mixes a copied GitHub provider or profile with a built-in one, and the two
+may not agree on the `GH_TOKEN` credential (see `provider credentials are
+not declared` under Troubleshooting).
+
+1. In `harness/<name>.yaml`, replace each built-in `providers:` path with
+   its bare name (`providers/vertex-ai.yaml` becomes `vertex-ai`).
+2. Remove the `profiles/fullsend-*.yaml` entries from `openshell.profiles:`.
+   Keep entries for your own profiles, and delete the block if it is empty.
+3. Under `env.sandbox`, delete the `GH_TOKEN: ${GH_TOKEN}` line. Keep the
+   one under `env.runner`. The built-in GitHub providers give the sandbox a
+   placeholder token; that line would put the real token in the sandbox.
+4. Delete `providers/<built-in name>.yaml` and `profiles/fullsend-*.yaml`
+   once no harness in the directory references them.
+
+The next `fullsend run` prints neither warning, and the agent's GitHub
+calls go through the built-in provider.
 
 ### Flags
 
@@ -149,11 +182,11 @@ command refuses an unknown one up front. The hosted mint serves these:
 | `retro` | `actions:read`, `contents:read`, `pull_requests:write`, `issues:write`, `metadata:read` | vertex-ai, github-ro, github-artifacts, openai |
 | `prioritize` | `contents:read`, `issues:write`, `organization_projects:write`, `metadata:read` | vertex-ai, github-ro, openai |
 
-`openai` is a bare name, not a file: the runner fills the definition in from
-the binary. The other providers are copied into `.fullsend/providers/` when
-absent. A codex agent gets no Vertex files; a pi agent on an `openai/` model
-declares none but still gets them for its commented-out overlay (see
-[Agents on OpenAI models](#agents-on-openai-models)).
+Every provider is a bare name: the runner resolves its definition and
+profile from the binary, and nothing is written under `.fullsend/providers/`
+or `.fullsend/profiles/`. A codex agent declares no Vertex provider; a pi
+agent on an `openai/` model declares none but keeps a commented-out overlay
+that adds it (see [Agents on OpenAI models](#agents-on-openai-models)).
 
 A `review` agent also gets `readonly_repo: true`: the checked-out repository is made read-only in the sandbox, so a reviewer cannot modify the code it reviews. That matches `harness/review.yaml` in fullsend-ai/agents.
 
@@ -196,8 +229,6 @@ fullsend agent new summarize-issue --fullsend-dir .fullsend \
   schemas/summarize-issue-result.schema.json
   scripts/post-summarize-issue.sh
   policies/base.yaml
-  providers/github-ro.yaml
-  profiles/fullsend-github-ro.yaml
   ✓ Added agent "summarize-issue"
   ✓ Set agent "summarize-issue": runtime="codex" model="" effort="" (empty = inherit)
 
@@ -224,7 +255,7 @@ the Vertex settings commented out:
 # overlays:
 #   - when: "true"
 #     providers:
-#       - providers/vertex-ai.yaml
+#       - vertex-ai
 #     ...
 ```
 
@@ -290,10 +321,6 @@ fullsend agent new -f link-check.agent.yaml --fullsend-dir .fullsend
   schemas/link-check-result.schema.json
   scripts/post-link-check.sh
   policies/base.yaml  (already present, left unchanged)
-  providers/vertex-ai.yaml  (already present, left unchanged)
-  providers/github-ro.yaml  (already present, left unchanged)
-  profiles/fullsend-vertex-ai.yaml  (already present, left unchanged)
-  profiles/fullsend-github-ro.yaml  (already present, left unchanged)
   ✓ Added agent "link-check"
 ```
 
@@ -561,19 +588,19 @@ request.
 |-------|-------|-----|
 | `unknown role "scribe"` followed by the role table | The role is not one the hosted mint serves | Use one of the five listed; for a custom role see [Custom Agent Identity](../guides/user/custom-agent-identity.md) |
 | `agent name "..." contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)` | The name would not be safe to interpolate into a shell script | Rename. Nothing is written when this fires |
-| `these files already exist:` followed by a list | An agent of that name was already generated | Pick another name, or pass `--force`. `--force` never overwrites `policies/`, `providers/` or `profiles/` |
+| `these files already exist:` followed by a list | An agent of that name was already generated | Pick another name, or pass `--force`. `--force` never overwrites `policies/` |
 | `agent "..." already exists in config` | The name is registered in `config.yaml` | `fullsend agent remove <name>` first. `--force` deliberately does not override this |
 | `trigger does not compile: ERROR: <input>:1:5: Syntax error: ...` | A `--trigger` expression is not valid CEL, or does not return a boolean | Compare against the `--on` presets above |
 | `unknown --on preset "..."` followed by the preset list | `--on` is not one of the four presets | Use a listed preset, or pass raw CEL with `--trigger` |
 | `a trigger is required: pass --on with a preset, or --trigger` | `--trigger ""` was passed explicitly | Give a real trigger. A trigger-less agent is silently never dispatched |
 | `fullsend dir ... does not exist; run ` + "`fullsend github setup`" + ` first` | `--fullsend-dir` points at nothing | Scaffold the repo first |
 | `validating files: policy: stat .../policies/base.yaml: no such file or directory` | The harness points at a policy file that is not committed next to it. Neither `fullsend github setup` nor CI creates one | Commit a copy of the fleet policy in [fullsend-ai/agents](https://github.com/fullsend-ai/agents) at the path the error shows, or set `policy:` to its URL with a `#sha256=` hash, under a prefix listed in `allowed_remote_resources`. Re-running `agent new` on this agent name does not help — it refuses (registered name or existing files, see the rows above) rather than adding the missing policy |
-| Agent crashes at 0s in CI | A profile file is missing (locally, a provider file can be missing too) | Commit `profiles/` next to the harness. CI layers `providers/` for you, but never `profiles/` |
+| Agent crashes at 0s in CI | A `providers:` entry names neither a built-in bare name nor a file that exists | Use a built-in bare name (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`, `atlassian-cloud`, `openai`), or commit a `providers/<name>.yaml` (and, if needed, a profile) under your own name |
 | `runtime codex takes OpenAI model ids only, and ...: use --model openai/gpt-5.6-luna ...` | `--runtime codex`, or a repo whose `config.yaml` sets `runtime: codex`, with no `--model` or with a model that is not an OpenAI id, such as `opus` | Use `--model openai/<id>` on the same command. Nothing is written when this fires |
 | `host_files[0]: GOOGLE_APPLICATION_CREDENTIALS is empty; mark the mount optional or provide a credential file` | A pi agent on an `openai/` model has its Vertex sub-agent block uncommented, and no credentials file is set | Set `GOOGLE_APPLICATION_CREDENTIALS` to the file in `.env.local`. Do not mark the mount optional: the Vertex sub-agents need it |
 | `validating env:` followed by unresolved host variables at `fullsend run` | A `${VAR}` in an environment-aware harness field is unset | `agent new` does not check host variables at generation time; supply them via `--env-file` locally or the workflow `env:` block in CI |
-| `provider credentials are not declared by profile 'fullsend-github-ro': GH_TOKEN` (or `'fullsend-github'`) in CI | Your committed `profiles/fullsend-github-ro.yaml` or `profiles/fullsend-github.yaml` was written by fullsend v0.44.0 or earlier and declares no credential. CI replaces `providers/` with the upstream copy, which now passes `GH_TOKEN`, but uses the `profiles/` you committed | Upgrade your local `fullsend` to the release your CI runs. Then replace the GitHub providers and profiles you have with that release's copies, together so local runs keep a matching pair, and commit them: `TAG=v$(fullsend --version \| awk '{print $3}'); for f in providers/github-ro providers/github profiles/fullsend-github-ro profiles/fullsend-github; do if [ -f .fullsend/$f.yaml ]; then curl -fsSL https://raw.githubusercontent.com/fullsend-ai/fullsend/$TAG/internal/scaffold/fullsend-repo/$f.yaml -o .fullsend/$f.yaml; fi; done`. While there, delete any `GH_TOKEN` line under `env.sandbox` in your harnesses (keep the `env.runner` one): the provider now hands the sandbox a placeholder, and that line would give it the real token |
-| The same error from `fullsend run` on your machine, with profiles that already declare `GH_TOKEN` | The OpenShell gateway still holds an older profile with that id. `fullsend run` cannot replace a profile while a provider uses it ([#7973](https://github.com/fullsend-ai/fullsend/issues/7973)) | Delete the providers that use either GitHub profile, then re-run: `openshell provider list \| awk '$2=="fullsend-github-ro" \|\| $2=="fullsend-github"{print $1}' \| xargs -r openshell provider delete`. Each run re-creates the providers it needs |
+| `provider credentials are not declared by profile 'fullsend-github-ro': GH_TOKEN` (or `'fullsend-github'`) | The harness declares the bare name `github-ro` (or `github`), whose built-in definition passes `GH_TOKEN`, but still lists a `profiles/fullsend-github-ro.yaml` (or `fullsend-github.yaml`) written by fullsend v0.44.0 or earlier, which declares no credential. During the warning release your listed copy is used instead of the built-in one | Remove the `profiles/fullsend-github*.yaml` entries from `openshell.profiles:` and delete the files (see [Migrating a generated agent to built-in providers](#migrating-a-generated-agent-to-built-in-providers)). While there, delete any `GH_TOKEN` line under `env.sandbox` in your harnesses (keep the `env.runner` one): the provider hands the sandbox a placeholder, and that line would give it the real token |
+| The same error from `fullsend run` on your machine, with bare names and no listed `fullsend-github*` profile | The OpenShell gateway still holds an older profile with that id. `fullsend run` cannot replace a profile while a provider uses it ([#7973](https://github.com/fullsend-ai/fullsend/issues/7973)) | Delete the providers that use either GitHub profile, then re-run: `openshell provider list \| awk '$2=="fullsend-github-ro" \|\| $2=="fullsend-github"{print $1}' \| xargs -r openshell provider delete`. Each run re-creates the providers it needs |
 | `provider profile 'fullsend-github-ro' requires static credentials: GH_TOKEN` at `fullsend run` | `GH_TOKEN` is unset or empty on the machine running `fullsend run`. The `github-ro` and `github` providers pass it to the sandbox as a placeholder | Put a real token in the env file you pass to `fullsend run`, for example `echo "GH_TOKEN=$(gh auth token)" >> .env.local`. The file is read literally, so a `$(...)` written inside it is not run |
 | `Vertex inference requires GOOGLE_APPLICATION_CREDENTIALS to point to an existing file` (or `a regular file`, `a non-empty file`) at `fullsend run` on your machine | A Vertex-route run (see [Running it](#running-it)) with `GOOGLE_APPLICATION_CREDENTIALS` unset, or pointing at a missing path, a directory or an empty file | Point it at a GCP credentials file — [Get Google Cloud Platform credentials](../guides/user/running-agents-locally.md#get-google-cloud-platform-credentials) |
 | `reading behaviour script .../behaviour/current-scenario.yaml: ... no such file or directory` | `--runtime dummy` with no scripted result. The sandbox has already started when this fires | Write the file — [Try it without a model](#try-it-without-a-model) has one |

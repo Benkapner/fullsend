@@ -68,11 +68,18 @@ func TestAgentNewEndToEnd(t *testing.T) {
 		"schemas/lint-docs-result.schema.json",
 		"scripts/post-lint-docs.sh",
 		"policies/base.yaml",
-		"providers/vertex-ai.yaml",
-		"profiles/fullsend-vertex-ai.yaml",
 	} {
 		if _, err := os.Stat(filepath.Join(dir, want)); err != nil {
 			t.Errorf("expected %s to be written: %v", want, err)
+		}
+	}
+	// Built-in providers are bare names resolved from the binary (#7268),
+	// so no providers/ or profiles/ files are written for them.
+	for _, notWant := range []string{"providers", "profiles"} {
+		if _, err := os.Stat(filepath.Join(dir, notWant)); err == nil {
+			t.Errorf("did not expect a %s/ directory to be written", notWant)
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
 		}
 	}
 
