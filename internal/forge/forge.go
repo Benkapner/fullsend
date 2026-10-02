@@ -963,6 +963,8 @@ type Client interface {
 	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
 	// GetPipelineSchedule includes variables omitted by GitLab's list endpoint.
 	GetPipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) (*PipelineSchedule, error)
+	// DeletePipelineScheduleVariable deletes one schedule-level variable from
+	// an existing pipeline schedule. GitHub returns ErrNotSupported.
 	DeletePipelineScheduleVariable(ctx context.Context, owner, repo string, scheduleID int64, key string) error
 	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
 	// UpdatePipelineSchedule sets whether an existing pipeline schedule is

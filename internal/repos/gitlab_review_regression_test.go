@@ -355,6 +355,42 @@ func TestInstalledTypedContractMustSupportLiteralScheduledDispatch(t *testing.T)
 	require.ErrorContains(t, err, "denied")
 }
 
+// TestInstalledTypedWrapperMustForwardEveryDispatchInput guards the
+// wrapper→agent include hop: a wrapper that keeps its input declarations
+// and contract marker but forwards a payload chunk as a blank or stale
+// value must be rejected as incompatible, not treated as a valid typed
+// wrapper, so activation cannot migrate schedules before the repair lands.
+func TestInstalledTypedWrapperMustForwardEveryDispatchInput(t *testing.T) {
+	wrapper, err := scaffold.GitLabPerRepoFile(fullsendPipelineInclude)
+	require.NoError(t, err)
+	good := "event_payload_chunk_00: $[[ inputs.event_payload_chunk_00 ]]"
+	require.Contains(t, string(wrapper), good)
+
+	for name, forwarded := range map[string]string{
+		"blank chunk":     "event_payload_chunk_00: ''",
+		"mismatched name": "event_payload_chunk_00: $[[ inputs.event_payload_chunk_01 ]]",
+	} {
+		t.Run(name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			broken := strings.Replace(string(wrapper), good, forwarded, 1)
+			require.NotEqual(t, string(wrapper), broken)
+			fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte(broken)
+			_, err := GitLabUsesTypedDispatch(context.Background(), fc, "acme", "api")
+			require.ErrorIs(t, err, errGitLabIncompatibleWrapper)
+			require.ErrorContains(t, err, "forward every dispatch input")
+		})
+	}
+
+	t.Run("missing forwarding key", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		broken := strings.Replace(string(wrapper), "      "+good+"\n", "", 1)
+		require.NotEqual(t, string(wrapper), broken)
+		fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte(broken)
+		_, err := GitLabUsesTypedDispatch(context.Background(), fc, "acme", "api")
+		require.ErrorIs(t, err, errGitLabIncompatibleWrapper)
+	})
+}
+
 // TestConvergeSchedulesGatesOnRestrictionBeforeMutating guards the ordering
 // bug where convergeSchedules created missing schedules and reactivated
 // disabled ones for a typed installation before convergeGitLabRootCIFiles'

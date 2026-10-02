@@ -1612,7 +1612,59 @@ func validateGitLabTypedContract(wrapper []byte) error {
 	if !bytes.Contains(wrapper, []byte("# fullsend-input-contract: literal-scheduled-v2")) {
 		return fmt.Errorf("%w: pinned typed GitLab scaffold lacks the literal-variable and variable-free schedule contract; upgrade the pin before activation", errGitLabIncompatibleWrapper)
 	}
+	if !gitlabWrapperForwardsDispatchInputs(wrapper) {
+		return fmt.Errorf("%w: typed GitLab wrapper does not forward every dispatch input to %s via its matching $[[ inputs.<name> ]] expression; repair the wrapper before activation", errGitLabIncompatibleWrapper, fullsendAgentTemplatePath)
+	}
 	return nil
+}
+
+// gitlabWrapperForwardsDispatchInputs reports whether the wrapper's include
+// of the agent template forwards every dispatch input through the matching
+// "$[[ inputs.<name> ]]" expression. Declarations and the contract marker
+// alone do not guarantee this intermediate hop: a wrapper that forwards an
+// input (e.g. an event_payload_chunk_NN) as a blank or stale value would
+// drop part of the signed payload and fail HMAC verification.
+func gitlabWrapperForwardsDispatchInputs(wrapper []byte) bool {
+	docs, err := decodeGitLabDocuments(wrapper)
+	if err != nil || len(docs) != 2 {
+		return false
+	}
+	root := docs[1].Content[0]
+	if root.Kind != yaml.MappingNode {
+		return false
+	}
+	include := findMappingValue(root, "include")
+	if include == nil {
+		return false
+	}
+	items := include.Content
+	if include.Kind != yaml.SequenceNode {
+		items = []*yaml.Node{include}
+	}
+	for _, item := range items {
+		if item.Kind != yaml.MappingNode {
+			continue
+		}
+		local := findMappingValue(item, "local")
+		if local == nil {
+			continue
+		}
+		if value, ok := isLiteralScalarValue(local); !ok || value != fullsendAgentTemplatePath {
+			continue
+		}
+		inputs := findMappingValue(item, "inputs")
+		if inputs == nil || inputs.Kind != yaml.MappingNode {
+			return false
+		}
+		for _, name := range gitlabDispatchInputNames {
+			value := findMappingValue(inputs, name)
+			if value == nil || value.Kind != yaml.ScalarNode || value.Value != "$[[ inputs."+name+" ]]" {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func marshalGitLabDocuments(docs []*yaml.Node) ([]byte, error) {
