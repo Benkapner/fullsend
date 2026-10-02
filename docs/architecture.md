@@ -188,12 +188,36 @@ repo baseline and overrides)
   property (source system, event type, etc.) rather than only the forge
   platform. `forge:` is deprecated but remains functional
   ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)).
+- Harness schema versioning and field types: a `schema_version` field (absent
+  = version `1`) is planned to make the harness a versioned contract, and every
+  field is classified by semantic type — inline command (`sh -c`), local file
+  path, resource reference, scalar value, or structural container — published in the
+  [Harness Field Reference](contributing/harness-fields.md). The field and its
+  type-flagging in `Harness.Lint()` are planned, not yet implemented (Lint
+  diagnostics non-fatal, with fail-fast as a tracked follow-up). Incompatible
+  field-type changes require a version bump; compatible additions do not
+  require one. Version-aware loaders reject unsupported versions before
+  composition; older pinned consumers must be upgraded before receiving
+  newer-version harnesses ([ADR 0127](ADRs/0127-harness-schema-versioning-and-field-types.md)).
+- `preflight_check` is a literal host command, not a script resource: it runs
+  via `sh -c` without setting a working directory and is not resource-resolved;
+  `Harness.Lint()` will flag path-like values (planned, not yet implemented;
+  non-fatal when it lands)
+  ([ADR 0128](ADRs/0128-preflight-check-literal-command.md)).
+- Preflight coverage for all scripts: a top-level `preflight_check` field is a
+  single host-dependency gate for `pre_script`, `post_script`, and
+  `validation_loop`, running before `pre_script` and before sandbox creation.
+  The field is planned but not yet implemented. Once it is usable, the nested
+  `validation_loop.preflight_check` is deprecated, but existing nested checks
+  continue running during migration. A separately named resource-delivered
+  preflight script for complex probes remains future work
+  ([ADR 0129](ADRs/0129-extend-preflight-coverage-to-pre-and-post-scripts.md)).
 
 **Open questions:**
 
 - Does the harness live inside the sandbox (configuring the agent from within its isolation boundary) or outside it (preparing the environment before the agent starts)? (Security hooks are injected as a runner-owned `hooks.json` loaded via `--settings`; see [ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md). General harness placement remains open.)
 - How is codebase context assembled? (See [codebase-context.md](problems/codebase-context.md).)
-- How do we version and test harness configurations? (See [testing-agents.md](problems/testing-agents.md).) (Functional tests now test the full pipeline including harness-assembled configuration — [ADR 0052](ADRs/0052-functional-tests-for-agent-pipelines.md). Harness versioning remains open.)
+- How do we version and test harness configurations? (See [testing-agents.md](problems/testing-agents.md).) (Functional tests now test the full pipeline including harness-assembled configuration — [ADR 0052](ADRs/0052-functional-tests-for-agent-pipelines.md). Harness versioning is decided in [ADR 0127](ADRs/0127-harness-schema-versioning-and-field-types.md); per-version field-value schemas remain open.)
 
 ## Agent Runtime
 
