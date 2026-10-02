@@ -311,7 +311,7 @@ gets its credential from the runner, never from the harness or the sandbox:
 | `OPENAI_API_KEY` | Static key for local runs, or CI when supplied by the `FULLSEND_OPENAI_API_KEY` repository secret (used only when the three above are unset). In harness YAML, `env.sandbox` and provider definitions `${OPENAI_API_KEY}` expands to the empty string (like the other runner-only variables), and it is never passed to pre/post scripts; the sandbox sees only the gateway placeholder. In CI the runner warns and WIF remains preferred. |
 
 A bare provider name that fullsend ships (`openai`, `github-ro`, `vertex-ai`, and the others listed
-in [`agent new`](agent.md#migrating-a-generated-agent-to-built-in-providers)) resolves to the
+in [`agent new`](agent.md#what-gets-written)) resolves to the
 definition and profile built into fullsend, locally and in CI, with nothing on disk. These names
 and their `fullsend-<name>` profile ids are reserved: a harness that still uses its own copy under
 one gets a warning and keeps the copy for now, and a later release rejects it (`fullsend-openai`
