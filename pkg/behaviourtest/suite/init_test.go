@@ -39,6 +39,9 @@ func (p *panickingSCM) GetIssue(context.Context, string, string, int) (*forge.Is
 func (p *panickingSCM) GetFileContent(context.Context, string, string, string) ([]byte, error) {
 	return nil, nil
 }
+func (p *panickingSCM) GetFileContentAtRef(context.Context, string, string, string, string) ([]byte, error) {
+	return nil, nil
+}
 func (p *panickingSCM) CommitFile(context.Context, string, string, string, string, []byte) error {
 	return nil
 }

@@ -196,6 +196,9 @@ type fakeDispatchSCM struct {
 func (f *fakeDispatchSCM) GetFileContent(_ context.Context, _, _, _ string) ([]byte, error) {
 	return f.fileContent, f.getFileErr
 }
+func (f *fakeDispatchSCM) GetFileContentAtRef(_ context.Context, _, _, _, _ string) ([]byte, error) {
+	return f.fileContent, f.getFileErr
+}
 func (f *fakeDispatchSCM) CommitFile(_ context.Context, _, _, _, _ string, content []byte) error {
 	f.commitCalled = true
 	f.committedContent = content

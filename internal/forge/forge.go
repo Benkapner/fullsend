@@ -889,6 +889,13 @@ type Client interface {
 
 	// Workflow run listing
 	ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]WorkflowRun, error)
+	// ListWorkflowRunsSince returns workflow runs for workflowFile created at
+	// or after since, paginating as needed rather than returning only the
+	// newest page. Use this instead of ListWorkflowRuns when the caller must
+	// not miss an older-but-still-eligible run that newer runs (including
+	// ones for other agents) could otherwise push off the first page (#7996
+	// review).
+	ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time) ([]WorkflowRun, error)
 	// ListRecentWorkflowRuns returns recent workflow runs across all workflows.
 	ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]WorkflowRun, error)
 

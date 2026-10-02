@@ -59,6 +59,10 @@ func (d *Driver) GetFileContent(ctx context.Context, owner, repo, path string) (
 	return d.Client.GetFileContent(ctx, owner, repo, path)
 }
 
+func (d *Driver) GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
+	return d.Client.GetFileContentAtRef(ctx, owner, repo, path, ref)
+}
+
 func (d *Driver) CreateBranch(ctx context.Context, owner, repo, branch string) error {
 	return d.Client.CreateBranch(ctx, owner, repo, branch)
 }
