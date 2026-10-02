@@ -144,6 +144,11 @@ function allowedProviders(agent, parentSpec) {
   for (const spec of Object.values(agent?.models ?? {})) {
     if (typeof spec === "string" && spec.includes("/")) out.add(providerOf(spec));
   }
+  // Bootstrap lists openai ids only for configured children, and only when
+  // the run-scoped openai provider is attached (#7981). The ids themselves
+  // are still checked exactly by servableSpecs.
+  const openaiIDs = agent?.providerModels?.openai;
+  if (Array.isArray(openaiIDs) && openaiIDs.length > 0) out.add("openai");
   for (const ext of agent?.extensions ?? []) {
     if (typeof ext !== "string" || ext.endsWith(".js") || ext.endsWith(".ts")) continue;
     const base = ext.replace(/\/+$/, "").split("/").pop();
@@ -242,9 +247,20 @@ export function resolveModel(agent, spec, parentSpec) {
   const allowed = allowedProviders(agent, parentSpec);
   // The normalized name, not the one written: "xai/grok-4.6" is a spec for
   // the xai-vertex provider and must be reported as one.
-  if (!allowed.has(provider)) return reject(`provider "${provider}" is not available in this run`);
+  if (!allowed.has(provider)) {
+    // The openai credential is attached only for a run whose parent or a
+    // configured child needs it (#7981), so name how to get one.
+    if (provider === "openai") {
+      return reject(`provider "openai" is not available in this run (declare "openai" in the harness providers and set the model on a persona or subagents.default in agents[].subagents, so the run attaches the openai credential)`);
+    }
+    return reject(`provider "${provider}" is not available in this run`);
+  }
   const canonical = servableSpecs(agent, parentSpec).get(normalized.toLowerCase());
   if (canonical) return canonical;
+  if (provider === "openai") {
+    // Only the ids configured children use are served (#7981).
+    return reject(`"${rest}" is not a model this run serves on "openai" (it serves the openai models configured on a persona or subagents.default; set this one there)`);
+  }
   return reject(`"${rest}" is not a model this run serves on "${provider}"`);
 }
 

@@ -379,8 +379,10 @@ providers:
 ```
 
 Declaring it costs nothing on runs that do not use it: the run-scoped provider is created only
-when the selected runtime will actually call OpenAI (codex, or pi on an `openai/` model), so the
-same harness can carry the provider for every runtime — a Vertex run notes that the declared
+when the selected runtime will actually call OpenAI — codex, pi on an `openai/` model, or a pi run
+on any model whose sub-agents are routed to `openai/`
+([pi › Route a persona to OpenAI](../../runtimes/pi.md#route-a-persona-to-openai)) — so the same
+harness can carry the provider for every runtime. Any other Vertex run notes that the declared
 provider was skipped and needs no OpenAI credential.
 
 A custom agent (a `source:` entry) declares it on its own harness; the built-in fleet agents declare
