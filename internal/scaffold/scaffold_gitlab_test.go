@@ -252,10 +252,14 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, "fullsend-code:latest")
 	// Resource group parameterized by STAGE
 	assert.Contains(t, s, `fullsend-${STAGE}-${RESOURCE_KEY}`)
-	// Rules gate on STAGE being set (truthy form — `$STAGE != ""` would
-	// match when STAGE is undefined because GitLab evaluates null != "" as true)
-	assert.Contains(t, s, "if: $STAGE")
-	assert.NotContains(t, s, `$STAGE != ""`)
+	// Rules gate on the stage pipeline input being set (#7850: STAGE is no
+	// longer a pipeline variable set by the dispatcher, but the job
+	// bridges the stage input into a same-named STAGE variable above, so
+	// the admit rule references it like any other CI/CD variable rather
+	// than comparing the raw interpolated input as a literal (which
+	// GitLab rejects as an invalid literal-to-literal comparison).
+	assert.Contains(t, s, "STAGE:\n      value: $[[ inputs.stage ]]\n      expand: false")
+	assert.Contains(t, s, "if: $CI_DEBUG_TRACE !~ /^(1|t|true)$/i && $STAGE")
 	// ENTRYPOINT override for runner image
 	assert.Contains(t, s, `entrypoint: [""]`)
 	// Uses python3 for YAML parsing (yq not in runner image)

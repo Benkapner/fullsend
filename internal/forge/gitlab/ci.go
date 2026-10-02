@@ -872,6 +872,44 @@ func (c *LiveClient) CreatePipelineSchedule(ctx context.Context, owner, repo, re
 	return schedule.ID, nil
 }
 
+// GetPipelineSchedule reads schedule details, including pipeline variables.
+func (c *LiveClient) GetPipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) (*forge.PipelineSchedule, error) {
+	path := fmt.Sprintf("/projects/%s/pipeline_schedules/%d", projectPath(owner, repo), scheduleID)
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("get pipeline schedule: %w", err)
+	}
+	var result struct {
+		ID           int64  `json:"id"`
+		Description  string `json:"description"`
+		Ref          string `json:"ref"`
+		Cron         string `json:"cron"`
+		CronTimezone string `json:"cron_timezone"`
+		Active       bool   `json:"active"`
+		Variables    []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"variables"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode pipeline schedule: %w", err)
+	}
+	if result.Variables == nil {
+		return nil, fmt.Errorf("pipeline schedule response omitted variable details; cannot verify migration")
+	}
+	schedule := &forge.PipelineSchedule{ID: result.ID, Description: result.Description, Ref: result.Ref, Cron: result.Cron, CronTimezone: result.CronTimezone, Active: result.Active, Variables: make(map[string]string)}
+	for _, variable := range result.Variables {
+		schedule.Variables[variable.Key] = variable.Value
+	}
+	return schedule, nil
+}
+
+// DeletePipelineScheduleVariable removes one schedule-level variable override.
+func (c *LiveClient) DeletePipelineScheduleVariable(ctx context.Context, owner, repo string, scheduleID int64, key string) error {
+	path := fmt.Sprintf("/projects/%s/pipeline_schedules/%d/variables/%s", projectPath(owner, repo), scheduleID, url.PathEscape(key))
+	return c.delete_(ctx, path)
+}
+
 // DeletePipelineSchedule deletes a pipeline schedule.
 func (c *LiveClient) DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error {
 	path := fmt.Sprintf("/projects/%s/pipeline_schedules/%d", projectPath(owner, repo), scheduleID)

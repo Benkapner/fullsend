@@ -308,6 +308,7 @@ func TestRunRepos_GitLabManagedConfigStatusAndDryRun(t *testing.T) {
 
 func newGitLabInstalledFake(repo string) *forge.FakeClient {
 	fc := forge.NewFakeClient()
+	seedGitLabInputPrerequisites(fc, repo, "v1.0.0")
 	fc.InstallationToken = true
 	fc.AuthenticatedUser = "fullsend-app[bot]"
 	fc.CollaboratorPermissions = map[string]string{
@@ -323,8 +324,8 @@ func newGitLabInstalledFake(repo string) *forge.FakeClient {
 	fc.Secrets[repo+"/"+forge.SecretGCPProjectID] = true
 	fc.Secrets[repo+"/"+forge.SecretGCPWIFProvider] = true
 	fc.PipelineSchedules[repo] = []forge.PipelineSchedule{
-		{Description: "fullsend slash poll", Active: true},
-		{Description: "fullsend event poll", Active: true},
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
 	}
 	fc.FileContents[repo+"/.gitlab/ci/fullsend-pipeline.yml"] = []byte("---\n# fullsend-ref: v1.0.0\n  ref: v1.0.0\n")
 	return fc

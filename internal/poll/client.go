@@ -7,6 +7,8 @@ package poll
 import (
 	"context"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // GitLabClient defines the GitLab API surface the poller requires.
@@ -37,6 +39,14 @@ type GitLabClient interface {
 	// tag, or SHA). Returns forge.ErrNotFound if the file or ref does
 	// not exist. Used to load the HMAC-signed poll-state document.
 	GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
+	// GetFileContent retrieves a file from the default branch. Returns
+	// forge.ErrNotFound if the file does not exist. Part of the broader
+	// forge.Client file-read surface this interface narrows; usesTypedDispatch
+	// reads the committed GitLab pipeline wrapper via GetFileContentAtRef
+	// instead, pinned to the same ref dispatch() creates the pipeline
+	// against, so detection and pipeline creation agree on which contract
+	// that ref declares.
+	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
 	// GetBranchRef returns the HEAD commit SHA for the named branch.
 	// Returns forge.ErrNotFound if the branch does not exist. Used to
 	// pin the CAS parent SHA at poll-state load time.
@@ -75,6 +85,18 @@ type GitLabClient interface {
 	// CreatePipeline creates a new pipeline on the given ref with the
 	// given variables. Returns the pipeline ID and web URL.
 	CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error)
+	// CreatePipelineWithInputs creates a new pipeline on the given ref
+	// using typed GitLab CI/CD pipeline inputs (spec:inputs) instead of
+	// user-defined pipeline variables. Unlike CreatePipeline, this
+	// remains usable when a project's
+	// ci_pipeline_variables_minimum_override_role is
+	// forge.PipelineVarOverrideNoOneAllowed, because that setting does
+	// not govern pipeline inputs (#7850). dispatch() uses this for a
+	// target repository whose committed wrapper declares the typed
+	// contract (see usesTypedDispatch) and falls back to CreatePipeline
+	// otherwise, since a poller binary upgrade is not synchronized with
+	// that repository's own scaffold migration.
+	CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]forge.PipelineInputValue) (int64, string, error)
 }
 
 // Issue represents a GitLab issue as returned by the API.

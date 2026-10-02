@@ -107,6 +107,7 @@ func baseCfg() InstallConfig {
 // newFakeClientWithRepo returns a FakeClient pre-populated with a repo.
 func newFakeClientWithRepo() *forge.FakeClient {
 	fc := forge.NewFakeClient()
+	fc.PipelineVarOverrideRoles["acme/widgets"] = forge.PipelineVarOverrideNoOneAllowed
 	fc.Repos = []forge.Repository{{
 		FullName:      "acme/widgets",
 		Name:          "widgets",

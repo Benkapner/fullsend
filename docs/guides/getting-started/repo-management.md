@@ -339,7 +339,10 @@ Install runs in two phases:
    branch are checked for component drift (workflow, thin callers,
    variables, secrets, pipeline schedules, GitLab poller protected-ref
    pipeline access, GitLab pipeline-variable override-role inspection —
-   report-only by default), scaffold content drift, managed `.fullsend/config.yaml`
+   typed dispatch activation fails closed without `no_one_allowed`;
+   runnable typed templates require that setting to be verified before
+   delivery, even when enforcement is requested; legacy variable-based
+   wrappers are exempt), scaffold content drift, managed `.fullsend/config.yaml`
    drift, scaffold ref drift, and declared configuration-preset drift against
    `.fullsend/config.base.yaml`. Missing or drifted components are repaired
    automatically; ref updates are committed as PRs (or direct pushes with
@@ -412,7 +415,10 @@ fullsend repos status -f repos.yaml --json
 Run `repos install` to detect and fix component drift (workflow, thin
 callers, variables, secrets, pipeline schedules, GitLab poller
 protected-ref pipeline access, GitLab pipeline-variable override-role
-inspection — report-only by default), scaffold ref drift,
+inspection — typed dispatch activation fails closed without
+`no_one_allowed` before runnable template delivery, even when enforcement
+is requested; legacy upgrades need maintenance-window preparation and legacy variable-based wrappers are
+exempt), scaffold ref drift,
 scaffold content drift, declared configuration-preset drift, and managed
 `.fullsend/config.yaml` drift across all manifest repos:
 
@@ -430,8 +436,10 @@ The convergence phase checks all components (workflow, thin callers,
 variables, secrets, pipeline schedules, GitLab poller protected-ref
 pipeline access — a disabled GitLab schedule is
 reported as drift and reactivated only when `--reactivate-schedules` is
-passed; GitLab pipeline-variable override-role inspection, report-only
-by default), scaffold content drift (including structural rewrites of
+passed; GitLab pipeline-variable override-role inspection — typed
+dispatch activation fails closed without `no_one_allowed`;
+runnable typed templates require the setting to be verified before delivery,
+even when enforcement is requested; legacy variable-based wrappers are exempt), scaffold content drift (including structural rewrites of
 `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref, and
 removal of a leftover `.gitlab/ci/fullsend-dispatch.yml` from installs
 predating #7707),

@@ -40,8 +40,9 @@ var scaffoldGitLabPaths = []struct {
 //
 // Template paths (scaffoldGitHubShimPath, scaffoldGitLabPaths) are pinned
 // to the current binary's layout. If the remote ref reorganises these
-// paths, the fetch fails gracefully and the caller falls back to embedded
-// templates — cross-version compatibility is best-effort.
+// paths, the fetch returns an error. GitLab mutation paths must not fall back
+// to embedded templates: their pipeline-input contract may be incompatible
+// with the pinned version. Other callers may use best-effort fallback.
 func FetchRemoteScaffold(ctx context.Context, ghClient forge.Client,
 	manifestRef, resolvedSHA, forgeName string,
 	agentRunnerTags, controlRunnerTags []string,

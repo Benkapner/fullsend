@@ -463,6 +463,7 @@ func TestRunAgentJobScript_UserlessPipelineRefetchesWithPinnedIDs(t *testing.T) 
 		"CI_JOB_TOKEN=job-token",
 		"FULLSEND_GITLAB_POLLER_TOKEN=poller-pat",
 		"STAGE=triage",
+		"FULLSEND_POLL_JOB_URL=https://${PROTECTED_VARIABLE}/private",
 		"RESOURCE_KEY=test-key",
 		"CI_PIPELINE_SOURCE=api",
 		// Deliberately different from the pinned project/pipeline (42/100)
@@ -474,6 +475,8 @@ func TestRunAgentJobScript_UserlessPipelineRefetchesWithPinnedIDs(t *testing.T) 
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err, "stdout/stderr: %s", out)
 	assert.Contains(t, string(out), "FULLSEND_DISPATCH_SECRET is not configured")
+	assert.NotContains(t, string(out), "Dispatched by:")
+	assert.NotContains(t, string(out), "PROTECTED_VARIABLE")
 	assert.True(t, sawPinnedRefetch.Load(), "PAT re-fetch must use the pinned project/pipeline IDs")
 	assert.False(t, sawUnpinnedRefetch.Load(), "PAT re-fetch must not use the overridable CI_PROJECT_ID/CI_PIPELINE_ID")
 }

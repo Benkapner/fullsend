@@ -1897,7 +1897,7 @@ func TestStatus_NoPresetDoesNotCompareBase(t *testing.T) {
 
 func TestStatus_GitLab_ConfigPresetDrift(t *testing.T) {
 	presetPath := writePresetFile(t, testPresetYAML)
-	fc := forge.NewFakeClient()
+	fc := newFakeClientForBatch("acme/api")
 	m := &Manifest{
 		Version:  1,
 		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: presetPath}},

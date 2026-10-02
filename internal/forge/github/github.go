@@ -4338,6 +4338,16 @@ func (c *LiveClient) CreatePipelineWithInputs(_ context.Context, _, _, _ string,
 	return nil, forge.ErrNotSupported
 }
 
+// GetPipelineSchedule is not supported on GitHub.
+func (c *LiveClient) GetPipelineSchedule(_ context.Context, _, _ string, _ int64) (*forge.PipelineSchedule, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// DeletePipelineScheduleVariable is not supported on GitHub.
+func (c *LiveClient) DeletePipelineScheduleVariable(_ context.Context, _, _ string, _ int64, _ string) error {
+	return forge.ErrNotSupported
+}
+
 // CreatePipelineSchedule is not supported on GitHub.
 func (c *LiveClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref, description, cron string, _ map[string]string) (int64, error) {
 	return 0, forge.ErrNotSupported

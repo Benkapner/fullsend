@@ -2524,6 +2524,40 @@ func (f *FakeClient) DeletePipelineSchedule(_ context.Context, owner, repo strin
 	return nil
 }
 
+func (f *FakeClient) GetPipelineSchedule(_ context.Context, owner, repo string, scheduleID int64) (*PipelineSchedule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.err("GetPipelineSchedule"); err != nil {
+		return nil, err
+	}
+	for _, schedule := range f.PipelineSchedules[owner+"/"+repo] {
+		if schedule.ID == scheduleID {
+			result := schedule
+			result.Variables = make(map[string]string, len(schedule.Variables))
+			for key, value := range schedule.Variables {
+				result.Variables[key] = value
+			}
+			return &result, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (f *FakeClient) DeletePipelineScheduleVariable(_ context.Context, owner, repo string, scheduleID int64, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.err("DeletePipelineScheduleVariable"); err != nil {
+		return err
+	}
+	for _, schedule := range f.PipelineSchedules[owner+"/"+repo] {
+		if schedule.ID == scheduleID {
+			delete(schedule.Variables, key)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
 func (f *FakeClient) UpdatePipelineSchedule(_ context.Context, owner, repo string, scheduleID int64, active bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
