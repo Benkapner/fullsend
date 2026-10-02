@@ -5382,17 +5382,31 @@ func sandboxArch() string {
 
 // resolvePlaybackForgeClient returns the forge.Client the dummy-playback
 // runtime should use for its tracking-comment reads/updates (see
-// RunParams.ForgeClient), or nil if none could be resolved. GitHub reuses
-// fallbackForgeClient (already built from composeGitToken for the
-// agents-repo fallback) rather than minting a second client; GitLab has
-// no equivalent client in scope yet, so one is built from
-// GITLAB_TOKEN/CI env vars. A resolution failure is reported as a
-// warning and yields a nil client, matching the existing fail-open
-// handling of a missing/unreadable tracking comment (the runtime falls
-// back to the local playlist position rather than erroring out).
+// RunParams.ForgeClient), or nil if none could be resolved. GitLab has no
+// equivalent client in scope yet, so one is built from GITLAB_TOKEN/CI env
+// vars. GitHub builds a fresh client from the current credential via
+// newAuthenticatedGitHubClient rather than reusing fallbackForgeClient:
+// fallbackForgeClient is constructed once, early in Run, from
+// composeGitToken — before this call's caller mints the agent token and
+// replaces GH_TOKEN (mintAgentTokenAtLevel). Reusing it would snapshot the
+// pre-mint credential, so tracking-comment reads/updates could run
+// anonymously or with a token lacking update permission even though
+// minting succeeded. If the current credential cannot be resolved (rare:
+// it would mean composeGitToken's earlier resolution has since become
+// invalid), GitHub falls back to fallbackForgeClient with a warning
+// rather than losing tracking entirely. A GitLab resolution failure is
+// reported as a warning and yields a nil client, matching the existing
+// fail-open handling of a missing/unreadable tracking comment (the
+// runtime falls back to the local playlist position rather than erroring
+// out).
 func resolvePlaybackForgeClient(forgePlatform string, fallbackForgeClient forge.Client, printer *ui.Printer) forge.Client {
 	if forgePlatform != "gitlab" {
-		return fallbackForgeClient
+		client, err := newAuthenticatedGitHubClient("", "")
+		if err != nil {
+			printer.StepWarn("dummy-playback: resolving current GitHub credential: " + err.Error())
+			return fallbackForgeClient
+		}
+		return client
 	}
 	client, err := newGitLabClientFromEnv("dummy-playback tracking comment")
 	if err != nil {

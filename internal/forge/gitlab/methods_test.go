@@ -359,6 +359,71 @@ func TestUpdateIssueComment(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestGetNoteOnParent_UsesExplicitParentDirectly guards against the
+// api-contract regression where a note's actual parent type differs from
+// the invocation context: the client defaults to the "issues" noteTarget,
+// but the requested note lives on a merge request. GetNoteOnParent must
+// address the merge_requests path directly from the explicit parentType
+// and parentIID, without scanning (an issues-list scan would both miss
+// the note and risk the 30s playback timeout on large projects).
+func TestGetNoteOnParent_UsesExplicitParentDirectly(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/7/notes/321", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id":         321,
+			"body":       "playback-current: 2",
+			"created_at": "2024-03-01T12:00:00Z",
+			"author":     map[string]string{"username": "botuser"},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/issues", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("GetNoteOnParent must not scan issues when the parent is already known")
+	})
+
+	comment, err := client.GetNoteOnParent(ctx, "myorg", "myrepo", "merge_requests", 7, 321)
+	require.NoError(t, err)
+	assert.Equal(t, 321, comment.ID)
+	assert.Equal(t, "playback-current: 2", comment.Body)
+	assert.Equal(t, "botuser", comment.Author)
+	assert.Contains(t, comment.HTMLURL, "/-/merge_requests/7#note_321")
+}
+
+func TestGetNoteOnParent_RejectsInvalidParentType(t *testing.T) {
+	client, _ := setupTest(t)
+	_, err := client.GetNoteOnParent(context.Background(), "myorg", "myrepo", "snippets", 1, 1)
+	require.Error(t, err)
+}
+
+// TestUpdateNoteOnParent_UsesExplicitParentDirectly is UpdateNoteOnParent's
+// counterpart to TestGetNoteOnParent_UsesExplicitParentDirectly.
+func TestUpdateNoteOnParent_UsesExplicitParentDirectly(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/7/notes/321", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		assert.Equal(t, "playback-current: 3", body["body"])
+		writeJSON(t, w, http.StatusOK, map[string]any{"id": 321, "body": "playback-current: 3"})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/issues", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("UpdateNoteOnParent must not scan issues when the parent is already known")
+	})
+
+	err := client.UpdateNoteOnParent(ctx, "myorg", "myrepo", "merge_requests", 7, 321, "playback-current: 3")
+	require.NoError(t, err)
+}
+
+func TestUpdateNoteOnParent_RejectsInvalidParentType(t *testing.T) {
+	client, _ := setupTest(t)
+	err := client.UpdateNoteOnParent(context.Background(), "myorg", "myrepo", "snippets", 1, 1, "x")
+	require.Error(t, err)
+}
+
 func TestDeleteIssueComment(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()

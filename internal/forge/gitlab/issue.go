@@ -237,6 +237,50 @@ func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string,
 	}, nil
 }
 
+// fetchNoteDirect fetches a single note by its parent noteable's IID and
+// the note's own ID, addressing the Notes API path directly rather than
+// scanning for the parent. parentType must be "issues" or "merge_requests".
+func (c *LiveClient) fetchNoteDirect(ctx context.Context, owner, repo, parentType string, parentIID, noteID int) (*forge.IssueComment, error) {
+	proj := projectPath(owner, repo)
+	notePath := fmt.Sprintf("/projects/%s/%s/%d/notes/%d", proj, parentType, parentIID, noteID)
+	resp, err := c.get(ctx, notePath)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		ID        int    `json:"id"`
+		Body      string `json:"body"`
+		CreatedAt string `json:"created_at"`
+		Author    struct {
+			Username string `json:"username"`
+		} `json:"author"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode note %d: %w", noteID, err)
+	}
+	htmlURL := fmt.Sprintf("%s/-/%s/%d#note_%d",
+		c.projectWebURL(owner, repo), parentType, parentIID, result.ID)
+	return &forge.IssueComment{
+		ID:        result.ID,
+		HTMLURL:   htmlURL,
+		Body:      result.Body,
+		Author:    result.Author.Username,
+		CreatedAt: result.CreatedAt,
+	}, nil
+}
+
+// GetNoteOnParent fetches a note directly by its parent noteable's IID
+// and the note's own ID (forge.GitLabExtensions). Unlike GetIssueComment,
+// this never scans: the caller already knows the parent, so GitLab's
+// Notes API can be addressed directly. parentType must be "issues" or
+// "merge_requests".
+func (c *LiveClient) GetNoteOnParent(ctx context.Context, owner, repo, parentType string, parentIID, noteID int) (*forge.IssueComment, error) {
+	if parentType != "issues" && parentType != "merge_requests" {
+		return nil, fmt.Errorf("get note %d: invalid parent type %q", noteID, parentType)
+	}
+	return c.fetchNoteDirect(ctx, owner, repo, parentType, parentIID, noteID)
+}
+
 // GetIssueComment fetches a single note by its numeric ID. See
 // UpdateIssueComment for why this requires scanning: GitLab's Notes API
 // requires the noteable IID in the URL, but forge.Client only provides a
@@ -252,31 +296,7 @@ func (c *LiveClient) GetIssueComment(ctx context.Context, owner, repo string, co
 	}
 
 	tryFetchNote := func(noteableIID int) (*forge.IssueComment, error) {
-		notePath := fmt.Sprintf("/projects/%s/%s/%d/notes/%d", proj, c.noteTarget, noteableIID, commentID)
-		resp, err := c.get(ctx, notePath)
-		if err != nil {
-			return nil, err
-		}
-		var result struct {
-			ID        int    `json:"id"`
-			Body      string `json:"body"`
-			CreatedAt string `json:"created_at"`
-			Author    struct {
-				Username string `json:"username"`
-			} `json:"author"`
-		}
-		if err := decodeJSON(resp, &result); err != nil {
-			return nil, fmt.Errorf("decode note %d: %w", commentID, err)
-		}
-		htmlURL := fmt.Sprintf("%s/-/%s/%d#note_%d",
-			c.projectWebURL(owner, repo), c.noteTarget, noteableIID, result.ID)
-		return &forge.IssueComment{
-			ID:        result.ID,
-			HTMLURL:   htmlURL,
-			Body:      result.Body,
-			Author:    result.Author.Username,
-			CreatedAt: result.CreatedAt,
-		}, nil
+		return c.fetchNoteDirect(ctx, owner, repo, c.noteTarget, noteableIID, commentID)
 	}
 
 	scanState := func(state string, maxPages int) (*forge.IssueComment, error) {
@@ -334,6 +354,18 @@ func (c *LiveClient) UpdateIssueComment(ctx context.Context, owner, repo string,
 	return c.updateOrDeleteNote(ctx, owner, repo, commentID, &body)
 }
 
+// UpdateNoteOnParent updates a note's body directly by its parent
+// noteable's IID and the note's own ID (forge.GitLabExtensions). Unlike
+// UpdateIssueComment, this never scans: the caller already knows the
+// parent, so GitLab's Notes API can be addressed directly. parentType
+// must be "issues" or "merge_requests".
+func (c *LiveClient) UpdateNoteOnParent(ctx context.Context, owner, repo, parentType string, parentIID, noteID int, body string) error {
+	if parentType != "issues" && parentType != "merge_requests" {
+		return fmt.Errorf("update note %d: invalid parent type %q", noteID, parentType)
+	}
+	return c.tryNoteOperation(ctx, projectPath(owner, repo), parentType, parentIID, noteID, &body)
+}
+
 // DeleteIssueComment deletes a note on an issue.
 // See UpdateIssueComment for the note-lookup strategy.
 func (c *LiveClient) DeleteIssueComment(ctx context.Context, owner, repo string, commentID int) error {
@@ -376,7 +408,7 @@ func (c *LiveClient) updateOrDeleteNote(ctx context.Context, owner, repo string,
 		}
 
 		for _, n := range noteables {
-			err := c.tryNoteOperation(ctx, proj, n.IID, noteID, body)
+			err := c.tryNoteOperation(ctx, proj, c.noteTarget, n.IID, noteID, body)
 			if err == nil {
 				return nil
 			}
@@ -406,7 +438,7 @@ func (c *LiveClient) updateOrDeleteNote(ctx context.Context, owner, repo string,
 			}
 
 			for _, n := range noteables {
-				err := c.tryNoteOperation(ctx, proj, n.IID, noteID, body)
+				err := c.tryNoteOperation(ctx, proj, c.noteTarget, n.IID, noteID, body)
 				if err == nil {
 					return nil
 				}
@@ -434,9 +466,12 @@ func (c *LiveClient) updateOrDeleteNote(ctx context.Context, owner, repo string,
 
 // tryNoteOperation attempts to update or delete a note on the given noteable.
 // Returns nil on success, or an error wrapping forge.ErrNotFound if the
-// note doesn't exist on this noteable.
-func (c *LiveClient) tryNoteOperation(ctx context.Context, proj string, noteableIID, noteID int, body *string) error {
-	notePath := fmt.Sprintf("/projects/%s/%s/%d/notes/%d", proj, c.noteTarget, noteableIID, noteID)
+// note doesn't exist on this noteable. parentType is the noteable type
+// segment of the URL ("issues" or "merge_requests"); callers scanning
+// under c.noteTarget pass that value, while UpdateNoteOnParent passes an
+// explicit, caller-supplied type.
+func (c *LiveClient) tryNoteOperation(ctx context.Context, proj, parentType string, noteableIID, noteID int, body *string) error {
+	notePath := fmt.Sprintf("/projects/%s/%s/%d/notes/%d", proj, parentType, noteableIID, noteID)
 
 	if body == nil {
 		return c.delete_(ctx, notePath)

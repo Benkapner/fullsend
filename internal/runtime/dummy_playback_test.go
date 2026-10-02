@@ -800,12 +800,14 @@ func TestParsePlaybackCommentRef(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		input         string
-		wantOK        bool
-		wantOwner     string
-		wantRepo      string
-		wantCommentID int
+		name             string
+		input            string
+		wantOK           bool
+		wantOwner        string
+		wantRepo         string
+		wantCommentID    int
+		wantNoteableType string
+		wantNoteableIID  int
 	}{
 		{
 			name:   "empty",
@@ -837,20 +839,24 @@ func TestParsePlaybackCommentRef(t *testing.T) {
 			wantCommentID: 42,
 		},
 		{
-			name:          "gitlab two-line",
-			input:         "glab\n/projects/org%2Frepo/issues/1/notes/99",
-			wantOK:        true,
-			wantOwner:     "org",
-			wantRepo:      "repo",
-			wantCommentID: 99,
+			name:             "gitlab two-line",
+			input:            "glab\n/projects/org%2Frepo/issues/1/notes/99",
+			wantOK:           true,
+			wantOwner:        "org",
+			wantRepo:         "repo",
+			wantCommentID:    99,
+			wantNoteableType: "issues",
+			wantNoteableIID:  1,
 		},
 		{
-			name:          "gitlab nested group",
-			input:         "glab\n/projects/group%2Fsubgroup%2Frepo/merge_requests/3/notes/7",
-			wantOK:        true,
-			wantOwner:     "group/subgroup",
-			wantRepo:      "repo",
-			wantCommentID: 7,
+			name:             "gitlab nested group",
+			input:            "glab\n/projects/group%2Fsubgroup%2Frepo/merge_requests/3/notes/7",
+			wantOK:           true,
+			wantOwner:        "group/subgroup",
+			wantRepo:         "repo",
+			wantCommentID:    7,
+			wantNoteableType: "merge_requests",
+			wantNoteableIID:  3,
 		},
 		{
 			name:   "cli but no path",
@@ -907,6 +913,46 @@ func TestParsePlaybackCommentRef(t *testing.T) {
 			input:  "glab\n/projects/myproject/issues/1/notes/99",
 			wantOK: false,
 		},
+		{
+			// Regression: a query delimiter in the repo field used to slip
+			// through the old `[^/]+/[^/]+` owner/repo capture, so the
+			// request path built from it (/repos/org/repo?x=/issues/...)
+			// addressed /repos/org/repo with the rest treated as query data.
+			name:   "github path with query delimiter in repo rejected",
+			input:  "gh\n/repos/org/repo?x=/issues/comments/42",
+			wantOK: false,
+		},
+		{
+			name:   "github path with query delimiter in owner rejected",
+			input:  "gh\n/repos/org?x=y/repo/issues/comments/42",
+			wantOK: false,
+		},
+		{
+			name:   "github path with fragment delimiter in repo rejected",
+			input:  "gh\n/repos/org/repo#frag/issues/comments/42",
+			wantOK: false,
+		},
+		{
+			name:   "github path with control character in repo rejected",
+			input:  "gh\n/repos/org/re\tpo/issues/comments/42",
+			wantOK: false,
+		},
+		{
+			// Regression: the noteable type and IID used to be discarded
+			// (the non-capturing group matched either "issues" or
+			// "merge_requests" without recording which), so a note whose
+			// actual parent type differs from the resolved client's fixed
+			// noteTarget (e.g. an issue reference during MR CI) could not
+			// be found. They are now preserved on the ref.
+			name:             "gitlab merge request reference preserves type and iid",
+			input:            "glab\n/projects/org%2Frepo/merge_requests/12/notes/55",
+			wantOK:           true,
+			wantOwner:        "org",
+			wantRepo:         "repo",
+			wantCommentID:    55,
+			wantNoteableType: "merge_requests",
+			wantNoteableIID:  12,
+		},
 	}
 
 	for _, tt := range tests {
@@ -917,6 +963,8 @@ func TestParsePlaybackCommentRef(t *testing.T) {
 				assert.Equal(t, tt.wantOwner, ref.owner)
 				assert.Equal(t, tt.wantRepo, ref.repo)
 				assert.Equal(t, tt.wantCommentID, ref.commentID)
+				assert.Equal(t, tt.wantNoteableType, ref.noteableType)
+				assert.Equal(t, tt.wantNoteableIID, ref.noteableIID)
 			}
 		})
 	}
@@ -1014,6 +1062,32 @@ func TestReadPlaybackComment(t *testing.T) {
 		assert.Equal(t, "repo", ref.repo)
 		assert.Equal(t, 99, ref.commentID)
 	})
+
+	t.Run("gitlab merge request ref uses direct addressing, not the scan", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, playbackCommentFile), []byte("glab\n/projects/org%2Frepo/merge_requests/12/notes/55"), 0o644))
+		fc := forge.NewFakeClient()
+		// Fail the ID-only scan GetIssueComment uses, so the test proves
+		// readPlaybackComment took the direct GetNoteOnParent path instead
+		// -- the regression this guards is a GitLab client built for one
+		// noteable type (e.g. issues) failing to find a note whose actual
+		// parent is the other type (merge requests).
+		fc.Errors = map[string]error{"GetIssueComment": fmt.Errorf("must not be called when the parent is known")}
+		fc.IssueComments = map[string][]forge.IssueComment{"org/repo/0": {{ID: 55, Body: "playback-current: 6"}}}
+		val, ref, ok := readPlaybackComment(context.Background(), dir, fc)
+		require.True(t, ok)
+		assert.Equal(t, 6, val)
+		assert.Equal(t, 55, ref.commentID)
+		assert.Equal(t, "merge_requests", ref.noteableType)
+		assert.Equal(t, 12, ref.noteableIID)
+		require.Len(t, fc.GetNoteOnParentCalls, 1)
+		assert.Equal(t, "org", fc.GetNoteOnParentCalls[0].Owner)
+		assert.Equal(t, "repo", fc.GetNoteOnParentCalls[0].Repo)
+		assert.Equal(t, "merge_requests", fc.GetNoteOnParentCalls[0].ParentType)
+		assert.Equal(t, 12, fc.GetNoteOnParentCalls[0].ParentIID)
+		assert.Equal(t, 55, fc.GetNoteOnParentCalls[0].NoteID)
+	})
 }
 
 func TestUpdatePlaybackComment(t *testing.T) {
@@ -1061,6 +1135,23 @@ func TestUpdatePlaybackComment(t *testing.T) {
 		require.Len(t, fc.UpdatedComments, 1)
 		assert.Equal(t, 99, fc.UpdatedComments[0].CommentID)
 		assert.Equal(t, "playback-current: 7", fc.UpdatedComments[0].Body)
+	})
+
+	t.Run("gitlab merge request ref uses direct addressing, not the scan", func(t *testing.T) {
+		t.Parallel()
+		fc := forge.NewFakeClient()
+		fc.Errors = map[string]error{"UpdateIssueComment": fmt.Errorf("must not be called when the parent is known")}
+		fc.IssueComments = map[string][]forge.IssueComment{"org/repo/0": {{ID: 55, Body: "playback-current: 1"}}}
+		ref := playbackCommentRef{owner: "org", repo: "repo", commentID: 55, noteableType: "merge_requests", noteableIID: 12}
+		err := updatePlaybackComment(context.Background(), fc, ref, 8)
+		require.NoError(t, err)
+		require.Len(t, fc.UpdateNoteOnParentCalls, 1)
+		assert.Equal(t, "org", fc.UpdateNoteOnParentCalls[0].Owner)
+		assert.Equal(t, "repo", fc.UpdateNoteOnParentCalls[0].Repo)
+		assert.Equal(t, "merge_requests", fc.UpdateNoteOnParentCalls[0].ParentType)
+		assert.Equal(t, 12, fc.UpdateNoteOnParentCalls[0].ParentIID)
+		assert.Equal(t, 55, fc.UpdateNoteOnParentCalls[0].NoteID)
+		assert.Equal(t, "playback-current: 8", fc.UpdateNoteOnParentCalls[0].Body)
 	})
 }
 

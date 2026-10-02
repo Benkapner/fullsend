@@ -3821,16 +3821,40 @@ roles:
 	assert.Contains(t, err.Error(), "not a valid forge platform")
 }
 
-func TestResolvePlaybackForgeClient_GitHubReusesFallback(t *testing.T) {
-	fallback := gh.New("token")
+func TestResolvePlaybackForgeClient_GitHubBuildsFromCurrentCredential(t *testing.T) {
+	// fallbackForgeClient is built once, early in Run, from the pre-mint
+	// token. resolvePlaybackForgeClient is called later, after the agent
+	// token has been minted and GH_TOKEN replaced (mintAgentTokenAtLevel).
+	// It must pick up the *current* GH_TOKEN rather than reusing the
+	// stale fallback -- otherwise tracking-comment reads/updates run with
+	// the pre-mint credential even though minting succeeded.
+	t.Setenv("GH_TOKEN", "runtime-mint-token")
+	t.Setenv("GITHUB_TOKEN", "")
+	fallback := gh.New("pre-mint-token")
 	printer := ui.New(io.Discard)
 
 	client := resolvePlaybackForgeClient("github", fallback, printer)
-	assert.Same(t, fallback, client)
+	require.NotNil(t, client)
+	assert.NotSame(t, fallback, client, "must build a fresh client from the current credential, not reuse the pre-mint fallback")
 
 	// Empty forge platform defaults to the GitHub path too, matching
 	// dummy_playback.go's repoFromEnv default-to-GitHub convention.
 	client = resolvePlaybackForgeClient("", fallback, printer)
+	require.NotNil(t, client)
+	assert.NotSame(t, fallback, client)
+}
+
+func TestResolvePlaybackForgeClient_GitHubFallsBackWhenCredentialUnresolvable(t *testing.T) {
+	// If the current credential cannot be resolved at all (env vars unset
+	// and `gh auth token` unavailable), degrade to the pre-mint fallback
+	// client with a warning rather than losing tracking entirely.
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("PATH", "/nonexistent")
+	fallback := gh.New("pre-mint-token")
+	printer := ui.New(io.Discard)
+
+	client := resolvePlaybackForgeClient("github", fallback, printer)
 	assert.Same(t, fallback, client)
 }
 

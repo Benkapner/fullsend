@@ -1201,3 +1201,23 @@ type GitHubExtensions interface {
 	// no pending invitation.
 	GetOrgMembership(ctx context.Context, org, username string) (OrgMembership, error)
 }
+
+// GitLabExtensions provides GitLab-specific operations that are not part
+// of the cross-forge Client interface. Callers type-assert to this
+// interface when they already know a note's parent noteable (issue or
+// merge request) type and IID, and want to address it directly instead
+// of through GetIssueComment/UpdateIssueComment's ID-only scan — the
+// scan is bounded and, because it is driven by the client's own fixed
+// noteTarget, cannot find a note whose actual parent type differs from
+// how the client was constructed.
+type GitLabExtensions interface {
+	// GetNoteOnParent fetches a note by its parent noteable's IID and the
+	// note's own ID, addressing the GitLab Notes API path directly.
+	// parentType must be "issues" or "merge_requests".
+	GetNoteOnParent(ctx context.Context, owner, repo, parentType string, parentIID, noteID int) (*IssueComment, error)
+
+	// UpdateNoteOnParent updates a note's body by its parent noteable's
+	// IID and the note's own ID, addressing the GitLab Notes API path
+	// directly. parentType must be "issues" or "merge_requests".
+	UpdateNoteOnParent(ctx context.Context, owner, repo, parentType string, parentIID, noteID int, body string) error
+}

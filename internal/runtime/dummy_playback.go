@@ -369,28 +369,47 @@ func (r DummyPlaybackRuntime) advancePlaylist(playlistPath string, playlist *Pla
 
 // githubCommentPathRe and gitlabCommentPathRe recognize the REST API path
 // shapes playback_driver.go commits into the tracking-comment file, and
-// extract the owner, repo, and comment/note ID so the runtime can address
-// the comment through forge.Client instead of replaying the path against
-// the forge CLI. The GitLab project segment is percent-encoded
-// ("org%2Frepo"); the issue/MR IID in the GitLab path is intentionally
-// unused — forge.Client.{Get,Update}IssueComment only takes the note ID.
+// extract the owner, repo, and comment/note ID (plus, for GitLab, the
+// noteable type and IID) so the runtime can address the comment through
+// forge.Client instead of replaying the path against the forge CLI. The
+// GitLab project segment is percent-encoded ("org%2Frepo").
+//
+// Owner and repo segments are restricted to the charset GitHub/GitLab
+// actually allow in identifiers (alphanumerics, hyphens, underscores,
+// dots): a wider class such as `[^/]+` would also accept URL delimiters
+// (`?`, `#`) or encoded separators, letting a crafted path redirect the
+// request to a different endpoint or smuggle query data once owner/repo
+// are interpolated back into a request path (see decodeCommentPath and
+// the GitHub client's GetIssueComment/UpdateIssueComment).
 var (
-	githubCommentPathRe = regexp.MustCompile(`^/repos/([^/]+/[^/]+)/issues/comments/(\d+)$`)
-	gitlabCommentPathRe = regexp.MustCompile(`^/projects/([^/]+)/(?:issues|merge_requests)/\d+/notes/(\d+)$`)
+	githubCommentPathRe = regexp.MustCompile(`^/repos/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/([A-Za-z0-9._-]+)/issues/comments/(\d+)$`)
+	gitlabCommentPathRe = regexp.MustCompile(`^/projects/([A-Za-z0-9](?:[A-Za-z0-9._%-]*[A-Za-z0-9])?)/(issues|merge_requests)/(\d+)/notes/(\d+)$`)
 )
 
 // playbackCommentRef identifies the forge comment the dummy-playback
 // runtime uses to track its position across sandbox invocations, resolved
-// to the owner/repo/commentID triple forge.Client operates on. The
-// committed file format is "<cli>\n<path>" (e.g. "gh\n/repos/…" or
-// "glab\n/projects/…"); legacy single-line files default to gh. cli only
-// selects which regex decodes path — the actual forge call goes through
-// whichever forge.Client the caller supplies via RunParams.ForgeClient,
-// which must already correspond to the active Forge platform.
+// to the fields forge.Client (and, for GitLab, forge.GitLabExtensions)
+// operate on. The committed file format is "<cli>\n<path>" (e.g.
+// "gh\n/repos/…" or "glab\n/projects/…"); legacy single-line files default
+// to gh. cli only selects which regex decodes path — the actual forge call
+// goes through whichever forge.Client the caller supplies via
+// RunParams.ForgeClient, which must already correspond to the active
+// Forge platform.
+//
+// noteableType and noteableIID are populated only for GitLab refs (empty
+// and zero for GitHub). They identify the note's parent (an issue or a
+// merge request) directly, so readPlaybackComment/updatePlaybackComment
+// can address it through forge.GitLabExtensions instead of the ID-only
+// scan GetIssueComment/UpdateIssueComment fall back to — a scan that is
+// driven by the resolved client's own fixed noteTarget and so cannot find
+// a note whose actual parent type differs from how that client was built
+// (e.g. an issue tracking reference during MR CI).
 type playbackCommentRef struct {
-	owner     string
-	repo      string
-	commentID int
+	owner        string
+	repo         string
+	commentID    int
+	noteableType string
+	noteableIID  int
 }
 
 func parsePlaybackCommentRef(data string) (playbackCommentRef, bool) {
@@ -428,15 +447,11 @@ func decodeCommentPath(cli, path string) (playbackCommentRef, bool) {
 		if m == nil {
 			return playbackCommentRef{}, false
 		}
-		owner, repo, found := strings.Cut(m[1], "/")
-		if !found {
-			return playbackCommentRef{}, false
-		}
-		commentID, err := strconv.Atoi(m[2])
+		commentID, err := strconv.Atoi(m[3])
 		if err != nil {
 			return playbackCommentRef{}, false
 		}
-		return playbackCommentRef{owner: owner, repo: repo, commentID: commentID}, true
+		return playbackCommentRef{owner: m[1], repo: m[2], commentID: commentID}, true
 	case "glab":
 		m := gitlabCommentPathRe.FindStringSubmatch(path)
 		if m == nil {
@@ -456,11 +471,22 @@ func decodeCommentPath(cli, path string) (playbackCommentRef, bool) {
 		if owner == "" || repo == "" {
 			return playbackCommentRef{}, false
 		}
-		commentID, err := strconv.Atoi(m[2])
+		noteableType := m[2]
+		noteableIID, err := strconv.Atoi(m[3])
 		if err != nil {
 			return playbackCommentRef{}, false
 		}
-		return playbackCommentRef{owner: owner, repo: repo, commentID: commentID}, true
+		commentID, err := strconv.Atoi(m[4])
+		if err != nil {
+			return playbackCommentRef{}, false
+		}
+		return playbackCommentRef{
+			owner:        owner,
+			repo:         repo,
+			commentID:    commentID,
+			noteableType: noteableType,
+			noteableIID:  noteableIID,
+		}, true
 	default:
 		return playbackCommentRef{}, false
 	}
@@ -483,7 +509,7 @@ func readPlaybackComment(ctx context.Context, fullsendDir string, client forge.C
 	}
 	apiCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	comment, err := client.GetIssueComment(apiCtx, ref.owner, ref.repo, ref.commentID)
+	comment, err := fetchPlaybackComment(apiCtx, client, ref)
 	if err != nil {
 		return 0, playbackCommentRef{}, false
 	}
@@ -508,10 +534,39 @@ func updatePlaybackComment(ctx context.Context, client forge.Client, ref playbac
 	apiCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	body := fmt.Sprintf("playback-current: %d", newValue)
-	if err := client.UpdateIssueComment(apiCtx, ref.owner, ref.repo, ref.commentID, body); err != nil {
+	if err := updatePlaybackCommentBody(apiCtx, client, ref, body); err != nil {
 		return fmt.Errorf("updating playback comment: %w", err)
 	}
 	return nil
+}
+
+// fetchPlaybackComment reads the tracking comment identified by ref. For a
+// GitLab ref (ref.noteableType set) it addresses the note directly by its
+// parent's type and IID via forge.GitLabExtensions when the resolved
+// client supports it, instead of client.GetIssueComment's ID-only scan —
+// a scan bounded by, and driven by, the client's own fixed noteTarget, so
+// it cannot find a note whose actual parent type differs from how that
+// client was built (e.g. an issue tracking reference during MR CI). A
+// GitHub ref, or a GitLab client that does not implement the extension,
+// falls back to the cross-forge GetIssueComment.
+func fetchPlaybackComment(ctx context.Context, client forge.Client, ref playbackCommentRef) (*forge.IssueComment, error) {
+	if ref.noteableType != "" {
+		if gl, ok := client.(forge.GitLabExtensions); ok {
+			return gl.GetNoteOnParent(ctx, ref.owner, ref.repo, ref.noteableType, ref.noteableIID, ref.commentID)
+		}
+	}
+	return client.GetIssueComment(ctx, ref.owner, ref.repo, ref.commentID)
+}
+
+// updatePlaybackCommentBody updates the tracking comment identified by
+// ref. See fetchPlaybackComment for the direct-addressing rationale.
+func updatePlaybackCommentBody(ctx context.Context, client forge.Client, ref playbackCommentRef, body string) error {
+	if ref.noteableType != "" {
+		if gl, ok := client.(forge.GitLabExtensions); ok {
+			return gl.UpdateNoteOnParent(ctx, ref.owner, ref.repo, ref.noteableType, ref.noteableIID, ref.commentID, body)
+		}
+	}
+	return client.UpdateIssueComment(ctx, ref.owner, ref.repo, ref.commentID, body)
 }
 
 func injectReviewMetadata(content []byte, forge string, printer *ui.Printer) []byte {

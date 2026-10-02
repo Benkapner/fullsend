@@ -10,6 +10,7 @@ import (
 // Compile-time interface checks.
 var _ Client = (*FakeClient)(nil)
 var _ GitHubExtensions = (*FakeClient)(nil)
+var _ GitLabExtensions = (*FakeClient)(nil)
 
 // NewFakeClient returns a FakeClient with all maps initialised.
 func NewFakeClient() *FakeClient {
@@ -87,6 +88,16 @@ type UpdatedCommentRecord struct {
 	Owner, Repo string
 	CommentID   int
 	Body        string
+}
+
+// NoteOnParentRecord records a GetNoteOnParent/UpdateNoteOnParent call,
+// letting tests assert that a caller addressed a note directly by its
+// parent's type and IID instead of going through the ID-only scan that
+// GetIssueComment/UpdateIssueComment use.
+type NoteOnParentRecord struct {
+	Owner, Repo, ParentType string
+	ParentIID, NoteID       int
+	Body                    string // empty for GetNoteOnParent calls
 }
 
 // CreatedIssueRecord records an issue creation call.
@@ -356,6 +367,8 @@ type FakeClient struct {
 	DeletedOrgVariables     []string // "org/name"
 	CreatedIssues           []CreatedIssueRecord
 	UpdatedComments         []UpdatedCommentRecord
+	GetNoteOnParentCalls    []NoteOnParentRecord
+	UpdateNoteOnParentCalls []NoteOnParentRecord
 	MinimizedComments       []MinimizedCommentRecord
 	AddedReactions          []ReactionRecord
 	DeletedReactions        []int64
@@ -1595,6 +1608,52 @@ func (f *FakeClient) GetIssueComment(_ context.Context, _, _ string, commentID i
 		}
 	}
 	return nil, fmt.Errorf("%w: comment %d", ErrNotFound, commentID)
+}
+
+// GetNoteOnParent implements GitLabExtensions. Unlike the real GitLab
+// client, FakeClient has no notion of noteTarget-vs-parentType mismatch;
+// it records the call (so tests can assert the direct-addressing path
+// was taken) and otherwise looks the note up the same way GetIssueComment
+// does.
+func (f *FakeClient) GetNoteOnParent(_ context.Context, owner, repo, parentType string, parentIID, noteID int) (*IssueComment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.GetNoteOnParentCalls = append(f.GetNoteOnParentCalls, NoteOnParentRecord{
+		Owner: owner, Repo: repo, ParentType: parentType, ParentIID: parentIID, NoteID: noteID,
+	})
+	if e := f.err("GetNoteOnParent"); e != nil {
+		return nil, e
+	}
+	for _, comments := range f.IssueComments {
+		for _, c := range comments {
+			if c.ID == noteID {
+				found := c
+				return &found, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("%w: comment %d", ErrNotFound, noteID)
+}
+
+// UpdateNoteOnParent implements GitLabExtensions. See GetNoteOnParent.
+func (f *FakeClient) UpdateNoteOnParent(_ context.Context, owner, repo, parentType string, parentIID, noteID int, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.UpdateNoteOnParentCalls = append(f.UpdateNoteOnParentCalls, NoteOnParentRecord{
+		Owner: owner, Repo: repo, ParentType: parentType, ParentIID: parentIID, NoteID: noteID, Body: body,
+	})
+	if e := f.err("UpdateNoteOnParent"); e != nil {
+		return e
+	}
+	for key, comments := range f.IssueComments {
+		for i, c := range comments {
+			if c.ID == noteID {
+				f.IssueComments[key][i].Body = body
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%w: comment %d", ErrNotFound, noteID)
 }
 
 func (f *FakeClient) UpdateIssueComment(_ context.Context, owner, repo string, commentID int, body string) error {

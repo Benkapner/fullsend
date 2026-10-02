@@ -3718,6 +3718,54 @@ func TestGetIssueComment_NotFound(t *testing.T) {
 	assert.True(t, forge.IsNotFound(err))
 }
 
+// TestGetIssueComment_EscapesOwnerAndRepo guards against a crafted owner
+// or repo value redirecting the request to a different path or smuggling
+// query data (e.g. an unescaped "?" terminating the path early). Both
+// fields are exercised independently.
+func TestGetIssueComment_EscapesOwnerAndRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/org%3Fevil/repo/issues/comments/42", r.URL.EscapedPath())
+		assert.Empty(t, r.URL.RawQuery, "a stray delimiter in owner must not start a query string")
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "body": "ok"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org?evil", "repo", 42)
+	require.NoError(t, err)
+}
+
+func TestGetIssueComment_EscapesRepoField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/org/repo%3Fx=/issues/comments/42", r.URL.EscapedPath())
+		assert.Empty(t, r.URL.RawQuery, "a stray delimiter in repo must not start a query string")
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "body": "ok"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org", "repo?x=", 42)
+	require.NoError(t, err)
+}
+
+// TestUpdateIssueComment_EscapesOwnerAndRepo is UpdateIssueComment's
+// counterpart to TestGetIssueComment_EscapesOwnerAndRepo.
+func TestUpdateIssueComment_EscapesOwnerAndRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PATCH", r.Method)
+		assert.Equal(t, "/repos/org%3Fevil/repo%3Fx=/issues/comments/42", r.URL.EscapedPath())
+		assert.Empty(t, r.URL.RawQuery, "a stray delimiter in owner/repo must not start a query string")
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "body": "updated"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.UpdateIssueComment(context.Background(), "org?evil", "repo?x=", 42, "updated")
+	require.NoError(t, err)
+}
+
 func TestDeleteIssueComment(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "DELETE", r.Method)
