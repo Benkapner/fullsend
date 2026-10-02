@@ -1053,6 +1053,15 @@ func (f *fakeURLSCM) GetFileContent(_ context.Context, owner, repo, path string)
 	return data, nil
 }
 
+func (f *fakeURLSCM) GetFileContentAtRef(_ context.Context, owner, repo, path, _ string) ([]byte, error) {
+	key := owner + "/" + repo + "/" + path
+	data, ok := f.files[key]
+	if !ok {
+		return nil, fmt.Errorf("file not found: %s", key)
+	}
+	return data, nil
+}
+
 func (f *fakeURLSCM) CreateRepo(_ context.Context, _, name, _ string) error {
 	if f.createRepoErr != nil {
 		return f.createRepoErr

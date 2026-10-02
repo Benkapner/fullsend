@@ -10,7 +10,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/stretchr/testify/assert"
@@ -2749,6 +2752,117 @@ func TestListWorkflowRuns(t *testing.T) {
 	assert.Equal(t, "failure", runs[1].Conclusion)
 }
 
+// TestListWorkflowRunsSince_PaginatesBeyondFirstPage is a regression test
+// (#7996 review): unlike ListWorkflowRuns's single page, ListWorkflowRunsSince
+// must paginate until it reaches a pipeline older than the since boundary,
+// so a pipeline far older than a single page is still returned.
+func TestListWorkflowRunsSince_PaginatesBeyondFirstPage(t *testing.T) {
+	client, mux := setupTest(t)
+	since := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	var pages []string
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		pages = append(pages, r.URL.Query().Get("page"))
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page") {
+		case "1":
+			w.Header().Set("X-Next-Page", "2")
+			pipelines := make([]string, 100)
+			for i := range pipelines {
+				pipelines[i] = fmt.Sprintf(`{"id":%d,"status":"success","ref":"main","created_at":"2026-01-03T00:00:00Z"}`, 300-i)
+			}
+			fmt.Fprint(w, "["+strings.Join(pipelines, ",")+"]")
+		case "2":
+			fmt.Fprint(w, `[{"id":100,"status":"success","ref":"main","created_at":"2026-01-02T00:00:00Z"},`+
+				`{"id":99,"status":"success","ref":"main","created_at":"2026-01-01T00:00:00Z"}]`)
+		default:
+			t.Errorf("unexpected page request %q", r.URL.RawQuery)
+		}
+	})
+
+	runs, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "", since)
+	require.NoError(t, err)
+	require.Len(t, runs, 101, "should include the 100 newer pipelines plus the earliest eligible pipeline at the boundary")
+	assert.Equal(t, 100, runs[len(runs)-1].ID, "the earliest eligible pipeline beyond the first page must be included")
+	for _, r := range runs {
+		assert.NotEqual(t, 99, r.ID, "a pipeline older than the since boundary must not be included")
+	}
+	assert.Equal(t, []string{"1", "2"}, pages, "pagination must stop once a pipeline older than since is seen")
+}
+
+// TestListWorkflowRunsSince_WithRefFilter covers the branch where a
+// non-empty workflowFile (treated as a ref) is appended to the pipelines
+// query, mirroring ListWorkflowRuns's ref filter.
+func TestListWorkflowRunsSince_WithRefFilter(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "develop", r.URL.Query().Get("ref"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":10,"status":"success","ref":"develop","created_at":"2026-01-01T00:00:00Z"}]`)
+	})
+	runs, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "develop", time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, 10, runs[0].ID)
+}
+
+func TestListWorkflowRunsSince_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	called := false
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	_, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "", time.Now())
+	require.Error(t, err)
+	assert.True(t, called, "the registered 500-response handler must have been invoked, not an unmatched route")
+	assert.Contains(t, err.Error(), "list pipelines since")
+}
+
+func TestListWorkflowRunsSince_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "{not valid json")
+	})
+	_, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "", time.Now())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode pipelines since")
+}
+
+func TestListWorkflowRunsSince_EmptyFirstPage(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "[]")
+	})
+	runs, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "", time.Now())
+	require.NoError(t, err)
+	assert.Empty(t, runs)
+}
+
+// TestListWorkflowRunsSince_PaginationExceeded guards the maxPages safety
+// valve: if every page is full and since is never reached, pagination must
+// stop with an error instead of looping indefinitely.
+func TestListWorkflowRunsSince_PaginationExceeded(t *testing.T) {
+	client, mux := setupTest(t)
+	page := 0
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		page++
+		pipelines := make([]string, 100)
+		for i := range pipelines {
+			pipelines[i] = fmt.Sprintf(`{"id":%d,"status":"success","ref":"main","created_at":"2026-01-03T00:00:00Z"}`, page*1000+i)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Next-Page", strconv.Itoa(page+1))
+		fmt.Fprint(w, "["+strings.Join(pipelines, ",")+"]")
+	})
+	since := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "", since)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pagination exceeded")
+	assert.Equal(t, 100, page)
+}
+
 func TestListRecentWorkflowRuns(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
@@ -2774,6 +2888,31 @@ func TestListWorkflowRunJobs(t *testing.T) {
 	assert.Equal(t, "success", jobs[0].Conclusion)
 	assert.Equal(t, "test", jobs[1].Name)
 	assert.Equal(t, "failure", jobs[1].Conclusion)
+}
+
+func TestListWorkflowRunJobs_PaginatesBeyondFirstPage(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/10/jobs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page") {
+		case "1":
+			jobs := make([]string, 100)
+			for i := range jobs {
+				jobs[i] = fmt.Sprintf(`{"id":%d,"name":"job-%d","status":"success"}`, i+1, i+1)
+			}
+			w.Header().Set("X-Next-Page", "2")
+			fmt.Fprint(w, "["+strings.Join(jobs, ",")+"]")
+		case "2":
+			fmt.Fprint(w, `[{"id":101,"name":"fullsend review agent","status":"success"}]`)
+		default:
+			t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+		}
+	})
+
+	jobs, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
+	require.NoError(t, err)
+	require.Len(t, jobs, 101)
+	assert.Equal(t, "fullsend review agent", jobs[100].Name)
 }
 
 func TestListWorkflowRunArtifacts(t *testing.T) {

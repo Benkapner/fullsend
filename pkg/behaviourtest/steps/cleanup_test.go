@@ -499,6 +499,10 @@ func (f *fakeCleanupSCM) GetFileContent(context.Context, string, string, string)
 	return f.fileContent, f.getFileErr
 }
 
+func (f *fakeCleanupSCM) GetFileContentAtRef(context.Context, string, string, string, string) ([]byte, error) {
+	return f.fileContent, f.getFileErr
+}
+
 func (f *fakeCleanupSCM) CommitFile(_ context.Context, _, _, _, _ string, _ []byte) error {
 	f.commitFileCalled = true
 	return f.commitFileErr
@@ -1120,6 +1124,10 @@ func (f *fakeRetryCleanupSCM) GetIssue(context.Context, string, string, int) (*f
 }
 
 func (f *fakeRetryCleanupSCM) GetFileContent(context.Context, string, string, string) ([]byte, error) {
+	return nil, nil
+}
+
+func (f *fakeRetryCleanupSCM) GetFileContentAtRef(context.Context, string, string, string, string) ([]byte, error) {
 	return nil, nil
 }
 

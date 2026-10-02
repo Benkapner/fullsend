@@ -24,6 +24,10 @@ type Driver interface {
 	AddComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error)
 	GetIssue(ctx context.Context, owner, repo string, number int) (*forge.Issue, error)
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
+	// GetFileContentAtRef retrieves the content of a file at a specific
+	// ref (commit SHA, branch, or tag), rather than GetFileContent's
+	// implicit default-branch/HEAD read.
+	GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
 	CommitFile(ctx context.Context, owner, repo, path, message string, content []byte) error
 	CreateBranch(ctx context.Context, owner, repo, branch string) error
 	// DeleteBranch deletes a branch from a repository. Returns

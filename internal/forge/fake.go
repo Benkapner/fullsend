@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Compile-time interface checks.
@@ -1945,6 +1946,35 @@ func (f *FakeClient) ListWorkflowRuns(_ context.Context, owner, repo, workflowFi
 		return []WorkflowRun{*run}, nil
 	}
 	return nil, nil
+}
+
+// ListWorkflowRunsSince returns the same configured runs as ListWorkflowRuns,
+// filtered to those created at or after since. Unlike the live GitHub
+// client's ListWorkflowRuns (capped at per_page=10), FakeClient never
+// truncates its configured list, so this filters rather than paginates —
+// tests configure WorkflowRunsList directly with as many runs as a scenario
+// needs, including more than a single live-API page, to exercise
+// since-bounded selection (#7996 review).
+func (f *FakeClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time) ([]WorkflowRun, error) {
+	f.mu.Lock()
+	e := f.err("ListWorkflowRunsSince")
+	f.mu.Unlock()
+	if e != nil {
+		return nil, e
+	}
+	runs, err := f.ListWorkflowRuns(ctx, owner, repo, workflowFile)
+	if err != nil {
+		return nil, err
+	}
+	var matched []WorkflowRun
+	for _, run := range runs {
+		runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+		if parseErr != nil || runTime.Before(since) {
+			continue
+		}
+		matched = append(matched, run)
+	}
+	return matched, nil
 }
 
 func (f *FakeClient) ListWorkflowRunJobs(_ context.Context, _, _ string, runID int) ([]WorkflowJob, error) {

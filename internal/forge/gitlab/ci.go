@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
@@ -554,6 +555,54 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 	return runs, nil
 }
 
+// ListWorkflowRunsSince lists pipelines for workflowFile (treated as the ref
+// name, as in ListWorkflowRuns), paginating through as many 100-per-page
+// requests as needed to reach pipelines created at or after since instead of
+// ListWorkflowRuns's single page. Pipelines are requested newest-first, so
+// once a page's pipeline was created before since (or a short page signals
+// the end of the listing), earlier pages cannot contain anything newer and
+// pagination stops (#7996 review — mirrors the GitHub driver's fix for
+// earliest-round selection truncation). It also stops once GitLab's
+// X-Next-Page response header is empty, the same signal ListWorkflowRunJobs
+// already honors, so a final page containing exactly perPage pipelines does
+// not trigger one more, empty, page request (#7996 review).
+func (c *LiveClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time) ([]forge.WorkflowRun, error) {
+	const maxPages = 100
+	const perPage = 100
+	proj := projectPath(owner, repo)
+	var all []forge.WorkflowRun
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/projects/%s/pipelines?per_page=%d&page=%d&order_by=id&sort=desc", proj, perPage, page)
+		if workflowFile != "" {
+			path += "&ref=" + url.QueryEscape(workflowFile)
+		}
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list pipelines since page %d: %w", page, err)
+		}
+		var pipelines []glPipeline
+		if err := decodeJSON(resp, &pipelines); err != nil {
+			return nil, fmt.Errorf("decode pipelines since page %d: %w", page, err)
+		}
+		if len(pipelines) == 0 {
+			return all, nil
+		}
+		reachedBoundary := false
+		for _, p := range pipelines {
+			if runTime, parseErr := time.Parse(time.RFC3339, p.CreatedAt); parseErr == nil && runTime.Before(since) {
+				reachedBoundary = true
+				break
+			}
+			all = append(all, pipelineToWorkflowRun(p))
+		}
+		nextPage := resp.Header.Get("X-Next-Page")
+		if reachedBoundary || nextPage == "" || len(pipelines) < perPage {
+			return all, nil
+		}
+	}
+	return nil, fmt.Errorf("list pipelines since: pagination exceeded %d pages", maxPages)
+}
+
 // ListRecentWorkflowRuns lists the most recent pipelines regardless of ref.
 func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]forge.WorkflowRun, error) {
 	if perPage <= 0 {
@@ -582,27 +631,36 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 // ListWorkflowRunJobs lists the jobs for a given pipeline, mapped to
 // WorkflowJob.
 func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
-	path := fmt.Sprintf("/projects/%s/pipelines/%d/jobs?per_page=100",
-		projectPath(owner, repo), runID)
-	resp, err := c.get(ctx, path)
-	if err != nil {
-		return nil, fmt.Errorf("list pipeline jobs: %w", err)
-	}
-	var jobs []glJob
-	if err := decodeJSON(resp, &jobs); err != nil {
-		return nil, fmt.Errorf("decode pipeline jobs: %w", err)
-	}
-	result := make([]forge.WorkflowJob, len(jobs))
-	for i, j := range jobs {
-		status, conclusion := mapPipelineStatus(j.Status)
-		result[i] = forge.WorkflowJob{
-			ID:         int(j.ID),
-			Name:       j.Name,
-			Status:     status,
-			Conclusion: conclusion,
+	const maxPages = 100
+	const perPage = 100
+	proj := projectPath(owner, repo)
+	var result []forge.WorkflowJob
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/projects/%s/pipelines/%d/jobs?per_page=%d&page=%d",
+			proj, runID, perPage, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list pipeline jobs page %d: %w", page, err)
+		}
+		var jobs []glJob
+		if err := decodeJSON(resp, &jobs); err != nil {
+			return nil, fmt.Errorf("decode pipeline jobs page %d: %w", page, err)
+		}
+		for _, j := range jobs {
+			status, conclusion := mapPipelineStatus(j.Status)
+			result = append(result, forge.WorkflowJob{
+				ID:         int(j.ID),
+				Name:       j.Name,
+				Status:     status,
+				Conclusion: conclusion,
+			})
+		}
+		nextPage := resp.Header.Get("X-Next-Page")
+		if nextPage == "" || len(jobs) < perPage {
+			return result, nil
 		}
 	}
-	return result, nil
+	return nil, fmt.Errorf("list pipeline jobs: pagination exceeded %d pages", maxPages)
 }
 
 // ListWorkflowRunArtifacts lists the artifacts produced by a pipeline's

@@ -3633,6 +3633,62 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 	return runs, nil
 }
 
+// ListWorkflowRunsSince returns workflow runs for workflowFile created at or
+// after since, paginating through as many 100-per-page requests as needed
+// instead of ListWorkflowRuns's single per_page=10 request. GitHub orders
+// runs newest-first, so once a page's run was created before since (or a
+// short page signals the end of the listing), earlier pages cannot contain
+// anything newer and pagination stops. Without this, earliest-round
+// selection (harnessRoundPollOnce) could miss an eligible, unconsumed run
+// that ten newer harness runs — for this agent or others — pushed past the
+// first page (#7996 review).
+func (c *LiveClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time) ([]forge.WorkflowRun, error) {
+	const maxPages = 100
+	const perPage = 100
+	var all []forge.WorkflowRun
+	for page := 1; page <= maxPages; page++ {
+		var result struct {
+			WorkflowRuns []struct {
+				ID         int    `json:"id"`
+				Name       string `json:"name"`
+				Event      string `json:"event"`
+				Status     string `json:"status"`
+				Conclusion string `json:"conclusion"`
+				HTMLURL    string `json:"html_url"`
+				CreatedAt  string `json:"created_at"`
+			} `json:"workflow_runs"`
+		}
+		path := fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?per_page=%d&page=%d",
+			url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(workflowFile), perPage, page)
+		if err := c.getCachedJSON(ctx, path, &result); err != nil {
+			return nil, fmt.Errorf("list workflow runs since page %d: %w", page, err)
+		}
+		if len(result.WorkflowRuns) == 0 {
+			return all, nil
+		}
+		reachedBoundary := false
+		for _, r := range result.WorkflowRuns {
+			if runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt); parseErr == nil && runTime.Before(since) {
+				reachedBoundary = true
+				break
+			}
+			all = append(all, forge.WorkflowRun{
+				ID:         r.ID,
+				Name:       r.Name,
+				Event:      r.Event,
+				Status:     r.Status,
+				Conclusion: r.Conclusion,
+				HTMLURL:    r.HTMLURL,
+				CreatedAt:  r.CreatedAt,
+			})
+		}
+		if reachedBoundary || len(result.WorkflowRuns) < perPage {
+			return all, nil
+		}
+	}
+	return nil, fmt.Errorf("list workflow runs since: pagination exceeded %d pages", maxPages)
+}
+
 // ListRecentWorkflowRuns returns recent workflow runs across all workflows.
 func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]forge.WorkflowRun, error) {
 	if perPage <= 0 {
@@ -3670,29 +3726,54 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 	return runs, nil
 }
 
-// ListWorkflowRunJobs returns the jobs within a workflow run.
+// ListWorkflowRunJobs returns the jobs within a workflow run, paginating
+// through as many 100-per-page requests as needed. A single
+// per_page=100 request only ever returns the first page, so a run with
+// more than 100 jobs (e.g. a large matrix build) could silently drop
+// jobs beyond that page. Earliest-round selection
+// (harnessRoundPollOnce) relies on this listing to find an agent's job
+// within a run; a truncated listing could make it treat the agent as
+// absent from the earliest eligible run and fall through to a later
+// run instead (#7996 review).
+//
+// owner and repo are escaped with url.PathEscape, as ListWorkflowRunsSince
+// already does, since an unescaped delimiter (e.g. "#") would otherwise let
+// the jobs suffix and pagination query be parsed as part of the path/query
+// rather than a fragment (#7996 review).
 func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
-	var result struct {
-		Jobs []struct {
-			ID         int    `json:"id"`
-			Name       string `json:"name"`
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-		} `json:"jobs"`
-	}
-	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", owner, repo, runID), &result); err != nil {
-		return nil, fmt.Errorf("list workflow run jobs: %w", err)
-	}
-	jobs := make([]forge.WorkflowJob, len(result.Jobs))
-	for i, j := range result.Jobs {
-		jobs[i] = forge.WorkflowJob{
-			ID:         j.ID,
-			Name:       j.Name,
-			Status:     j.Status,
-			Conclusion: j.Conclusion,
+	const maxPages = 100
+	const perPage = 100
+	var jobs []forge.WorkflowJob
+	for page := 1; page <= maxPages; page++ {
+		var result struct {
+			Jobs []struct {
+				ID         int    `json:"id"`
+				Name       string `json:"name"`
+				Status     string `json:"status"`
+				Conclusion string `json:"conclusion"`
+			} `json:"jobs"`
+		}
+		path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=%d&page=%d",
+			url.PathEscape(owner), url.PathEscape(repo), runID, perPage, page)
+		if err := c.getCachedJSON(ctx, path, &result); err != nil {
+			return nil, fmt.Errorf("list workflow run jobs page %d: %w", page, err)
+		}
+		if len(result.Jobs) == 0 {
+			return jobs, nil
+		}
+		for _, j := range result.Jobs {
+			jobs = append(jobs, forge.WorkflowJob{
+				ID:         j.ID,
+				Name:       j.Name,
+				Status:     j.Status,
+				Conclusion: j.Conclusion,
+			})
+		}
+		if len(result.Jobs) < perPage {
+			return jobs, nil
 		}
 	}
-	return jobs, nil
+	return nil, fmt.Errorf("list workflow run jobs: pagination exceeded %d pages", maxPages)
 }
 
 // ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.

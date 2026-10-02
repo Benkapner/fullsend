@@ -589,6 +589,10 @@ func (f *fakeForkSCM) GetFileContent(context.Context, string, string, string) ([
 	return nil, nil
 }
 
+func (f *fakeForkSCM) GetFileContentAtRef(context.Context, string, string, string, string) ([]byte, error) {
+	return nil, nil
+}
+
 func (f *fakeForkSCM) CommitFile(context.Context, string, string, string, string, []byte) error {
 	return nil
 }
