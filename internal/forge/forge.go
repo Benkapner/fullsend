@@ -866,9 +866,11 @@ type Client interface {
 	// request. On GitHub, the API caps results at 3000 files total.
 	ListPullRequestFiles(ctx context.Context, owner, repo string, number int) ([]string, error)
 	// ListPullRequestCommits returns the commit SHAs on a pull request,
-	// oldest first. Unlike the head branch's live tip, the first entry is
-	// an immutable record of the commit the PR was opened with: later
-	// pushes append to the list rather than replacing it. On GitHub the
+	// oldest first. The result is the pull request's current commit list,
+	// not a historical record: force-pushing or rebasing the head branch
+	// can replace it, and the first entry is the commit the PR was opened
+	// with only while the PR has not been rewritten (and, for a
+	// multi-commit PR, the PR opens at its last commit). On GitHub the
 	// API caps results at 250 commits.
 	ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error)
 	// ListPullRequestFileDiffs returns the files changed by a pull request

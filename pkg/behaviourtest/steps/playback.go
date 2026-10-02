@@ -501,13 +501,15 @@ func thenPullRequestExists(w *world.World) error {
 }
 
 // codeStageCommitSHA returns the commit the code stage published to pull
-// request number: the first commit on the pull request. Review and fix,
-// dispatched automatically by forge webhooks independently of this
-// scenario's own step pacing, only ever append further commits to the
-// same branch, so — unlike the head branch's live tip — the first commit
-// is an immutable record of the code round's publication that no later
-// stage can displace, however far the branch has advanced by the time this
-// is read (#7957 review).
+// request number: the first commit on the pull request. This relies on
+// the playback scenario's own assumptions, not on a guarantee of the SCM
+// interface: the code stage publishes a single commit, and the review and
+// fix stages that follow (dispatched automatically by forge webhooks
+// independently of this scenario's step pacing) only append further
+// commits, never force-push or rebase. Under those assumptions — unlike
+// the head branch's live tip — the first commit identifies the code
+// round's publication however far the branch has advanced by the time
+// this is read (#7957 review).
 func codeStageCommitSHA(ctx context.Context, w *world.World, number int) (string, error) {
 	commits, err := w.SCM.ListPullRequestCommits(ctx, w.RepoOwner, w.RepoName, number)
 	if err != nil {
