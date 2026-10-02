@@ -4,7 +4,7 @@ description: >
   Use when the user wants to tag a release, cut a release candidate, or ship a
   new version. Also use when asking about release process, versioning, or how
   GoReleaser is configured.
-allowed-tools: Read, Grep, Glob, AskUserQuestion, Agent, Bash(git tag:*), Bash(git log:*), Bash(git diff:*), Bash(git pull:*), Bash(git push:*), Bash(gh release:*), Bash(gh run:*), Bash(gh api:*), Bash(gh pr:*), Bash(git checkout:*), Bash(git fetch:*), Bash(bash skills/cutting-releases/scripts/install-binary.sh:*)
+allowed-tools: Read, Grep, Glob, AskUserQuestion, Agent, Bash(git tag:*), Bash(git log:*), Bash(git diff:*), Bash(git pull:*), Bash(git push:*), Bash(gh release:*), Bash(gh run:*), Bash(gh api:*), Bash(gh pr:*), Bash(git checkout:*), Bash(git fetch:*), Bash(skopeo inspect:*), Bash(bash skills/cutting-releases/scripts/install-binary.sh:*)
 ---
 
 # Cutting Releases
@@ -37,23 +37,26 @@ Check the latest tag:
 git tag --sort=-v:refname | head -5
 ```
 
-Decide the next version following semver:
+Decide the next **target final version** following semver. Every release is
+cut as a release candidate first (step 6) and promoted to this final version
+only after the RC gate passes and the fleet images are repinned (step 8) —
+so what you pick here is the version the release will end up as, not the
+first tag you push:
 
-| Change type | Example bump |
+| Change type | Example target version |
 |---|---|
 | Breaking / major milestone | `v1.0.0` |
 | New functionality (MVP, feature set) | `v0.X.0` |
 | Bug fixes only | `v0.0.X` |
-| Release candidate | `v0.X.0-rc.N` |
 
 ### 3. Confirm the version with the user
 
 Use `AskUserQuestion` to present your proposed version tag and the rationale
 for your choice. For example:
 
-> I'd suggest `v0.2.0` — there are 5 new `feat:` commits since `v0.1.0` and
-> no breaking changes. Does that look right, or would you prefer a different
-> version?
+> I'd suggest `v0.2.0` (cut first as `v0.2.0-rc.1`) — there are 5 new `feat:`
+> commits since `v0.1.0` and no breaking changes. Does that look right, or
+> would you prefer a different version?
 
 Do not proceed until the user confirms.
 
@@ -77,30 +80,35 @@ git log --oneline <previous-tag>..HEAD
 Summarize changes into categories (features, fixes, refactors). Exclude
 `docs:`, `test:`, `chore:`, `ci:`, `build:` commits — GoReleaser filters these anyway.
 
-### 6. Create the annotated tag
+### 6. Create the RC tag
 
-Build the tag message:
+Every release starts as a release candidate — even one you expect to ship
+with no changes after the gate run. Build the tag message:
 
 - **Line 1 (subject):** The custom title from step 4, if one was given.
-  If no custom title, **use the tag name itself** (e.g. `v0.9.0`) — git's
-  `%(contents:subject)` skips leading blank lines, so a blank first line
-  still picks up the first category header as `.TagSubject`. Using the tag
-  name as subject ensures `.TagSubject == .Tag`, which the goreleaser guard
-  suppresses, producing a clean release title with no suffix.
+  If no custom title, **use the tag name itself** (e.g. `v0.9.0-rc.1`) —
+  git's `%(contents:subject)` skips leading blank lines, so a blank first
+  line still picks up the first category header as `.TagSubject`. Using the
+  tag name as subject ensures `.TagSubject == .Tag`, which the goreleaser
+  guard suppresses, producing a clean release title with no suffix.
 - **Line 2:** Blank.
 - **Lines 3+:** Summary of highlights organized by category.
 
 ```
-git tag -a v0.X.0 -m "<message>"
+git tag -a v0.X.0-rc.1 -m "<message>"
 ```
+
+Record the commit the RC was cut from (`git log -1 --format=%H`) — call it
+commit X. The final tag in step 9 must point at this same commit unless a
+new RC is required in the meantime.
 
 The first line of the annotation becomes the release title suffix via
 GoReleaser's `name_template` (see `.goreleaser.yml`).
 
-### 7. Push the tag
+### 7. Push the RC tag
 
 ```
-git push origin <tag>
+git push origin v0.X.0-rc.N
 ```
 
 The Release workflow takes over from here. Verify it starts:
@@ -111,14 +119,87 @@ gh run list --workflow=release.yml --limit=1
 
 Expect the run to take a while before any artifact appears: agents'
 functional tests gate the publish step, so GoReleaser does not start
-until they pass (see the notes at the end of this file).
+until they pass (see the notes at the end of this file). Once the gate
+passes, GoReleaser publishes the `:X.Y.Z-rc.N` binaries and images and
+marks the GitHub release as a prerelease; `v0` does not move for a
+prerelease tag, but `tag-agents` still runs and tags
+`fullsend-ai/agents` at this same prerelease version (see Notes).
 
-### 8. Run post-flight verification
+**If the gate fails:** fix forward on `main`, increment N, and cut
+`rc.N+1` from the new commit (back to step 6). The failed RC's images stay
+published in the registry but unused — never delete a published tag (see
+Notes).
+
+### 8. Repin the fleet harness images
+
+Once the RC gate is green, repin the 7 harness images in
+`fullsend-ai/agents` to this RC's digests before tagging the final. The
+final tag in step 9 must wait until this repin PR is merged.
+
+1. **Resolve the RC digests.** The `sandbox-images.yml` workflow publishes
+   images tagged with the bare semver (no `v` prefix):
+
+   ```
+   skopeo inspect --no-tags docker://ghcr.io/fullsend-ai/fullsend-sandbox:X.Y.Z-rc.N
+   skopeo inspect --no-tags docker://ghcr.io/fullsend-ai/fullsend-code:X.Y.Z-rc.N
+   ```
+
+   Check each result's `org.opencontainers.image.revision` label equals
+   commit X. If it doesn't, the registry tag was overwritten by a later
+   build — do not proceed; investigate which commit actually built it.
+2. **Open a repin PR against `fullsend-ai/agents`** replacing the `image:`
+   line in the 7 harness files with the resolved digests:
+   - `fullsend-sandbox` → `harness/prioritize.yaml`, `harness/retro.yaml`,
+     `harness/scribe.yaml`, `harness/triage.yaml`
+   - `fullsend-code` → `harness/code.yaml`, `harness/fix.yaml`,
+     `harness/review.yaml`
+
+   Pin the multi-arch index digest only (`@sha256:...`) — never `:latest`
+   or a per-platform digest. Use
+   [fullsend-ai/agents#1570](https://github.com/fullsend-ai/agents/pull/1570)
+   as the template for the PR diff and description.
+3. **Hold window.** Between pushing the RC tag and merging the repin PR,
+   do not merge PRs in this repo touching `images/sandbox`, `images/code`,
+   or `.github/workflows/sandbox-images.yml`. A merge in that window can
+   change what the *next* build produces, and because the image build is
+   not reproducible (see Notes), that leaves no way to re-obtain the
+   digests being repinned if they need re-verifying.
+4. **Wait for the repin PR to merge** before proceeding to step 9.
+
+### 9. Tag and push the final release
+
+Confirm the final tag can point at commit X. If you are tagging later than
+the RC (commit Y, e.g. because the repin PR merge is the current `main`
+tip), run:
+
+```
+git log --oneline X..Y -- images/sandbox images/code .github/workflows/sandbox-images.yml
+```
+
+- **Prints nothing:** the fleet images haven't changed since the RC was
+  built, so the final tag can safely point at Y (or X).
+- **Prints commits:** a change since the RC could produce different
+  images than the ones just repinned. Do not tag the final yet — cut
+  `rc.N+1` at Y instead (back to step 6) and repin again.
+
+Once clear, tag and push the final at the confirmed commit, reusing the
+subject and highlights from step 6 with the `-rc.N` suffix dropped:
+
+```
+git tag -a vX.Y.Z -m "<message>"
+git push origin vX.Y.Z
+```
+
+Verify it starts the same way as step 7. This run moves `v0` and tags
+`fullsend-ai/agents` at the non-prerelease version once GoReleaser
+succeeds (see Notes).
+
+### 10. Run post-flight verification
 
 Read [post-flight.md](post-flight.md) in this skill's directory and
 follow the post-flight verification procedure.
 
-### 9. Write release highlights
+### 11. Write release highlights
 
 After post-flight confirms the release is published, write a short user-facing
 summary highlighting the changes that matter most to end users.
@@ -162,7 +243,7 @@ summary highlighting the changes that matter most to end users.
    )"
    ```
 
-### 10. Install the binary locally
+### 12. Install the binary locally
 
 Use `AskUserQuestion` to ask where to install (default: `~/.local/bin/`),
 then run the install script using its repo-root-relative path:
@@ -199,5 +280,18 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
   (`RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`). This is the only step
   that can fail after the binary has shipped; when it does, a Slack
   notification is sent and only the agents tag is missing. That tag push
-  triggers agents' own `release.yml`, which creates a GitHub Release and
-  moves its `v0` floating tag.
+  triggers agents' own `release.yml`, which creates a GitHub Release and,
+  for non-prerelease tags, moves its `v0` floating tag.
+- **`tag-agents` runs for prereleases too.** Unlike the `v0` move (which
+  `release` skips for any tag containing `-`), `tag-agents` tags
+  `fullsend-ai/agents` for RC tags as well as final ones — so an RC that
+  passes the gate leaves agents tagged at `vX.Y.Z-rc.N`, not just at the
+  eventual final version.
+- **`sandbox-images.yml` builds independently of the publish gate.**
+  GitHub Actions ignores `paths` filters on tag pushes, so every `v*` tag
+  triggers a sandbox/code image build and push regardless of whether
+  `resolve-agents`/`validate-agents` pass — a blocked release (per the
+  note above) can still leave new `:X.Y.Z` images in the registry. This is
+  also why the images built for the final tag are not guaranteed to match
+  the ones built for its RC at the same commit (see the repin step):
+  each tag push is an independent, non-reproducible build.

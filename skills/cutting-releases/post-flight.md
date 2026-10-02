@@ -62,14 +62,50 @@ If all jobs succeeded, verify the tag and release exist on agents:
 gh release view <tag> --repo fullsend-ai/agents
 ```
 
-For non-prerelease tags, verify the `v0` floating tag was moved:
+Verify the agents tag points at the repin PR's merge commit (step 8 of
+SKILL.md) — not some other commit on `main`:
 
 ```
+gh api repos/fullsend-ai/agents/git/ref/tags/<tag> --jq '.object.sha'
+gh pr view <repin-pr-number> --repo fullsend-ai/agents --json mergeCommit --jq '.mergeCommit.oid'
+```
+
+The two SHAs should match (or the tag SHA should be a descendant of the
+merge commit, if other PRs landed on agents `main` between the repin
+merge and the release). If the tag predates the repin merge, the shipped
+fleet config does not include the pinned images and the repin did not
+take effect for this release.
+
+For non-prerelease tags, verify the `v0` floating tag was moved on
+**both** repos — this repo's own `v0` as well as agents':
+
+```
+gh api repos/fullsend-ai/fullsend/git/ref/tags/v0 --jq '.object.sha'
 gh api repos/fullsend-ai/agents/git/ref/tags/v0 --jq '.object.sha'
 ```
 
 If the agents release workflow failed, investigate before continuing —
 downstream consumers may reference agents by tag.
+
+## B3. Verify the harness image pins
+
+The harness files in `fullsend-ai/agents` should be pinned to the
+**RC's** digests (resolved and verified in SKILL.md step 8) — not the
+final tag's own `:X.Y.Z` images. The image build is not reproducible
+(see SKILL.md Notes), so a final build from the same commit produces
+different digests than its RC; re-pinning to the final's digests would
+silently undo the verification done at RC time.
+
+```
+grep -n 'image:' harness/{code,fix,prioritize,retro,review,scribe,triage}.yaml
+```
+
+(Run against a local clone or `gh api repos/fullsend-ai/agents/contents/harness/<file>.yaml` for each.)
+
+Confirm each digest matches what was resolved via `skopeo inspect` for
+the `X.Y.Z-rc.N` tag in SKILL.md step 8 — not a fresh `skopeo inspect` of
+the final `X.Y.Z` tag, which will likely show a different digest for the
+same content.
 
 ## C. Skip fullsend-ai repos
 
@@ -129,6 +165,11 @@ Summarize results to the user:
 
 Note: `fullsend-ai` repos are excluded from this table — they use
 `@main` and were checked during pre-flight.
+
+Also report the results of B2 (both `v0` tags moved, agents tag at the
+repin merge commit) and B3 (harness pins match the RC digests) —
+these are blockers, not optional checks, even though they fall outside
+the `@v0`-consumer table above.
 
 Distinguish between:
 - **Release-related failures** — workflow resolution errors, missing
