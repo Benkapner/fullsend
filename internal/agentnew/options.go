@@ -35,16 +35,11 @@ type Options struct {
 	Image          string
 	TimeoutMinutes int
 	ValidationLoop bool
-	// Runtime is the already-validated, already-resolved runtime the agent
-	// will dispatch under (claude, pi, or codex): the --runtime flag or spec
-	// value, or — when neither is given — the caller's resolved repo-wide
-	// config.yaml default. Callers must resolve that default themselves
-	// before constructing Options; leaving this empty when a --runtime flag
-	// was not given would make UsesVertex assume claude even in a repo
-	// configured to dispatch as codex or pi by default. It is not written
-	// into the harness YAML — config.yaml holds the per-agent override, if
-	// any — but it decides Vertex host_files/env and whether model: must be
-	// an OpenAI id (#7264).
+	// Runtime is the runtime the agent will dispatch under: --runtime, the
+	// spec's runtime:, or else the repo's config.yaml default, resolved by
+	// the caller. It is not written to the harness, but decides which
+	// credentials the harness asks for and whether the model must be an
+	// OpenAI id.
 	Runtime string
 }
 
@@ -74,12 +69,13 @@ func (o *Options) Validate() error {
 	if o.Model != "" && !config.ValidModelRef(o.Model) {
 		return fmt.Errorf("model %q contains invalid characters", o.Model)
 	}
-	// fullsend pins codex to OpenAI; the default opus alias is one of the
-	// values it rejects. Fail here so generation cannot emit a harness the
-	// runtime will refuse.
+	// Refused here rather than by the runtime after the sandbox is up. The
+	// example id is the one docs/runtimes/codex.md uses.
 	if o.Runtime == "codex" {
 		if err := agentruntime.ValidateCodexModel(o.Model); err != nil {
-			return err
+			return fmt.Errorf("runtime codex takes OpenAI model ids only, and %s: "+
+				"use --model openai/gpt-5.6-luna (or another openai/<id>) on the command, "+
+				"or model: openai/gpt-5.6-luna in the spec file", describeModel(o.Model))
 		}
 	}
 	if o.Effort != "" && !config.ValidEffort(o.Effort) {
@@ -97,25 +93,13 @@ func (o *Options) Validate() error {
 	return nil
 }
 
-// UsesVertex reports whether the generated harness should carry the GCP
-// credential host_files and the Vertex sandbox env. fullsend pins codex to
-// OpenAI, so those fields would only fail the run before it starts (#7264).
-// pi is multi-provider, so its answer also depends on the model: --runtime
-// pi with an OpenAI model calls OpenAI, not Vertex, and would otherwise be
-// stranded needing GOOGLE_APPLICATION_CREDENTIALS it will never use for the
-// same reason as #7264.
+// UsesVertex reports whether the agent calls Vertex, and so whether its
+// harness carries the Vertex provider, GCP credentials and Vertex env. codex
+// never does; pi does unless its model has an explicit openai/ prefix.
 //
-// This is deliberately not agentruntime.NeedsOpenAIProvider: that resolves a
-// bare pi model id through translatePiModel, which reads the ambient
-// FULLSEND_PI_PROVIDER environment variable of the *run*. Harness generation
-// happens in a different process (and often a different machine, e.g. CI)
-// than the run it generates for, so branching on that variable here would
-// make the generated harness depend on whatever happened to be set in the
-// generator's environment rather than on Options alone — e.g. a developer
-// with FULLSEND_PI_PROVIDER=openai set would get a harness with Vertex
-// host_files/env omitted even though the run (with that variable unset, as
-// in CI) still needs them. UsesVertex only trusts an explicit "openai/"
-// prefix on the model Options itself carries.
+// Not agentruntime.NeedsOpenAIProvider: that reads FULLSEND_PI_PROVIDER from
+// the environment of the run, and the generator runs elsewhere, so the
+// harness would depend on the generating machine.
 func (o Options) UsesVertex() bool {
 	switch o.Runtime {
 	case "codex":
@@ -133,4 +117,12 @@ func (o Options) UsesVertex() bool {
 func hasOpenAIPrefix(model string) bool {
 	prefix, _, ok := strings.Cut(model, "/")
 	return ok && strings.EqualFold(prefix, "openai")
+}
+
+// describeModel names what was wrong with a model codex refused.
+func describeModel(model string) string {
+	if model == "" {
+		return "no model was named"
+	}
+	return fmt.Sprintf("%q is not one", model)
 }

@@ -45,16 +45,15 @@ fullsend agent new lint-docs --fullsend-dir .fullsend \
 
 Next:
   1. Fill in the marked sections of agents/lint-docs.md — that file is the agent's prompt.
-  2. Test locally:
-       fullsend run lint-docs --fullsend-dir .fullsend \
+  2. Test locally, printing the result instead of commenting:
+       POST_LINT_DOCS_DRY_RUN=1 fullsend run lint-docs --fullsend-dir .fullsend \
          --target-repo . --env-file .env.local
      .env.local needs GITHUB_ISSUE_URL, ISSUE_NUMBER, REPO_FULL_NAME,
      GH_TOKEN, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION, and
-     GOOGLE_APPLICATION_CREDENTIALS pointing at a GCP
-     credentials file — the harness copies that file into the sandbox, so the
-     run stops before it starts without it. GH_TOKEN must be a real token: a
-     connectivity check runs before the agent does. See
-     docs/guides/user/running-agents-locally.md.
+     GOOGLE_APPLICATION_CREDENTIALS pointing at a GCP credentials file;
+     the run stops before it starts without them.
+     GH_TOKEN must be a real token: a connectivity check runs before the
+     agent does. See docs/guides/user/running-agents-locally.md.
   3. Commit .fullsend, then comment `/fs-lint-docs` on an issue or pull request to run it in CI.
 ```
 
@@ -116,9 +115,9 @@ want to change one:
 | `--description` | `Custom <name> agent.` | One-line description; written to both the harness and the agent definition |
 | `--on` | `command:/fs-<name>` | Trigger preset; mutually exclusive with `--trigger` |
 | `--trigger` | | A trigger written by hand, in CEL (the expression language dispatch evaluates); mutually exclusive with `--on` |
-| `--model` | `opus` | Model for the agent. `--runtime codex` has no Claude-alias default: pass an OpenAI id (`openai/<id>` or a bare id) or the command refuses |
+| `--model` | `opus` | Model for the agent. With `--runtime codex` there is no default: pass an OpenAI id such as `openai/<id>`, or the command refuses |
 | `--effort` | `high` | Effort level (`low`, `medium`, `high`, `xhigh`, `max`) |
-| `--runtime` | | Agent runtime recorded in `config.yaml` (`claude`, `pi` or `codex`). When omitted, the agent dispatches under the repo's `config.yaml` `runtime:` default (`claude` if that is also unset) — the harness is shaped for that resolved runtime, not left as if it were `claude`. Also shapes the generated harness: Vertex `host_files` and sandbox env for `claude`/`pi`; an OpenAI `--model` is required for `codex`, and an OpenAI `--model` on `pi` omits the Vertex `host_files`/env too. The `openai` provider is declared on every role — a run that does not call OpenAI skips it |
+| `--runtime` | | Agent runtime recorded in `config.yaml` (`claude`, `pi` or `codex`); when omitted, the repo's `runtime:` default applies. The runtime and model decide which credentials the harness asks for: see [Agents on OpenAI models](#agents-on-openai-models) |
 | `--slug` | `<owner>-<name>` | Names the GitHub App to look for when the agent is installed; `<owner>` comes from the `origin` remote |
 | `--image` | per-role pin | Container image the agent runs inside |
 | `--timeout-minutes` | `15` | Agent timeout in minutes |
@@ -147,8 +146,10 @@ command refuses an unknown one up front. The hosted mint serves these:
 | `prioritize` | `contents:read`, `issues:write`, `organization_projects:write`, `metadata:read` | vertex-ai, github-ro, openai |
 
 `openai` is a bare name, not a file: the runner fills the definition in from
-the binary. Path-referenced providers (`vertex-ai`, `github-ro`, …) are copied
-into `.fullsend/providers/` when absent.
+the binary. The other providers are copied into `.fullsend/providers/` when
+absent. A codex agent gets no Vertex files; a pi agent on an `openai/` model
+declares none but still gets them for its commented-out overlay (see
+[Agents on OpenAI models](#agents-on-openai-models)).
 
 A `review` agent also gets `readonly_repo: true`: the checked-out repository is made read-only in the sandbox, so a reviewer cannot modify the code it reviews. That matches `harness/review.yaml` in fullsend-ai/agents.
 
@@ -157,6 +158,83 @@ immediately with this table, rather than returning `403` from the mint the
 first time the agent runs. To use a role the hosted mint does not serve, you
 need to run your own — see
 [Custom Agent Identity](../guides/user/custom-agent-identity.md).
+
+### Agents on OpenAI models
+
+The runtime and the model decide which credentials the generated harness asks
+for. Without `--runtime`, the repo's `config.yaml` `runtime:` applies. Pick the
+row that matches the agent:
+
+| You pass | The agent calls | `.env.local` needs, besides the GitHub variables |
+|----------|-----------------|--------------------------------------------------|
+| `--runtime claude`, or no `--runtime` in a repo whose `config.yaml` sets no `runtime:` | Claude on Vertex | `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, `GOOGLE_APPLICATION_CREDENTIALS` |
+| `--runtime pi` with a Claude model (default `opus`) | Claude on Vertex | The same three |
+| `--runtime pi --model openai/<id>` | OpenAI only | `OPENAI_API_KEY` |
+| `--runtime codex --model openai/<id>` | OpenAI only | `OPENAI_API_KEY` |
+
+Every harness declares the `openai` provider; a run whose model is not on
+OpenAI skips it. An agent that calls only OpenAI gets no Vertex provider, no
+GCP `host_files` and no Vertex variables, so it runs with no GCP credentials
+at all.
+
+`--runtime codex` has no default model, because codex takes OpenAI model ids
+only and the default `opus` is a Claude alias. Name one:
+
+```bash
+fullsend agent new summarize-issue --fullsend-dir .fullsend \
+  --runtime codex --model openai/gpt-5.6-luna
+```
+
+```
+  ✓ Created agent "summarize-issue" in .fullsend
+  harness/summarize-issue.yaml
+  agents/summarize-issue.md
+  schemas/summarize-issue-result.schema.json
+  scripts/post-summarize-issue.sh
+  policies/base.yaml
+  providers/github-ro.yaml
+  profiles/fullsend-github-ro.yaml
+  ✓ Added agent "summarize-issue"
+  ✓ Set agent "summarize-issue": runtime="codex" model="" effort="" (empty = inherit)
+
+Next:
+  1. Fill in the marked sections of agents/summarize-issue.md — that file is the agent's prompt.
+  2. Test locally, printing the result instead of commenting:
+       POST_SUMMARIZE_ISSUE_DRY_RUN=1 fullsend run summarize-issue --fullsend-dir .fullsend \
+         --target-repo . --env-file .env.local
+     .env.local needs GITHUB_ISSUE_URL, ISSUE_NUMBER, REPO_FULL_NAME,
+     GH_TOKEN, and OPENAI_API_KEY. No GCP variables are needed: this
+     agent calls only OpenAI, and the runner keeps the key out of the
+     sandbox.
+     GH_TOKEN must be a real token: a connectivity check runs before the
+     agent does. See docs/guides/user/running-agents-locally.md.
+  3. Commit .fullsend, then comment `/fs-summarize-issue` on an issue or pull request to run it in CI.
+```
+
+A pi agent on an `openai/` model can still dispatch sub-agents on Vertex
+models, for example `model: "sonnet"` in an `Agent` call. Its harness ends with
+the Vertex settings commented out:
+
+```yaml
+# To dispatch Vertex sub-agents (e.g. sonnet), uncomment this overlay, which is merged on top of the settings above; GOOGLE_APPLICATION_CREDENTIALS is then required.
+# overlays:
+#   - when: "true"
+#     providers:
+#       - providers/vertex-ai.yaml
+#     ...
+```
+
+To use it, remove the `# ` from every line under the first one, add `Agent` to
+the `tools:` list in `agents/<name>.md`, and add the three Vertex variables to
+`.env.local`. The credentials file is then required: without it the run stops
+before the sandbox is created, rather than the sub-agents failing part-way
+through. Codex gets no such block, because its sub-agents take OpenAI model ids
+only.
+
+On codex the generated `tools:` list is `Bash(gh,jq), Write`. Codex has no
+Read, Grep or Glob tool and does that work through its shell. The Bash
+allowlist stays in the file so it still applies if the agent moves to pi; on
+codex the run prints that it is recorded but not enforced.
 
 ### Triggers
 
@@ -372,11 +450,9 @@ Three things that stop a local run before it starts, all of them easy to hit:
 
 - `--forge github` is required. Without it no forge overlay applies, so the
   environment the harness expects is never assembled.
-- `GOOGLE_APPLICATION_CREDENTIALS` must point at a real file for the default
-  (Vertex-shaped) harness. The harness copies it into the sandbox, so the run
-  fails validation without it — even under `dummy`, which does no inference.
-  `--runtime codex` omits that `host_files` entry; use `OPENAI_API_KEY` instead
-  (see [Running agents locally](../guides/user/running-agents-locally.md#get-an-openai-key-gpt-on-pi-or-codex)).
+- `GOOGLE_APPLICATION_CREDENTIALS` must point at a real file. The harness
+  copies it into the sandbox, so the run fails validation without it — even
+  under `dummy`, which does no inference.
 - `GH_TOKEN` must be a real token. A GitHub connectivity check runs before the
   agent, and a placeholder fails it with `Bad credentials (HTTP 401)`.
 
@@ -398,6 +474,8 @@ request.
 | `fullsend dir ... does not exist; run ` + "`fullsend github setup`" + ` first` | `--fullsend-dir` points at nothing | Scaffold the repo first |
 | `validating files: policy: stat .../policies/base.yaml: no such file or directory` | The harness points at a policy file that is not committed next to it. Neither `fullsend github setup` nor CI creates one | Commit a copy of the fleet policy in [fullsend-ai/agents](https://github.com/fullsend-ai/agents) at the path the error shows, or set `policy:` to its URL with a `#sha256=` hash, under a prefix listed in `allowed_remote_resources`. Re-running `agent new` on this agent name does not help — it refuses (registered name or existing files, see the rows above) rather than adding the missing policy |
 | Agent crashes at 0s in CI | A profile file is missing (locally, a provider file can be missing too) | Commit `profiles/` next to the harness. CI layers `providers/` for you, but never `profiles/` |
+| `runtime codex takes OpenAI model ids only, and ...: use --model openai/gpt-5.6-luna ...` | `--runtime codex`, or a repo whose `config.yaml` sets `runtime: codex`, with no `--model` or with a model that is not an OpenAI id, such as `opus` | Use `--model openai/<id>` on the same command. Nothing is written when this fires |
+| `host_files[0]: GOOGLE_APPLICATION_CREDENTIALS is empty; mark the mount optional or provide a credential file` | A pi agent on an `openai/` model has its Vertex sub-agent block uncommented, and no credentials file is set | Set `GOOGLE_APPLICATION_CREDENTIALS` to the file in `.env.local`. Do not mark the mount optional: the Vertex sub-agents need it |
 | `validating env:` followed by unresolved host variables at `fullsend run` | A `${VAR}` in an environment-aware harness field is unset | `agent new` does not check host variables at generation time; supply them via `--env-file` locally or the workflow `env:` block in CI |
 | `provider credentials are not declared by profile 'fullsend-github-ro': GH_TOKEN` (or `'fullsend-github'`) in CI | Your committed `profiles/fullsend-github-ro.yaml` or `profiles/fullsend-github.yaml` was written by fullsend v0.44.0 or earlier and declares no credential. CI replaces `providers/` with the upstream copy, which now passes `GH_TOKEN`, but uses the `profiles/` you committed | Upgrade your local `fullsend` to the release your CI runs. Then replace the GitHub providers and profiles you have with that release's copies, together so local runs keep a matching pair, and commit them: `TAG=v$(fullsend --version \| awk '{print $3}'); for f in providers/github-ro providers/github profiles/fullsend-github-ro profiles/fullsend-github; do if [ -f .fullsend/$f.yaml ]; then curl -fsSL https://raw.githubusercontent.com/fullsend-ai/fullsend/$TAG/internal/scaffold/fullsend-repo/$f.yaml -o .fullsend/$f.yaml; fi; done`. While there, delete any `GH_TOKEN` line under `env.sandbox` in your harnesses (keep the `env.runner` one): the provider now hands the sandbox a placeholder, and that line would give it the real token |
 | The same error from `fullsend run` on your machine, with profiles that already declare `GH_TOKEN` | The OpenShell gateway still holds an older profile with that id. `fullsend run` cannot replace a profile while a provider uses it ([#7973](https://github.com/fullsend-ai/fullsend/issues/7973)) | Delete the providers that use either GitHub profile, then re-run: `openshell provider list \| awk '$2=="fullsend-github-ro" \|\| $2=="fullsend-github"{print $1}' \| xargs -r openshell provider delete`. Each run re-creates the providers it needs |

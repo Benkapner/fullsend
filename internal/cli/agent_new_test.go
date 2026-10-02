@@ -243,7 +243,7 @@ func TestAgentNewCodexRequiresOpenAIModel(t *testing.T) {
 	if err == nil {
 		t.Fatal("--runtime codex without --model should be refused")
 	}
-	for _, want := range []string{"codex takes OpenAI model ids only", "FULLSEND_CODEX_MODEL"} {
+	for _, want := range []string{"use --model openai/gpt-5.6-luna", "runtime codex takes OpenAI model ids only"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should mention %q, got: %v", want, err)
 		}
@@ -324,6 +324,45 @@ func TestAgentNewPiOpenAIModelOmitsVertexHostFiles(t *testing.T) {
 	}
 }
 
+// TestAgentNewCodexToolsOmitShellOnlyTools: codex has no Read, Grep or Glob
+// tool, so listing them only prints a notice on every run.
+func TestAgentNewCodexToolsOmitShellOnlyTools(t *testing.T) {
+	dir := newFullsendDir(t)
+	f := defaultFlags(dir, "runtime", "model")
+	f.runtime = "codex"
+	f.model = "openai/gpt-5.6-luna"
+	if out, err := runNew(t, "lint-docs", f); err != nil {
+		t.Fatalf("runAgentNew: %v\n%s", err, out)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "agents", "lint-docs.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "tools: Bash(gh,jq), Write\n") {
+		t.Errorf("codex agent definition should list only Bash and Write:\n%s", data)
+	}
+}
+
+// TestAgentNewNextStepsDryRun: step 2 names the post-script's dry-run
+// variable, so following it literally does not post a real comment.
+func TestAgentNewNextStepsDryRun(t *testing.T) {
+	dir := newFullsendDir(t)
+	out, err := runNew(t, "lint-docs", defaultFlags(dir))
+	if err != nil {
+		t.Fatalf("runAgentNew: %v\n%s", err, out)
+	}
+	if want := agentnew.DryRunEnvVar("lint-docs") + "=1 fullsend run lint-docs"; !strings.Contains(out, want) {
+		t.Errorf("next steps should run with %q:\n%s", want, out)
+	}
+	post, err := os.ReadFile(filepath.Join(dir, "scripts", "post-lint-docs.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(post), "POST_LINT_DOCS_DRY_RUN") {
+		t.Errorf("the printed variable must be the one the post-script reads:\n%s", post)
+	}
+}
+
 func TestResolveAgentNewOptions(t *testing.T) {
 	dir := newFullsendDir(t)
 
@@ -386,6 +425,28 @@ func TestResolveAgentNewOptions(t *testing.T) {
 		}
 		if runtimeName != "" {
 			t.Errorf("runtimeName = %q, want empty: no explicit --runtime was given, so `agent set --runtime` must not fire", runtimeName)
+		}
+	})
+
+	t.Run("an existing agents: entry runtime wins over the repo default", func(t *testing.T) {
+		// Regenerating a registered codex agent (--force --no-register) in
+		// a claude repo must still produce a codex harness.
+		regenDir := filepath.Join(t.TempDir(), ".fullsend")
+		if err := os.MkdirAll(regenDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(regenDir, "config.yaml"),
+			[]byte("version: \"1\"\nroles: [triage]\nagents:\n  - name: lint-docs\n    source: harness/lint-docs.yaml\n    runtime: codex\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		f := defaultFlags(regenDir, "model")
+		f.model = "openai/gpt-5.6-luna"
+		opts, runtimeName, _, err := resolveAgentNewOptions("lint-docs", f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if opts.Runtime != "codex" || runtimeName != "" {
+			t.Errorf("runtime = %q, runtimeName = %q; want codex from the agents: entry and no new override", opts.Runtime, runtimeName)
 		}
 	})
 
