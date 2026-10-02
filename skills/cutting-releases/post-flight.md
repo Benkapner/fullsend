@@ -11,12 +11,12 @@ step F.
 
 Wait for the Release workflow (triggered by the `v*` tag) and the
 Sandbox Images workflow (triggered by the same tag push, not by the
-release workflow) to complete. Sandbox Images runs against the tag, not
-a branch, so `--limit=1` alone can show an unrelated run — scope it to
-this tag with `--branch`:
+release workflow) to complete. Sandbox Images also runs on `main` pushes
+that touch `images/` and on manual dispatch, so `--limit=1` alone can
+show an unrelated run — scope both lists to this tag with `--branch`:
 
 ```
-gh run list --workflow=release.yml --limit=1
+gh run list --workflow=release.yml --branch <tag> --limit=1
 gh run list --workflow=sandbox-images.yml --branch <tag> --limit=1
 ```
 
@@ -67,10 +67,10 @@ also surfaces when `release` is re-run after it already published the
 final (e.g. a later step like `tag-agents` or the `v0` move failed and
 the whole job was re-run), in which case the final already shipped.
 Check the `release` job's GoReleaser logs for which tag it resolved and
-built — the RC-selection failure shows the RC tag, not the final — and
+built (`gh run view <release-run-id> --log | grep -m1 'using tags'`; its `current` value, e.g. `current=v0.44.0-rc.2`, is the tag GoReleaser built) — the RC-selection failure shows the RC tag, not the final — and
 confirm the final has no GitHub Release or binary assets yet (`gh
 release view <tag>`). Only when both are confirmed — the final shared a
-commit with its RC and nothing was published — does re-cutting apply,
+commit with its RC and no binaries or GitHub Release were published — does re-cutting apply,
 since re-running cannot fix it: delete the tag both locally and
 remotely (`git tag -d <tag> && git push origin :refs/tags/<tag>`) —
 otherwise the next `git tag -a <tag>` fails because the old tag still
@@ -151,6 +151,7 @@ fixed list or reading a local checkout (either may have drifted from
 what actually shipped):
 
 ```
+(
 HARNESS_FILES=$(gh api "repos/fullsend-ai/agents/contents/harness?ref=vX.Y.Z" --jq '.[].name') || exit 1
 [ -n "$HARNESS_FILES" ] || exit 1
 
@@ -168,7 +169,10 @@ for f in $HARNESS_FILES; do
   fi
 done
 [ "$MATCH_COUNT" -gt 0 ] || exit 1
+)
 ```
+
+The block runs in a subshell, so its `exit 1` ends only the check.
 
 Check the directory listing, each content fetch, and the base64 decode
 independently — an API error, an empty response, or a bad decode is a

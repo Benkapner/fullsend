@@ -176,10 +176,12 @@ final tag in step 9 must wait until this repin PR is merged.
    file list — discover the current harness files and repin whichever
    ones reference `fullsend-sandbox` or `fullsend-code`. Read agents
    `main`, which is what the repin PR edits and what the final will tag
-   (not a local fullsend checkout, which may have drifted from what the
-   harness actually runs):
+   (harness files live only in agents). The block runs in a subshell, so
+   its `exit 1` ends only the check; a non-zero status means discovery
+   failed:
 
    ```
+   (
    HARNESS_FILES=$(gh api "repos/fullsend-ai/agents/contents/harness?ref=main" --jq '.[].name') || exit 1
    [ -n "$HARNESS_FILES" ] || exit 1
 
@@ -197,6 +199,7 @@ final tag in step 9 must wait until this repin PR is merged.
      fi
    done
    [ "$MATCH_COUNT" -gt 0 ] || exit 1
+   )
    ```
 
    Check the directory listing, each content fetch, and the base64
@@ -272,10 +275,11 @@ Verify it starts the same way as step 7. This run moves `v0` and tags
 succeeds (see Notes). Because the RC gate ran against agents `main`
 *before* the repin PR merged, this is the **first** gate run against the
 repinned images. For a flaked gate, re-run instead of re-tagging (see
-Notes). For a real gate failure, the final tag is now blocked: delete it
-both locally and remotely before cutting `rc.N+1` at a new commit (back
-to step 6) — otherwise the next `git tag -a vX.Y.Z` here fails because
-the old tag still exists. For the `422 already_exists` failure, first
+Notes). For a real gate failure, the final tag is now blocked: confirm
+`gh release view vX.Y.Z` reports no release, then delete it both locally
+and remotely (`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`)
+before cutting `rc.N+1` at a new commit (back to step 6) — otherwise the
+next `git tag -a vX.Y.Z` here fails because the old tag still exists. For the `422 already_exists` failure, first
 confirm it is the RC-tag-selection case — not a rerun hitting an
 already-published final — before deleting anything (see Notes).
 
@@ -348,7 +352,7 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
 
 - **Pre-releases:** Tags with `-rc.N`, `-alpha.N`, or `-beta.N` suffixes are
   automatically marked as pre-releases by GoReleaser.
-- **Never delete a tag that published artifacts.** If a shipped release
+- **Never delete a tag that published binaries or a GitHub Release.** If a shipped release
   turns out bad, cut a new patch or RC instead of deleting it. The
   exception is a final tag confirmed blocked before publishing — either
   the agents validation gate failed, or the `release` job itself failed
@@ -389,7 +393,7 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
   prior successful publish (e.g. after a later step such as `tag-agents`
   or the `v0` move failed and the whole job was re-run). Before touching
   the tag, check the `release` job's GoReleaser logs for which tag it
-  resolved and built — the RC-selection failure shows the RC tag, not
+  resolved and built (`gh run view <release-run-id> --log | grep -m1 'using tags'`; its `current` value, e.g. `current=v0.44.0-rc.2`, is the tag GoReleaser built) — the RC-selection failure shows the RC tag, not
   the final — and confirm the final has no GitHub Release or binary
   assets yet (`gh release view vX.Y.Z`). Only when both are confirmed is
   nothing published in this case, and re-running cannot fix it because
