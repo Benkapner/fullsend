@@ -36,9 +36,16 @@ Next:
 1. **Generate.** The command needs the fullsend CLI on your `PATH` and a
    repository already scaffolded with
    [`fullsend github setup`](../getting-started/configuring-github.md) — see
-   [Before you begin](#before-you-begin) for the full prerequisite list.
-   (GitLab repositories are scaffolded instead with
-   `fullsend repos install --forge gitlab`.) The command above generates an
+   [Before you begin](#before-you-begin) for the full prerequisite list. This
+   quick start is GitHub-only: `agent new` hardcodes `FULLSEND_FORGE: github`,
+   wires `ISSUE_URL` from `GITHUB_ISSUE_URL`, and writes a prompt that calls
+   `gh issue view`. (GitLab repositories are scaffolded instead with
+   `fullsend repos install --forge gitlab`, but the generated harness, prompt,
+   and post-script still need forge-specific adaptation before they run there
+   — see [Custom roles](../getting-started/configuring-gitlab.md#custom-roles)
+   and the
+   [role-credential contract](../../contributing/gitlab-role-credentials.md).)
+   The command above generates an
    agent on the default route, Claude on Vertex (when the repository's default
    runtime is `claude` or unset) — for OpenAI, or a mix of the
    two, see [Pick a route](#pick-a-route).
