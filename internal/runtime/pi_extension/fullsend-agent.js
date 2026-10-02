@@ -64,6 +64,13 @@ const TOOL_ALIAS = "Task";
 // Providers pi serves without an extension and with the same Vertex ADC
 // the sandbox already carries.
 const BUILTIN_PROVIDERS = ["google-vertex"];
+// OPENAI_PROVIDER is pi's built-in provider that needs neither a models-table
+// entry (openai has no alias table) nor a vendored -e extension — unlike
+// google-vertex (BUILTIN_PROVIDERS, always on ambient ADC) and xai-vertex
+// (gated on the extension actually being in `extensions`), its providerModels
+// entry is the only signal of availability, and Bootstrap writes it only once
+// the run-scoped credential actually attached (#7981).
+const OPENAI_PROVIDER = "openai";
 // DEFAULT_KILL_GRACE_MS is how long a child gets to handle SIGTERM (kill
 // its own detached bash grandchildren and flush the session) before SIGKILL.
 export const DEFAULT_KILL_GRACE_MS = 3000;
@@ -126,8 +133,8 @@ function providerOf(spec) {
 // allowedProviders are the provider prefixes a child may name directly:
 // those of the manifest's model table, those whose extension the child is
 // given (directory basename, the way the sandbox image names them), pi's
-// credential-free built-ins on Vertex, and the provider the parent is
-// actually running on.
+// credential-free built-ins on Vertex, the provider the parent is actually
+// running on, and openai when providerModels lists it.
 //
 // The parent's live provider is in the set so that naming the parent's own
 // model explicitly is not stricter than omitting `model` (which inherits
@@ -138,6 +145,21 @@ function providerOf(spec) {
 // extension and is not in the model table — openai, whose key the runner
 // seeds into auth.json — could not dispatch a sub-agent on its own model
 // at all.
+//
+// openai is read from providerModels specifically, not every providerModels
+// key: a pre-configured child (a subagents.<persona> override, subagents.
+// default, or a persona's own frontmatter model:) can name it with no
+// models-table entry and no vendored extension, and Bootstrap lists its ids
+// here only once the run-scoped credential actually attached (#7981).
+// Omitting `model` already reaches it through resolveModel's subagentDefault/
+// personas fallback; naming that same, already-trusted id explicitly must not
+// be stricter than that. The other providerModels entries (google-vertex,
+// xai-vertex) are not read here: Bootstrap writes their catalogs
+// unconditionally, whether or not the extension that actually serves them
+// made it into this sandbox image, so — unlike openai — their presence in
+// providerModels is not proof the provider is really available; extensions
+// (probed on the host at Bootstrap) is what gates xai-vertex, and
+// BUILTIN_PROVIDERS is what gates google-vertex.
 function allowedProviders(agent, parentSpec) {
   const out = new Set(BUILTIN_PROVIDERS);
   if (typeof parentSpec === "string" && parentSpec.includes("/")) out.add(providerOf(parentSpec));
@@ -148,6 +170,9 @@ function allowedProviders(agent, parentSpec) {
     if (typeof ext !== "string" || ext.endsWith(".js") || ext.endsWith(".ts")) continue;
     const base = ext.replace(/\/+$/, "").split("/").pop();
     if (base) out.add(base.toLowerCase());
+  }
+  if (Array.isArray(agent?.providerModels?.[OPENAI_PROVIDER]) && agent.providerModels[OPENAI_PROVIDER].length > 0) {
+    out.add(OPENAI_PROVIDER);
   }
   return out;
 }

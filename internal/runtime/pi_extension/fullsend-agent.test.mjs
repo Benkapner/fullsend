@@ -177,6 +177,27 @@ test("resolveModel: an id is checked against a closed set, not just its provider
   assert.equal(resolveModel(a, "anthropic-vertex/claude-haiku-4-5", parent), "anthropic-vertex/claude-haiku-4-5", "a model-table entry");
 });
 
+// #7981: a pre-configured child (subagents.default here) naming the openai
+// provider has no models-table entry (openai has no alias table) and no
+// vendored -e extension, so it is admitted only through providerModels —
+// which Bootstrap populates only once the run-scoped credential actually
+// attached. Before allowedProviders read providerModels, omitting `model`
+// still reached this id through resolveModel's subagentDefault fallback,
+// but naming it explicitly was rejected as an unavailable provider — stricter
+// than the default the orchestrator never has to type.
+test("resolveModel: a providerModels-only provider (openai) is allowed when named explicitly, not just by omission", () => {
+  const { manifest } = fixture();
+  const a = { ...manifest.agent, providerModels: { ...manifest.agent.providerModels, openai: ["gpt-5.6-luna"] }, subagentDefault: "openai/gpt-5.6-luna" };
+  const parent = "anthropic-vertex/claude-opus-4-6";
+  assert.equal(resolveModel(a, "", parent), "openai/gpt-5.6-luna", "omitting model already reaches it via subagentDefault");
+  assert.equal(resolveModel(a, "openai/gpt-5.6-luna", parent), "openai/gpt-5.6-luna", "naming the same id explicitly must not be stricter");
+  assert.throws(
+    () => resolveModel(a, "openai/gpt-5-unlisted", parent),
+    /is not a model this run serves on "openai"/,
+    "the provider is allowed, but still only for the ids providerModels actually lists",
+  );
+});
+
 test("resolveModel: a Grok spec is normalized and then checked against the closed set", () => {
   const { manifest } = fixture();
   // A parent that is not on Grok, so nothing here is served merely because

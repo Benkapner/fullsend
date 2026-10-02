@@ -108,11 +108,12 @@ func TestSubagentsNeedOpenAIProvider(t *testing.T) {
 	writePersonaFile(t, withOpenAI, "checker", "---\nname: checker\nmodel: openai/gpt-5.6-luna\n---\nCheck something.\n")
 
 	for _, tc := range []struct {
-		name         string
-		backend      string
-		subagentsCfg map[string]*string
-		skillDirs    []string
-		want         bool
+		name          string
+		backend       string
+		subagentsCfg  map[string]*string
+		skillDirs     []string
+		configAliases map[string]string
+		want          bool
 	}{
 		{name: "not pi: always false regardless of config", backend: "codex",
 			subagentsCfg: map[string]*string{"x": strp("openai/gpt-5.6-luna")}},
@@ -131,9 +132,25 @@ func TestSubagentsNeedOpenAIProvider(t *testing.T) {
 			subagentsCfg: map[string]*string{"checker": strp("opus")}},
 		{name: "a tombstoned entry (nil) is not a model reference", backend: "pi",
 			subagentsCfg: map[string]*string{"default": nil}},
+		// #7981: a child reference resolved through a repo models.aliases
+		// entry must be detected the same way Bootstrap's resolvePersonaModels
+		// resolves it (piChildModelProvider), or the credential this gate
+		// decides to create disagrees with what Bootstrap goes on to trust.
+		{name: "a repo alias mapped to openai, with the persona '@suffix' stripped first", backend: "pi",
+			subagentsCfg:  map[string]*string{"default": strp("sonnet@default")},
+			configAliases: map[string]string{"sonnet": "openai/gpt-5.6-luna"}, want: true},
+		{name: "alias resolution is case-insensitive", backend: "pi",
+			subagentsCfg:  map[string]*string{"default": strp("SONNET")},
+			configAliases: map[string]string{"sonnet": "openai/gpt-5.6-luna"}, want: true},
+		{name: "a bare id matching an alias's own target resolves to that alias's provider", backend: "pi",
+			subagentsCfg:  map[string]*string{"default": strp("gpt-5.6-luna")},
+			configAliases: map[string]string{"sonnet": "openai/gpt-5.6-luna"}, want: true},
+		{name: "a repo alias mapped away from openai is not detected as one", backend: "pi",
+			subagentsCfg:  map[string]*string{"default": strp("sonnet")},
+			configAliases: map[string]string{"sonnet": "anthropic-vertex/claude-sonnet-5"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := SubagentsNeedOpenAIProvider(tc.backend, tc.subagentsCfg, tc.skillDirs, "code", nil)
+			got := SubagentsNeedOpenAIProvider(tc.backend, tc.subagentsCfg, tc.skillDirs, "code", tc.configAliases)
 			assert.Equal(t, tc.want, got)
 		})
 	}

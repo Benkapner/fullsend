@@ -73,12 +73,20 @@ func NeedsOpenAIProvider(backend, runModel, agentModel string, configAliases map
 // sandbox starts, so admitting it here would make the gate depend on what
 // the dispatching model decides to type rather than on configuration the
 // repo controls.
+//
+// Resolution uses piChildModelProvider, not piModelProvider: a child
+// reference can carry a persona "@suffix", or name a repo models.aliases
+// entry case-insensitively or by the alias's own bare id, all of which
+// resolvePersonaModels' canonicalise already accepts when Bootstrap resolves
+// the same reference. Using the parent-only piModelProvider here would miss
+// those forms and skip creating the credential a persona pinned to them
+// would then need (#7981).
 func SubagentsNeedOpenAIProvider(backend string, subagentsCfg map[string]*string, skillDirs []string, agentName string, configAliases map[string]string) bool {
 	if backend != "pi" {
 		return false
 	}
 	for _, v := range subagentsCfg {
-		if v != nil && piModelProvider(*v, configAliases) == piOpenAIProvider {
+		if v != nil && piChildModelProvider(*v, configAliases) == piOpenAIProvider {
 			return true
 		}
 	}
@@ -91,7 +99,7 @@ func SubagentsNeedOpenAIProvider(backend string, subagentsCfg map[string]*string
 			// frontmatter and must not be double-counted.
 			continue
 		}
-		if p.Model != "" && piModelProvider(p.Model, configAliases) == piOpenAIProvider {
+		if p.Model != "" && piChildModelProvider(p.Model, configAliases) == piOpenAIProvider {
 			return true
 		}
 	}

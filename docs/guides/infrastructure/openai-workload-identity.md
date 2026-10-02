@@ -379,9 +379,11 @@ providers:
 ```
 
 Declaring it costs nothing on runs that do not use it: the run-scoped provider is created only
-when the selected runtime will actually call OpenAI (codex, or pi on an `openai/` model), so the
-same harness can carry the provider for every runtime — a Vertex run notes that the declared
-provider was skipped and needs no OpenAI credential.
+when the selected runtime will actually call OpenAI (codex; pi on an `openai/` model; or a pi
+run on another provider whose `agents[].subagents` or a discovered persona's own frontmatter
+`model:` names one), so the same harness can carry the provider for every runtime — a Vertex run
+with no OpenAI persona notes that the declared provider was skipped and needs no OpenAI
+credential, while a Vertex run with one still gets it created for that child.
 
 A custom agent (a `source:` entry) declares it on its own harness; the built-in fleet agents declare
 it from the first fullsend release after v0.43.0. The provider definition and the matching profile

@@ -521,7 +521,7 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 	// sandbox — otherwise the credential a trusted spec implies exists
 	// would not (#7981).
 	if openAIProviderAttached {
-		if ids := piConfiguredOpenAIIDs(personas, subagentsCfg); len(ids) > 0 {
+		if ids := piConfiguredOpenAIIDs(personas, subagentsCfg, configAliases); len(ids) > 0 {
 			manifest.ProviderModels[piOpenAIProvider] = ids
 		}
 	}
@@ -608,7 +608,22 @@ func piAgentExtensionDigests(hooksExt string, hooksEnabled bool, editRepairExt s
 // an xai-vertex parent.
 func piAgentModels(defModel string, configAliases map[string]string) map[string]string {
 	base, _, _ := strings.Cut(strings.TrimSpace(defModel), "@")
-	models := map[string]string{"default": translatePiModel(base, configAliases)}
+	models := piAliasModelsTable(configAliases)
+	models["default"] = translatePiModel(base, configAliases)
+	return models
+}
+
+// piAliasModelsTable is the alias portion of piAgentModels (every repo
+// models.aliases entry resolved to a pi spec), without the "default" key —
+// which depends on the agent definition's model and is meaningless for a
+// child reference, since a persona/subagents entry never names "default" as
+// an alias. Factored out so SubagentsNeedOpenAIProvider and
+// piConfiguredOpenAIIDs can build the identical alias table
+// resolvePersonaModels checks a child's model against, without needing the
+// agent definition that is not read yet when the provider-creation gate
+// runs (#7981).
+func piAliasModelsTable(configAliases map[string]string) map[string]string {
+	models := make(map[string]string, len(configAliases))
 	for alias, id := range mergedPiModelAliases(configAliases) {
 		// piDefaultProvider is never xai-vertex, so a bare id cannot take
 		// normalizeXaiVertexModel's provider-env branch.
