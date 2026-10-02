@@ -3378,6 +3378,32 @@ func (c *LiveClient) ListPullRequestFiles(ctx context.Context, owner, repo strin
 	return files, nil
 }
 
+// ListPullRequestCommits returns the commit SHAs on a pull request,
+// oldest first (the order GitHub's API reports them in). GitHub caps PR
+// commit lists at 250 commits regardless of pagination.
+func (c *LiveClient) ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error) {
+	var shas []string
+	for page := 1; page <= 3; page++ {
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100&page=%d", owner, repo, number, page))
+		if err != nil {
+			return nil, fmt.Errorf("list pull request commits page %d: %w", page, err)
+		}
+		var raw []struct {
+			SHA string `json:"sha"`
+		}
+		if err := decodeJSON(resp, &raw); err != nil {
+			return nil, fmt.Errorf("decoding pull request commits page %d: %w", page, err)
+		}
+		for _, cm := range raw {
+			shas = append(shas, cm.SHA)
+		}
+		if len(raw) < 100 {
+			break
+		}
+	}
+	return shas, nil
+}
+
 // ListPullRequestFileDiffs returns the files changed by a pull request
 // along with their unified diff patches. Same API endpoint as
 // ListPullRequestFiles but also extracts the patch field.

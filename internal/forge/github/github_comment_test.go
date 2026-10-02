@@ -505,6 +505,25 @@ func TestListPullRequestFileDiffs(t *testing.T) {
 	assert.Empty(t, files[1].Patch)
 }
 
+func TestListPullRequestCommits(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/pulls/5/commits", r.URL.Path)
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"sha": "first"},
+			{"sha": "second"},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	shas, err := client.ListPullRequestCommits(context.Background(), "owner", "repo", 5)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"first", "second"}, shas, "must keep GitHub's oldest-first order")
+}
+
 func TestListPullRequestReviews(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "GET", r.Method)
