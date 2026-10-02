@@ -953,6 +953,105 @@ func TestParsePlaybackCommentRef(t *testing.T) {
 			wantNoteableType: "merge_requests",
 			wantNoteableIID:  12,
 		},
+		{
+			// Regression: GitLab allows a namespace (group/user) to start
+			// with an underscore, but the path used to be rejected before
+			// decoding because the whole combined segment had to start
+			// alphanumeric.
+			name:             "gitlab namespace with leading underscore accepted",
+			input:            "glab\n/projects/_group%2Frepo/issues/1/notes/99",
+			wantOK:           true,
+			wantOwner:        "_group",
+			wantRepo:         "repo",
+			wantCommentID:    99,
+			wantNoteableType: "issues",
+			wantNoteableIID:  1,
+		},
+		{
+			// Regression: GitLab allows a project name to end with an
+			// underscore or hyphen, but the path used to be rejected
+			// because the whole combined segment had to end alphanumeric.
+			name:             "gitlab project with trailing underscore accepted",
+			input:            "glab\n/projects/org%2Frepo_/issues/1/notes/99",
+			wantOK:           true,
+			wantOwner:        "org",
+			wantRepo:         "repo_",
+			wantCommentID:    99,
+			wantNoteableType: "issues",
+			wantNoteableIID:  1,
+		},
+		{
+			name:             "gitlab project with trailing hyphen accepted",
+			input:            "glab\n/projects/org%2Frepo-/merge_requests/3/notes/7",
+			wantOK:           true,
+			wantOwner:        "org",
+			wantRepo:         "repo-",
+			wantCommentID:    7,
+			wantNoteableType: "merge_requests",
+			wantNoteableIID:  3,
+		},
+		{
+			// A single-character namespace must still be alphanumeric or an
+			// underscore; GitLab does not allow a bare hyphen or dot.
+			name:   "gitlab single-char namespace hyphen rejected",
+			input:  "glab\n/projects/-%2Frepo/issues/1/notes/99",
+			wantOK: false,
+		},
+		{
+			// GitLab reserves a trailing ".git" suffix on project names.
+			name:   "gitlab project with reserved git suffix rejected",
+			input:  "glab\n/projects/org%2Frepo.git/issues/1/notes/99",
+			wantOK: false,
+		},
+		{
+			// A multi-character namespace must still start with an
+			// alphanumeric, underscore, or dot; GitLab does not allow it to
+			// start with a hyphen.
+			name:   "gitlab namespace with invalid leading hyphen rejected",
+			input:  "glab\n/projects/-grp%2Frepo/issues/1/notes/99",
+			wantOK: false,
+		},
+		{
+			// A multi-character namespace must end with an alphanumeric,
+			// underscore, or hyphen; GitLab does not allow a trailing dot.
+			name:   "gitlab namespace with invalid trailing dot rejected",
+			input:  "glab\n/projects/grp.%2Frepo/issues/1/notes/99",
+			wantOK: false,
+		},
+		{
+			// Regression: a percent-encoded delimiter decoded into the
+			// middle of a namespace component (rather than at a component
+			// boundary) must still be rejected; only the outer path's
+			// pre-decode charset was validated before, so a disallowed
+			// decoded character inside a single component slipped through.
+			name:   "gitlab namespace with disallowed decoded character rejected",
+			input:  "glab\n/projects/gr%3Fp%2Frepo/issues/1/notes/99",
+			wantOK: false,
+		},
+		{
+			// A project (repo leaf) name must start with an alphanumeric,
+			// underscore, or dot; GitLab does not allow it to start with a
+			// hyphen.
+			name:   "gitlab project with invalid leading hyphen rejected",
+			input:  "glab\n/projects/org%2F-repo/issues/1/notes/99",
+			wantOK: false,
+		},
+		{
+			// Same decoded-delimiter regression as above, but for the
+			// project (repo leaf) component instead of a namespace.
+			name:   "gitlab project with disallowed decoded character rejected",
+			input:  "glab\n/projects/org%2Fre%3Fpo/issues/1/notes/99",
+			wantOK: false,
+		},
+		{
+			// A trailing encoded slash decodes to an empty project (repo
+			// leaf) component, which must still be rejected even though
+			// decodeCommentPath now splits on "/" instead of requiring the
+			// whole combined segment to be non-empty at both ends.
+			name:   "gitlab path with trailing encoded slash rejected",
+			input:  "glab\n/projects/org%2F/issues/1/notes/99",
+			wantOK: false,
+		},
 	}
 
 	for _, tt := range tests {

@@ -381,9 +381,17 @@ func (r DummyPlaybackRuntime) advancePlaylist(playlistPath string, playlist *Pla
 // request to a different endpoint or smuggle query data once owner/repo
 // are interpolated back into a request path (see decodeCommentPath and
 // the GitHub client's GetIssueComment/UpdateIssueComment).
+//
+// The GitLab project segment's capture group only restricts the overall
+// charset (still excluding URL delimiters); it does not anchor the first
+// and last characters, because those rules differ per decoded path
+// component (and GitLab allows a leading underscore on a namespace and a
+// trailing underscore/hyphen on a project name). decodeCommentPath
+// validates each decoded namespace/project component individually against
+// GitLab's own identifier rules.
 var (
 	githubCommentPathRe = regexp.MustCompile(`^/repos/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/([A-Za-z0-9._-]+)/issues/comments/(\d+)$`)
-	gitlabCommentPathRe = regexp.MustCompile(`^/projects/([A-Za-z0-9](?:[A-Za-z0-9._%-]*[A-Za-z0-9])?)/(issues|merge_requests)/(\d+)/notes/(\d+)$`)
+	gitlabCommentPathRe = regexp.MustCompile(`^/projects/([A-Za-z0-9._%-]+)/(issues|merge_requests)/(\d+)/notes/(\d+)$`)
 )
 
 // playbackCommentRef identifies the forge comment the dummy-playback
@@ -463,14 +471,25 @@ func decodeCommentPath(cli, path string) (playbackCommentRef, bool) {
 		}
 		// GitLab project paths can be nested ("group/subgroup/project"), so
 		// the repo (leaf project name) is everything after the last slash.
-		sep := strings.LastIndex(decoded, "/")
-		if sep < 0 {
+		// Each namespace component and the project leaf have different
+		// GitLab-compatible identifier rules (see isGitLabNamespaceComponent
+		// and isGitLabProjectComponent), so validate them individually
+		// rather than requiring the whole decoded path to start and end
+		// alphanumeric.
+		parts := strings.Split(decoded, "/")
+		if len(parts) < 2 {
 			return playbackCommentRef{}, false
 		}
-		owner, repo := decoded[:sep], decoded[sep+1:]
-		if owner == "" || repo == "" {
+		namespaces, repo := parts[:len(parts)-1], parts[len(parts)-1]
+		for _, ns := range namespaces {
+			if !isGitLabNamespaceComponent(ns) {
+				return playbackCommentRef{}, false
+			}
+		}
+		if !isGitLabProjectComponent(repo) {
 			return playbackCommentRef{}, false
 		}
+		owner := strings.Join(namespaces, "/")
 		noteableType := m[2]
 		noteableIID, err := strconv.Atoi(m[3])
 		if err != nil {
@@ -490,6 +509,69 @@ func decodeCommentPath(cli, path string) (playbackCommentRef, bool) {
 	default:
 		return playbackCommentRef{}, false
 	}
+}
+
+// isGitLabNamespaceComponent reports whether s is a valid single path
+// segment for a GitLab user or group name, mirroring upstream's
+// NAMESPACE_FORMAT_REGEX (see
+// https://github.com/gitlabhq/gitlabhq/blob/master/lib/gitlab/path_regex.rb):
+// a single character must be alphanumeric or an underscore; a longer
+// segment may start with an alphanumeric, underscore, or dot, may
+// contain alphanumerics, underscores, hyphens, and dots in the middle,
+// and must end with an alphanumeric, underscore, or hyphen. Notably, a
+// leading underscore is allowed (e.g. "_namespace").
+func isGitLabNamespaceComponent(s string) bool {
+	if s == "" {
+		return false
+	}
+	if len(s) == 1 {
+		c := s[0]
+		return isAlphanumByte(c) || c == '_'
+	}
+	first := s[0]
+	if !isAlphanumByte(first) && first != '_' && first != '.' {
+		return false
+	}
+	last := s[len(s)-1]
+	if !isAlphanumByte(last) && last != '_' && last != '-' {
+		return false
+	}
+	for i := 1; i < len(s)-1; i++ {
+		c := s[i]
+		if !isAlphanumByte(c) && c != '_' && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+// isGitLabProjectComponent reports whether s is a valid GitLab project
+// (repository) path segment, mirroring upstream's
+// PROJECT_PATH_FORMAT_REGEX: it must start with an alphanumeric,
+// underscore, or dot, and may otherwise contain alphanumerics,
+// underscores, hyphens, and dots anywhere else in the segment — including
+// as the last character, so a trailing underscore or hyphen (e.g.
+// "repo_", "repo-") is valid. A trailing ".git" or ".atom" suffix is
+// reserved by GitLab and rejected.
+func isGitLabProjectComponent(s string) bool {
+	if s == "" {
+		return false
+	}
+	first := s[0]
+	if !isAlphanumByte(first) && first != '_' && first != '.' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if !isAlphanumByte(c) && c != '_' && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return !strings.HasSuffix(s, ".git") && !strings.HasSuffix(s, ".atom")
+}
+
+func isAlphanumByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 // isZero reports whether ref is the zero value, i.e. parsing or resolving

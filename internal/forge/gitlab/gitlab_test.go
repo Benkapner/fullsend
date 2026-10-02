@@ -2962,6 +2962,105 @@ func TestGetIssueComment_NotFoundAnywhere(t *testing.T) {
 	assert.True(t, forge.IsNotFound(err), "expected ErrNotFound, got: %v", err)
 }
 
+// TestGetIssueComment_ListError guards the scanState branch that surfaces a
+// non-404 failure listing noteables (e.g. a transient API error) instead of
+// masking it as "not found".
+func TestGetIssueComment_ListError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/issues", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"message":"bad request"}`)
+	})
+
+	_, err := client.GetIssueComment(ctx, "own", "repo", 42)
+	require.Error(t, err)
+	assert.False(t, forge.IsNotFound(err))
+	assert.Contains(t, err.Error(), "list opened issues to find note 42")
+}
+
+// TestGetIssueComment_ListDecodeError guards scanState's decode-error branch
+// when the noteable list page is not valid JSON.
+func TestGetIssueComment_ListDecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/issues", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "{not valid json")
+	})
+
+	_, err := client.GetIssueComment(ctx, "own", "repo", 42)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode opened issues")
+}
+
+// TestGetIssueComment_FetchNoteNonNotFoundError guards scanState's
+// early-abort branch: when fetching a candidate note fails with something
+// other than "not found" (e.g. a server error), the scan must stop and
+// propagate that error rather than continuing to the next candidate/state.
+func TestGetIssueComment_FetchNoteNonNotFoundError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/issues", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{{"iid": 5}})
+	})
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/issues/5/notes/42", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"message":"bad request"}`)
+	})
+
+	_, err := client.GetIssueComment(ctx, "own", "repo", 42)
+	require.Error(t, err)
+	assert.False(t, forge.IsNotFound(err))
+}
+
+// TestGetIssueComment_MRNoteTarget_FoundInOpen guards the merge_requests
+// noteTarget path through scanState's first ("opened") call, which the
+// issues-noteTarget tests above don't exercise.
+func TestGetIssueComment_MRNoteTarget_FoundInOpen(t *testing.T) {
+	client, mux := setupTest(t)
+	client.noteTarget = "merge_requests"
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/merge_requests", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{{"iid": 3}})
+	})
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/merge_requests/3/notes/55", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         55,
+			"body":       "playback-current: 1",
+			"created_at": "2026-01-01T00:00:00Z",
+			"author":     map[string]string{"username": "fullsend-bot"},
+		})
+	})
+
+	comment, err := client.GetIssueComment(ctx, "own", "repo", 55)
+	require.NoError(t, err)
+	assert.Equal(t, 55, comment.ID)
+	assert.Contains(t, comment.HTMLURL, "/-/merge_requests/3#note_55")
+}
+
+// TestGetIssueComment_MRNoteTarget_NotFoundAnywhere guards the
+// merge-request-specific "not found" message (as opposed to the
+// issue-specific one TestGetIssueComment_NotFoundAnywhere covers).
+func TestGetIssueComment_MRNoteTarget_NotFoundAnywhere(t *testing.T) {
+	client, mux := setupTest(t)
+	client.noteTarget = "merge_requests"
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/merge_requests", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	_, err := client.GetIssueComment(ctx, "own", "repo", 999)
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err), "expected ErrNotFound, got: %v", err)
+	assert.Contains(t, err.Error(), "could not find merge request containing this note")
+}
+
 func TestDeleteIssueComment_NotFoundAnywhere(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()

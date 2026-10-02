@@ -397,6 +397,21 @@ func TestGetNoteOnParent_RejectsInvalidParentType(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestGetNoteOnParent_DecodeError guards the fetchNoteDirect decode-error
+// branch: a malformed note body must surface as an error rather than a
+// zero-value comment.
+func TestGetNoteOnParent_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/7/notes/321", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "{not valid json")
+	})
+
+	_, err := client.GetNoteOnParent(context.Background(), "myorg", "myrepo", "merge_requests", 7, 321)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode note")
+}
+
 // TestUpdateNoteOnParent_UsesExplicitParentDirectly is UpdateNoteOnParent's
 // counterpart to TestGetNoteOnParent_UsesExplicitParentDirectly.
 func TestUpdateNoteOnParent_UsesExplicitParentDirectly(t *testing.T) {

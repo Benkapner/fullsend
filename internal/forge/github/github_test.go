@@ -3718,6 +3718,19 @@ func TestGetIssueComment_NotFound(t *testing.T) {
 	assert.True(t, forge.IsNotFound(err))
 }
 
+func TestGetIssueComment_DecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("{not valid json"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode issue comment")
+}
+
 // TestGetIssueComment_EscapesOwnerAndRepo guards against a crafted owner
 // or repo value redirecting the request to a different path or smuggling
 // query data (e.g. an unescaped "?" terminating the path early). Both
