@@ -4,7 +4,7 @@ description: >
   Use when the user wants to tag a release, cut a release candidate, or ship a
   new version. Also use when asking about release process, versioning, or how
   GoReleaser is configured.
-allowed-tools: Read, Grep, Glob, AskUserQuestion, Agent, Bash(git tag:*), Bash(git log:*), Bash(git diff:*), Bash(git pull:*), Bash(git push:*), Bash(gh release:*), Bash(gh run:*), Bash(gh api:*), Bash(gh pr:*), Bash(git checkout:*), Bash(git fetch:*), Bash(skopeo inspect:*), Bash(bash skills/cutting-releases/scripts/install-binary.sh:*)
+allowed-tools: Read, Grep, Glob, AskUserQuestion, Agent, Bash(git tag:*), Bash(git log:*), Bash(git diff:*), Bash(git pull:*), Bash(git push:*), Bash(git rev-parse:*), Bash(gh release:*), Bash(gh run:*), Bash(gh api:*), Bash(gh pr:*), Bash(git checkout:*), Bash(git fetch:*), Bash(skopeo inspect:*), Bash(grep:*), Bash(bash skills/cutting-releases/scripts/install-binary.sh:*)
 ---
 
 # Cutting Releases
@@ -31,10 +31,11 @@ git checkout main && git pull --tags --force
 
 ### 2. Determine the version
 
-Check the latest tag:
+Check the latest **final** tag — RC/alpha/beta tags sort above their
+final, so exclude anything with a `-` suffix:
 
 ```
-git tag --sort=-v:refname | head -5
+git tag --sort=-v:refname | grep -v -- - | head -5
 ```
 
 Decide the next **target final version** following semver. Every release is
@@ -71,10 +72,10 @@ The answer becomes the tag subject line. If blank, use the tag name itself as
 the subject so that GoReleaser's `name_template` guard (`ne .TagSubject .Tag`)
 suppresses it, producing a clean release title without duplication.
 
-### 5. Gather changes since last tag
+### 5. Gather changes since the last final
 
 ```
-git log --oneline <previous-tag>..HEAD
+git log --oneline <previous-final>..HEAD
 ```
 
 Summarize changes into categories (features, fixes, refactors). Exclude
@@ -173,16 +174,20 @@ final tag in step 9 must wait until this repin PR is merged.
    commit actually built it.
 2. **Open a repin PR against `fullsend-ai/agents`.** Don't assume a fixed
    file list — discover the current harness files and repin whichever
-   ones reference `fullsend-sandbox` or `fullsend-code`, reading agents at
-   its released tag (not a local fullsend checkout or agents `main`,
-   either of which may have drifted from what the harness actually runs):
+   ones reference `fullsend-sandbox` or `fullsend-code`. Read agents
+   `main`, which is what the repin PR edits and what the final will tag
+   (not a local fullsend checkout, which may have drifted from what the
+   harness actually runs):
 
    ```
-   for f in $(gh api "repos/fullsend-ai/agents/contents/harness?ref=vX.Y.Z-rc.N" --jq '.[].name'); do
-     gh api "repos/fullsend-ai/agents/contents/harness/$f?ref=vX.Y.Z-rc.N" --jq .content \
+   for f in $(gh api "repos/fullsend-ai/agents/contents/harness?ref=main" --jq '.[].name'); do
+     gh api "repos/fullsend-ai/agents/contents/harness/$f?ref=main" --jq .content \
        | base64 -d | grep -H --label="$f" -E 'image:.*fullsend-(sandbox|code)'
-   done
+   done || true
    ```
+
+   (A non-zero exit from the loop just means the last file's `grep`
+   didn't match — that's fine.)
 
    Replace the `image:` line in each matching file with the resolved
    digest. Pin the multi-arch index digest only (`@sha256:...`) — never
@@ -192,10 +197,9 @@ final tag in step 9 must wait until this repin PR is merged.
 3. **Hold window.** Between pushing the RC tag and pushing the final tag,
    do not merge PRs in this repo touching `images/sandbox`, `images/code`,
    or `.github/workflows/sandbox-images.yml`. Any such merge changes what
-   the *next* tag's build produces — because the image build is not
-   reproducible (see Notes), the step 9 `X..Y` check would then print
-   commits, forcing `rc.N+1` instead of shipping the final from the
-   already-repinned RC.
+   the *next* tag's build produces — the step 9 `X..Y` check would then
+   print commits for those paths, forcing `rc.N+1` instead of shipping
+   the final from the already-repinned RC.
 4. **Wait for the repin PR to merge** before proceeding to step 9.
 
 ### 9. Tag and push the final release
@@ -210,6 +214,14 @@ final tag in step 9 must wait until this repin PR is merged.
 > repin merges in `fullsend-ai/agents`, which does not move fullsend
 > `main`), merge a docs-only commit first to create a Y, then continue
 > below.
+
+**Changelog caveat — also remove once fullsend#7955 merges.** Because the
+final tag (commit Y) and its RC (commit X) are now different commits,
+GoReleaser's auto-generated changelog for the final compares against the
+RC tag immediately before it, so it covers only `rc.N..vX.Y.Z` — not the
+full set of changes since the last final. When writing highlights in
+step 11, gather commits from `<previous-final>..vX.Y.Z` instead of
+relying on the release body for the full picture.
 
 Let Y be the commit the final tag will point at (distinct from commit X)
 and run:
@@ -240,8 +252,12 @@ Verify it starts the same way as step 7. This run moves `v0` and tags
 `fullsend-ai/agents` at the non-prerelease version once GoReleaser
 succeeds (see Notes). Because the RC gate ran against agents `main`
 *before* the repin PR merged, this is the **first** gate run against the
-repinned images — if it fails, fix forward and cut `rc.N+1` at a new
-commit (back to step 6) rather than retrying this tag.
+repinned images. For a flaked gate, re-run instead of re-tagging (see
+Notes). For a real gate failure or the `422 already_exists` failure (see
+Notes), the final tag is now blocked: delete it both locally and
+remotely before cutting `rc.N+1` at a new commit (back to step 6) —
+otherwise the next `git tag -a vX.Y.Z` here fails because the old tag
+still exists.
 
 ### 10. Run post-flight verification
 
@@ -253,8 +269,12 @@ follow the post-flight verification procedure.
 After post-flight confirms the release is published, write a short user-facing
 summary highlighting the changes that matter most to end users.
 
-1. **Gather the raw changelog.** Run `gh release view <tag> --json body -q .body`
-   to get the auto-generated release body.
+1. **Gather the raw changelog.** **Until fullsend#7955 merges**, the
+   release body only covers `rc.N..vX.Y.Z` (see the changelog caveat in
+   step 9), not the full release — don't rely on it. Gather commits with
+   `git log --oneline <previous-final>..vX.Y.Z` instead. Once #7955
+   lands, `gh release view <tag> --json body -q .body` is sufficient on
+   its own.
 2. **Research the actual changes.** Do not rely on PR titles or one-line
    summaries — they often undersell or misrepresent user impact. Launch an
    `Agent` sub-agent to read the full body, diff, and comments of every merged
@@ -309,10 +329,11 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
 - **Pre-releases:** Tags with `-rc.N`, `-alpha.N`, or `-beta.N` suffixes are
   automatically marked as pre-releases by GoReleaser.
 - **Never delete a tag that published artifacts.** If a shipped release
-  turns out bad, cut a new patch or RC instead of deleting it. The one
-  exception is a final tag that failed in the `release` job itself with
-  `422 already_exists` (see below) — nothing was published under that
-  tag, so it is safe to delete and re-cut.
+  turns out bad, cut a new patch or RC instead of deleting it. The
+  exception is a final tag that was blocked before publishing — either
+  the agents validation gate failed, or the `release` job itself failed
+  with `422 already_exists` (see below) — no binaries or GitHub Release
+  were published under it, so it is safe to delete and re-cut.
 - **The changelog** is auto-generated from PR titles (which must follow conventional commit format). GoReleaser uses `changelog.use: github` in `.goreleaser.yml`, so merged PR titles — not individual commit subjects — are the source of release-note entries.
 - **The `v0` tag** is a moving tag consumed by downstream orgs for reusable
   workflows. It is automatically moved by the release workflow after
@@ -324,23 +345,34 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
   which runs agents' functional tests (via a cross-repo reusable workflow
   call) against the release tag. Only if those pass does the `release` job
   re-verify the tag and run GoReleaser. A failure at either step means
-  **nothing is published** — no binaries, no GitHub Release, no moved
-  `v0` tag — and a Slack notification reports the release as blocked. If
-  the cause is a flake or transient infrastructure issue, resolve it and
-  re-run the failed jobs — the tag stays as it is. If the fix needs a
-  code or pin change (e.g. the functional-tests gate pin drift described
-  in pre-flight step A3), the tag is now stale: cut `rc.N+1` from the
-  fixed commit instead (back to step 6), rather than re-running.
+  **no binaries or GitHub Release are published** (images are still
+  built — see below), and `v0` does not move; a Slack notification
+  reports the release as blocked. If the cause is a flake or transient
+  infrastructure issue, resolve it and re-run the failed jobs — the tag
+  stays as it is. If the fix needs a code or pin change (e.g. the
+  functional-tests gate pin drift described in pre-flight step A3), the
+  tag is now blocked: for a final tag, delete it both locally and
+  remotely (`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`) —
+  otherwise the next `git tag -a vX.Y.Z` fails because the old tag still
+  exists — then cut `rc.N+1` from the fixed commit instead (back to step
+  6). An RC tag that fails this way has no name to free up; just cut
+  `rc.N+1`.
 - **A final tag can also fail in the `release` job itself**, after the
   gate passes, with `422 already_exists`. This happens when the final
   shares a commit with its RC: GoReleaser resolves the tag to build via
-  `git tag --points-at HEAD`, finds both tags on that commit, and picks
-  the RC's — then fails trying to re-upload its assets under the final
-  tag (this is what happened on `v0.44.0`). Nothing is published in this
-  case either, but re-running cannot fix it, because the commit itself is
-  the problem: delete the tag (`git push origin :refs/tags/vX.Y.Z`) and
-  re-tag at a commit Y ≠ X that passes the step 9 check (see the interim
-  rule there, fullsend#7955).
+  `git tag --points-at HEAD`, finds both tags on that commit, and builds
+  as the rc tag — then fails re-uploading the RC's assets to the RC's
+  own release, which already has them (this is what happened on
+  `v0.44.0`). Nothing is published in this case either, but re-running
+  cannot fix it, because the commit itself is the problem: delete the
+  blocked final tag both locally and remotely (`git tag -d vX.Y.Z &&
+  git push origin :refs/tags/vX.Y.Z`) — otherwise the next `git tag -a
+  vX.Y.Z` fails because the old tag still exists — and re-tag at a
+  commit Y ≠ X that passes the step 9 check (see the interim rule
+  there, fullsend#7955). The blocked final's `:X.Y.Z` images (built
+  independently by Sandbox Images — see below) were already published
+  and get overwritten when the tag is re-pushed; that's harmless, since
+  the fleet only pins RC digests (step 8), never a final's.
 - **The `fullsend-ai/agents` repo** is tagged with the same version last,
   by the `tag-agents` job, using an org-owned GitHub App token
   (`RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`). This is the only step
@@ -357,7 +389,7 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
   GitHub Actions ignores `paths` filters on tag pushes, so every `v*` tag
   triggers a sandbox/code image build and push regardless of whether
   `resolve-agents`/`validate-agents` pass — a blocked release (per the
-  note above) can still leave new `:X.Y.Z` images in the registry. This is
-  also why the images built for the final tag are not guaranteed to match
-  the ones built for its RC at the same commit (see the repin step):
-  each tag push is an independent, non-reproducible build.
+  note above) can still leave new `:X.Y.Z` images in the registry. The
+  images built for the final tag are therefore not guaranteed to match
+  the ones built for its RC at the same commit (see the repin step).
+  Each tag push is an independent, non-reproducible build.

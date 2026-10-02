@@ -10,11 +10,14 @@ step F.
 ## A. Wait for CI workflows
 
 Wait for the Release workflow (triggered by the `v*` tag) and the
-Sandbox Images workflow (triggered by release workflow) to complete:
+Sandbox Images workflow (triggered by the same tag push, not by the
+release workflow) to complete. Sandbox Images runs against the tag, not
+a branch, so `--limit=1` alone can show an unrelated run — scope it to
+this tag with `--branch`:
 
 ```
 gh run list --workflow=release.yml --limit=1
-gh run list --workflow=sandbox-images.yml --limit=1
+gh run list --workflow=sandbox-images.yml --branch <tag> --limit=1
 ```
 
 Both must pass before proceeding. If either fails, investigate and
@@ -53,15 +56,21 @@ If the cause is a flake or transient infrastructure issue, resolve it
 and use "Re-run failed jobs" on the existing run — the tag is already
 correct and must not be moved (re-verification would fail the release
 if it were). If the fix needs a code or pin change, the tag is now
-stale: cut `rc.N+1` from the fixed commit instead (SKILL.md step 6)
-rather than re-running.
+blocked: delete it both locally and remotely (`git tag -d <tag> && git
+push origin :refs/tags/<tag>`) — otherwise the next `git tag -a <tag>`
+fails because the old tag still exists — then cut `rc.N+1` from the
+fixed commit instead (SKILL.md step 6) rather than re-running.
 
 If `release` itself failed with `422 already_exists`, the final tag
 shared a commit with its RC and nothing was published either — but
 re-running cannot fix it, since the commit itself is the problem:
-delete the tag (`git push origin :refs/tags/<tag>`) and re-tag at a
-commit Y that is different from the RC's commit and passes the SKILL.md
-step 9 check (see the interim rule there, fullsend#7955).
+delete the tag both locally and remotely (`git tag -d <tag> && git push
+origin :refs/tags/<tag>`) — otherwise the next `git tag -a <tag>` fails
+because the old tag still exists — and re-tag at a commit Y that is
+different from the RC's commit and passes the SKILL.md step 9 check
+(see the interim rule there, fullsend#7955). The blocked final's images
+were already published and get overwritten when the tag is re-pushed;
+that's harmless, since the fleet only pins RC digests.
 
 If only `tag-agents` failed, the fullsend release shipped but agents
 was not tagged; fix that job's cause and re-run it.
@@ -108,7 +117,12 @@ The two SHAs must match. For agents:
 
 ```
 gh api repos/fullsend-ai/agents/git/ref/tags/v0 --jq '.object.sha'
+gh api repos/fullsend-ai/agents/git/ref/tags/<tag> --jq '.object.sha'
 ```
+
+The two SHAs must match — agents tags are lightweight, so `.object.sha`
+is already the commit (unlike the fullsend final tag above, which is
+annotated and needs the commits-API resolution).
 
 If the agents release workflow failed, investigate before continuing —
 downstream consumers may reference agents by tag.
@@ -130,8 +144,11 @@ what actually shipped):
 for f in $(gh api "repos/fullsend-ai/agents/contents/harness?ref=vX.Y.Z" --jq '.[].name'); do
   gh api "repos/fullsend-ai/agents/contents/harness/$f?ref=vX.Y.Z" --jq .content \
     | base64 -d | grep -H --label="$f" -E 'image:.*fullsend-(sandbox|code)'
-done
+done || true
 ```
+
+(A non-zero exit from the loop just means the last file's `grep` didn't
+match — that's fine.)
 
 Confirm each digest matches what was resolved via `skopeo inspect` for
 the `X.Y.Z-rc.N` tag in SKILL.md step 8 — not a fresh `skopeo inspect` of
