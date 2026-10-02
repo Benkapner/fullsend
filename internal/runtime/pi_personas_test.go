@@ -530,9 +530,6 @@ func TestResolvePersonaModels_BareIDTableIsDeterministic(t *testing.T) {
 	}
 }
 
-// A persona pinned to the parent's own effective model is accepted even
-// when that model is outside the alias table -- the anonymous path would
-// inherit it, so the named path must not be the one that fails.
 // A model carrying a newline (a frontmatter block scalar on the agent
 // definition, which reaches the model table unvalidated) is never trusted,
 // so a persona naming the same text is refused with a quoted error rather
@@ -551,6 +548,9 @@ func TestPiTrustedSpecs_RejectsMalformedSpecs(t *testing.T) {
 	assert.NotContains(t, err.Error(), "\n::warning::", "the spec is quoted, never raw")
 }
 
+// A persona pinned to the parent's own effective model is accepted even
+// when that model is outside the alias table -- the anonymous path would
+// inherit it, so the named path must not be the one that fails.
 func TestPiTrustedSpecs_IncludesEffectiveParent(t *testing.T) {
 	t.Setenv(piProviderEnv, "")
 	trusted := piTrustedSpecs(testModels, map[string][]string{"google-vertex": {"gemini-3.8-flash"}}, "claude-sonnet-5", nil)
