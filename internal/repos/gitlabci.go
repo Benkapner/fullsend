@@ -1834,7 +1834,7 @@ func UnmergeGitLabCI(existing []byte) ([]byte, error) {
 	if variables := findMappingValue(root, "variables"); variables != nil && variables.Kind == yaml.MappingNode {
 		if stage := findMappingValue(variables, "STAGE"); stage != nil && stage.Value == "$[[ inputs.stage ]]" &&
 			!yamlReferencesVariable(root, "STAGE") && !yamlReferencesVariable(docs[0], "STAGE") &&
-			!survivingIncludes {
+			!survivingIncludes && !yamlSubtreeHasSurvivingAlias(root, stage) {
 			removeMappingKey(variables, "STAGE")
 		}
 		if len(variables.Content) == 0 {
@@ -1861,7 +1861,8 @@ func UnmergeGitLabCI(existing []byte) ([]byte, error) {
 					if input == nil {
 						continue
 					}
-					if yamlReferencesInput(root, name) || yamlReferencesInput(header, name) {
+					if yamlReferencesInput(root, name) || yamlReferencesInput(header, name) ||
+						yamlSubtreeHasSurvivingAlias(header, input) {
 						continue
 					}
 					var actual, managed any
@@ -1889,6 +1890,42 @@ func UnmergeGitLabCI(existing []byte) ([]byte, error) {
 	}
 
 	return marshalGitLabDocuments(docs)
+}
+
+// yamlSubtreeHasSurvivingAlias reports whether any alias node in doc, outside
+// the subtree rooted at target, points at a node inside that subtree. Removing
+// such a subtree would drop the anchor and leave the alias unresolvable, so
+// the caller must preserve it.
+func yamlSubtreeHasSurvivingAlias(doc, target *yaml.Node) bool {
+	if doc == nil || target == nil {
+		return false
+	}
+	inside := map[*yaml.Node]bool{}
+	var collect func(*yaml.Node)
+	collect = func(n *yaml.Node) {
+		inside[n] = true
+		for _, child := range n.Content {
+			collect(child)
+		}
+	}
+	collect(target)
+
+	var visit func(*yaml.Node) bool
+	visit = func(n *yaml.Node) bool {
+		if inside[n] {
+			return false
+		}
+		if n.Kind == yaml.AliasNode && inside[n.Alias] {
+			return true
+		}
+		for _, child := range n.Content {
+			if visit(child) {
+				return true
+			}
+		}
+		return false
+	}
+	return visit(doc)
 }
 
 func removeMappingKey(mapping *yaml.Node, key string) {

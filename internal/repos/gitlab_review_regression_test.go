@@ -286,6 +286,26 @@ func TestUnmergeRetainsMatchingUserInputReferences(t *testing.T) {
 	}
 }
 
+func TestUnmergePreservesAnchorsStillAliasedByUserConfig(t *testing.T) {
+	original := []byte("variables:\n  STAGE: &stage_bridge '$[[ inputs.stage ]]'\n  USER_STAGE: *stage_bridge\n" +
+		"user-job:\n  script: echo $USER_STAGE\n")
+	merged, err := MergeGitLabCI(original)
+	require.NoError(t, err)
+	cleaned, err := UnmergeGitLabCI(merged)
+	require.NoError(t, err)
+
+	docs, err := decodeGitLabDocuments(cleaned)
+	require.NoError(t, err, "cleaned output must remain valid YAML:\n%s", cleaned)
+	require.Len(t, docs, 2)
+	variables := findMappingValue(docs[1].Content[0], "variables")
+	require.NotNil(t, variables)
+	assert.NotNil(t, findMappingValue(variables, "STAGE"), "anchored bridge still aliased by USER_STAGE must be preserved")
+	assert.NotNil(t, findMappingValue(variables, "USER_STAGE"))
+	inputs := findMappingValue(findMappingValue(docs[0].Content[0], "spec"), "inputs")
+	assert.NotNil(t, findMappingValue(inputs, "stage"))
+	assert.NotContains(t, string(cleaned), fullsendPipelineInclude)
+}
+
 func TestGitLabOnlyPinnedTargetFailsWithoutMatchingClient(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	d := convergeDiscovery{repo: ResolvedRepo{Owner: "acme", Repo: "api"}, resolved: ResolvedConfig{Owner: "acme", Repo: "api", Forge: ForgeGitLab, FullsendRef: "v0.1.0", ForgeConfig: ForgeConfig{Client: fc}}}
