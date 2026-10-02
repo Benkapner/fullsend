@@ -243,7 +243,16 @@ GoReleaser's auto-generated changelog for the final compares against the
 RC tag immediately before it, so it covers only `rc.N..vX.Y.Z` — not the
 full set of changes since the last final. When writing highlights in
 step 11, gather commits from `<previous-final>..vX.Y.Z` instead of
-relying on the release body for the full picture.
+relying on the release body for the full picture (the `release` log's
+`using tags` line shows `previous=vX.Y.Z-rc.N`). If the published notes
+need the full range, regenerate them against the previous final and
+replace the body:
+
+```
+gh api repos/fullsend-ai/fullsend/releases/generate-notes \
+  -f tag_name=vX.Y.Z -f previous_tag_name=<previous-final> --jq .body > notes.md
+gh release edit vX.Y.Z --notes-file notes.md
+```
 
 Let Y be the commit the final tag will point at (distinct from commit X)
 and run:
