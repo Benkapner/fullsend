@@ -50,9 +50,20 @@ type pinAPIState struct {
 	projectStatus  int
 	branchStatus   int
 	pipelineStatus int
-	jobHits        atomic.Int32
-	sawPAT         atomic.Bool
-	jobAuth        atomic.Bool
+	// projectPATStatus/branchPATStatus, when non-zero, override the
+	// response given to a PRIVATE-TOKEN (Poller-role PAT) request on the
+	// project-detail / branch-protection endpoints, independent of the
+	// JOB-TOKEN-path status above. This simulates the self-hosted GitLab
+	// EE 19.2.7 behavior from #7965 where JOB-TOKEN 404s on these two
+	// calls but a PAT succeeds (or also fails, to test the no-fallback
+	// path is still fail-closed).
+	projectPATStatus int
+	projectPATJSON   string
+	branchPATStatus  int
+	branchPATJSON    string
+	jobHits          atomic.Int32
+	sawPAT           atomic.Bool
+	jobAuth          atomic.Bool
 }
 
 func buildPinAPIMux(st *pinAPIState) *http.ServeMux {
@@ -73,7 +84,8 @@ func buildPinAPIMux(st *pinAPIState) *http.ServeMux {
 		_, _ = w.Write([]byte(st.jobJSON))
 	})
 	mux.HandleFunc("/api/v4/projects/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("PRIVATE-TOKEN") != "" {
+		isPAT := r.Header.Get("PRIVATE-TOKEN") != ""
+		if isPAT {
 			st.sawPAT.Store(true)
 		}
 		path := r.URL.Path
@@ -81,14 +93,24 @@ func buildPinAPIMux(st *pinAPIState) *http.ServeMux {
 		body := ""
 		switch {
 		case strings.Contains(path, "/repository/branches/"):
-			status = st.branchStatus
-			body = st.branchJSON
+			if isPAT && st.branchPATStatus != 0 {
+				status = st.branchPATStatus
+				body = st.branchPATJSON
+			} else {
+				status = st.branchStatus
+				body = st.branchJSON
+			}
 		case strings.Contains(path, "/pipelines/"):
 			status = st.pipelineStatus
 			body = st.pipelineJSON
 		default:
-			status = st.projectStatus
-			body = st.projectJSON
+			if isPAT && st.projectPATStatus != 0 {
+				status = st.projectPATStatus
+				body = st.projectPATJSON
+			} else {
+				status = st.projectStatus
+				body = st.projectJSON
+			}
 		}
 		if status == 0 {
 			status = http.StatusOK
@@ -294,6 +316,110 @@ func TestPinCIJobIdentity_PipelineLookupFailsClosed(t *testing.T) {
 	out, err := sourcePinScript(t, root, script, pinTLSEnv(t, srv))
 	require.Error(t, err, "stdout/stderr: %s", out)
 	assert.Contains(t, out, "cannot read pinned pipeline")
+}
+
+// TestPinCIJobIdentity_ProjectLookupFallsBackToPollerPAT is a regression
+// test for #7965: self-hosted GitLab EE 19.2.7 returns 404 ("Project Not
+// Found") for GET /projects/:id authenticated with JOB-TOKEN, breaking every
+// poll/agent job's identity pin even though the CI_JOB_TOKEN itself is
+// valid (GET /job above already succeeded with it). The already-provisioned
+// Poller-role PAT must serve this same-project read as a fallback so the
+// pin still succeeds.
+func TestPinCIJobIdentity_ProjectLookupFallsBackToPollerPAT(t *testing.T) {
+	root, script := writePinCIJobIdentityScripts(t)
+	st := &pinAPIState{
+		jobJSON:          pinJobJSON("42", "100", "main"),
+		projectStatus:    http.StatusNotFound,
+		projectJSON:      `{"message":"404 Project Not Found"}`,
+		projectPATStatus: http.StatusOK,
+		projectPATJSON:   `{"id":42,"default_branch":"main","path_with_namespace":"group/project"}`,
+		branchJSON:       `{"name":"main","protected":true}`,
+		pipelineJSON:     `{"id":100,"source":"api","user":{"id":7}}`,
+	}
+	srv := startPinAPI(t, st)
+	t.Cleanup(srv.Close)
+
+	out, err := sourcePinScript(t, root, script, append(pinTLSEnv(t, srv),
+		"FULLSEND_GITLAB_POLLER_TOKEN=poller-pat",
+	))
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "PINNED_PROJECT=42")
+	assert.True(t, st.sawPAT.Load(), "project lookup must retry with the Poller-role PAT after JOB-TOKEN 404s")
+}
+
+// TestPinCIJobIdentity_ProjectLookupFailsClosedWhenPollerPATAlsoFails proves
+// the fallback added for #7965 preserves fail-closed semantics: if JOB-TOKEN
+// 404s and the Poller-role PAT fallback also fails, the pin must still abort
+// with a specific, actionable error rather than a generic retry-exhaustion
+// message.
+func TestPinCIJobIdentity_ProjectLookupFailsClosedWhenPollerPATAlsoFails(t *testing.T) {
+	root, script := writePinCIJobIdentityScripts(t)
+	st := &pinAPIState{
+		jobJSON:          pinJobJSON("42", "100", "main"),
+		projectStatus:    http.StatusNotFound,
+		projectJSON:      `{"message":"404 Project Not Found"}`,
+		projectPATStatus: http.StatusForbidden,
+		projectPATJSON:   `{"message":"403 Forbidden"}`,
+	}
+	srv := startPinAPI(t, st)
+	t.Cleanup(srv.Close)
+
+	out, err := sourcePinScript(t, root, script, append(pinTLSEnv(t, srv),
+		"FULLSEND_GITLAB_POLLER_TOKEN=poller-pat",
+	))
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "cannot read pinned project")
+	assert.Contains(t, out, "Poller-role PAT fallback")
+	assert.True(t, st.sawPAT.Load(), "must have attempted the Poller-role PAT fallback before failing closed")
+}
+
+// TestPinCIJobIdentity_BranchLookupFallsBackToPollerPAT mirrors
+// TestPinCIJobIdentity_ProjectLookupFallsBackToPollerPAT for the
+// branch-protection read: #7965 observed this endpoint 404 with JOB-TOKEN
+// on self-hosted EE 19.2.7 too ("Project Not Found", not a branch-specific
+// rejection), so it gets the same Poller-role PAT fallback.
+func TestPinCIJobIdentity_BranchLookupFallsBackToPollerPAT(t *testing.T) {
+	root, script := writePinCIJobIdentityScripts(t)
+	st := &pinAPIState{
+		jobJSON:         pinJobJSON("42", "100", "main"),
+		projectJSON:     `{"id":42,"default_branch":"main","path_with_namespace":"group/project"}`,
+		branchStatus:    http.StatusNotFound,
+		branchJSON:      `{"message":"404 Project Not Found"}`,
+		branchPATStatus: http.StatusOK,
+		branchPATJSON:   `{"name":"main","protected":true}`,
+		pipelineJSON:    `{"id":100,"source":"api","user":{"id":7}}`,
+	}
+	srv := startPinAPI(t, st)
+	t.Cleanup(srv.Close)
+
+	out, err := sourcePinScript(t, root, script, append(pinTLSEnv(t, srv),
+		"FULLSEND_GITLAB_POLLER_TOKEN=poller-pat",
+	))
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "PINNED_PROJECT=42")
+	assert.True(t, st.sawPAT.Load(), "branch lookup must retry with the Poller-role PAT after JOB-TOKEN 404s")
+}
+
+// TestPinCIJobIdentity_BranchLookupFailsClosedWithoutPollerPATConfigured
+// proves the fallback is only attempted when a Poller-role PAT is actually
+// provisioned: with none configured, a JOB-TOKEN 404 on the branch read
+// must still fail closed (matching TestPinCIJobIdentity_BranchLookupFailsClosed,
+// which covers the same case via a 403 instead of a 404).
+func TestPinCIJobIdentity_BranchLookupFailsClosedWithoutPollerPATConfigured(t *testing.T) {
+	root, script := writePinCIJobIdentityScripts(t)
+	st := &pinAPIState{
+		jobJSON:      pinJobJSON("42", "100", "main"),
+		projectJSON:  `{"id":42,"default_branch":"main","path_with_namespace":"group/project"}`,
+		branchStatus: http.StatusNotFound,
+		branchJSON:   `{"message":"404 Project Not Found"}`,
+	}
+	srv := startPinAPI(t, st)
+	t.Cleanup(srv.Close)
+
+	out, err := sourcePinScript(t, root, script, pinTLSEnv(t, srv))
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "cannot read pinned branch")
+	assert.False(t, st.sawPAT.Load(), "no PAT configured — fallback must not be attempted")
 }
 
 func TestPinCIJobIdentity_EmptyJobTokenFailsClosed(t *testing.T) {
