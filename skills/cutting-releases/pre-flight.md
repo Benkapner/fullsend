@@ -70,37 +70,21 @@ If there are critical open PRs, resolve them before proceeding.
 
 ## A3. Check the functional-tests gate pin
 
-`.github/workflows/release.yml` pins `validate-agents` to a specific
-commit of agents' `functional-tests.yml`, not `@main`:
+`.github/workflows/release.yml` pins `validate-agents` to a commit of
+agents' `functional-tests.yml`, and pull requests never run that pin, so
+a stale one only fails at tag time (as on `v0.44.0-rc.1`). Show what
+changed in the file since the pin:
 
 ```
-grep -n 'functional-tests.yml@' .github/workflows/release.yml
+PIN=$(grep -oE 'functional-tests\.yml@[a-f0-9]{40}' .github/workflows/release.yml)
+gh api "repos/fullsend-ai/agents/compare/${PIN#*@}...main" \
+  --jq '.files[] | select(.filename == ".github/workflows/functional-tests.yml") | .patch'
 ```
 
-Pull requests never exercise this pin — it's only resolved when a tag is
-actually pushed — so a stale pin surfaces as a tag-time failure instead of
-a PR check. This is exactly what happened with `v0.44.0-rc.1`: the pin
-predated an agents change and the gate run failed at "Install OpenShell
-CLI" with `legacy_schema_v1`.
-
-Compare the pinned commit's copy of the file against agents `main`:
-
-```
-PIN=$(grep -oE 'functional-tests\.yml@[a-f0-9]{40}' .github/workflows/release.yml | sed 's/.*@//')
-gh api "repos/fullsend-ai/agents/contents/.github/workflows/functional-tests.yml?ref=${PIN}" --jq '.sha'
-gh api "repos/fullsend-ai/agents/contents/.github/workflows/functional-tests.yml?ref=main" --jq '.sha'
-```
-
-If the two blob SHAs differ, the workflow has changed since the pin was
-set — bump the pin to agents `main` (or the commit you intend to validate
-against) and land that change before cutting `rc.1`, or the RC gate will
-fail on an out-of-date workflow. A non-matching blob SHA is not itself a
-sign of a *breaking* change — read the diff between the two refs to judge
-that — but it does mean the pin needs updating before the gate can be
-trusted. (`scripts/check-agents-gate-pin.sh` runs a related check after
-the tag is pushed, but it compares against the moving `main` HEAD and is
-informational-only at that point; this pre-flight check catches the same
-drift before a tag is spent on a doomed gate run.)
+Bump the pin before `rc.1` only if the pinned copy lacks something the
+gate needs: tool versions, schema, secrets or permissions. Additive
+changes, such as a new optional input or a longer timeout, do not need a
+bump.
 
 ## B. Audit scaffold and template changes
 
@@ -193,7 +177,7 @@ Summarize findings to the user in a table:
 | Area | Changes | Breaking? |
 |------|---------|-----------|
 | Reusable workflows | ... | No/Yes |
-| Functional-tests gate pin | current / stale | — |
+| Functional-tests gate pin | current / needs bump | — |
 | Scaffold templates | ... | No/Yes |
 | CLI / internal | ... | No/Yes |
 

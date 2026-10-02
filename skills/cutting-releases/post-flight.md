@@ -9,11 +9,9 @@ step F.
 
 ## A. Wait for CI workflows
 
-Wait for the Release workflow (triggered by the `v*` tag) and the
-Sandbox Images workflow (triggered by the same tag push, not by the
-release workflow) to complete. Sandbox Images also runs on `main` pushes
-that touch `images/` and on manual dispatch, so `--limit=1` alone can
-show an unrelated run — scope both lists to this tag with `--branch`:
+Wait for the Release workflow and the Sandbox Images workflow, both
+triggered by the `v*` tag push, to complete. Sandbox Images also runs
+on `main` pushes, so scope both lists to the tag:
 
 ```
 gh run list --workflow=release.yml --branch <tag> --limit=1
@@ -52,51 +50,10 @@ gh run view <run-id> --repo fullsend-ai/fullsend --json jobs \
 If `resolve-agents` or `validate-agents` failed, the release was
 blocked before publishing: no binaries, no GitHub Release, no moved
 `v0` tag, and no agents tag. Step B above will show nothing to verify.
-If the cause is a flake or transient infrastructure issue, resolve it
-and use "Re-run failed jobs" on the existing run — the tag is already
-correct and must not be moved (re-verification would fail the release
-if it were). If the fix landed only in `fullsend-ai/agents` (its `main`
-or its functional tests), re-run the **whole** workflow instead of just
-the failed jobs — `gh run rerun <run-id>` without `--failed`.
-`validate-agents` is called with only `fullsend_ref` (the release tag),
-never a pinned agents SHA, so re-running it re-resolves agents `main`
-from scratch and picks up the fix; `resolve-agents` also re-runs and
-records the current SHA for `tag-agents`'s fallback. The tag itself
-does not need to move. "Re-run failed jobs" does not give this
-guarantee — a job GitHub considers already successful is not
-re-executed, so it can keep seeing the agents state from the first
-attempt. Reserve deleting and re-pushing the tag for a fix that needs a
-code or pin change in this repo (including the pinned reusable workflow
-in `release.yml`): no rerun, failed-jobs or whole-workflow, can pick up
-a change that requires a different fullsend commit. In that case the
-tag is now blocked: confirm `gh release view <tag>` reports no release,
-then delete it both locally and remotely (`git tag -d <tag> && git
-push origin :refs/tags/<tag>`) — otherwise the next `git tag -a <tag>`
-fails because the old tag still exists — then cut `rc.N+1` from the
-fixed commit instead (SKILL.md step 6) rather than re-running.
-
-If `release` itself failed with `422 already_exists`, confirm this is
-the RC-tag-selection failure before touching the tag — the same error
-also surfaces when `release` is re-run after it already published the
-final (e.g. a later step like `tag-agents` or the `v0` move failed and
-the whole job was re-run), in which case the final already shipped.
-Check the `release` job's GoReleaser logs for which tag it resolved and
-built (`gh run view <release-run-id> --log | grep -m1 'using tags'`;
-its `current` value, e.g. `current=v0.44.0-rc.2`, is the tag GoReleaser
-built) — the RC-selection failure shows the RC tag, not the final — and
-confirm the final has no GitHub Release or binary assets yet (`gh
-release view <tag>`). Only when both are confirmed — the final shared a
-commit with its RC and no binaries or GitHub Release were published — does re-cutting apply,
-since re-running cannot fix it: delete the tag both locally and
-remotely (`git tag -d <tag> && git push origin :refs/tags/<tag>`) —
-otherwise the next `git tag -a <tag>` fails because the old tag still
-exists — and re-tag at a commit Y that is different from the RC's
-commit and passes the SKILL.md step 9 check (see the interim rule
-there, fullsend#7955). The blocked final's images were already
-published and get overwritten when the tag is re-pushed; that's
-harmless, since the fleet only pins RC digests. If the final already
-has a GitHub Release or binary assets, it already shipped — preserve
-the tag and investigate the later step that failed instead.
+Pick the recovery from "When a release run fails" in the SKILL.md
+Notes: a flake, an agents-only fix and a fullsend fix each need a
+different action. The same section covers `release` failing with
+`422 already_exists`.
 
 If only `tag-agents` failed, the fullsend release shipped but agents
 was not tagged; fix that job's cause and re-run it.
@@ -107,103 +64,44 @@ If all jobs succeeded, verify the tag and release exist on agents:
 gh release view <tag> --repo fullsend-ai/agents
 ```
 
-Verify the agents tag points at the repin PR's merge commit (step 8 of
-SKILL.md) — not some other commit on `main`:
+Verify the agents tag includes the repin (SKILL.md step 8). The tag
+is the agents `main` commit the gate validated, which can be later than
+the repin merge:
 
 ```
-gh api repos/fullsend-ai/agents/git/ref/tags/<tag> --jq '.object.sha'
-gh pr view <repin-pr-number> --repo fullsend-ai/agents --json mergeCommit --jq '.mergeCommit.oid'
+gh api repos/fullsend-ai/agents/compare/<repin-merge-sha>...<tag> --jq .status
 ```
 
-The two SHAs should match. If other PRs landed on agents `main` between
-the repin merge and the release, the tag SHA may legitimately differ —
-confirm it is still a descendant of the merge commit rather than
-predating it:
+`identical` or `ahead` passes; anything else means the release shipped
+without the repinned images.
+
+For non-prerelease tags, verify `v0` moved on both repos. Each pair
+must print the same SHA (`commits/` resolves the annotated fullsend
+tag to its commit; agents tags are lightweight):
 
 ```
-gh api repos/fullsend-ai/agents/compare/<merge-sha>...<tag-sha> --jq .status
-```
-
-`identical` or `ahead` is OK; anything else means the tag predates the
-repin merge, so the shipped fleet config does not include the pinned
-images and the repin did not take effect for this release.
-
-For non-prerelease tags, verify the `v0` floating tag was moved on
-**both** repos. For this repo, `git/ref/tags/vX.Y.Z` returns the tag
-*object*, not the commit, because the final is an annotated tag — so
-resolve the commit the final tag points at via the commits API instead
-of the ref before comparing it to `v0`:
-
-```
-gh api repos/fullsend-ai/fullsend/commits/vX.Y.Z --jq .sha
+gh api repos/fullsend-ai/fullsend/commits/<tag> --jq .sha
 gh api repos/fullsend-ai/fullsend/git/ref/tags/v0 --jq '.object.sha'
-```
-
-The two SHAs must match. For agents:
-
-```
-gh api repos/fullsend-ai/agents/git/ref/tags/v0 --jq '.object.sha'
 gh api repos/fullsend-ai/agents/git/ref/tags/<tag> --jq '.object.sha'
+gh api repos/fullsend-ai/agents/git/ref/tags/v0 --jq '.object.sha'
 ```
-
-The two SHAs must match — agents tags are lightweight, so `.object.sha`
-is already the commit (unlike the fullsend final tag above, which is
-annotated and needs the commits-API resolution).
 
 If the agents release workflow failed, investigate before continuing —
 downstream consumers may reference agents by tag.
 
 ## B3. Verify the harness image pins
 
-The harness files in `fullsend-ai/agents` should be pinned to the
-**RC's** digests (resolved and verified in SKILL.md step 8) — not the
-final tag's own `:X.Y.Z` images. The image build is not reproducible
-(see SKILL.md Notes), so a final build from the same commit produces
-different digests than its RC; re-pinning to the final's digests would
-silently undo the revision check done at RC time.
-
-Discover the harness files at the released tag rather than assuming a
-fixed list or reading a local checkout (either may have drifted from
-what actually shipped):
+The released agents harness files must pin the RC's digests from
+SKILL.md step 8, not a fresh `skopeo inspect` of `X.Y.Z` — the final's
+images are a separate, non-reproducible build with different digests:
 
 ```
-bash <<'EOF'
-HARNESS_FILES=$(gh api "repos/fullsend-ai/agents/contents/harness?ref=vX.Y.Z" --jq '.[].name') || exit 1
-[ -n "$HARNESS_FILES" ] || exit 1
-
-MATCH_COUNT=0
-for f in $HARNESS_FILES; do
-  CONTENT=$(gh api "repos/fullsend-ai/agents/contents/harness/$f?ref=vX.Y.Z" --jq .content) || exit 1
-  [ -n "$CONTENT" ] || exit 1
-  DECODED=$(printf '%s' "$CONTENT" | base64 -d) || exit 1
-  MATCHES=$(printf '%s\n' "$DECODED" | grep -E 'image:.*fullsend-(sandbox|code)')
-  GREP_STATUS=$?
-  [ "$GREP_STATUS" -le 1 ] || exit 1
-  if [ -n "$MATCHES" ]; then
-    printf '%s:\n%s\n' "$f" "$MATCHES"
-    MATCH_COUNT=$((MATCH_COUNT + 1))
-  fi
-done
-[ "$MATCH_COUNT" -gt 0 ] || exit 1
-EOF
+for f in $(gh api "repos/fullsend-ai/agents/contents/harness?ref=<tag>" --jq '.[].name'); do gh api "repos/fullsend-ai/agents/contents/harness/$f?ref=<tag>" --jq ".content|@base64d|split(\"\n\")[]|select(test(\"image:.*fullsend-(sandbox|code)\"))|\"$f: \"+."; done
 ```
 
-The block runs under `bash` even from zsh, and its `exit 1` ends only
-the check.
-
-Check the directory listing, each content fetch, and the base64 decode
-independently — an API error, an empty response, or a bad decode is a
-discovery failure, not "no harness files," and must stop here rather
-than reporting an incomplete pin check as verified. Tolerate only
-`grep` exit status 1 (no match in that file); any other status is also
-an error. Require at least one matching harness file overall — zero
-matches means verification is broken, not that no harness references
-these images; do not mark B3 as passed in that case.
-
-Confirm each digest matches what was resolved via `skopeo inspect` for
-the `X.Y.Z-rc.N` tag in SKILL.md step 8 — not a fresh `skopeo inspect` of
-the final `X.Y.Z` tag, which will likely show a different digest for the
-same content.
+Expect one line per harness that pins an image, each with an RC digest.
+Empty output or an error means the check did not run — treat it as a
+failure, not a pass.
 
 ## C. Skip fullsend-ai repos
 
@@ -264,10 +162,8 @@ Summarize results to the user:
 Note: `fullsend-ai` repos are excluded from this table — they use
 `@main` and were checked during pre-flight.
 
-Also report the results of B2 (both `v0` tags moved, agents tag at the
-repin merge commit) and B3 (harness pins match the RC digests) —
-these are blockers, not optional checks, even though they fall outside
-the `@v0`-consumer table above.
+Also report B2 (repin included, `v0` moved on both repos) and B3
+(harness pins match the RC digests). A failure in either is a blocker.
 
 Distinguish between:
 - **Release-related failures** — workflow resolution errors, missing
