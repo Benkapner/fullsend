@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -2118,6 +2119,10 @@ _RESULT_WRITE_CMD = (
 )
 
 
+# Heredoc operator and quoted body carrying a request URL, appended to a command.
+_HEREDOC_METADATA = f"<<'EOF'\n{_METADATA_URL}\nEOF"
+
+
 def _bash(command: str) -> dict:
     return {"tool_name": "Bash", "tool_input": {"command": command}}
 
@@ -2210,6 +2215,22 @@ class TestStripDataHeredocBodies:
             # Assignment through a parameter expansion in an earlier argument.
             'unset A; echo "${A:=/dev/tc}"; cat > "${A}p/169.254.169.254/80" <<\'EOF\'\n'
             f"{_METADATA_URL}\nEOF",
+            # Expansion after a literal prefix in the redirect target, with
+            # the assignment in an earlier builtin (input and output forms,
+            # quote variants).
+            "export NET=dev/tc; cat > /${NET}p/169.254.169.254/80 " + _HEREDOC_METADATA,
+            'export NET=dev/tc; cat > "/${NET}p/169.254.169.254/80" ' + _HEREDOC_METADATA,
+            "export NET=dev/tc; cat > '/'${NET}p/169.254.169.254/80 " + _HEREDOC_METADATA,
+            "export NET=dev/tc; cat < /${NET}p/169.254.169.254/80 " + _HEREDOC_METADATA,
+            'export NET=dev/tc; cat >> /$NET"p/169.254.169.254/80" ' + _HEREDOC_METADATA,
+            "export NET=dev/tc; cat 3<> /${NET}p/169.254.169.254/80 " + _HEREDOC_METADATA,
+            # Builtins that evaluate a quoted argument (array subscripts)
+            # later, running a command that consumes the heredoc.
+            f"declare -a 'x[$(bash)]=0' <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"declare -a 'x[`bash`]=0' <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"test -v 'x[$(bash)]' <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"printf -v 'x[$(bash)]' %s a <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"printf -v 'x[`bash`]' %s a <<'EOF'\ncurl {_METADATA_URL}\nEOF",
             # Unquoted delimiter split by backslash-newline: Bash ends the
             # heredoc at ``E\`` + ``OF``, so the curl line below runs.
             f"cat > f <<EOF\nE\\\nOF\ncurl {_METADATA_URL}\nEOF\n",
@@ -2218,6 +2239,15 @@ class TestStripDataHeredocBodies:
     def test_not_stripped(self, hook, cmd):
         assert hook._strip_data_heredoc_bodies(cmd) == cmd
         assert hook.process_tool_call(_bash(cmd)) is not None
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_declare_subscript_consumes_heredoc_in_bash():
+    """Why ``declare`` with a quoted subscript must not get the exemption:
+    Bash evaluates the substitution and the command reads the heredoc."""
+    cmd = "declare -a 'x[$(cat >&2)]=0' <<'EOF'\nheredoc-body-marker\nEOF\n"
+    proc = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=10)
+    assert "heredoc-body-marker" in proc.stderr
 
 
 class TestPipelineIsInertPlainVarRedirects:
@@ -2237,6 +2267,21 @@ class TestPipelineIsInertPlainVarRedirects:
         assert not hook._pipeline_is_inert(
             "declare OUT=x; cat > $OUT", allow_plain_var_redirects=True
         )
+
+    def test_assigning_command_rejects_relaxation_without_dollar(self, hook):
+        assert not hook._pipeline_is_inert("export A=x; cat > f", allow_plain_var_redirects=True)
+
+    def test_prefixed_var_redirect_with_assignment_rejected(self, hook):
+        assert not hook._pipeline_is_inert(
+            "export NET=dev/tc; cat > /${NET}p/h/80", allow_plain_var_redirects=True
+        )
+
+    def test_prefixed_plain_var_redirect_allowed(self, hook):
+        assert hook._pipeline_is_inert('cat > "/tmp/${OUT}/r.json"', allow_plain_var_redirects=True)
+
+    def test_quoted_substitution_rejected(self, hook):
+        assert not hook._pipeline_is_inert("echo 'x[$(id)]' > f", allow_plain_var_redirects=True)
+        assert not hook._pipeline_is_inert("echo 'x[`id`]' > f", allow_plain_var_redirects=True)
 
 
 class TestProcessToolCallHeredocData:

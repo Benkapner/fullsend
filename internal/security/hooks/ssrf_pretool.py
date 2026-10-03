@@ -882,19 +882,24 @@ def _extract_base_command(stage: str) -> str | None:
     return None
 
 
-def _redirect_vars_are_plain(command: str, stages: list[str]) -> bool:
+def _expansions_are_plain(command: str, stages: list[str]) -> bool:
     """Return True if *command* expands only plain variables and nothing in
-    it can have assigned one.
+    it can have assigned one or can evaluate a hidden substitution.
 
-    Every ``$`` anywhere in *command* must start a plain ``$NAME`` or
-    ``${NAME}`` expansion.  That rules out assignment-capable expansions
-    (``${A:=/dev/tc}``) wherever they appear — in a redirection word after
-    a plain variable (``> ${EMPTY}${B:=/dev/tc}p/h/80``) or in an earlier
-    argument (``echo "${A:=/dev/tc}"``) — as well as ``$_``, ``$1`` and
-    ``$((...))``.  ``cat > "$OUT/result.json"`` is accepted.  A command
-    containing a variable-assigning builtin (``export``, ``printf -v``,
-    ``set --``, ...) is also rejected.  Assignment prefixes (``A=x``)
-    already make the stage fail _extract_base_command.
+    Every ``$`` anywhere in *command* — in any word, whether or not it is a
+    redirection target, and even inside single quotes — must start a plain
+    ``$NAME`` or ``${NAME}`` expansion.  That rules out assignment-capable
+    expansions (``${A:=/dev/tc}``) wherever they appear — in a redirection
+    word after a plain variable (``> ${EMPTY}${B:=/dev/tc}p/h/80``), after a
+    literal prefix (``> /${NET}p/h/80``) or in an earlier argument
+    (``echo "${A:=/dev/tc}"``) — as well as ``$_``, ``$1`` and ``$((...))``.
+    It also rules out substitutions that a builtin evaluates later from a
+    quoted argument (``declare -a 'x[$(cmd)]=0'``, ``test -v``,
+    ``printf -v``); backticks are refused for the same reason.
+    ``cat > "$OUT/result.json"`` is accepted.  A command containing a
+    variable-assigning builtin (``export``, ``printf -v``, ``set --``, ...)
+    is also rejected, whether or not it contains a ``$``.  Assignment
+    prefixes (``A=x``) already make the stage fail _extract_base_command.
 
     Residual risk: a variable already in the environment when the command
     starts is trusted.  That environment comes from the harness, and a
@@ -903,7 +908,7 @@ def _redirect_vars_are_plain(command: str, stages: list[str]) -> bool:
     """
     # ANSI-C quoting (``$'\x2fdev...'``) collapses to a fake variable name
     # once quotes are stripped; refuse it outright.
-    if "$'" in command:
+    if "$'" in command or "`" in command:
         return False
     stripped = _strip_shell_quoting(command)
     for m in re.finditer(r"\$", stripped):
@@ -925,7 +930,8 @@ def _pipeline_is_inert(command: str, *, allow_plain_var_redirects: bool = False)
     3. No /dev/tcp-style device access, including quote/backslash-obscured
        and variable-assembled forms
     4. No redirection to a variable-expanded target — unless
-       *allow_plain_var_redirects* is set and _redirect_vars_are_plain holds
+       *allow_plain_var_redirects* is set and _expansions_are_plain holds
+       for the whole command
     5. Every pipeline/sequence stage uses a command from ``_INERT_COMMANDS``
     """
     # Shell reentry can hide arbitrary commands in quoted arguments.
@@ -949,9 +955,12 @@ def _pipeline_is_inert(command: str, *, allow_plain_var_redirects: bool = False)
 
     # A redirection target assembled from variables can name a /dev/tcp
     # path in fragments (``A=/dev/tc; B=p/H/80; read x < ${A}${B}``).
-    if _REDIRECT_VAR_PATTERN.search(_strip_shell_quoting(command)) and not (
-        allow_plain_var_redirects and _redirect_vars_are_plain(command, stages)
-    ):
+    if allow_plain_var_redirects:
+        # Not keyed on the target starting with ``$``: ``> /${NET}p/h/80``
+        # expands too.  Check the whole command instead.
+        if not _expansions_are_plain(command, stages):
+            return False
+    elif _REDIRECT_VAR_PATTERN.search(_strip_shell_quoting(command)):
         return False
 
     for stage in stages:
