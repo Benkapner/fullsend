@@ -17,7 +17,8 @@ Add one when a **user-visible workflow** must be verified end-to-end (dispatch â
 Shared framework (importable by external repos):
 
 ```
-pkg/behaviourtest/   # RunSuite public entry (build tag: behaviour)
+pkg/behaviourtest/   # RunSuite public entry (build tag: behaviour);
+                     # RunPlaybackSuite public entry (build tag: playback)
   world/             # Scenario state
   steps/             # Step definitions + CleanupScenario
   artifacts/         # Artifact lookup helpers
@@ -38,6 +39,7 @@ e2e/behaviour/
   features/          # Portable Gherkin scenarios
   fixtures/          # Static content for write_fixture ops
   suite_test.go      # Thin RunSuite caller (build tag: behaviour)
+  playback_suite_test.go  # Thin RunPlaybackSuite caller (build tag: playback)
 ```
 
 ## Writing scenarios
@@ -488,9 +490,32 @@ func TestBehaviourSuite(t *testing.T) {
 
 `RunSuite` builds the CLI from module `github.com/fullsend-ai/fullsend` (equivalent to `e2etest.BuildModuleBinary`), so the caller's module root is not used. Run with `-tags behaviour` and the same env vars as CI (see above).
 
+The dummy-playback suite has its own entry point, `behaviourtest.RunPlaybackSuite`, which takes the same `SuiteOptions` and is called from a test file built with `-tags playback` (see `e2e/behaviour/playback_suite_test.go`). It installs pool repos with the `dummy-playback` runtime, runs only `@playback`-tagged scenarios (the filter is fixed; `GODOG_TAGS` is not consulted), and is otherwise configured from the same environment variables as `RunSuite`. `@playback` scenarios are skipped automatically by the standard `RunSuite` suite, so the two runners do not overlap. Run it with `-tags playback`:
+
+```go
+//go:build playback
+
+package behaviour_test
+
+import (
+    "testing"
+
+    "github.com/fullsend-ai/fullsend/pkg/behaviourtest"
+)
+
+func TestPlaybackSuite(t *testing.T) {
+    behaviourtest.RunPlaybackSuite(t, behaviourtest.SuiteOptions{
+        FeaturePaths: []string{"features"},
+        FixturesRoot: "e2e/behaviour", // module-relative
+    })
+}
+```
+
 Lower-level packages (`world`, `steps`, `drivers`, `suite.InitScenario`) remain available for custom bootstraps. Org pool and CLI helpers live in `internal/e2etest` and are not importable outside this module. Prefer `RunSuite` unless you need to inject drivers the env-based selector does not cover.
 
 ### API changes
+
+**`behaviourtest.RunPlaybackSuite`:** New entry point for the dummy-playback suite (build tag: `playback`). Callers pass the same `SuiteOptions{FeaturePaths, FixturesRoot}`; the `@playback` tag filter is fixed.
 
 **`behaviourtest.RunSuite`:** New high-level entry point. Callers pass `SuiteOptions{FeaturePaths, FixturesRoot}` only. Replaces the ~80-line bootstrap previously duplicated in `e2e/behaviour/suite_test.go`.
 
@@ -536,5 +561,7 @@ suiteRunner := godog.TestSuite{
 **`ci.Driver.WaitForHarnessAgentRound` addition (breaking change):** The `ci.Driver` interface now includes `WaitForHarnessAgentRound(ctx, owner, repo, agent string, after time.Time, consumed map[int]bool) (*forge.WorkflowRun, error)`, for scenarios where the same agent's harness is dispatched more than once (e.g. dummy-playback's review round, retried after fix). Unlike `WaitForHarnessAgent`'s latest-eligible-run selection, it selects the earliest eligible run whose ID is not in `consumed`. This widens the required method set, so external `ci.Driver` implementations must add this method when upgrading past this release or they will no longer satisfy the interface.
 
 **`scm.Driver.GetFileContentAtRef` addition (breaking change):** The `scm.Driver` interface now includes `GetFileContentAtRef(ctx, owner, repo, path, ref string) ([]byte, error)`, retrieving a file's content at a specific ref (commit SHA, branch, or tag) rather than `GetFileContent`'s implicit default-branch/HEAD read. The dummy-playback suite's "the published repository matches fixture" step uses it to verify, file by file, that a stage actually published the expected content at a pinned commit. The GitHub and GitLab reference implementations pass through to the existing `forge.Client` method of the same name. This widens the required method set, so external `scm.Driver` implementations must add this method when upgrading past this release or they will no longer satisfy the interface.
+
+**`scm.Driver.ListPullRequestCommits` addition (breaking change):** The `scm.Driver` interface now includes `ListPullRequestCommits(ctx, owner, repo, number) ([]string, error)`, returning the commit SHAs on a pull request, oldest first. The dummy-playback suite uses the first entry as the code stage's published commit: review and fix only append commits to the branch, so unlike the head branch's live tip, that commit cannot be displaced by a later stage that races ahead. The GitHub and GitLab reference implementations pass through to the new `forge.Client.ListPullRequestCommits` method (GitHub caps results at 250 commits). This widens the required method set, so external `scm.Driver` implementations must add this method when upgrading past this release or they will no longer satisfy the interface.
 
 Bump the pinned version when behaviour step vocabulary or `pkg/behaviourtest` APIs change.

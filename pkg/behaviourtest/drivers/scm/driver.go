@@ -84,4 +84,10 @@ type Driver interface {
 	// ListPullRequestReviews returns the formal reviews submitted on a
 	// change proposal (pull request / merge request).
 	ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]forge.PullRequestReview, error)
+
+	// ListPullRequestCommits returns the commit SHAs on a change
+	// proposal, oldest first. The result is the proposal's current commit
+	// list, so a force-push or rebase of the head branch can replace it;
+	// it makes no promise about the commits the proposal was opened with.
+	ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error)
 }

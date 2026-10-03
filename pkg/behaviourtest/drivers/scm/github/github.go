@@ -174,6 +174,10 @@ func (d *Driver) ListPullRequestReviews(ctx context.Context, owner, repo string,
 	return d.Client.ListPullRequestReviews(ctx, owner, repo, number)
 }
 
+func (d *Driver) ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error) {
+	return d.Client.ListPullRequestCommits(ctx, owner, repo, number)
+}
+
 // ParseRepo splits "owner/repo" into owner and repo name.
 func ParseRepo(fullName string) (owner, repo string, err error) {
 	return scm.ParseRepo(fullName)

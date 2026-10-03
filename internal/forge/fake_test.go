@@ -12,6 +12,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestFakeClient_ListPullRequestCommits(t *testing.T) {
+	f := NewFakeClient()
+	f.PRCommits = map[string][]string{"o/r/7": {"a", "b"}}
+
+	shas, err := f.ListPullRequestCommits(context.Background(), "o", "r", 7)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "b"}, shas)
+
+	shas, err = f.ListPullRequestCommits(context.Background(), "o", "r", 8)
+	require.NoError(t, err)
+	assert.Empty(t, shas)
+
+	f.Errors["ListPullRequestCommits"] = errors.New("boom")
+	_, err = f.ListPullRequestCommits(context.Background(), "o", "r", 7)
+	require.Error(t, err)
+}
+
 func TestFakeClient_ListOrgRepos(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{

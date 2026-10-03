@@ -653,6 +653,49 @@ func TestListPullRequestFiles(t *testing.T) {
 	assert.Equal(t, "same.go", files[1])
 }
 
+func TestListPullRequestCommits(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/commits", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		// GitLab reports newest first.
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"id": "second"},
+			{"id": "first"},
+		})
+	})
+
+	shas, err := client.ListPullRequestCommits(ctx, "myorg", "myrepo", 5)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"first", "second"}, shas, "must be reversed to oldest first")
+}
+
+func TestListPullRequestCommits_Errors(t *testing.T) {
+	t.Run("request error", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/commits", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, http.StatusInternalServerError, map[string]string{"message": "boom"})
+		})
+
+		_, err := client.ListPullRequestCommits(context.Background(), "myorg", "myrepo", 5)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "list merge request commits page 1")
+	})
+
+	t.Run("decode error", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/commits", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("not json"))
+		})
+
+		_, err := client.ListPullRequestCommits(context.Background(), "myorg", "myrepo", 5)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decode merge request commits page 1")
+	})
+}
+
 func TestListPullRequestFileDiffs(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()

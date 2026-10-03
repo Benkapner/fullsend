@@ -560,6 +560,10 @@ func (f *fakeCleanupSCM) CreateForkChangeProposal(context.Context, string, strin
 	return nil, nil
 }
 
+func (f *fakeCleanupSCM) ListPullRequestCommits(context.Context, string, string, int) ([]string, error) {
+	return nil, nil
+}
+
 func (f *fakeCleanupSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
 	return nil, nil
 }
@@ -1180,6 +1184,10 @@ func (f *fakeRetryCleanupSCM) CommitFileToFork(context.Context, string, string, 
 }
 
 func (f *fakeRetryCleanupSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
+}
+
+func (f *fakeRetryCleanupSCM) ListPullRequestCommits(context.Context, string, string, int) ([]string, error) {
 	return nil, nil
 }
 

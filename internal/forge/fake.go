@@ -336,6 +336,9 @@ type FakeClient struct {
 	// Pull request files for ListPullRequestFiles.
 	PRFiles map[string][]string // key: "owner/repo/number"
 
+	// Pull request commit SHAs (oldest first) for ListPullRequestCommits.
+	PRCommits map[string][]string // key: "owner/repo/number"
+
 	// Pull request file diffs for ListPullRequestFileDiffs.
 	PRFileDiffs map[string][]PullRequestFileDiff // key: "owner/repo/number"
 
@@ -1823,6 +1826,16 @@ func (f *FakeClient) ListPullRequestFiles(_ context.Context, owner, repo string,
 		}
 	}
 	return nil, nil
+}
+
+func (f *FakeClient) ListPullRequestCommits(_ context.Context, owner, repo string, number int) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListPullRequestCommits"); e != nil {
+		return nil, e
+	}
+	key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+	return f.PRCommits[key], nil
 }
 
 func (f *FakeClient) ListPullRequestFileDiffs(_ context.Context, owner, repo string, number int) ([]PullRequestFileDiff, error) {
