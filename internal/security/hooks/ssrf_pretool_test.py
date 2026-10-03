@@ -1513,13 +1513,20 @@ class TestOpenShellPolicyDns:
             "198.18.1",
             "0xc6120006",
             "0306.022.0.6",
-            "198.018.0.6",
+            "198.022.0.6",  # octal 022 is decimal 18
         ],
     )
     def test_ip_literal_spellings_blocked_in_sandbox(self, hook, host):
         result, log = self._validate(hook, f"http://{host}/", ["198.18.0.6"])
         assert result is not None
         log.assert_not_called()
+
+    def test_invalid_octal_spelling_is_hostname_deferred_in_sandbox(self, hook):
+        # "018" is not valid octal, so neither the numeric resolver nor libcurl
+        # treats 198.018.0.6 as an IP literal; it takes the hostname path.
+        result, log = self._validate(hook, "http://198.018.0.6/", ["198.18.0.6"])
+        assert result is None
+        assert log.call_args.kwargs["name"] == "openshell_policy_dns_defer"
 
     @pytest.mark.parametrize(
         "ips",
