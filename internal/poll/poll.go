@@ -24,6 +24,7 @@ type Poller struct {
 	dispatches        []Dispatch
 	warnedNoHMAC      bool
 	slashCommandsOnly bool
+	now               func() time.Time // clock for webhook freshness checks; nil uses time.Now
 }
 
 // New creates a Poller for the given project.
