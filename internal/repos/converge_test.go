@@ -17,13 +17,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testInferenceDefaults selects an inference authentication method under
+// defaults so test manifests satisfy the explicit inference.auth requirement.
+func testInferenceDefaults() DefaultsConfig {
+	return DefaultsConfig{Inference: InferenceSettings{Auth: InferenceAuthVertexWIF}}
+}
+
 func newConvergeManifest(repos ...string) *Manifest {
 	entries := make([]RepoEntry, len(repos))
 	for i, r := range repos {
 		entries[i] = RepoEntry{Name: r}
 	}
 	return &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v1.0.0",
@@ -2089,6 +2096,7 @@ func gitlabConvergeCfg(repo string) ConvergeConfig {
 			GitLab: &PlatformConfig{
 				URL:         "https://gitlab.example.com",
 				FullsendRef: "v2.5.0",
+				Inference:   InferenceSettings{Auth: InferenceAuthOpenAIAPIKey},
 				Repos:       []RepoEntry{{Name: repo}},
 			},
 		},
@@ -2140,7 +2148,8 @@ func TestConverge_GitLabFreshInstallReleaseRefWithoutManifestPin(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	cfg := ConvergeConfig{
 		Manifest: &Manifest{
-			Version: 1,
+			Version:  1,
+			Defaults: testInferenceDefaults(),
 			GitLab: &PlatformConfig{
 				URL:   "https://gitlab.example.com",
 				Repos: []RepoEntry{{Name: "acme/api"}},
@@ -2188,7 +2197,8 @@ func TestConverge_GitLabOnlyReleaseDefaultRefWithoutGitHubClient(t *testing.T) {
 	}
 	cfg := ConvergeConfig{
 		Manifest: &Manifest{
-			Version: 1,
+			Version:  1,
+			Defaults: testInferenceDefaults(),
 			GitLab: &PlatformConfig{
 				URL:   "https://gitlab.example.com",
 				Repos: []RepoEntry{{Name: "acme/api"}},
@@ -2892,7 +2902,8 @@ func TestConverge_GitLab_CreatesMissingSchedules(t *testing.T) {
 	// No pipeline schedules — simulates partial install failure.
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -2970,7 +2981,8 @@ func TestConverge_GitLab_SchedulesAlreadyPresent(t *testing.T) {
 	}
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -3923,7 +3935,8 @@ workflow:
 `)
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -4023,7 +4036,8 @@ workflow:
 `)
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -4122,7 +4136,8 @@ workflow:
 `)
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -4202,7 +4217,8 @@ workflow:
 `)
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -4263,7 +4279,8 @@ stages:
 `)
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -4376,7 +4393,8 @@ stages:
 `)
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -4455,7 +4473,8 @@ workflow:
 `)
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -4542,7 +4561,8 @@ stages:
 `)
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -4617,7 +4637,8 @@ stages:
 `)
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -4683,7 +4704,8 @@ workflow:
 `)
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -4738,7 +4760,8 @@ func TestConverge_GitLab_RootCIReadErrorSurfaces(t *testing.T) {
 	}
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -4786,7 +4809,8 @@ func TestConverge_GitLab_MissingSchedules_DryRun(t *testing.T) {
 	// No pipeline schedules.
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -4844,7 +4868,8 @@ func TestConverge_GitLab_ScheduleCreationError(t *testing.T) {
 	fc.Errors["CreatePipelineSchedule"] = fmt.Errorf("schedule API error")
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -4891,7 +4916,8 @@ func TestConverge_GitLab_GetRepoError_ScheduleCreation(t *testing.T) {
 	fc.Errors["GetRepo"] = fmt.Errorf("repo not found")
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -5025,7 +5051,8 @@ func TestConverge_BranchRefConsistentAcrossBatch(t *testing.T) {
 	fc := newFakeClientForBatch(repoNames...)
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "main",
@@ -5534,7 +5561,7 @@ func TestConverge_ManifestVendorFieldSetsVendorBinary(t *testing.T) {
 	v := true
 	m := &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{Vendor: &v},
+		Defaults: DefaultsConfig{Vendor: &v, Inference: InferenceSettings{Auth: InferenceAuthVertexWIF}},
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v1.0.0",
@@ -5565,7 +5592,7 @@ func TestConverge_VendorOverrideFalseDisablesManifestVendor(t *testing.T) {
 	v := true
 	m := &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{Vendor: &v},
+		Defaults: DefaultsConfig{Vendor: &v, Inference: InferenceSettings{Auth: InferenceAuthVertexWIF}},
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v1.0.0",
@@ -5597,7 +5624,8 @@ func TestConverge_VendorOverrideFalseDisablesManifestVendor(t *testing.T) {
 func TestConverge_VendorGitLabFailsBeforeCommit(t *testing.T) {
 	v := true
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v1.0.0",
@@ -6513,7 +6541,7 @@ func TestConverge_PerRepoPresetOverrideAndDisable(t *testing.T) {
 
 	m := &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: defaultPath}},
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: defaultPath}, Inference: InferenceSettings{Auth: InferenceAuthVertexWIF}},
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v1.0.0",
