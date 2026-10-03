@@ -885,16 +885,18 @@ external scheduler instead — see [Off-system polling](#off-system-polling)
 
 ### `workflow:` block and `auto_cancel`
 
-Install merges an include, `poll` / `agent` stages, and workflow rules into
-the existing `.gitlab-ci.yml`. Installs from before the removal of the empty
-`dispatch` stage may still contain that legacy stage; converge and uninstall
-clean it up. Install does not overwrite unrelated jobs.
+Install merges an include, `dispatch` / `poll` / `agent` stages, and workflow
+rules into the existing `.gitlab-ci.yml`. The `dispatch` stage hosts the
+webhook dispatcher job (`fullsend-dispatcher.yml`), which runs only in
+`trigger` pipelines started by a GitLab pipeline trigger on the protected
+default branch; such a pipeline runs the dispatcher alone, never an agent
+job. Install does not overwrite unrelated jobs.
 
 When an existing, non-empty file already has a `workflow:` block, fullsend sets
 `workflow.auto_cancel.on_new_commit: none` if that key is missing, and does not
 overwrite an existing value. It also adds a `CI_DEBUG_TRACE` deny-before-admit
-rule (`when: never`) followed by the protected-ref `schedule`/`api` rules if
-the block has no `rules:` key. Because `workflow.rules` is an
+rule (`when: never`) followed by the protected-ref `schedule`/`api` rules and
+the protected-default-branch `trigger` rule if the block has no `rules:` key. Because `workflow.rules` is an
 allowlist, ordinary push pipelines stop running in that case unless the block
 already has a matching rule; add a catch-all/push rule (or an explicit
 `when: always` rule) before installing, or remove the name-only `workflow:`
@@ -902,8 +904,8 @@ block so fullsend can leave it absent. When an existing, non-empty file has no
 `workflow:` block, fullsend leaves it absent so push-triggered pipelines keep
 running. For a missing or empty `.gitlab-ci.yml`, fullsend instead writes a
 fullsend-owned `workflow:` block with a name, `auto_cancel.on_new_commit:
-none`, the `CI_DEBUG_TRACE` deny rule, and protected-ref `schedule`/`api`
-rules. Later ordinary push jobs added to that file likewise need additional
+none`, the `CI_DEBUG_TRACE` deny rule, protected-ref `schedule`/`api`
+rules, and the protected-default-branch `trigger` rule. Later ordinary push jobs added to that file likewise need additional
 `workflow.rules` (or an explicit `when: always` rule), or GitLab will skip
 them.
 

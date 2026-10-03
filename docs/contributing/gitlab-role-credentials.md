@@ -196,6 +196,7 @@ GitLab permissions than the implementation uses.
 | Job | Role |
 | --- | --- |
 | GitLab poller/controller (`fullsend poll`, `fullsend-poll.yml`) | Poller |
+| GitLab webhook dispatcher (`fullsend poll --input-driver gitlab-webhook`, `fullsend-dispatcher.yml`) | Poller |
 | Agents / harness roles `review`, `triage`, `prioritize`, `retro`, `scribe` | Analyst |
 | Agents / harness roles `code`, `fix`, `coder` | Coder |
 | Custom agent whose name or harness `role:` is listed on a registered custom role | That custom role |
@@ -258,9 +259,10 @@ unlisted), exports `GITLAB_TOKEN` from that secret, and sets
 `approve_merge_request`. Selection also publishes non-secret diagnostic
 env vars `FULLSEND_GITLAB_ROLE`, `FULLSEND_GITLAB_ROLE_SECRET`, and
 `FULLSEND_GITLAB_ROLE_SOURCE`.
-GitLab CI templates (`fullsend-poll.yml`, `fullsend-agent.yml`) source
-`run-poll-job.sh` and `run-agent-job.sh`, which resolve credentials via
-`select-gitlab-role-token.sh`. Both job scripts first source
+GitLab CI templates (`fullsend-poll.yml`, `fullsend-dispatcher.yml`,
+`fullsend-agent.yml`) source `run-poll-job.sh`, `run-dispatcher-job.sh`, and
+`run-agent-job.sh`, which resolve credentials via
+`select-gitlab-role-token.sh`. All three job scripts first source
 `pin-ci-job-identity.sh`, which takes project, pipeline, and ref from
 the `CI_JOB_TOKEN` job record (`GET /api/v4/job`) rather than from the
 overridable `CI_PROJECT_ID` / `CI_PIPELINE_ID` / `CI_COMMIT_REF_PROTECTED`

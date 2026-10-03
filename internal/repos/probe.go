@@ -100,7 +100,17 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 	// so status and converge can detect and repair installs missing only
 	// these files.
 	if forgeName == ForgeGitLab {
-		for _, path := range gitlabAuxiliaryScriptPaths() {
+		scriptPaths := gitlabAuxiliaryScriptPaths()
+		// The webhook dispatcher template and script exist only in
+		// scaffold versions whose pipeline wrapper includes them, so a
+		// pre-dispatcher install must not report them missing. An
+		// unchanged-ref rollout that has not yet rewritten the wrapper is
+		// covered by CheckFileContentDrift, which compares against the
+		// selected version's expected files.
+		if gitlabWrapperReferencesDispatcher(content) {
+			scriptPaths = append(scriptPaths, gitlabDispatcherPaths()...)
+		}
+		for _, path := range scriptPaths {
 			_, err := client.GetFileContent(ctx, owner, repo, path)
 			if err != nil && !forge.IsNotFound(err) {
 				return nil, fmt.Errorf("checking GitLab scaffold file %s: %w", path, err)

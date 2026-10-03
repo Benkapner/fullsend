@@ -1,6 +1,7 @@
 package repos
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -73,11 +74,13 @@ var gitlabScaffoldPaths = []string{
 	".gitlab/ci/fullsend-agent.yml",
 	fullsendDispatchInclude,
 	".gitlab/ci/fullsend-poll.yml",
+	fullsendDispatcherTemplatePath,
 	".gitlab/ci/scripts/trust-ci-server-ca.sh",
 	".gitlab/ci/scripts/pin-ci-job-identity.sh",
 	".gitlab/ci/scripts/select-gitlab-role-token.sh",
 	".gitlab/ci/scripts/install-fullsend-cli.sh",
 	".gitlab/ci/scripts/run-poll-job.sh",
+	gitlabDispatcherJobScriptPath,
 	".gitlab/ci/scripts/run-agent-job.sh",
 	".gitlab/ci/scripts/checkout-mr-source.sh",
 	".fullsend/config.yaml",
@@ -100,13 +103,19 @@ const gitlabInstallCLIScriptPath = ".gitlab/ci/scripts/install-fullsend-cli.sh"
 
 const gitlabPollJobScriptPath = ".gitlab/ci/scripts/run-poll-job.sh"
 
+// gitlabDispatcherJobScriptPath is the webhook dispatcher job body (#7771)
+// sourced by fullsendDispatcherTemplatePath.
+const gitlabDispatcherJobScriptPath = ".gitlab/ci/scripts/run-dispatcher-job.sh"
+
 const gitlabAgentJobScriptPath = ".gitlab/ci/scripts/run-agent-job.sh"
 
 const gitlabCheckoutMRSourceScriptPath = ".gitlab/ci/scripts/checkout-mr-source.sh"
 
 // gitlabAuxiliaryScriptPaths returns the CI helper scripts sourced by the
 // generated poll and agent jobs. Probe and converge treat each as its own
-// scaffold component so a missing script is detected and repaired.
+// scaffold component so a missing script is detected and repaired. The
+// webhook dispatcher files are version-dependent and listed separately by
+// gitlabDispatcherPaths.
 func gitlabAuxiliaryScriptPaths() []string {
 	return []string{
 		gitlabTrustScriptPath,
@@ -117,6 +126,25 @@ func gitlabAuxiliaryScriptPaths() []string {
 		gitlabAgentJobScriptPath,
 		gitlabCheckoutMRSourceScriptPath,
 	}
+}
+
+// gitlabDispatcherPaths returns the webhook dispatcher scaffold files (#7771):
+// the job template the pipeline wrapper includes and the script it sources.
+// Scaffold versions that predate the dispatcher ship neither, so they are
+// required only when the pipeline wrapper references the template (see
+// gitlabWrapperReferencesDispatcher).
+func gitlabDispatcherPaths() []string {
+	return []string{
+		fullsendDispatcherTemplatePath,
+		gitlabDispatcherJobScriptPath,
+	}
+}
+
+// gitlabWrapperReferencesDispatcher reports whether pipeline wrapper content
+// includes the webhook dispatcher template, i.e. the scaffold version that
+// produced it requires the dispatcher files.
+func gitlabWrapperReferencesDispatcher(wrapper []byte) bool {
+	return bytes.Contains(wrapper, []byte(fullsendDispatcherTemplatePath))
 }
 
 // UninstallVarsForForge returns the CI/CD variable names to delete for

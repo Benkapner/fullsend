@@ -97,6 +97,19 @@ include:
       - if: $CI_DEBUG_TRACE =~ /^(1|t|true)$/i
         when: never
       - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i
+  # Webhook dispatcher (ADR 0125, #7771). GitLab's native "use a webhook"
+  # pipeline trigger starts a source=trigger pipeline; only this include
+  # admits it, so a trigger pipeline runs the dispatcher alone and never
+  # the agent job below (api only) or the poller above (schedule only).
+  # The dispatcher reads the native TRIGGER_PAYLOAD file variable and
+  # launches agents through a separate signed-input API pipeline, so no
+  # inputs are forwarded into it. This is the distinct
+  # fullsend-dispatcher.yml, not the retired fullsend-dispatch.yml.
+  - local: '.gitlab/ci/fullsend-dispatcher.yml'
+    rules:
+      - if: $CI_DEBUG_TRACE =~ /^(1|t|true)$/i
+        when: never
+      - if: $CI_PIPELINE_SOURCE == "trigger" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i
   # Native merge_request_event dispatch (fullsend-dispatch.yml) was
   # removed in #7322, and the leftover stub was dropped in #7707. All
   # events route through the cron poller, which creates standalone
@@ -146,8 +159,10 @@ variables:
   STAGE: $[[ inputs.stage ]]
 
 stages:
-  # Native MR dispatch was removed in #7322. The empty 'dispatch' stage
-  # was dropped from this list in #7337; uninstall and converge still
-  # strip it from already-enrolled repos via obsoleteGitLabStages.
+  # Native MR dispatch was removed in #7322 and its empty 'dispatch'
+  # stage dropped in #7337. #7771 reintroduces 'dispatch' for the
+  # webhook dispatcher job (fullsend-dispatcher.yml), which only runs in
+  # source=trigger pipelines.
+  - dispatch
   - poll
   - agent
