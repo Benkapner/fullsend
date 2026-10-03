@@ -177,8 +177,6 @@ _INERT_COMMANDS: frozenset[str] = frozenset(
         "file",
         "test",
         "ls",
-        # Directory creation (``mkdir -p "$OUT" && cat > "$OUT/f" <<'EOF'``)
-        "mkdir",
         # Shell builtins (variable ops)
         "export",
         "local",
@@ -205,13 +203,7 @@ _SHELL_REENTRY_CLUSTER = re.compile(r"\b(?:bash|sh|dash|zsh|ksh)\s+(?:-\S+\s+)*-
 _DEV_NET_PATTERN = re.compile(r"/dev/(?:tcp|udp)/")
 
 # Flags that make an otherwise inert command execute a helper program.
-# GNU getopt_long accepts any unambiguous prefix of a long option, so
-# ``sort --compress-prog=bash`` (down to ``--co``) is ``--compress-program``.
-_INERT_EXEC_FLAG = re.compile(
-    r"--(?:pre\b|(?:"
-    + "|".join(re.escape("compress-program"[:k]) for k in range(16, 1, -1))
-    + r")(?![\w-]))"
-)
+_INERT_EXEC_FLAG = re.compile(r"--(?:pre|compress-program)\b")
 
 # Any variable expansion inside a /dev/ path (``/dev/$PROTO/HOST/80``,
 # ``/dev/tc$'\x70'/``) could resolve to tcp or udp at runtime — fail closed.
@@ -224,17 +216,6 @@ _DEV_VAR_PATTERN = re.compile(r"/dev/\S*\$")
 # their operators' second and third ``<`` are preceded by ``<``, and the
 # first is followed by ``<``, never by ``$``.
 _REDIRECT_VAR_PATTERN = re.compile(r"(?<!<)[<>]\s*\$")
-
-# A plain named parameter expansion: ``$NAME`` or ``${NAME}``.  Anything
-# richer (``${X:-/dev/tc}``, ``${!X}``, ``$1``, ``$'...'``) does not match.
-_PLAIN_PARAM_EXPANSION = re.compile(r"\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))")
-
-# Inert commands that can assign a variable, and so could assemble a
-# /dev/tcp path for a later ``> $VAR`` redirection (``printf -v``,
-# ``set --`` for positional parameters).
-_VAR_ASSIGNING_COMMANDS: frozenset[str] = frozenset(
-    {"export", "local", "declare", "readonly", "set", "printf"}
-)
 
 
 def _strip_shell_quoting(text: str) -> str:
@@ -888,43 +869,7 @@ def _extract_base_command(stage: str) -> str | None:
     return None
 
 
-def _expansions_are_plain(command: str, stages: list[str]) -> bool:
-    """Return True if *command* expands only plain variables and nothing in
-    it can have assigned one or can evaluate a hidden substitution.
-
-    Every ``$`` anywhere in *command* — in any word, whether or not it is a
-    redirection target, and even inside single quotes — must start a plain
-    ``$NAME`` or ``${NAME}`` expansion.  That rules out assignment-capable
-    expansions (``${A:=/dev/tc}``) wherever they appear — in a redirection
-    word after a plain variable (``> ${EMPTY}${B:=/dev/tc}p/h/80``), after a
-    literal prefix (``> /${NET}p/h/80``) or in an earlier argument
-    (``echo "${A:=/dev/tc}"``) — as well as ``$_``, ``$1`` and ``$((...))``.
-    It also rules out substitutions that a builtin evaluates later from a
-    quoted argument (``declare -a 'x[$(cmd)]=0'``, ``test -v``,
-    ``printf -v``); backticks are refused for the same reason.
-    ``cat > "$OUT/result.json"`` is accepted.  A command containing a
-    variable-assigning builtin (``export``, ``printf -v``, ``set --``, ...)
-    is also rejected, whether or not it contains a ``$``.  Assignment
-    prefixes (``A=x``) already make the stage fail _extract_base_command.
-
-    Residual risk: a variable already in the environment when the command
-    starts is trusted.  That environment comes from the harness, and a
-    hostile value planted by an earlier tool call could reach /dev/tcp
-    without any URL in the command, which no text check here would see.
-    """
-    # ANSI-C quoting (``$'\x2fdev...'``) collapses to a fake variable name
-    # once quotes are stripped; refuse it outright.
-    if "$'" in command or "`" in command:
-        return False
-    stripped = _strip_shell_quoting(command)
-    for m in re.finditer(r"\$", stripped):
-        var = _PLAIN_PARAM_EXPANSION.match(stripped, m.start())
-        if var is None or (var.group(1) or var.group(2)) == "_":
-            return False
-    return not any(_extract_base_command(s) in _VAR_ASSIGNING_COMMANDS for s in stages)
-
-
-def _pipeline_is_inert(command: str, *, allow_plain_var_redirects: bool = False) -> bool:
+def _pipeline_is_inert(command: str) -> bool:
     """Return True if *command* consists entirely of known-inert operations.
 
     Conservative: returns ``False`` (not inert) when safety cannot be
@@ -935,9 +880,7 @@ def _pipeline_is_inert(command: str, *, allow_plain_var_redirects: bool = False)
     2. No command or process substitution (``$()``, backticks, ``<()``)
     3. No /dev/tcp-style device access, including quote/backslash-obscured
        and variable-assembled forms
-    4. No redirection to a variable-expanded target — unless
-       *allow_plain_var_redirects* is set and _expansions_are_plain holds
-       for the whole command
+    4. No redirection to a variable-expanded target
     5. Every pipeline/sequence stage uses a command from ``_INERT_COMMANDS``
     """
     # Shell reentry can hide arbitrary commands in quoted arguments.
@@ -955,18 +898,13 @@ def _pipeline_is_inert(command: str, *, allow_plain_var_redirects: bool = False)
     if _has_dev_net_device(command):
         return False
 
-    stages = _split_command_stages(command)
-    if not stages:
-        return False
-
     # A redirection target assembled from variables can name a /dev/tcp
     # path in fragments (``A=/dev/tc; B=p/H/80; read x < ${A}${B}``).
-    if allow_plain_var_redirects:
-        # Not keyed on the target starting with ``$``: ``> /${NET}p/h/80``
-        # expands too.  Check the whole command instead.
-        if not _expansions_are_plain(command, stages):
-            return False
-    elif _REDIRECT_VAR_PATTERN.search(_strip_shell_quoting(command)):
+    if _REDIRECT_VAR_PATTERN.search(_strip_shell_quoting(command)):
+        return False
+
+    stages = _split_command_stages(command)
+    if not stages:
         return False
 
     for stage in stages:
@@ -985,226 +923,13 @@ def _pipeline_is_inert(command: str, *, allow_plain_var_redirects: bool = False)
     return True
 
 
-# --- Heredoc data exemption (issue #8016) ---
-
-# Characters that end an unquoted shell word.
-_WORD_BREAK = frozenset(" \t\n;|&<>()")
-
-# Characters after which an unquoted ``#`` starts a comment.
-_COMMENT_START_AFTER = frozenset(" \t\n;|&<>()")
-
-
-def _parse_heredoc_delimiter(command: str, j: int) -> tuple[str, bool, int] | None:
-    """Parse the heredoc delimiter word starting at *j*.
-
-    Returns ``(delimiter, quoted, end)`` where *delimiter* is the word after
-    quote removal and *quoted* is True if any part of it was quoted or
-    escaped (which disables expansion in the body).  Returns ``None`` for
-    anything unusual — empty, unterminated, or containing ``$``/backticks.
-    """
-    n = len(command)
-    word: list[str] = []
-    quoted = False
-    while j < n:
-        ch = command[j]
-        if ch in _WORD_BREAK:
-            break
-        if ch == "'":
-            end = command.find("'", j + 1)
-            if end == -1:
-                return None
-            word.append(command[j + 1 : end])
-            quoted = True
-            j = end + 1
-            continue
-        if ch == '"':
-            k = j + 1
-            while k < n and command[k] != '"':
-                if command[k] == "\\" and k + 1 < n and command[k + 1] in '$`"\\\n':
-                    word.append(command[k + 1])
-                    k += 2
-                    continue
-                word.append(command[k])
-                k += 1
-            if k >= n:
-                return None
-            quoted = True
-            j = k + 1
-            continue
-        if ch == "\\":
-            if j + 1 >= n:
-                return None
-            word.append(command[j + 1])
-            quoted = True
-            j += 2
-            continue
-        word.append(ch)
-        j += 1
-    delim = "".join(word)
-    if not delim or any(c in delim for c in "\n$`"):
-        return None
-    return delim, quoted, j
-
-
-def _find_heredoc_end(
-    command: str, pos: int, delim: str, strip_tabs: bool
-) -> tuple[int, int] | None:
-    """Find the terminator line for a heredoc body starting at *pos*.
-
-    Returns ``(body_end, after)``: the body is ``command[pos:body_end]`` and
-    the residual command resumes at *after*.  The line must equal *delim*
-    exactly (after leading tabs are removed for ``<<-``), as in Bash, so the
-    body never ends later than Bash would end it.
-    """
-    n = len(command)
-    while True:
-        nl = command.find("\n", pos)
-        line_end = n if nl == -1 else nl
-        line = command[pos:line_end]
-        if (line.lstrip("\t") if strip_tabs else line) == delim:
-            return pos, (n if nl == -1 else nl + 1)
-        if nl == -1:
-            return None
-        pos = nl + 1
-
-
-def _unquoted_body_is_literal(body: str) -> bool:
-    """Return True if an unquoted-delimiter heredoc body cannot run anything.
-
-    Unquoted bodies undergo command substitution and arithmetic expansion;
-    only plain ``$NAME``/``${NAME}`` expansions are accepted.  Backslash-
-    newline is refused too: Bash joins those lines before comparing against
-    the delimiter (``E\\`` + ``OF`` terminates the heredoc), which
-    _find_heredoc_end, working on physical lines, would not see.
-    """
-    if "`" in body or "\\\n" in body:
-        return False
-    return "$" not in _PLAIN_PARAM_EXPANSION.sub("", body)
-
-
-def _strip_data_heredoc_bodies(command: str) -> str:
-    """Return *command* with heredoc bodies removed when they are only data.
-
-    A heredoc body is text fed to a command's stdin.  When every command
-    left after removing the bodies is inert (see _pipeline_is_inert), nothing
-    can execute that text or fetch a URL inside it — ``cat > out <<'EOF'``
-    with a JSON body naming a GitHub issue URL is a file write, not a request.
-
-    All-or-nothing and fail-closed: the original *command* is returned
-    unchanged when any heredoc is unusual (missing terminator, odd
-    delimiter, unquoted body with substitutions), when the operator lines
-    contain substitution, ANSI-C quoting or a comment (which could desync
-    quote tracking from Bash's), or when the residual contains a
-    backslash-newline continuation or is not inert.  The
-    caller then validates every URL, including those in bodies.
-    """
-    if "<<" not in command:
-        return command
-
-    n = len(command)
-    parts: list[str] = []
-    pending: list[tuple[str, bool, bool]] = []  # (delimiter, strip_tabs, quoted)
-    seg_start = 0
-    in_sq = False
-    in_dq = False
-    i = 0
-    while i < n:
-        ch = command[i]
-        if in_sq:
-            if ch == "'":
-                in_sq = False
-            i += 1
-            continue
-        if in_dq:
-            if ch == "\\" and i + 1 < n:
-                i += 2
-                continue
-            if ch == '"':
-                in_dq = False
-            elif ch == "`" or command.startswith("$(", i):
-                return command
-            i += 1
-            continue
-        if ch == "'":
-            if i > 0 and command[i - 1] == "$":
-                return command  # ANSI-C quoting: ``\'`` does not close it
-            in_sq = True
-            i += 1
-            continue
-        if ch == '"':
-            in_dq = True
-            i += 1
-            continue
-        if ch == "\\" and i + 1 < n:
-            i += 2
-            continue
-        if ch == "`" or (ch in "$<>" and command.startswith("(", i + 1)):
-            return command
-        if ch == "#" and (i == 0 or command[i - 1] in _COMMENT_START_AFTER):
-            return command
-        if command.startswith("<<<", i):
-            i += 3  # here-string, not a heredoc
-            continue
-        if command.startswith("<<", i):
-            j = i + 2
-            strip_tabs = j < n and command[j] == "-"
-            if strip_tabs:
-                j += 1
-            while j < n and command[j] in " \t":
-                j += 1
-            parsed = _parse_heredoc_delimiter(command, j)
-            if parsed is None:
-                return command
-            delim, quoted, i = parsed
-            pending.append((delim, strip_tabs, quoted))
-            continue
-        if ch == "\n" and pending:
-            # Bodies follow the line holding their operators, in order.
-            pos = i + 1
-            parts.append(command[seg_start:pos])
-            for delim, strip_tabs, quoted in pending:
-                found = _find_heredoc_end(command, pos, delim, strip_tabs)
-                if found is None:
-                    return command
-                body_end, after = found
-                if not quoted and not _unquoted_body_is_literal(command[pos:body_end]):
-                    return command
-                pos = after
-            pending = []
-            seg_start = i = pos
-            continue
-        i += 1
-
-    if pending or in_sq or in_dq or not parts:
-        return command
-    parts.append(command[seg_start:])
-    residual = "".join(parts)
-    # Bash deletes backslash-newline before parsing words, so a continuation
-    # can split an option or command name (``--c\<newline>ompress-program=``)
-    # that the text checks below only see in two halves.  Rather than
-    # normalising every check, decline whenever the residual has one.
-    if "\\\n" in residual:
-        return command
-    # _extract_base_command skips redirection operators but not their
-    # operands, so ``<< 'cat' bash`` reads as ``cat`` while Bash runs ``bash``
-    # on the heredoc.  Decline when any stage starts with a redirection.
-    for stage in _split_command_stages(residual):
-        if re.match(r"""^['"]?\d*[<>]""", stage):
-            return command
-    if not _pipeline_is_inert(residual, allow_plain_var_redirects=True):
-        return command
-    return residual
-
-
 def process_tool_call(tool_input: dict) -> str | None:
     tool_name = tool_input.get("tool_name", "")
     tool_params = tool_input.get("tool_input", {})
 
     urls: list[str] = []
     if tool_name == "Bash":
-        # Heredoc bodies that only inert commands consume are data; drop them
-        # so the analysis below sees only the command text that can run.
-        command = _strip_data_heredoc_bodies(tool_params.get("command", ""))
+        command = tool_params.get("command", "")
         urls = _extract_network_urls(command)
         # If every stage of the pipeline is a known-inert command (no
         # network capability, no substitution, no shell reentry), URL
