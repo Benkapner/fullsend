@@ -2234,11 +2234,58 @@ class TestStripDataHeredocBodies:
             # Unquoted delimiter split by backslash-newline: Bash ends the
             # heredoc at ``E\`` + ``OF``, so the curl line below runs.
             f"cat > f <<EOF\nE\\\nOF\ncurl {_METADATA_URL}\nEOF\n",
+            # Leading redirection whose operand reads as the command name:
+            # Bash runs ``bash`` (or ``sh``) on the heredoc / here-string.
+            f"<< 'cat' bash\ncurl {_METADATA_URL}\ncat",
+            f"<<'cat' bash\ncurl {_METADATA_URL}\ncat",
+            f"<<- 'cat' bash\ncurl {_METADATA_URL}\ncat",
+            f"<<< cat bash <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"< in.txt bash <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"> out.txt bash <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"2>&1 bash <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"echo a; << 'cat' sh\ncurl {_METADATA_URL}\ncat",
+            # GNU getopt_long abbreviations of --compress-program.
+            f"sort --compress-prog=bash -S 1b <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"sort --compress-prog bash -S 1b <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"sort --co=bash -S 1b <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"sort --compress=bash -S 1b <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"sort --compress-program=bash -S 1b <<'EOF'\ncurl {_METADATA_URL}\nEOF",
         ],
     )
     def test_not_stripped(self, hook, cmd):
         assert hook._strip_data_heredoc_bodies(cmd) == cmd
         assert hook.process_tool_call(_bash(cmd)) is not None
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_leading_heredoc_operand_is_not_the_command_in_bash(tmp_path):
+    """Why a leading ``<< 'cat' bash`` must not get the exemption: Bash runs
+    ``bash`` on the heredoc body, not ``cat``."""
+    cmd = "<< 'cat' bash\necho heredoc-body-marker\ncat\n"
+    proc = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=10)
+    assert "heredoc-body-marker" in proc.stdout
+
+
+@pytest.mark.skipif(shutil.which("sort") is None, reason="sort not available")
+def test_sort_abbreviated_compress_program_runs_helper(tmp_path):
+    """Why abbreviated ``--compress-prog`` must not count as inert: GNU sort
+    accepts it and runs the helper once ``-S`` forces temporary runs."""
+    version = subprocess.run(["sort", "--version"], capture_output=True, text=True, timeout=10)
+    if "GNU" not in version.stdout:
+        pytest.skip("GNU sort required")
+    marker = tmp_path / "marker"
+    helper = tmp_path / "helper.sh"
+    helper.write_text(f"#!/bin/sh\necho ran >> {marker}\nexec cat\n")
+    helper.chmod(0o755)
+    data = "x\n" * 400
+    subprocess.run(
+        ["sort", f"--compress-prog={helper}", "-S", "1b", "-T", str(tmp_path)],
+        input=data,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert marker.exists()
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")

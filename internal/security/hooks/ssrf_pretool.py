@@ -205,7 +205,13 @@ _SHELL_REENTRY_CLUSTER = re.compile(r"\b(?:bash|sh|dash|zsh|ksh)\s+(?:-\S+\s+)*-
 _DEV_NET_PATTERN = re.compile(r"/dev/(?:tcp|udp)/")
 
 # Flags that make an otherwise inert command execute a helper program.
-_INERT_EXEC_FLAG = re.compile(r"--(?:pre|compress-program)\b")
+# GNU getopt_long accepts any unambiguous prefix of a long option, so
+# ``sort --compress-prog=bash`` (down to ``--co``) is ``--compress-program``.
+_INERT_EXEC_FLAG = re.compile(
+    r"--(?:pre\b|(?:"
+    + "|".join(re.escape("compress-program"[:k]) for k in range(16, 1, -1))
+    + r")(?![\w-]))"
+)
 
 # Any variable expansion inside a /dev/ path (``/dev/$PROTO/HOST/80``,
 # ``/dev/tc$'\x70'/``) could resolve to tcp or udp at runtime — fail closed.
@@ -1172,6 +1178,12 @@ def _strip_data_heredoc_bodies(command: str) -> str:
         return command
     parts.append(command[seg_start:])
     residual = "".join(parts)
+    # _extract_base_command skips redirection operators but not their
+    # operands, so ``<< 'cat' bash`` reads as ``cat`` while Bash runs ``bash``
+    # on the heredoc.  Decline when any stage starts with a redirection.
+    for stage in _split_command_stages(residual):
+        if re.match(r"""^['"]?\d*[<>]""", stage):
+            return command
     if not _pipeline_is_inert(residual, allow_plain_var_redirects=True):
         return command
     return residual
