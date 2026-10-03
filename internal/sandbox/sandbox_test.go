@@ -1105,6 +1105,79 @@ func TestUploadFile_OpenshellNotInPath(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestUploadFile_ExactDestination(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing=%t", existing), func(t *testing.T) {
+			dir := t.TempDir()
+			local := filepath.Join(dir, "source ' file.json")
+			require.NoError(t, os.WriteFile(local, []byte("replacement"), 0o644))
+			remote := filepath.Join(dir, "repo", "main ' file.go")
+			require.NoError(t, os.MkdirAll(filepath.Dir(remote), 0o755))
+			neighbor := filepath.Join(filepath.Dir(remote), "neighbor.go")
+			require.NoError(t, os.WriteFile(neighbor, []byte("preserve"), 0o644))
+			if existing {
+				require.NoError(t, os.WriteFile(remote, []byte("original"), 0o644))
+			}
+			installFileUploadFake(t)
+			require.NoError(t, UploadFile("test", local, remote))
+			got, err := os.ReadFile(remote)
+			require.NoError(t, err)
+			assert.Equal(t, "replacement", string(got))
+			got, err = os.ReadFile(neighbor)
+			require.NoError(t, err)
+			assert.Equal(t, "preserve", string(got))
+		})
+	}
+}
+
+// Execute the remote commands locally and emulate OpenShell's directory
+// destination semantics, including mkdir failure for an existing file. The
+// sandbox runs GNU coreutils, but BSD mv on macOS lacks -T, so the fake
+// emulates "mv -fT -- SRC DST" with portable shell instead of the host mv.
+func installFileUploadFake(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = upload ]; then
+  mkdir -p -- "$5" && cp -- "$4" "$5/"
+  exit $?
+fi
+if [ "$2" = exec ]; then
+  for arg in "$@"; do command="$arg"; done
+  prelude='mv() {
+  if [ "$1" = -fT ] && [ "$2" = -- ] && [ "$#" -eq 4 ]; then
+    if [ -d "$4" ]; then
+      echo "mv: cannot overwrite directory $4" >&2
+      return 1
+    fi
+    command mv -f -- "$3" "$4"
+  else
+    command mv "$@"
+  fi
+}'
+  sh -c "$prelude
+$command"
+  exit $?
+fi
+exit 1
+`
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestUploadFile_RejectsDirectoryDestination(t *testing.T) {
+	installFileUploadFake(t)
+	local := filepath.Join(t.TempDir(), "source")
+	require.NoError(t, os.WriteFile(local, []byte("content"), 0o644))
+	destination := t.TempDir()
+	assert.ErrorContains(t, UploadFile("test", local, destination), "installing uploaded file")
+}
+
+func TestUploadFile_MissingSource(t *testing.T) {
+	installFileUploadFake(t)
+	assert.Error(t, UploadFile("test", filepath.Join(t.TempDir(), "missing"), filepath.Join(t.TempDir(), "dest")))
+}
+
 func TestUploadDir_OpenshellNotInPath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PATH", "")

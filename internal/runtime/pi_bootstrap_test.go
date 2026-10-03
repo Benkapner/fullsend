@@ -40,12 +40,17 @@ func fakeOpenshellPi(t *testing.T, logPath, storeDir, streamFixture string) {
 	script := `#!/bin/sh
 echo "$@" >> '` + logPath + `'
 if [ "$2" = "upload" ]; then
+  case "$5" in /tmp/fs-upload-*/) cp -- "$4" "$5/"; exit $? ;; esac
   cp "$4" '` + storeDir + `'/"$(printf '%s' "$5" | tr '/' '_')"
   exit 0
 fi
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
+    "mkdir -m 700 -- /tmp/"*|"mkdir -m 700 -- '/tmp/"*|"rm -f -- '/tmp/fs-upload-"*) sh -c "$last"; exit $? ;;
+    "test -f '/tmp/fs-upload-"*)
+      sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
+      exit $? ;;
     "pi --version") echo "0.84.2"; exit 0 ;;
     "command -v pi"*) printf '%s\n' /usr/bin/pi '/usr/local/share/pi-extensions/anthropic-vertex'; exit 0 ;;
     *usage.jsonl*mv*) u='` + storeDir + `'/` + piFakeUsageFile + `; if [ -f "$u" ]; then cat "$u"; mv -f "$u" "$u.read"; fi; exit 0 ;;

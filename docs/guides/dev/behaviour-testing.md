@@ -223,6 +223,41 @@ GODOG_CONCURRENCY=1 make behaviour-test
 Serial mode (`GODOG_CONCURRENCY=1`) is useful when debugging a single
 scenario or when `-v` output from multiple scenarios would interleave.
 
+### Playback suite
+
+The dummy-playback scenarios (`@playback`, e.g. `features/runtime/playback.feature`) run under their own target:
+
+```bash
+make playback-test
+```
+
+The target runs `go test -tags playback -race -v -count=1 -timeout 45m ./e2e/behaviour/`. It uses only the `playback` build tag, so only `TestPlaybackSuite` (`behaviourtest.RunPlaybackSuite`) is compiled and `TestBehaviourSuite` is left out. Do not add `behaviour` to the tag list; that would run both suites. `RunPlaybackSuite` fixes the godog tag filter to `@playback` (`GODOG_TAGS` is ignored) and sets `PLAYBACK_RUNTIME=dummy-playback` for the install driver. Everything else is configured from the same environment as `make behaviour-test`: `ENVIRONMENT`, `BEHAVIOUR_SCM` / `BEHAVIOUR_CI` / `BEHAVIOUR_INSTALL_MODE`, `E2E_GCP_*`, `E2E_LOCK_TIMEOUT`, `GODOG_CONCURRENCY`, `BEHAVIOUR_ARTIFACT_DIR`, and the role PEM / Cloudflare credentials the install factories need. `make behaviour-test` skips `@playback` scenarios, so the two targets never run the same scenario.
+
+#### Running the playback suite in CI
+
+The `playback` job mirrors the `behaviour` job in [`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml), with these specifics:
+
+- **Target and environment.** Run `make playback-test` with `shell: bash`, teeing output (for example to `playback-test.log`) so `pipefail` propagates failures. Pass the same `env:` block as the behaviour job: `BEHAVIOUR_SCM=github`, `BEHAVIOUR_CI=githubactions`, `BEHAVIOUR_INSTALL_MODE=per-repo`, `E2E_GCP_*`, `TEST_*_PEM`, and the `TEST_CLOUDFLARE_*` credentials. Point `BEHAVIOUR_ARTIFACT_DIR` at a playback-specific directory (for example `${{ runner.temp }}/playback-artifacts`). You do not need to set `GODOG_TAGS` or `PLAYBACK_RUNTIME`, because `RunPlaybackSuite` sets them itself.
+- **Triggers, gate, and environment binding.** Use `needs: gate` for authorized `pull_request_target`, `merge_group`, and push to `main`; manual dispatch runs playback when `run_playback=true`. Bind to the same GitHub Environment (`stage` on push, `dev` otherwise) and set `ENVIRONMENT` to match. The job checks out and runs PR-head code with secrets, so the [CI Workflows security rules](../../contributing/ci-workflows.md#review-checklist-for-secrets-in-e2ebehaviour-jobs) apply.
+- **Org reservation.** The playback and behaviour jobs share a job concurrency group within each stage workflow run, so they execute one at a time. Dev jobs use distinct groups and run concurrently, reserving separate orgs. `RunPlaybackSuite` reserves a pool org with the same `e2etest.AcquireOrg` lock that `RunSuite` uses (`orgPoolForEnvironment`), and the lock is released in `t.Cleanup`. Two limits make relying on that lock alone unsafe when both suites target the single stage org:
+  - `AcquireOrg` waits for the lock for the `E2E_LOCK_TIMEOUT` default of 10 minutes, far less than the 45-minute suite budget, so a job that starts while the other suite is running can fail while waiting.
+  - A lock is treated as stale and reclaimed once it is older than 15 minutes (`staleLockTimeout` in `internal/e2etest`). That check uses only the lock's creation time and does not check whether the holder is still running, so a later contender can reclaim an org that a long-running suite is still using.
+
+  On `dev`, the pool has several orgs, so contention is lower, but the same limits apply when the pool is exhausted. The org lock remains responsible for reservation; job concurrency prevents contention between these two suites in the same stage run.
+- **Change detection.** Reuse the behaviour job's file filter (its `grep -qE` path list and the `push.paths` entries under the same `SYNC-WITH` comment). It already covers `e2e/behaviour/` (playback features, fixtures and results), `pkg/behaviourtest/`, `internal/runtime/` (the `dummy-playback` runtime), and `Makefile`. Keep the two filters in sync, and keep the behaviour job's fallback of running the tests when the file list cannot be fetched or may be truncated.
+- **Cancellation.** The job inherits the workflow-level `concurrency` group and `cancel-in-progress` expression. A cancelled or killed run cannot run `t.Cleanup`, so its org lock is reclaimed by the stale-lock timeout in `internal/e2etest`, exactly as for the behaviour job. Gate post-test steps on `always()` rather than `success()` so that redaction still runs after a failure.
+- **Artifacts.** Before uploading, redact the playback artifact directory with the base-branch `scripts/redact-behaviour-artifacts.sh`, run through `env -i` with the full secret list, as described in [Behaviour debug artifact redaction](../../contributing/ci-workflows.md#behaviour-debug-artifact-redaction). Upload only when `steps.redact.outcome == 'success'` and the suite step failed, with `if-no-files-found: ignore`. Use an artifact name distinct from `behaviour-artifacts-*`, for example `playback-artifacts-<pr-or-run-id>`.
+- **Timeout.** Set `timeout-minutes: 45` to match the target's `go test -timeout` (see [CI timeout budgeting](#ci-timeout-budgeting-for-lazy-provisioning)).
+
+To run playback from a trusted PR branch before merging, dispatch the existing E2E workflow with that branch as the ref:
+
+```bash
+gh workflow run e2e.yml --repo fullsend-ai/fullsend \
+  --ref agent/7942-playback-test-target -f run_playback=true
+```
+
+This runs the branch's workflow and test target in the dev environment. The admin e2e and regular behaviour jobs are skipped for this playback dispatch. Artifact redaction uses the default-branch script.
+
 In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same as admin e2e) for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. Before `github setup`, the install driver resolves the repo-scoped inference WIF provider: it runs `fullsend inference status` and runs `fullsend inference provision` only when the provider is not healthy. Provisions are serialised across the process. The resolved provider is cached per repo name for the rest of the run, including after the repo is deleted and recreated, because the provider ID, its attribute condition and the Vertex AI grant are all keyed by `owner/repo`, not by repo ID (`Provisioner.ProvisionWIF` in `internal/dispatch/gcf/provisioner.go` creates the provider and the grant, and is the source of truth for these bindings). See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
 ### Repo allocation via unified Driver
@@ -248,6 +283,7 @@ Runner env (defaults shown):
 BEHAVIOUR_SCM=github              # also: gitlab; future: forgejo
 BEHAVIOUR_CI=githubactions        # also: gitlabci; future: tekton
 BEHAVIOUR_INSTALL_MODE=per-repo
+BEHAVIOUR_APP_SET=fullsend-test # app identities for both mint deployment and github setup; must match the supplied role PEMs
 BEHAVIOUR_ARTIFACT_DIR=        # CI upload-artifact root for debug logs and run artifacts; temp dir when unset
 BEHAVIOUR_CONFIG_PRESET=       # optional local path or HTTPS URL forwarded as github setup --config
 PLAYBACK_RUNTIME=              # unset: normal "dummy" runtime; "dummy-playback": install.PlaybackDriver's installation runtime
@@ -405,7 +441,7 @@ Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ens
 
 Each lease of a pool repo adds approximately 3–5 minutes of overhead (delete leftover state + create + `github setup` + Actions settle; the first lease of each name also resolves inference WIF), including when a later scenario reuses the same `test-repo-NN` name. The behaviour job's `timeout-minutes` in `e2e.yml` and the `go test -timeout` in the Makefile must account for this overhead across all leases in the suite.
 
-Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within this budget. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection.
+Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within this budget. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection. The same rule applies to the `playback-test` target (also 45 minutes) and to any CI job that runs it.
 
 Reference: [`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) behaviour job `timeout-minutes` and `Makefile` `behaviour-test` target.
 
@@ -490,7 +526,7 @@ func TestBehaviourSuite(t *testing.T) {
 
 `RunSuite` builds the CLI from module `github.com/fullsend-ai/fullsend` (equivalent to `e2etest.BuildModuleBinary`), so the caller's module root is not used. Run with `-tags behaviour` and the same env vars as CI (see above).
 
-The dummy-playback suite has its own entry point, `behaviourtest.RunPlaybackSuite`, which takes the same `SuiteOptions` and is called from a test file built with `-tags playback` (see `e2e/behaviour/playback_suite_test.go`). It installs pool repos with the `dummy-playback` runtime, runs only `@playback`-tagged scenarios (the filter is fixed; `GODOG_TAGS` is not consulted), and is otherwise configured from the same environment variables as `RunSuite`. `@playback` scenarios are skipped automatically by the standard `RunSuite` suite, so the two runners do not overlap. Run it with `-tags playback`:
+The dummy-playback suite has its own entry point, `behaviourtest.RunPlaybackSuite`, which takes the same `SuiteOptions` and is called from a test file built with `-tags playback` (see `e2e/behaviour/playback_suite_test.go`). It installs pool repos with the `dummy-playback` runtime, runs only `@playback`-tagged scenarios (the filter is fixed; `GODOG_TAGS` is not consulted), and is otherwise configured from the same environment variables as `RunSuite`. `@playback` scenarios are skipped automatically by the standard `RunSuite` suite, so the two runners do not overlap. In this repo, `make playback-test` runs it (see [Playback suite](#playback-suite)). External callers should build it with `-tags playback`:
 
 ```go
 //go:build playback
