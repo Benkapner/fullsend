@@ -754,11 +754,21 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			// the glob's other settings and its siblings are unchanged. A value
 			// is written when it differs from the inherited platform/default
 			// value or when the copied glob entry already overrides it.
-			carved, carveErr := repos.CarveOutGlobCovered(repos.ManifestEditConfig{
+			carved, carveErr := repos.CarveOutGlobCovered(ctx, repos.ManifestEditConfig{
 				Manifest:     manifest,
 				ManifestPath: opts.manifest,
 				DryRun:       opts.dryRun,
-			}, carveTargets, func(forgeName string, platform *repos.PlatformConfig, entry *repos.RepoEntry) {
+			}, carveTargets, clients, func(forgeName string, platform *repos.PlatformConfig, entry *repos.RepoEntry) error {
+				// Reject a target that would have no effective inference
+				// authentication selection before anything is persisted:
+				// the flag, or the copied glob entry's own, forge-section,
+				// or defaults value.
+				if opts.inferenceAuth == "" {
+					owner, repo, _ := strings.Cut(entry.Name, "/")
+					if err := manifest.ResolveConfigForEntry(owner, repo, forgeName, *entry).RequireInferenceAuth(); err != nil {
+						return err
+					}
+				}
 				if opts.fullsendRef != "" && (entry.FullsendRef != "" || opts.fullsendRef != platform.FullsendRef) {
 					entry.FullsendRef = opts.fullsendRef
 				}
@@ -778,6 +788,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 						entry.Vendor = &v
 					}
 				}
+				return nil
 			})
 			if carveErr != nil {
 				return fmt.Errorf("applying per-repo overrides to glob-covered repos: %w", carveErr)

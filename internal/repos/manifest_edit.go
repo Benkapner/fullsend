@@ -209,11 +209,17 @@ func UpdateInferenceAuth(ctx context.Context, cfg ManifestEditConfig, filters []
 		}
 	}
 
+	var concrete []string
 	for _, filter := range filters {
-		if isGlob(filter) || matchedExact[strings.ToLower(filter)] {
-			continue
+		if !isGlob(filter) && !matchedExact[strings.ToLower(filter)] {
+			concrete = append(concrete, filter)
 		}
-		carved, err := carveOutGlobEntry(platforms, filter, nil)
+	}
+	// A discovery failure falls back to the first covering glob; convergence
+	// repeats the expansion and reports the error.
+	discovered, _ := m.discoverGlobForges(ctx, clients, concrete)
+	for _, filter := range concrete {
+		carved, _, err := carveOutForForge(m, filter, discovered[strings.ToLower(filter)], nil)
 		if err != nil {
 			return nil, err
 		}
@@ -281,6 +287,83 @@ func UpdateInferenceAuth(ctx context.Context, cfg ManifestEditConfig, filters []
 	return updated, nil
 }
 
+// discoverGlobForges returns, for each concrete name covered by glob entries
+// in more than one forge section, the forge whose glob expansion discovers
+// the repository (the same resolution convergence uses). Names covered on a
+// single forge, names that expansion does not discover, and calls with a nil
+// clients factory yield no entry, leaving the caller to fall back to the
+// first covering glob.
+func (m *Manifest) discoverGlobForges(ctx context.Context, clients ForgeClientFactory, names []string) (map[string]string, error) {
+	if clients == nil {
+		return nil, nil
+	}
+	var ambiguous []string
+	for _, name := range names {
+		if isGlob(name) {
+			continue
+		}
+		covering := 0
+		for _, platform := range []*PlatformConfig{m.GitHub, m.GitLab} {
+			if platform == nil {
+				continue
+			}
+			for _, entry := range platform.Repos {
+				if !isGlob(entry.Name) {
+					continue
+				}
+				ok, err := matchesPattern(entry.Name, name)
+				if err != nil {
+					return nil, fmt.Errorf("invalid manifest repo pattern %q: %w", entry.Name, err)
+				}
+				if ok {
+					covering++
+					break
+				}
+			}
+		}
+		if covering > 1 {
+			ambiguous = append(ambiguous, name)
+		}
+	}
+	if len(ambiguous) == 0 {
+		return nil, nil
+	}
+	expanded, err := m.ExpandGlobsFor(ctx, clients, ambiguous)
+	if err != nil {
+		return nil, err
+	}
+	forges := make(map[string]string, len(expanded))
+	for _, rr := range expanded {
+		forges[strings.ToLower(rr.Owner+"/"+rr.Repo)] = rr.Forge
+	}
+	return forges, nil
+}
+
+// carveOutForForge carves an explicit entry for name from the covering glob
+// in the discovered forge section, or from the first covering glob across
+// forges (GitHub before GitLab) when discovered is empty. It returns the new
+// entry and the forge section it was added to.
+func carveOutForForge(m *Manifest, name, discovered string, skipGlobs map[string]bool) (*RepoEntry, string, error) {
+	order := []string{ForgeGitHub, ForgeGitLab}
+	if discovered != "" {
+		order = []string{discovered}
+	}
+	for _, forgeName := range order {
+		platform := m.PlatformFor(forgeName)
+		if platform == nil {
+			continue
+		}
+		carved, err := carveOutGlobEntry([]*PlatformConfig{platform}, name, skipGlobs)
+		if err != nil {
+			return nil, "", err
+		}
+		if carved != nil {
+			return carved, forgeName, nil
+		}
+	}
+	return nil, "", nil
+}
+
 // carveOutGlobEntry appends an explicit entry for name copied from the first
 // glob entry (GitHub before GitLab, matching resolution order) that covers
 // it, and returns a pointer to the new entry. It returns nil when no glob
@@ -320,45 +403,49 @@ func carveOutGlobEntry(platforms []*PlatformConfig, name string, skipGlobs map[s
 }
 
 // CarveOutGlobCovered gives each concrete repository in names that is covered
-// only by a glob entry its own explicit entry, copied from the first matching
-// glob (the same glob resolution would use), and passes the new entry to
-// apply together with its forge name and platform section so per-entry
-// overrides can be recorded while the glob's other settings are preserved.
-// Sibling repositories covered by the glob are left untouched. Names that
-// already have an explicit entry, or that no glob covers, are skipped. Returns
-// the names that received a new entry; the manifest is written when any did
-// and DryRun is not set.
-func CarveOutGlobCovered(cfg ManifestEditConfig, names []string, apply func(forgeName string, platform *PlatformConfig, entry *RepoEntry)) ([]string, error) {
+// only by a glob entry its own explicit entry, copied from the glob that
+// resolution would use, and passes the new entry to apply together with its
+// forge name and platform section so per-entry overrides can be recorded
+// while the glob's other settings are preserved. When globs on more than one
+// forge cover a name, the forge whose expansion discovers the repository is
+// used (when clients is non-nil); undiscovered names use the first covering
+// glob, GitHub before GitLab. Sibling repositories covered by the glob are
+// left untouched. Names that already have an explicit entry, or that no glob
+// covers, are skipped. An error from apply aborts before the manifest is
+// written. Returns the names that received a new entry; the manifest is
+// written when any did and DryRun is not set.
+func CarveOutGlobCovered(ctx context.Context, cfg ManifestEditConfig, names []string, clients ForgeClientFactory, apply func(forgeName string, platform *PlatformConfig, entry *RepoEntry) error) ([]string, error) {
 	if cfg.Manifest == nil {
 		return nil, fmt.Errorf("manifest is required")
 	}
 	m := cfg.Manifest
-	var carvedNames []string
+	var candidates []string
 	for _, name := range names {
 		if isGlob(name) {
 			continue
 		}
-		if slices.ContainsFunc(m.AllRepos(), func(e RepoEntry) bool { return strings.EqualFold(e.Name, name) }) {
+		if slices.ContainsFunc(m.AllRepos(), func(e RepoEntry) bool { return strings.EqualFold(e.Name, name) }) ||
+			slices.ContainsFunc(candidates, func(c string) bool { return strings.EqualFold(c, name) }) {
 			continue
 		}
-		for _, p := range []struct {
-			forge    string
-			platform *PlatformConfig
-		}{{ForgeGitHub, m.GitHub}, {ForgeGitLab, m.GitLab}} {
-			if p.platform == nil {
-				continue
-			}
-			carved, err := carveOutGlobEntry([]*PlatformConfig{p.platform}, name, nil)
-			if err != nil {
-				return nil, err
-			}
-			if carved == nil {
-				continue
-			}
-			apply(p.forge, p.platform, carved)
-			carvedNames = append(carvedNames, name)
-			break
+		candidates = append(candidates, name)
+	}
+	// A discovery failure falls back to the first covering glob; convergence
+	// repeats the expansion and reports the error.
+	discovered, _ := m.discoverGlobForges(ctx, clients, candidates)
+	var carvedNames []string
+	for _, name := range candidates {
+		carved, forgeName, err := carveOutForForge(m, name, discovered[strings.ToLower(name)], nil)
+		if err != nil {
+			return nil, err
 		}
+		if carved == nil {
+			continue
+		}
+		if err := apply(forgeName, m.PlatformFor(forgeName), carved); err != nil {
+			return nil, err
+		}
+		carvedNames = append(carvedNames, name)
 	}
 	if len(carvedNames) == 0 {
 		return nil, nil
