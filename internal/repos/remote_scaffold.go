@@ -19,11 +19,13 @@ var scaffoldGitLabPaths = []struct {
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-pipeline.yml", ".gitlab/ci/fullsend-pipeline.yml"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-agent.yml", ".gitlab/ci/fullsend-agent.yml"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-poll.yml", ".gitlab/ci/fullsend-poll.yml"},
+	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-dispatcher.yml", ".gitlab/ci/fullsend-dispatcher.yml"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/trust-ci-server-ca.sh", ".gitlab/ci/scripts/trust-ci-server-ca.sh"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/pin-ci-job-identity.sh", ".gitlab/ci/scripts/pin-ci-job-identity.sh"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/select-gitlab-role-token.sh", ".gitlab/ci/scripts/select-gitlab-role-token.sh"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/install-fullsend-cli.sh", ".gitlab/ci/scripts/install-fullsend-cli.sh"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/run-poll-job.sh", ".gitlab/ci/scripts/run-poll-job.sh"},
+	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/run-dispatcher-job.sh", ".gitlab/ci/scripts/run-dispatcher-job.sh"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/run-agent-job.sh", ".gitlab/ci/scripts/run-agent-job.sh"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/checkout-mr-source.sh", ".gitlab/ci/scripts/checkout-mr-source.sh"},
 }

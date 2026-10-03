@@ -653,6 +653,8 @@ func TestUninstall_GitLabExtractedJobScripts_Deleted(t *testing.T) {
 		gitlabInstallCLIScriptPath,
 		gitlabPinCIJobIdentityScriptPath,
 		gitlabPollJobScriptPath,
+		gitlabDispatcherJobScriptPath,
+		fullsendDispatcherTemplatePath,
 		gitlabAgentJobScriptPath,
 		gitlabCheckoutMRSourceScriptPath,
 	} {

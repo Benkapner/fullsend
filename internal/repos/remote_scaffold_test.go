@@ -109,6 +109,8 @@ func TestGitLabScaffoldListsIncludeTrustScript(t *testing.T) {
 	for _, yamlPath := range []string{
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/fullsend-agent.yml",
+		fullsendDispatcherTemplatePath,
+		gitlabDispatcherJobScriptPath,
 	} {
 		if !installPaths[yamlPath] {
 			t.Fatalf("embedded GitLab install files missing %s", yamlPath)

@@ -66,11 +66,13 @@ func TestGitLabPerRepoFilesExist(t *testing.T) {
 		".gitlab/ci/fullsend-pipeline.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/fullsend-agent.yml",
+		gitlabDispatcherTemplatePath,
 		".gitlab/ci/scripts/trust-ci-server-ca.sh",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
 		gitlabPinCIJobIdentityScriptPath,
 		gitlabInstallCLIScriptPath,
 		gitlabRunPollJobScriptPath,
+		gitlabRunDispatcherJobScriptPath,
 		gitlabRunAgentJobScriptPath,
 		gitlabCheckoutMRSourceScriptPath,
 	}
@@ -860,7 +862,8 @@ func TestGitLabPipelineWrapperContent(t *testing.T) {
 	assert.Contains(t, s, `$CI_DEBUG_TRACE =~ /^(1|t|true)$/i`)
 	assert.Contains(t, s, "when: never")
 	assert.Contains(t, s, "stages:")
-	assert.NotContains(t, s, "- dispatch", "dispatch stage was removed in #7337")
+	// #7771 reintroduces the dispatch stage for the webhook dispatcher.
+	assert.Contains(t, s, "- dispatch")
 	assert.Contains(t, s, "- poll")
 	assert.Contains(t, s, "- agent")
 	assert.NotContains(t, s, "- generate")

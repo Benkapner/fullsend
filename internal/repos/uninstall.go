@@ -73,11 +73,13 @@ var gitlabScaffoldPaths = []string{
 	".gitlab/ci/fullsend-agent.yml",
 	fullsendDispatchInclude,
 	".gitlab/ci/fullsend-poll.yml",
+	fullsendDispatcherTemplatePath,
 	".gitlab/ci/scripts/trust-ci-server-ca.sh",
 	".gitlab/ci/scripts/pin-ci-job-identity.sh",
 	".gitlab/ci/scripts/select-gitlab-role-token.sh",
 	".gitlab/ci/scripts/install-fullsend-cli.sh",
 	".gitlab/ci/scripts/run-poll-job.sh",
+	gitlabDispatcherJobScriptPath,
 	".gitlab/ci/scripts/run-agent-job.sh",
 	".gitlab/ci/scripts/checkout-mr-source.sh",
 	".fullsend/config.yaml",
@@ -100,13 +102,18 @@ const gitlabInstallCLIScriptPath = ".gitlab/ci/scripts/install-fullsend-cli.sh"
 
 const gitlabPollJobScriptPath = ".gitlab/ci/scripts/run-poll-job.sh"
 
+// gitlabDispatcherJobScriptPath is the webhook dispatcher job body (#7771)
+// sourced by fullsendDispatcherTemplatePath.
+const gitlabDispatcherJobScriptPath = ".gitlab/ci/scripts/run-dispatcher-job.sh"
+
 const gitlabAgentJobScriptPath = ".gitlab/ci/scripts/run-agent-job.sh"
 
 const gitlabCheckoutMRSourceScriptPath = ".gitlab/ci/scripts/checkout-mr-source.sh"
 
 // gitlabAuxiliaryScriptPaths returns the CI helper scripts sourced by the
-// generated poll and agent jobs. Probe and converge treat each as its own
-// scaffold component so a missing script is detected and repaired.
+// generated poll, dispatcher, and agent jobs. Probe and converge treat each
+// as its own scaffold component so a missing script is detected and
+// repaired.
 func gitlabAuxiliaryScriptPaths() []string {
 	return []string{
 		gitlabTrustScriptPath,
@@ -114,6 +121,7 @@ func gitlabAuxiliaryScriptPaths() []string {
 		gitlabRoleTokenScriptPath,
 		gitlabInstallCLIScriptPath,
 		gitlabPollJobScriptPath,
+		gitlabDispatcherJobScriptPath,
 		gitlabAgentJobScriptPath,
 		gitlabCheckoutMRSourceScriptPath,
 	}
