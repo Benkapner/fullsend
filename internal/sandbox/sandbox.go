@@ -1447,56 +1447,29 @@ func randStringBytes(n int) string {
 	return string(b)
 }
 
-// UploadFile copies a single local file into a sandbox at a specific remote path.
-// It checks if the remotePath is a file and if it is not it tries to fix it. This is
-// because of `openshell sandbox upload` in a git environment. Check
-// https://github.com/NVIDIA/OpenShell/issues/1740 for more information. When that gets
-// addressed, this can go away.
+// UploadFile copies a single local file to an exact destination filename.
+// OpenShell upload treats its destination as a directory, so stage the file
+// separately and then move it into place. This supports existing files and
+// preserves neighboring files; directory destinations are rejected.
 func UploadFile(sandboxName, localPath, remotePath string) error {
-	if err := Upload(sandboxName, localPath, remotePath); err != nil {
+	stage := "/tmp/fs-upload-" + randStringBytes(20)
+	stdout, stderr, code, err := Exec(sandboxName, "mkdir -m 700 -- "+shellQuote(stage), transferTimeout)
+	if err != nil || code != 0 {
+		return errors.Join(fmt.Errorf("creating upload staging directory: exit %d: %s%s", code, stdout, stderr), err)
+	}
+	stagedFile := filepath.Join(stage, resolvedBasename(localPath))
+	defer func() {
+		_, _, _, _ = Exec(sandboxName, "rm -f -- "+shellQuote(stagedFile)+" && rmdir -- "+shellQuote(stage), transferTimeout)
+	}()
+	if err := Upload(sandboxName, localPath, stage+"/"); err != nil {
 		return err
 	}
-
-	_, _, exitCode, err := Exec(sandboxName, fmt.Sprintf("test -f %s", shellQuote(remotePath)), 1*time.Second)
-	if err != nil {
-		return err
-	}
-
-	if exitCode != 0 {
-		wrongPath := fmt.Sprintf("%s/%s", remotePath, resolvedBasename(localPath))
-		_, _, exitCode, err := Exec(sandboxName, fmt.Sprintf("test -f %s", shellQuote(wrongPath)), 1*time.Second)
-		if err != nil {
-			return err
-		}
-
-		if exitCode != 0 {
-			return fmt.Errorf("checking for file: %s", wrongPath)
-		}
-
-		tmpPath := fmt.Sprintf("/tmp/fs-upload-%s", randStringBytes(10))
-		stdout, stderr, exitCode, err := Exec(sandboxName, fmt.Sprintf("mv %s %s", shellQuote(wrongPath), shellQuote(tmpPath)), 1*time.Second)
-		if err != nil {
-			return err
-		}
-		if exitCode != 0 {
-			return fmt.Errorf("fixing UploadFile path: %s, %s", stdout, stderr)
-		}
-
-		stdout, stderr, exitCode, err = Exec(sandboxName, fmt.Sprintf("rm -r %s", shellQuote(remotePath)), 1*time.Second)
-		if err != nil {
-			return err
-		}
-		if exitCode != 0 {
-			return fmt.Errorf("fixing UploadFile path: %s, %s", stdout, stderr)
-		}
-
-		stdout, stderr, exitCode, err = Exec(sandboxName, fmt.Sprintf("mv %s %s", shellQuote(tmpPath), shellQuote(remotePath)), 1*time.Second)
-		if err != nil {
-			return err
-		}
-		if exitCode != 0 {
-			return fmt.Errorf("fixing UploadFile path: %s, %s", stdout, stderr)
-		}
+	command := fmt.Sprintf("test -f %s && mkdir -p -- %s && mv -fT -- %s %s",
+		shellQuote(stagedFile), shellQuote(filepath.Dir(remotePath)),
+		shellQuote(stagedFile), shellQuote(remotePath))
+	stdout, stderr, code, err = Exec(sandboxName, command, transferTimeout)
+	if err != nil || code != 0 {
+		return errors.Join(fmt.Errorf("installing uploaded file %q: exit %d: %s%s", remotePath, code, stdout, stderr), err)
 	}
 	return nil
 }

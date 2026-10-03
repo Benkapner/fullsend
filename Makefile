@@ -2,7 +2,7 @@
 .PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
        mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
        lint-md-links script-test test \
-       e2e-test behaviour-test lint-eval-cases functional-tests \
+       e2e-test behaviour-test playback-test lint-eval-cases functional-tests \
        wasm-build wasm-stage mint-cf-worker-test
 
 # Let Go automatically download the toolchain version required by go.mod.
@@ -30,6 +30,7 @@ help:
 	@echo "  test                 - Run all checks: lint-all, go-test, script-test, lint-eval-cases"
 	@echo "  e2e-test             - Run admin e2e tests (CI: OIDC mint; local: gh auth login or GH_TOKEN)"
 	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
+	@echo "  playback-test        - Run @playback behaviour scenarios on the dummy-playback runtime (CI: OIDC mint)"
 	@echo "  lint-eval-cases      - Lint eval case definitions (annotations.yaml completeness)"
 	@echo "  functional-tests     - Run functional agent tests (requires EVAL_ORG, FULLSEND_DIR, GH_TOKEN, GCP creds)"
 	@echo "  wasm-build           - Build mintcore WASM binary and report gzip size vs Workers limits"
@@ -231,6 +232,18 @@ BEHAVIOUR_CAPABILITIES ?= runtime-pi
 
 behaviour-test:
 	BEHAVIOUR_CAPABILITIES="$(BEHAVIOUR_CAPABILITIES)" go test -tags behaviour -race -v -count=1 -timeout 45m ./e2e/behaviour/
+
+# Dummy-playback behaviour suite (e2e/behaviour/playback_suite_test.go ->
+# behaviourtest.RunPlaybackSuite). Built with -tags playback only, never
+# together with "behaviour": that would compile TestBehaviourSuite in too and
+# run both suites. RunPlaybackSuite fixes the @playback tag filter (GODOG_TAGS
+# is ignored), sets PLAYBACK_RUNTIME=dummy-playback, and otherwise reads the
+# same env as behaviour-test (ENVIRONMENT, BEHAVIOUR_*, E2E_*, GODOG_CONCURRENCY,
+# BEHAVIOUR_ARTIFACT_DIR) and reserves an org through the same pool lock.
+# The timeout matches behaviour-test; a CI job running this target must use
+# the same timeout-minutes (see docs/guides/dev/behaviour-testing.md).
+playback-test:
+	go test -tags playback -race -v -count=1 -timeout 45m ./e2e/behaviour/
 
 # Functional agent evals — run agents against ephemeral GitHub repos and judge results.
 # Required env: EVAL_ORG (GitHub org for ephemeral repos), plus GCP creds for Vertex AI.
