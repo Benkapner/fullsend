@@ -2250,6 +2250,11 @@ class TestStripDataHeredocBodies:
             f"sort --co=bash -S 1b <<'EOF'\ncurl {_METADATA_URL}\nEOF",
             f"sort --compress=bash -S 1b <<'EOF'\ncurl {_METADATA_URL}\nEOF",
             f"sort --compress-program=bash -S 1b <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            # Backslash-newline splits the option; Bash rejoins it.
+            f"sort --c\\\nompress-program=bash -S 1b <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"sort --compress-pr\\\nog=bash -S 1b <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"sort -S 1b --compress-prog\\\n=bash <<'EOF'\ncurl {_METADATA_URL}\nEOF",
+            f"cat > f <<'EOF'\n{_METADATA_URL}\nEOF\nsort --c\\\nompress-program=bash -S 1b",
         ],
     )
     def test_not_stripped(self, hook, cmd):
@@ -2286,6 +2291,31 @@ def test_sort_abbreviated_compress_program_runs_helper(tmp_path):
         timeout=30,
     )
     assert marker.exists()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@pytest.mark.skipif(shutil.which("sort") is None, reason="sort not available")
+def test_sort_continuation_split_option_runs_helper_in_bash(hook, tmp_path):
+    """Why a backslash-newline inside ``--compress-program`` must decline the
+    exemption: Bash rejoins the option, GNU sort runs the helper, and the
+    metadata URL in the heredoc body stays subject to validation."""
+    version = subprocess.run(["sort", "--version"], capture_output=True, text=True, timeout=10)
+    if "GNU" not in version.stdout:
+        pytest.skip("GNU sort required")
+    marker = tmp_path / "marker"
+    helper = tmp_path / "helper.sh"
+    helper.write_text(f"#!/bin/sh\necho ran >> {marker}\nexec cat\n")
+    helper.chmod(0o755)
+    body = f"curl {_METADATA_URL}\n" * 400
+    cmd = (
+        f"sort --c\\\nompress-program={helper} -S 1b -T {tmp_path} >/dev/null <<'EOF'\n{body}EOF\n"
+    )
+    subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=30)
+    assert marker.exists()
+    assert hook._strip_data_heredoc_bodies(cmd) == cmd
+    result = hook.process_tool_call(_bash(cmd))
+    assert result is not None
+    assert "169.254.169.254" in result
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")

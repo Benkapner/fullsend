@@ -1094,7 +1094,8 @@ def _strip_data_heredoc_bodies(command: str) -> str:
     unchanged when any heredoc is unusual (missing terminator, odd
     delimiter, unquoted body with substitutions), when the operator lines
     contain substitution, ANSI-C quoting or a comment (which could desync
-    quote tracking from Bash's), or when the residual is not inert.  The
+    quote tracking from Bash's), or when the residual contains a
+    backslash-newline continuation or is not inert.  The
     caller then validates every URL, including those in bodies.
     """
     if "<<" not in command:
@@ -1178,6 +1179,12 @@ def _strip_data_heredoc_bodies(command: str) -> str:
         return command
     parts.append(command[seg_start:])
     residual = "".join(parts)
+    # Bash deletes backslash-newline before parsing words, so a continuation
+    # can split an option or command name (``--c\<newline>ompress-program=``)
+    # that the text checks below only see in two halves.  Rather than
+    # normalising every check, decline whenever the residual has one.
+    if "\\\n" in residual:
+        return command
     # _extract_base_command skips redirection operators but not their
     # operands, so ``<< 'cat' bash`` reads as ``cat`` while Bash runs ``bash``
     # on the heredoc.  Decline when any stage starts with a redirection.
