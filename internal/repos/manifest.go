@@ -880,14 +880,17 @@ func (m *Manifest) ExpandGlobsFor(ctx context.Context, clients ForgeClientFactor
 			if strings.ContainsAny(name, "*?[") {
 				globs = append(globs, globEntry{org: org, pattern: name, entry: entry})
 			} else {
-				explicit[entry.Name] = entry
+				// Keys are lowercased: forges treat repository paths
+				// case-insensitively, and manifest validation and filter
+				// matching already do.
+				explicit[strings.ToLower(entry.Name)] = entry
 			}
 		}
 
 		// Add explicit entries first (they take priority).
-		for fullName, entry := range explicit {
-			parts := strings.SplitN(fullName, "/", 2)
-			resolved[fullName] = ResolvedRepo{
+		for key, entry := range explicit {
+			parts := strings.SplitN(entry.Name, "/", 2)
+			resolved[key] = ResolvedRepo{
 				Owner: parts[0],
 				Repo:  parts[1],
 				Forge: p.name,
@@ -921,12 +924,13 @@ func (m *Manifest) ExpandGlobsFor(ctx context.Context, clients ForgeClientFactor
 				}
 
 				fullName := g.org + "/" + repo.Name
+				key := strings.ToLower(fullName)
 				// Explicit entries win over glob matches.
-				if _, exists := explicit[fullName]; exists {
+				if _, exists := explicit[key]; exists {
 					continue
 				}
 				// First glob match wins (if multiple globs match the same repo).
-				if _, exists := resolved[fullName]; exists {
+				if _, exists := resolved[key]; exists {
 					continue
 				}
 
@@ -935,7 +939,7 @@ func (m *Manifest) ExpandGlobsFor(ctx context.Context, clients ForgeClientFactor
 				// actual repo name.
 				entry := g.entry
 				entry.Name = fullName
-				resolved[fullName] = ResolvedRepo{
+				resolved[key] = ResolvedRepo{
 					Owner: g.org,
 					Repo:  repo.Name,
 					Forge: p.name,
