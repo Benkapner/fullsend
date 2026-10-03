@@ -713,7 +713,8 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			}
 		}
 		hasEntryOverrides := opts.fullsendRef != "" || opts.mintURL != "" ||
-			len(opts.allowedRemoteResources) > 0 || opts.runtime != "" || opts.vendorChanged
+			len(opts.allowedRemoteResources) > 0 || opts.runtime != "" || opts.vendorChanged ||
+			opts.appSet != ""
 		// A textual glob match does not guarantee that convergence discovers
 		// the repository: ListOrgRepos omits forks and archived repos, so a
 		// glob-covered target can be absent from the expansion and would then
@@ -762,7 +763,11 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				// Reject a target that would have no effective inference
 				// authentication selection before anything is persisted:
 				// the flag, or the copied glob entry's own, forge-section,
-				// or defaults value.
+				// or defaults value. --app-set also carves here, so the
+				// check runs before UpdateAppSet can persist its entry.
+				if forgeName != repos.ForgeGitHub && opts.appSet != "" {
+					return fmt.Errorf("--app-set is a GitHub-only option and cannot be combined with GitLab installs")
+				}
 				if opts.inferenceAuth == "" {
 					owner, repo, _ := strings.Cut(entry.Name, "/")
 					if err := manifest.ResolveConfigForEntry(owner, repo, forgeName, *entry).RequireInferenceAuth(); err != nil {

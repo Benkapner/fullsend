@@ -105,3 +105,55 @@ func TestCarveOutGlobCovered_ApplyErrorLeavesManifestFileUnchanged(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, string(before), string(after))
 }
+
+func TestUpdateInferenceAuth_ConcreteFilterDiscoveryErrorWritesNothing(t *testing.T) {
+	m, _ := overlappingForgeManifest()
+	failing := &perForgeClientFactory{errs: map[string]error{ForgeGitLab: assert.AnError}}
+	path := filepath.Join(t.TempDir(), "repos.yaml")
+	require.NoError(t, writeManifest(path, m))
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	_, err = UpdateInferenceAuth(context.Background(), ManifestEditConfig{Manifest: m, ManifestPath: path}, []string{"acme/api1"}, InferenceAuthOpenAIAPIKey, failing)
+	require.Error(t, err)
+	assert.Len(t, m.GitHub.Repos, 1, "a failed discovery must not carve an entry on the fallback forge")
+	assert.Len(t, m.GitLab.Repos, 1)
+
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after))
+
+	// Retrying with a working factory puts the entry on the discovering forge.
+	_, clients := overlappingForgeManifest()
+	updated, err := UpdateInferenceAuth(context.Background(), ManifestEditConfig{Manifest: m, ManifestPath: path}, []string{"acme/api1"}, InferenceAuthOpenAIAPIKey, clients)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acme/api1"}, updated)
+	assert.Len(t, m.GitHub.Repos, 1)
+	require.Len(t, m.GitLab.Repos, 2)
+	assert.Equal(t, "acme/api1", m.GitLab.Repos[1].Name)
+}
+
+func TestCarveOutGlobCovered_DiscoveryErrorWritesNothing(t *testing.T) {
+	m, _ := overlappingForgeManifest()
+	failing := &perForgeClientFactory{errs: map[string]error{ForgeGitLab: assert.AnError}}
+	called := false
+
+	_, err := CarveOutGlobCovered(context.Background(), ManifestEditConfig{Manifest: m}, []string{"acme/api1"}, failing,
+		func(string, *PlatformConfig, *RepoEntry) error { called = true; return nil })
+	require.Error(t, err)
+	assert.False(t, called)
+	assert.Len(t, m.GitHub.Repos, 1)
+	assert.Len(t, m.GitLab.Repos, 1)
+}
+
+func TestUpdateInferenceAuth_RepeatedConcreteFiltersCreateOneEntry(t *testing.T) {
+	m, clients := overlappingForgeManifest()
+
+	updated, err := UpdateInferenceAuth(context.Background(), ManifestEditConfig{Manifest: m}, []string{"acme/api1", "acme/api1", "ACME/API1"}, InferenceAuthOpenAIAPIKey, clients)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acme/api1"}, updated)
+	require.Len(t, m.GitLab.Repos, 2)
+	assert.Len(t, m.GitHub.Repos, 1)
+	m.GitLab.URL = "https://gitlab.test"
+	require.NoError(t, m.Validate(), "duplicate entries would be rejected")
+}

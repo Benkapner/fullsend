@@ -209,15 +209,22 @@ func UpdateInferenceAuth(ctx context.Context, cfg ManifestEditConfig, filters []
 		}
 	}
 
+	// Repeated or case-variant concrete filters name one repository, so keep
+	// only the first spelling to avoid writing duplicate explicit entries.
 	var concrete []string
 	for _, filter := range filters {
-		if !isGlob(filter) && !matchedExact[strings.ToLower(filter)] {
+		if !isGlob(filter) && !matchedExact[strings.ToLower(filter)] &&
+			!slices.ContainsFunc(concrete, func(c string) bool { return strings.EqualFold(c, filter) }) {
 			concrete = append(concrete, filter)
 		}
 	}
-	// A discovery failure falls back to the first covering glob; convergence
-	// repeats the expansion and reports the error.
-	discovered, _ := m.discoverGlobForges(ctx, clients, concrete)
+	// A discovery failure aborts before anything is carved or written: the
+	// first-glob fallback is only correct once discovery succeeded and found
+	// no repository, otherwise the entry could land on the wrong forge.
+	discovered, err := m.discoverGlobForges(ctx, clients, concrete)
+	if err != nil {
+		return nil, fmt.Errorf("discovering forge for glob-covered repos: %w", err)
+	}
 	for _, filter := range concrete {
 		carved, _, err := carveOutForForge(m, filter, discovered[strings.ToLower(filter)], nil)
 		if err != nil {
@@ -430,9 +437,12 @@ func CarveOutGlobCovered(ctx context.Context, cfg ManifestEditConfig, names []st
 		}
 		candidates = append(candidates, name)
 	}
-	// A discovery failure falls back to the first covering glob; convergence
-	// repeats the expansion and reports the error.
-	discovered, _ := m.discoverGlobForges(ctx, clients, candidates)
+	// A discovery failure aborts before anything is carved or written; the
+	// first-glob fallback applies only after successful discovery.
+	discovered, err := m.discoverGlobForges(ctx, clients, candidates)
+	if err != nil {
+		return nil, fmt.Errorf("discovering forge for glob-covered repos: %w", err)
+	}
 	var carvedNames []string
 	for _, name := range candidates {
 		carved, forgeName, err := carveOutForForge(m, name, discovered[strings.ToLower(name)], nil)

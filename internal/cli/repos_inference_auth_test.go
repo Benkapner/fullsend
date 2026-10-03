@@ -414,3 +414,28 @@ func TestRunReposInstall_GlobCoveredRepoMissingFromExpansionGetsExplicitEntry(t 
 	assert.Equal(t, "acme/my-fork", fork.Name)
 	assert.Equal(t, repos.InferenceAuthOpenAIAPIKey, fork.Inference.Auth, "the explicit entry keeps the glob's inference.auth")
 }
+
+// noAuthGlobManifestYAML covers repos with a glob entry and no inference.auth
+// selection at any level.
+const noAuthGlobManifestYAML = `version: 1
+github:
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/*
+`
+
+func TestRunReposInstall_AppSetOnGlobCoveredRepoMissingSelectionLeavesManifestUnchanged(t *testing.T) {
+	manifestPath := writeTestManifest(t, noAuthGlobManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+
+	opts := githubManagedInstallOpts(manifestPath, fc)
+	opts.repoFilter = []string{"acme/api"}
+	opts.forge = repos.ForgeGitHub
+	opts.appSet = "custom-set"
+	err := runReposInstall(context.Background(), opts)
+	require.Error(t, err, "missing selection must fail the install")
+
+	data, readErr := os.ReadFile(manifestPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, noAuthGlobManifestYAML, string(data), "--app-set must not persist an entry without an effective inference.auth")
+}
