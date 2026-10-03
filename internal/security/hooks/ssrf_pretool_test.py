@@ -1537,10 +1537,17 @@ class TestOpenShellPolicyDns:
             "host.openshell.internal",
             "host.docker.internal",
             "Host.Containers.Internal",
+            "ｐｏｌｉｃｙ.local",  # fullwidth
+            "policy。local",  # ideographic full stop
+            "hoſt.docker.internal",  # long s folds to s
         ],
     )
     def test_openshell_internal_names_blocked_in_sandbox(self, hook, host):
-        result, _ = self._validate(hook, f"http://{host}/", ["198.18.0.1"])
+        result, _ = self._validate(hook, f"http://{host}/", ["198.18.0.6"])
+        assert result is not None
+
+    def test_policy_local_address_never_deferred(self, hook):
+        result, _ = self._validate(hook, "http://any-name.example/", ["198.18.0.1"])
         assert result is not None
 
     @pytest.mark.parametrize(

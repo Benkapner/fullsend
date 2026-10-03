@@ -435,11 +435,19 @@ def _is_openshell_synthetic_answer(hostname: str, resolved_ips: list[str]) -> bo
     policy DNS is answering. Policy DNS returns no IPv6 answers in OpenShell
     0.1.x; a mixed answer fails closed.
     """
-    if hostname in OPENSHELL_INTERNAL_HOSTNAMES or _is_ip_literal(hostname):
+    try:
+        # The resolver IDNA-encodes names, so compare in that form
+        # (fullwidth ``policy.local`` resolves as ``policy.local``).
+        canonical = hostname.encode("idna").decode("ascii").lower().rstrip(".")
+    except UnicodeError:
+        return False
+    if canonical in OPENSHELL_INTERNAL_HOSTNAMES or _is_ip_literal(hostname):
         return False
     try:
         if not resolved_ips or any(
-            ipaddress.ip_address(ip) not in OPENSHELL_SYNTHETIC_NETWORK for ip in resolved_ips
+            ip == OPENSHELL_POLICY_LOCAL_IP
+            or ipaddress.ip_address(ip) not in OPENSHELL_SYNTHETIC_NETWORK
+            for ip in resolved_ips
         ):
             return False
     except ValueError:
