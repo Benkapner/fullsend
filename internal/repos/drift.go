@@ -84,6 +84,17 @@ func CheckFileContentDrift(ctx context.Context, client forge.Client,
 		if installed == nil {
 			// File not found — presence drift is handled by
 			// ProbeComponents; content comparison not applicable.
+			// Exception: the GitLab webhook dispatcher files are probed
+			// only when the installed wrapper already references them, so
+			// a rollout that is about to rewrite the wrapper must deliver
+			// them here when the selected version's scaffold includes them.
+			if forgeName == ForgeGitLab && slices.Contains(gitlabDispatcherPaths(), ef.Path) {
+				drifted = append(drifted, ContentDriftFile{
+					Path:          ef.Path,
+					InstalledPath: ef.Path,
+					Expected:      ef.Content,
+				})
+			}
 			continue
 		}
 

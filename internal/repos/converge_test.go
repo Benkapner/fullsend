@@ -2220,7 +2220,7 @@ func TestConverge_GitLabOnlyReleaseDefaultRefWithoutGitHubClient(t *testing.T) {
 func populateGitLabInstalled(fc *forge.FakeClient, owner, repo string) {
 	full := owner + "/" + repo
 	fc.FileContents[full+"/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
-	for _, path := range gitlabAuxiliaryScriptPaths() {
+	for _, path := range append(gitlabAuxiliaryScriptPaths(), gitlabDispatcherPaths()...) {
 		content, _ := scaffold.GitLabPerRepoFile(path)
 		fc.FileContents[full+"/"+path] = content
 	}
@@ -2300,6 +2300,90 @@ func TestConverge_GitLab_RepairsMissingTrustScript(t *testing.T) {
 		}
 	}
 	t.Fatalf("convergence did not repair %s; files: %+v", gitlabTrustScriptPath, sc.files)
+}
+
+// convergeGitLabFilesCommitted runs Converge and returns the committed paths.
+func convergeGitLabFilesCommitted(t *testing.T, fc *forge.FakeClient) map[string]bool {
+	t.Helper()
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), gitlabConvergeCfg("acme/api"), newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("unexpected failure: %v", result.Failed()[0].Error)
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	committed := make(map[string]bool)
+	for _, f := range sc.files {
+		if !f.Delete {
+			committed[f.Path] = true
+		}
+	}
+	return committed
+}
+
+// TestConverge_GitLab_RepairsTemplateOnlyDispatcherDeletion verifies that
+// deleting only the dispatcher template (script intact) from a fully
+// converged install is detected and the YAML is redelivered; otherwise the
+// wrapper's local include would point at a missing file.
+func TestConverge_GitLab_RepairsTemplateOnlyDispatcherDeletion(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	populateGitLabInstalled(fc, "acme", "api")
+	populateGitLabScaffoldContent(t, fc, "acme", "api", "v2.5.0")
+	delete(fc.FileContents, "acme/api/"+fullsendDispatcherTemplatePath)
+
+	committed := convergeGitLabFilesCommitted(t, fc)
+	if !committed[fullsendDispatcherTemplatePath] {
+		t.Fatalf("convergence did not redeliver %s; committed: %v", fullsendDispatcherTemplatePath, committed)
+	}
+}
+
+// TestConverge_GitLab_UnchangedRefRolloutDeliversDispatcherFiles verifies an
+// unchanged-ref rollout from a pre-dispatcher wrapper delivers both the
+// dispatcher template and script together with the rewritten wrapper.
+func TestConverge_GitLab_UnchangedRefRolloutDeliversDispatcherFiles(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	populateGitLabInstalled(fc, "acme", "api")
+	populateGitLabScaffoldContent(t, fc, "acme", "api", "v2.5.0")
+	// Roll the install back to a pre-dispatcher state at the same ref.
+	for _, path := range gitlabDispatcherPaths() {
+		delete(fc.FileContents, "acme/api/"+path)
+	}
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("# fullsend-ref: v2.5.0\n")
+
+	committed := convergeGitLabFilesCommitted(t, fc)
+	for _, path := range append([]string{fullsendPipelineInclude}, gitlabDispatcherPaths()...) {
+		if !committed[path] {
+			t.Errorf("unchanged-ref rollout did not deliver %s; committed: %v", path, committed)
+		}
+	}
+}
+
+func TestProbeComponents_GitLab_DispatcherFilesFollowWrapper(t *testing.T) {
+	probe := func(wrapper string) map[string]bool {
+		fc := forge.NewFakeClient()
+		fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte(wrapper)
+		components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
+		if err != nil {
+			t.Fatalf("ProbeComponents() error: %v", err)
+		}
+		probed := make(map[string]bool)
+		for _, c := range components {
+			probed[c.Name] = true
+		}
+		return probed
+	}
+
+	for _, path := range gitlabDispatcherPaths() {
+		if probe("# pre-dispatcher wrapper\n")["scaffold:"+path] {
+			t.Errorf("pre-dispatcher wrapper must not require %s", path)
+		}
+		if !probe("include: " + fullsendDispatcherTemplatePath + "\n")["scaffold:"+path] {
+			t.Errorf("wrapper referencing the dispatcher must require %s", path)
+		}
+	}
 }
 
 func TestConverge_GitLab_RefUpgradeAndMissingHelperDedupes(t *testing.T) {
@@ -4399,17 +4483,22 @@ workflow:
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	var updated []byte
-	var committedDispatcherScript bool
+	var committedDispatcherScript, committedDispatcherTemplate bool
 	for _, f := range sc.files {
 		switch f.Path {
 		case ".gitlab-ci.yml":
 			updated = f.Content
 		case gitlabDispatcherJobScriptPath:
 			committedDispatcherScript = true
+		case fullsendDispatcherTemplatePath:
+			committedDispatcherTemplate = true
 		}
 	}
 	if !committedDispatcherScript {
 		t.Errorf("expected converge to repair the missing dispatcher job script")
+	}
+	if !committedDispatcherTemplate {
+		t.Errorf("expected converge to repair the missing dispatcher job template")
 	}
 	if updated == nil {
 		t.Fatalf("expected .gitlab-ci.yml to be committed, got files: %+v", sc.files)
