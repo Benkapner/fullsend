@@ -99,6 +99,9 @@ type Issue struct {
 	State     string    `json:"state"`
 	Labels    []string  `json:"labels"`
 	Author    UserRef   `json:"author"`
+	ClosedBy  UserRef   `json:"closed_by"`
+	ClosedAt  time.Time `json:"closed_at"`
+	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -166,5 +169,6 @@ type ResourceLabelEvent struct {
 	Label  struct {
 		Name string `json:"name"`
 	} `json:"label"`
-	User UserRef `json:"user"`
+	User      UserRef   `json:"user"`
+	CreatedAt time.Time `json:"created_at"`
 }

@@ -63,7 +63,7 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 	}
 	var actorID int
 	switch event.Type {
-	case "issue_note", "mr_note", "mr_event", "issue_label":
+	case "issue_note", "mr_note", "mr_event", "issue_label", "issue_event":
 		actorID = event.NoteAuthorID
 	default:
 		log.Printf("WARNING: unrecognized event type %q — no actor ID will be set", event.Type)

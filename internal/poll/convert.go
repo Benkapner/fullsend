@@ -72,6 +72,10 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 			actorLogin = la.Username
 			isBot = la.IsBot || (p.botUserID != 0 && la.ID == p.botUserID) || isProjectAccessTokenBot(la.Username)
 		}
+	case "issue_event":
+		authorID = event.NoteAuthorID
+		actorLogin = event.NoteAuthorLogin
+		isBot = event.IsBot || (p.botUserID != 0 && authorID == p.botUserID) || isProjectAccessTokenBot(actorLogin)
 	case "mr_event":
 		authorID = event.NoteAuthorID
 		switch event.Action {
@@ -145,6 +149,10 @@ func translateEventType(event RoutableEvent) string {
 		default:
 			return "merged"
 		}
+	case "issue_event":
+		// Issue lifecycle events are produced only by the webhook
+		// builder (webhook.go), which admits just these two actions.
+		return event.Action
 	default:
 		return event.Type
 	}
@@ -227,7 +235,7 @@ func extractCommand(body string) (command, instruction string) {
 
 func mapRawType(eventType string) string {
 	switch eventType {
-	case "issue_label", "issue_note":
+	case "issue_label", "issue_note", "issue_event":
 		return "issues"
 	case "mr_note", "mr_event":
 		return "merge_request"
@@ -251,6 +259,8 @@ func mapRawAction(event RoutableEvent) string {
 		default:
 			return "merged"
 		}
+	case "issue_event":
+		return event.Action
 	default:
 		return ""
 	}
@@ -259,7 +269,7 @@ func mapRawAction(event RoutableEvent) string {
 // entityKind returns the Entity.Kind based on the event type.
 func entityKind(eventType string) string {
 	switch eventType {
-	case "issue_label", "issue_note":
+	case "issue_label", "issue_note", "issue_event":
 		return "work_item"
 	case "mr_note", "mr_event":
 		return "change_proposal"
@@ -272,7 +282,7 @@ func entityKind(eventType string) string {
 func entityURL(gitlabURL, projectPath, eventType string, iid int) string {
 	base := strings.TrimRight(gitlabURL, "/") + "/" + projectPath
 	switch eventType {
-	case "issue_label", "issue_note":
+	case "issue_label", "issue_note", "issue_event":
 		return base + "/-/issues/" + strconv.Itoa(iid)
 	case "mr_note", "mr_event":
 		return base + "/-/merge_requests/" + strconv.Itoa(iid)
@@ -286,7 +296,7 @@ func entityURL(gitlabURL, projectPath, eventType string, iid int) string {
 // determined.
 func (p *Poller) isEntityAuthor(ctx context.Context, event RoutableEvent, actorID int) bool {
 	switch event.Type {
-	case "issue_label", "issue_note":
+	case "issue_label", "issue_note", "issue_event":
 		issue, err := p.client.GetIssue(ctx, p.owner, p.repo, event.IID)
 		if err != nil {
 			return false
