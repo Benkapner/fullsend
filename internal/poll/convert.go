@@ -64,13 +64,23 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 		isBot = event.IsBot || (p.botUserID != 0 && event.NoteAuthorID == p.botUserID) || isProjectAccessTokenBot(event.NoteAuthorLogin)
 	case "issue_label":
 		if event.ChangedLabel != "" {
-			la, err := p.resolveLabelAuthor(ctx, event.IID, event.ChangedLabel)
-			if err != nil {
-				return dispatch.NormalizedEvent{}, 0, fmt.Errorf("resolve label author: %w", err)
+			if event.NoteAuthorID != 0 && event.NoteAuthorLogin != "" {
+				// The webhook builder already bound this actor to the
+				// validated label transition. Do not re-resolve it from a
+				// second label-event snapshot, which could name a different
+				// actor. The poller never presets these fields.
+				authorID = event.NoteAuthorID
+				actorLogin = event.NoteAuthorLogin
+				isBot = event.IsBot || (p.botUserID != 0 && authorID == p.botUserID) || isProjectAccessTokenBot(actorLogin)
+			} else {
+				la, err := p.resolveLabelAuthor(ctx, event.IID, event.ChangedLabel)
+				if err != nil {
+					return dispatch.NormalizedEvent{}, 0, fmt.Errorf("resolve label author: %w", err)
+				}
+				authorID = la.ID
+				actorLogin = la.Username
+				isBot = la.IsBot || (p.botUserID != 0 && la.ID == p.botUserID) || isProjectAccessTokenBot(la.Username)
 			}
-			authorID = la.ID
-			actorLogin = la.Username
-			isBot = la.IsBot || (p.botUserID != 0 && la.ID == p.botUserID) || isProjectAccessTokenBot(la.Username)
 		}
 	case "issue_event":
 		authorID = event.NoteAuthorID

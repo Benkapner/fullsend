@@ -18,7 +18,12 @@ import (
 // (HarnessRouter) → dispatch() — rather than the CEL spine over
 // normevent.Event. That keeps the fast-path and the poller backstop on
 // one authorization gate, one RoutableEvent.Key() deduplication scheme,
-// and one signed pipeline-input transport (ADR 0131). A
+// and one signed pipeline-input transport (ADR 0131). Label additions are
+// keyed on the validated label event's time rather than the issue's
+// mutable updated_at, so repeated webhook construction is stable; that key
+// can differ from the one poll discovery computes for the same addition,
+// so a driver must hand off label state (not only dispatched keys) between
+// the webhook and poll paths. A
 // dispatch.NormalizedEvent → normevent.Event bridge belongs to any
 // future work that moves GitLab onto the CEL spine.
 //
@@ -45,6 +50,12 @@ const maxWebhookPayloadBytes = 8 << 20
 // window a trigger-token holder can still re-fire a matching event, and
 // the shared RoutableEvent.Key() dedup with the poller is the backstop.
 const webhookMaxEventAge = 30 * time.Minute
+
+// webhookMaxClockSkew bounds how far in the future re-fetched event-time
+// evidence may be relative to the builder's clock. Anything further ahead
+// is treated as anomalous and fails closed, so skew cannot extend the
+// freshness window.
+const webhookMaxClockSkew = 2 * time.Minute
 
 // WebhookEvent is one validated webhook transition, ready for the shared
 // poll dispatch path. Event is what dispatch() consumes (it carries the
@@ -452,12 +463,20 @@ func (p *Poller) webhookIssueLabelEvents(ctx context.Context, actorID int, issue
 		if !d.added {
 			continue
 		}
+		// The validated event's actor and time are carried into the
+		// RoutableEvent so normalization does not re-resolve them from
+		// another snapshot. UpdatedAt is the validated add event's time
+		// (not the issue's mutable updated_at), so repeated construction
+		// of the same addition yields the same Key().
 		events = append(events, RoutableEvent{
-			Type:         "issue_label",
-			IID:          issue.IID,
-			UpdatedAt:    issue.UpdatedAt,
-			Labels:       issue.Labels,
-			ChangedLabel: d.title,
+			Type:            "issue_label",
+			IID:             issue.IID,
+			UpdatedAt:       latest.CreatedAt,
+			Labels:          issue.Labels,
+			ChangedLabel:    d.title,
+			NoteAuthorID:    latest.User.ID,
+			NoteAuthorLogin: latest.User.Username,
+			IsBot:           latest.User.Bot,
 		})
 	}
 	return events, nil
@@ -541,8 +560,12 @@ func (p *Poller) checkFresh(t time.Time, what string) error {
 	if p.now != nil {
 		now = p.now
 	}
-	if age := now().Sub(t); age > webhookMaxEventAge {
+	age := now().Sub(t)
+	if age > webhookMaxEventAge {
 		return fmt.Errorf("%s is %s old, older than the %s webhook window", what, age.Round(time.Second), webhookMaxEventAge)
+	}
+	if -age > webhookMaxClockSkew {
+		return fmt.Errorf("%s is %s in the future, beyond the %s clock-skew allowance", what, (-age).Round(time.Second), webhookMaxClockSkew)
 	}
 	return nil
 }

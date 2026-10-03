@@ -758,34 +758,126 @@ func TestBuildWebhookEvents_RouterAndNormalizeErrors(t *testing.T) {
 		}
 	})
 	t.Run("normalize error", func(t *testing.T) {
-		// Label events change between the builder's binding check and
-		// toNormalizedEvent's own label-author lookup.
+		// A non-label event whose actor cannot be resolved at normalization.
 		mc := newMockClient()
-		mc.issue[5] = &Issue{IID: 5, State: "opened", Labels: []string{"ready-to-code"}, UpdatedAt: recent}
-		mc.labelEvents[5] = []ResourceLabelEvent{labelEvent(1, "add", "ready-to-code", alice, recent)}
+		mc.issue[9] = &Issue{IID: 9, State: "opened", Author: UserRef{ID: alice.ID}, CreatedAt: recent}
 		p := newWebhookPoller(mc)
-		calls := 0
-		p.client = &labelEventsOnce{mockClient: mc, calls: &calls}
-		_, err := p.BuildWebhookEvents(context.Background(),
-			issuePayload(t, "update", alice.ID, 5, labelChange(nil, []string{"ready-to-code"})))
-		if err == nil || !strings.Contains(err.Error(), "normalize webhook") {
-			t.Fatalf("err = %v", err)
+		_, err := p.BuildWebhookEvents(context.Background(), issuePayload(t, "open", alice.ID, 9, nil))
+		if err == nil {
+			t.Fatal("expected an error for an actor without a username")
 		}
 	})
 }
 
-// labelEventsOnce serves label events on the first call only.
-type labelEventsOnce struct {
+// labelEventsChanging serves the real label events on the first call and
+// a different snapshot on every later call.
+type labelEventsChanging struct {
 	*mockClient
-	calls *int
+	calls  *int
+	second []ResourceLabelEvent
 }
 
-func (l *labelEventsOnce) ListResourceLabelEvents(ctx context.Context, owner, repo string, iid int) ([]ResourceLabelEvent, error) {
+func (l *labelEventsChanging) ListResourceLabelEvents(ctx context.Context, owner, repo string, iid int) ([]ResourceLabelEvent, error) {
 	*l.calls++
 	if *l.calls > 1 {
-		return nil, nil
+		return l.second, nil
 	}
 	return l.mockClient.ListResourceLabelEvents(ctx, owner, repo, iid)
+}
+
+// TestBuildWebhookEvents_LabelActorNotReResolved checks that the validated
+// label actor is carried through normalization: a later snapshot naming a
+// different actor, or showing an intervening removal, must not change the
+// actor or role used for routing.
+func TestBuildWebhookEvents_LabelActorNotReResolved(t *testing.T) {
+	for name, second := range map[string][]ResourceLabelEvent{
+		"different actor add": {
+			labelEvent(1, "add", "ready-to-code", alice, recent),
+			labelEvent(2, "add", "ready-to-code", bob, recent),
+		},
+		"intervening removal": {
+			labelEvent(1, "add", "ready-to-code", alice, recent),
+			labelEvent(2, "remove", "ready-to-code", bob, recent),
+		},
+		"empty": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			mc := newMockClient()
+			mc.memberLevel[alice.ID] = 30
+			mc.memberLevel[bob.ID] = 50
+			mc.issue[5] = &Issue{IID: 5, State: "opened", Labels: []string{"ready-to-code"}, UpdatedAt: recent}
+			mc.labelEvents[5] = []ResourceLabelEvent{labelEvent(1, "add", "ready-to-code", alice, recent)}
+			p := newWebhookPoller(mc)
+			calls := 0
+			p.client = &labelEventsChanging{mockClient: mc, calls: &calls, second: second}
+			got, err := p.BuildWebhookEvents(context.Background(),
+				issuePayload(t, "update", alice.ID, 5, labelChange(nil, []string{"ready-to-code"})))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			we := got[0]
+			if we.ActorID != alice.ID || we.Normalized.Actor.ID != "alice" || we.Normalized.Actor.Role != "write" {
+				t.Errorf("actor = %d %q %q, want the validated actor alice with write role",
+					we.ActorID, we.Normalized.Actor.ID, we.Normalized.Actor.Role)
+			}
+			if calls != 1 {
+				t.Errorf("label events fetched %d times, want 1", calls)
+			}
+		})
+	}
+}
+
+// TestBuildWebhookEvents_LabelKeyStableAcrossIssueUpdates checks that an
+// unrelated issue update between two constructions of the same validated
+// label addition does not change the dedup key.
+func TestBuildWebhookEvents_LabelKeyStableAcrossIssueUpdates(t *testing.T) {
+	mc := newMockClient()
+	mc.memberLevel[alice.ID] = 30
+	mc.issue[5] = &Issue{IID: 5, State: "opened", Labels: []string{"ready-to-code"}, UpdatedAt: recent}
+	mc.labelEvents[5] = []ResourceLabelEvent{labelEvent(1, "add", "ready-to-code", alice, recent)}
+	p := newWebhookPoller(mc)
+	payload := issuePayload(t, "update", alice.ID, 5, labelChange(nil, []string{"ready-to-code"}))
+
+	first, err := p.BuildWebhookEvents(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	mc.issue[5].UpdatedAt = recent.Add(5 * time.Minute)
+	second, err := p.BuildWebhookEvents(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if first[0].Event.Key() != second[0].Event.Key() {
+		t.Errorf("key changed after unrelated issue update: %q vs %q", first[0].Event.Key(), second[0].Event.Key())
+	}
+}
+
+func TestCheckFresh_FutureAndBoundary(t *testing.T) {
+	p := newWebhookPoller(newMockClient())
+	for _, tt := range []struct {
+		name    string
+		at      time.Time
+		wantErr string
+	}{
+		{"within skew", webhookTestNow.Add(webhookMaxClockSkew), ""},
+		{"beyond skew", webhookTestNow.Add(webhookMaxClockSkew + time.Second), "in the future"},
+		{"far future", webhookTestNow.Add(24 * time.Hour), "in the future"},
+		{"max age boundary", webhookTestNow.Add(-webhookMaxEventAge), ""},
+		{"beyond max age", webhookTestNow.Add(-webhookMaxEventAge - time.Second), "old"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := p.checkFresh(tt.at, "x")
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
 }
 
 // TestBuildWebhookEvents_DispatchHandoff checks that builder output feeds
