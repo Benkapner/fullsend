@@ -226,11 +226,12 @@ type aggregateMetrics struct {
 	// "harness", "default") so a silent override is visible after the fact.
 	OverrideSource string `json:"override_source,omitempty"`
 	// PerModelUsage attributes the totals above to the model specs that
-	// spent them. Only runtimes that dispatch sub-agents fill it (pi's
-	// Agent tool), and then on every iteration of such a run — including
-	// one that dispatched nothing, whose parent entry is what keeps the
-	// breakdown summing to the totals across a retry. A run on a runtime
-	// without sub-agents keeps metrics.json as it was.
+	// spent them. Only runtimes that dispatch sub-agents fill it: pi's
+	// Agent tool on every iteration of such a run — including one that
+	// dispatched nothing, whose parent entry is what keeps the breakdown
+	// summing to the totals across a retry — and claude from each
+	// iteration's result modelUsage. A run on a runtime without sub-agents
+	// keeps metrics.json as it was.
 	PerModelUsage map[string]agentruntime.ModelUsage `json:"per_model_usage,omitempty"`
 }
 

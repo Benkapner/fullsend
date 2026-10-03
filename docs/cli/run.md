@@ -123,14 +123,26 @@ depend on the process cwd.
 | `total_cost_usd` | Total inference cost in USD, as reported by the runtime (raw floating-point aggregate across all iterations; no fullsend-side pricing-table fallback). See [Cost data contract](../guides/infrastructure/distributed-tracing.md#cost-data-contract) |
 | `num_turns` | Number of conversation turns |
 | `iterations` | Number of agent iterations run; an iteration killed at the budget is not retried (see [Budget and deadline](#budget-and-deadline)) |
-| `per_model_usage` | Per-model-spec breakdown, present only when a runtime reports one (today: `pi` with the `Agent` tool enabled). See below |
+| `per_model_usage` | Per-model breakdown, present only when a runtime reports one (today: `pi` with the `Agent` tool enabled, and `claude` when Claude Code's result carries `modelUsage`). See below |
 
 #### Per-model usage
 
-A map from pi model spec (`anthropic-vertex/claude-opus-4-6`) to
+A map from model spec to
 `{requests, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cost_usd}`.
-It exists because a pi sub-agent is a separate `pi` process whose tokens never appear in the
-parent's stream, so without it `total_cost_usd` would grow with no way to attribute it.
+On `pi` the key is the pi model spec (`anthropic-vertex/claude-opus-4-6`). It exists because a pi
+sub-agent is a separate `pi` process whose tokens never appear in the parent's stream, so without it
+`total_cost_usd` would grow with no way to attribute it.
+
+On `claude` the key is the model id Claude Code reports (`claude-haiku-4-5@20251001`), with one
+entry per model that ran, sub-agents included. The token totals come from the result event's
+`modelUsage` rather than its `usage` block, because `usage` covers only the top-level loop while
+`total_cost_usd` covers sub-agents too; the Claude token totals therefore include sub-agent usage.
+Claude Code reports `modelUsage` as a session running total, so a steered or retried session
+records its last value rather than adding each result's. `requests` has no counterpart in Claude
+Code's result and stays `0`. A result without `modelUsage` keeps the parent-only `usage` totals and
+records no breakdown, and an iteration that ends without a result (cancelled at the budget)
+contributes to the totals but not to the breakdown, so the invariant below can fall short in those
+two cases. The rest of this section describes the `pi` breakdown.
 
 - **What folds.** Tokens and cost, from both the parent and every child, summed across retry
   iterations. Each iteration contributes one `requests` for the parent plus one per sub-agent call,
