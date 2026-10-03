@@ -441,7 +441,11 @@ def _is_openshell_synthetic_answer(hostname: str, resolved_ips: list[str]) -> bo
         canonical = hostname.encode("idna").decode("ascii").lower().rstrip(".")
     except UnicodeError:
         return False
-    if canonical in OPENSHELL_INTERNAL_HOSTNAMES or _is_ip_literal(hostname):
+    if (
+        canonical in OPENSHELL_INTERNAL_HOSTNAMES
+        or canonical in BLOCKED_HOSTNAMES
+        or _is_ip_literal(hostname)
+    ):
         return False
     try:
         if not resolved_ips or any(

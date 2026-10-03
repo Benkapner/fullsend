@@ -1546,6 +1546,19 @@ class TestOpenShellPolicyDns:
         result, _ = self._validate(hook, f"http://{host}/", ["198.18.0.6"])
         assert result is not None
 
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "metadata。google.internal",  # ideographic full stop
+            "ｍｅｔａｄａｔａ.google.internal",  # fullwidth
+            "ｍｅｔａｄａｔａ.goog",
+        ],
+    )
+    def test_blocked_hostname_idna_variants_never_deferred(self, hook, host):
+        result, log = self._validate(hook, f"http://{host}/", ["198.18.0.6"])
+        assert result is not None
+        log.assert_not_called()
+
     def test_policy_local_address_never_deferred(self, hook):
         result, _ = self._validate(hook, "http://any-name.example/", ["198.18.0.1"])
         assert result is not None
