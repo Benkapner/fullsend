@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"gopkg.in/yaml.v3"
 )
 
 // emojiCall records a CreateNoteAwardEmoji invocation.
@@ -18,12 +19,37 @@ type emojiCall struct {
 	Emoji       string
 }
 
-// pipelineCall records a CreatePipeline invocation.
+// pipelineCall records a CreatePipeline or CreatePipelineWithInputs
+// invocation. ViaInputs distinguishes which transport dispatch() actually
+// used, since both methods decode into the same flat Variables shape here
+// (see CreatePipelineWithInputs below) so most assertions can stay
+// transport-agnostic.
 type pipelineCall struct {
 	Owner     string
 	Repo      string
 	Ref       string
 	Variables map[string]string
+	ViaInputs bool
+}
+
+// typedWrapperFixture returns a minimal two-document GitLab wrapper whose
+// spec:inputs header declares every name dispatch() requires, used as
+// mockClient's default GetFileContent response so existing dispatch tests
+// keep exercising the typed pipeline-input transport unless a test
+// explicitly configures a legacy (not-found) or malformed wrapper.
+func typedWrapperFixture() []byte {
+	inputs := make(map[string]any, len(dispatchInputNames)+maxEventPayloadChunks)
+	for _, name := range dispatchInputNames {
+		inputs[name] = map[string]any{"default": ""}
+	}
+	for i := 0; i < maxEventPayloadChunks; i++ {
+		inputs[dispatchEventPayloadChunkInputName(i)] = map[string]any{"default": ""}
+	}
+	header, err := yaml.Marshal(map[string]any{"spec": map[string]any{"inputs": inputs}})
+	if err != nil {
+		panic(fmt.Sprintf("marshaling typed wrapper fixture: %v", err))
+	}
+	return append(header, []byte("---\n{}\n")...)
 }
 
 // mockClient implements GitLabClient with configurable return values
@@ -52,13 +78,18 @@ type mockClient struct {
 	// files is per-branch file content: branch → path → bytes.
 	// ForceCommitFileToBranch replaces the branch tree with a single file.
 	files map[string]map[string][]byte
-	// fileContentRefs records every ref GetFileContentAtRef was queried
-	// with, in order, so tests can assert persistWithCAS pins its content
-	// read to the exact SHA a prior GetBranchRef call returned.
+	// fileContentRefs records every non-wrapper ref GetFileContentAtRef was
+	// queried with, in order, so tests can assert persistWithCAS pins its
+	// content read to the exact SHA a prior GetBranchRef call returned.
 	fileContentRefs []string
-	fileContentErr  error
-	branchRefErr    error
-	forceCommitErr  error
+	// wrapperContentRefs records every ref GetFileContentAtRef was queried
+	// with for the GitLab pipeline wrapper (fullsendPipelineIncludePath),
+	// in order, so tests can assert usesTypedDispatch reads at the
+	// dispatch ref rather than the default branch.
+	wrapperContentRefs []string
+	fileContentErr     error
+	branchRefErr       error
+	forceCommitErr     error
 	// forceCommitErrSeq is an error queue for CommitFileToBranch / ForceCommitFileToBranch.
 	// Each call shifts the first element; when empty, falls through to forceCommitErr.
 	forceCommitErrSeq []error
@@ -101,6 +132,16 @@ type mockClient struct {
 	pipelineErr      error
 	pipelineCalls    []pipelineCall
 	pipelineErrAfter int // fail after N successful calls (0 = always fail if pipelineErr set)
+
+	// wrapperContent is dispatch()'s GetFileContentAtRef response for the GitLab
+	// pipeline wrapper, defaulting to typedWrapperFixture() so existing
+	// tests keep exercising the typed transport. wrapperNotFound simulates
+	// a legacy installation with no committed wrapper; wrapperErr simulates
+	// a read failure. wrapperNotFound and wrapperErr take precedence over
+	// wrapperContent when set.
+	wrapperContent  []byte
+	wrapperNotFound bool
+	wrapperErr      error
 }
 
 func newMockClient() *mockClient {
@@ -117,6 +158,7 @@ func newMockClient() *mockClient {
 		issueErr:       make(map[int]error),
 		mr:             make(map[int]*MergeRequest),
 		mrErr:          make(map[int]error),
+		wrapperContent: typedWrapperFixture(),
 		memberLevel:    make(map[int]int),
 		memberErr:      make(map[int]error),
 		projectPaths:   make(map[int]string),
@@ -279,6 +321,23 @@ func (m *mockClient) GetFileContentAtRef(_ context.Context, owner, repo, path, r
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.fileContentRefs = append(m.fileContentRefs, ref)
+	if path == fullsendPipelineIncludePath {
+		// dispatch()'s GitLab pipeline-wrapper lookup (see usesTypedDispatch)
+		// reads at the dispatch ref, not the default branch; record it
+		// separately from fileContentRefs (poll-state CAS reads) so tests
+		// can assert usesTypedDispatch queries the exact ref dispatch()
+		// creates the pipeline against.
+		m.wrapperContentRefs = append(m.wrapperContentRefs, ref)
+		if m.wrapperErr != nil {
+			return nil, m.wrapperErr
+		}
+		if m.wrapperNotFound {
+			return nil, forge.ErrNotFound
+		}
+		cp := make([]byte, len(m.wrapperContent))
+		copy(cp, m.wrapperContent)
+		return cp, nil
+	}
 	if m.fileContentErr != nil {
 		return nil, m.fileContentErr
 	}
@@ -508,6 +567,77 @@ func (m *mockClient) CreatePipeline(_ context.Context, owner, repo, ref string, 
 		Repo:      repo,
 		Ref:       ref,
 		Variables: vars,
+		ViaInputs: false,
+	})
+	if m.pipelineErr != nil && (m.pipelineErrAfter == 0 || len(m.pipelineCalls) > m.pipelineErrAfter) {
+		return 0, "", m.pipelineErr
+	}
+	m.pipelineCounter++
+	return int64(m.pipelineCounter), fmt.Sprintf("https://gitlab.example.com/-/pipelines/%d", m.pipelineCounter), nil
+}
+
+// CreatePipelineWithInputs decodes the typed pipeline inputs dispatch()
+// sends back into the same flat Variables shape CreatePipeline recorded,
+// reconstructing EVENT_PAYLOAD_B64 by concatenating its fixed
+// event_payload_chunk_NN scalar inputs in order (#7850 injection-vuln
+// fix: chunks are plain data now, not shell statements needing parsing).
+// This lets most dispatch_test.go assertions keep reading
+// pipelineCall.Variables unchanged while still exercising the real
+// input-encoding/chunking logic end to end.
+func (m *mockClient) CreatePipelineWithInputs(_ context.Context, owner, repo, ref string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	reverseInputNames := make(map[string]string, len(dispatchInputNames))
+	for varName, inputName := range dispatchInputNames {
+		reverseInputNames[inputName] = varName
+	}
+
+	vars := make(map[string]string, len(inputs))
+	var payload strings.Builder
+	for i := 0; i < maxEventPayloadChunks; i++ {
+		name := dispatchEventPayloadChunkInputName(i)
+		v, ok := inputs[name]
+		if !ok {
+			continue
+		}
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return 0, "", fmt.Errorf("marshal input %q: %w", name, err)
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return 0, "", fmt.Errorf("decode input %q as string: %w", name, err)
+		}
+		payload.WriteString(s)
+	}
+	vars["EVENT_PAYLOAD_B64"] = payload.String()
+
+	for inputName, v := range inputs {
+		if strings.HasPrefix(inputName, "event_payload_chunk_") {
+			continue
+		}
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return 0, "", fmt.Errorf("marshal input %q: %w", inputName, err)
+		}
+		varName, ok := reverseInputNames[inputName]
+		if !ok {
+			return 0, "", fmt.Errorf("unrecognized pipeline input %q", inputName)
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return 0, "", fmt.Errorf("decode input %q as string: %w", inputName, err)
+		}
+		vars[varName] = s
+	}
+
+	m.pipelineCalls = append(m.pipelineCalls, pipelineCall{
+		Owner:     owner,
+		Repo:      repo,
+		Ref:       ref,
+		Variables: vars,
+		ViaInputs: true,
 	})
 	if m.pipelineErr != nil && (m.pipelineErrAfter == 0 || len(m.pipelineCalls) > m.pipelineErrAfter) {
 		return 0, "", m.pipelineErr

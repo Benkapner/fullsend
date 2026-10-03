@@ -34,6 +34,69 @@ GitHub repositories use a different command (`fullsend github setup`). See
   may be insufficient for sustained polling because polling consumes CI
   minutes. See
   [Runner Configuration](#runner-configuration).
+* The project's `ci_pipeline_variables_minimum_override_role` must already
+  be `no_one_allowed` before typed pipeline-input dispatch can activate —
+  install/converge refuse runnable template delivery on a weaker, unset,
+  or unverifiable setting, even with automatic enforcement requested.
+  Follow [Typed-input dispatch migration](#typed-input-dispatch-migration)
+  before upgrading a legacy installation; legacy variable-based pins keep
+  their compatible setting. See [GitLab Role-Credential
+  Contract](../../contributing/gitlab-role-credentials.md#how-a-job-selects-its-credential)
+  for the remaining live-validation rollout gates for this transport.
+
+## Typed-input dispatch migration
+
+`ci_pipeline_variables_minimum_override_role` is a GitLab project setting,
+not a `.fullsend` configuration field. Before installing typed-input jobs,
+an administrator must set it to `no_one_allowed`; Fullsend reads it back
+and refuses delivery if it is weaker, unsupported, or unreadable. Setting
+`FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced` does not bypass this
+pre-delivery check. A failed setting change must leave the new jobs undelivered,
+not runnable under an unsafe policy.
+
+For an existing variable-based installation, plan a maintenance window:
+stop its poller and prevent its legacy credential-bearing jobs from running,
+remove the managed schedules' obsolete `FULLSEND_POLL_MODE` variables, and
+apply and verify the GitLab restriction before installing the new templates.
+Do not apply the restriction to a running legacy installation: its dispatch
+and schedule variables would stop working. If preparation fails, keep jobs
+stopped and do not deliver or merge the typed setup. Inspect an asynchronous
+installation/repair MR before merging, keep the restriction in place, and
+rerun `repos install` after it merges to complete activation. Other user-owned
+schedule variables must be migrated separately; Fullsend does not delete them.
+
+Root, wrapper, agent, and poll templates are delivered together using the
+effective target version. Fullsend does not migrate managed schedule variables
+until the compatible wrapper **and** agent/poll templates are on the default
+branch, including when a repair MR is still open. Dry runs never mutate them.
+Typed jobs derive slash/event mode from the schedule description; legacy
+variable wrappers retain their existing restriction and schedule variables.
+
+Version skew between the poller and the installed wrapper behaves as follows:
+
+| Poller | Installed wrapper | Result |
+| --- | --- | --- |
+| New | Typed | Dispatches with pipeline inputs. |
+| New | Legacy | Detects the legacy wrapper and falls back to pipeline variables. |
+| Old (sends variables) | Legacy | Dispatches with pipeline variables, as before. |
+| Old (sends variables) | Typed, after activation set `no_one_allowed` | Cannot dispatch: GitLab rejects the variables. Upgrade the poller. |
+
+The transport declares eleven metadata inputs and nine base64 chunks, at
+most 1000 characters each. All three template layers validate the chunk
+alphabet and length; fixed code reconstructs the payload as data. Variable
+bridges disable expansion, and creator/HMAC authentication precedes caller
+link logging and credential selection. Note bodies are bounded to 800 Unicode
+characters with a truncation marker and note ID; oversized payloads fail
+before a pipeline is created. GitLab's 20-input limit leaves no spare root
+inputs: conflicting declarations or excess inputs fail explicitly.
+
+Compatible user input declarations, jobs, includes, and header settings
+survive merge/uninstall. Declarations referenced directly by surviving user
+configuration, and the `STAGE` bridge/input used indirectly through `$STAGE`,
+are retained. Different version pins need matching upstream templates; a
+recorded ref matching the running release uses embedded templates even
+without GitHub credentials, including status checks. GitLab vendor mode
+and typed pins predating the secured contract are unsupported.
 
 > **GitLab tier:** Project access tokens require GitLab Premium or
 > Ultimate **on gitlab.com**; self-managed Community Edition can create
@@ -105,6 +168,10 @@ then converges the project:
 
 * Scaffolds `.gitlab/ci/fullsend-*.yml` and merges an include, stages, and
   workflow rules into `.gitlab-ci.yml` without overwriting unrelated CI.
+  Dispatch uses typed pipeline inputs, which requires
+  `ci_pipeline_variables_minimum_override_role=no_one_allowed` (see
+  [Prerequisites](#prerequisites) above) — installation fails closed when
+  the project doesn't already have it set.
 * Provisions the built-in and registered custom role credentials as protected
   CI/CD variables. Runtime jobs select the registered role credential
   unconditionally; there is no legacy shared-token fallback.
@@ -664,7 +731,9 @@ fullsend repos set-default gitlab.control_runner_tags fullsend-api
 > `gitlab.control_runner_tags` explicitly before or immediately after
 > upgrading, or the poll job sits pending. `fullsend repos converge`
 > auto-remediates the rendered `fullsend-poll.yml` with a repair commit
-> for unpinned, vendored, or post-split-pinned installs; a
+> for unpinned or post-split-pinned installs (GitLab vendor mode is no
+> longer supported and is rejected by install/converge, so a previously
+> vendored install is not repaired this way); a
 > `gitlab.fullsend_ref` still pinned to a pre-split ref keeps the
 > leftover `__RUNNER_TAGS__` placeholder stamped with the agent tags, so
 > no drift is detected and no repair commit runs there — that install

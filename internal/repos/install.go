@@ -5,6 +5,7 @@
 package repos
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -46,6 +47,17 @@ type InstallConfig struct {
 	UpstreamRef string
 	// UpstreamTag is the version tag corresponding to UpstreamRef (e.g., "v0.42.0").
 	UpstreamTag string
+
+	// Pinned reports whether UpstreamRef came from an explicit manifest
+	// fullsend_ref pin (resolveTargetRef's manifestRef) rather than the
+	// running release's own default ref. A fresh install with no manifest
+	// pin uses the running binary's release-default UpstreamRef together
+	// with its embedded templates, which match that ref by construction —
+	// PrebuiltScaffoldFiles is unnecessary there. An explicit pin can
+	// target a different release, so GitLab requires PrebuiltScaffoldFiles
+	// fetched for that ref. Leave false for GitHub and for unpinned
+	// installs.
+	Pinned bool
 
 	// Skip flags control which install steps are executed. Set by callers
 	// that handle specific steps externally (e.g., admin.go handles mint
@@ -158,6 +170,17 @@ type InstallResult struct {
 	// WIFProvider is the WIF provider resource name, either pre-existing
 	// (from InstallConfig) or newly provisioned.
 	WIFProvider string
+
+	// GitLabTypedDispatch reports whether the GitLab wrapper queued for
+	// commit (the pending scaffold files, not a live re-read) uses the
+	// pipeline-input dispatch contract rather than the legacy
+	// pipeline-variable one. Only meaningful for ForgeGitLab installs.
+	// Callers that need to act on the install's dispatch transport (e.g.
+	// post-install schedule creation) must use this instead of re-reading
+	// the default branch: that commit may still be an unmerged upgrade MR,
+	// in which case a live read would see the prior (or absent) wrapper
+	// and misclassify a pending typed installation as legacy.
+	GitLabTypedDispatch bool
 }
 
 // ScaffoldCommitFunc delivers scaffold files to a repository and returns
@@ -204,6 +227,14 @@ func Install(ctx context.Context, cfg InstallConfig,
 	result := &InstallResult{
 		Owner: cfg.Owner,
 		Repo:  cfg.Repo,
+	}
+	if cfg.Forge == ForgeGitLab {
+		if cfg.VendorBinary {
+			return result, fmt.Errorf("GitLab vendor mode is unsupported: its installer does not execute a matching vendored binary")
+		}
+		if cfg.Pinned && cfg.PrebuiltScaffoldFiles == nil {
+			return result, fmt.Errorf("pinned GitLab installation requires matching upstream scaffold templates")
+		}
 	}
 
 	mintURL := cfg.MintURL
@@ -258,16 +289,53 @@ func Install(ctx context.Context, cfg InstallConfig,
 		if err != nil && !forge.IsNotFound(err) {
 			return result, fmt.Errorf("reading existing .gitlab-ci.yml: %w", err)
 		}
-		if !HasFullsendEntries(existing) {
-			mergedRoot, mergeErr := MergeGitLabCI(existing)
+		wrapper, wrapperErr := effectiveGitLabWrapper(ctx, client, cfg.Owner, cfg.Repo, files)
+		if wrapperErr != nil {
+			return result, fmt.Errorf("reading effective GitLab wrapper: %w", wrapperErr)
+		}
+		result.GitLabTypedDispatch = gitlabWrapperHasDispatchInputs(wrapper)
+		if result.GitLabTypedDispatch {
+			if err := validateGitLabTypedContract(wrapper); err != nil {
+				return result, err
+			}
+			// Require the live restriction before delivering runnable jobs.
+			// Neither a planned update nor an error after delivery closes
+			// the unsafe interval. Do not strand a legacy poller by changing
+			// its setting or schedules before compatible templates land.
+			if err := requireGitLabRestrictionBeforeDelivery(ctx, client, cfg.Owner, cfg.Repo); err != nil {
+				return result, err
+			}
+			if err := requireGitLabPipelineVariableRestriction(ctx, client, cfg.Owner, cfg.Repo, true); err != nil {
+				return result, err
+			}
+		} else if err := requireCompleteGitLabDispatchContract(wrapper); err != nil {
+			return result, err
+		} else if gitlabWrapperHasDispatchInputs(existing) {
+			// Forced typed-to-legacy transition: the committed root
+			// already carries the typed spec:inputs header and
+			// include:inputs forwarding map from a previous typed
+			// install, but the wrapper this install would deliver is
+			// legacy and declares none of those inputs. The merge below
+			// is only invoked when HasFullsendEntries(existing) is false
+			// or the wrapper is typed, so it would never touch (or
+			// revert) that stale root contract here — delivering the
+			// legacy wrapper alongside it would leave an invalid include
+			// and restriction/schedule state incompatible with legacy
+			// dispatch. Refuse rather than commit that broken mix.
+			return result, fmt.Errorf("refusing GitLab typed-to-legacy transition: the installed root still forwards the typed pipeline-input contract, which the legacy wrapper does not declare; manually roll back the root contract before reverting to pipeline-variable dispatch")
+		}
+		if !HasFullsendEntries(existing) || gitlabWrapperHasDispatchInputs(wrapper) {
+			mergedRoot, mergeErr := mergeGitLabCIWithWrapper(existing, wrapper)
 			if mergeErr != nil {
 				return result, fmt.Errorf("merging .gitlab-ci.yml: %w", mergeErr)
 			}
-			files = append(files, forge.TreeFile{
-				Path:    ".gitlab-ci.yml",
-				Content: mergedRoot,
-				Mode:    "100644",
-			})
+			if !bytes.Equal(existing, mergedRoot) {
+				files = append(files, forge.TreeFile{
+					Path:    ".gitlab-ci.yml",
+					Content: mergedRoot,
+					Mode:    "100644",
+				})
+			}
 		}
 	}
 
@@ -343,6 +411,22 @@ func Install(ctx context.Context, cfg InstallConfig,
 	}
 	progress(repoFullName, "scaffold", "Scaffold files committed")
 
+	// Step 7b: Now that scaffold delivery has succeeded, perform the
+	// typed-dispatch activation validated (but not applied) in step 4b:
+	// migrate managed schedule variables under the already-required
+	// restriction. commitScaffold can fall back to a merge
+	// request instead of landing a direct commit (see ScaffoldCommitFunc),
+	// so activateGitLabTypedDispatch independently re-reads the wrapper
+	// and only activates once it actually observes the typed contract —
+	// an unmerged upgrade MR correctly leaves activation for a later run.
+	if cfg.Forge == ForgeGitLab {
+		for _, a := range activateGitLabTypedDispatch(ctx, client, cfg.Owner, cfg.Repo) {
+			if a.Action == "error" {
+				return result, errors.New(a.Detail)
+			}
+		}
+	}
+
 	result.Success = true
 	progress(repoFullName, "done", "Installation complete")
 	return result, nil
@@ -353,6 +437,11 @@ func Install(ctx context.Context, cfg InstallConfig,
 // fields come from the manifest or CLI flags and are not part of the
 // per-repo resolved config.
 type DriftConfig struct {
+	// UpstreamRef and UpstreamTag identify the running release. Matching
+	// recorded refs use its embedded templates even without an upstream client.
+	UpstreamRef string
+	UpstreamTag string
+
 	// InferenceRegion is the GCP region for inference. Only available
 	// from CLI flags on repos install; empty on the status path.
 	InferenceRegion string
@@ -415,7 +504,24 @@ func ExpectedScaffoldContent(ctx context.Context, resolved ResolvedConfig, dcfg 
 	if resolved.FullsendRef == "" {
 		return nil, nil
 	}
+	matchingRelease := resolved.FullsendRef == dcfg.UpstreamRef || resolved.FullsendRef == dcfg.UpstreamTag
+	if resolved.Forge == ForgeGitLab && (resolved.Vendor || (refResolver == nil && !matchingRelease)) {
+		return nil, fmt.Errorf("matching pinned GitLab templates require an upstream client and non-vendored runtime")
+	}
 	installCfg := driftInstallConfig(resolved, dcfg)
+	if matchingRelease {
+		// resolved.FullsendRef is the running release's own SHA or tag,
+		// not a differing explicit pin — driftInstallConfig collapsed
+		// UpstreamRef and UpstreamTag to that single recorded string.
+		// Render with the release's actual (ref, tag) pair instead,
+		// mirroring resolveTargetRef's matching-release normalization
+		// (see convergeContentDriftFiles), so version-derived fields
+		// like FULLSEND_VERSION match what installation/convergence
+		// actually render regardless of whether the manifest happened
+		// to record the SHA or the tag.
+		installCfg.UpstreamRef = dcfg.UpstreamRef
+		installCfg.UpstreamTag = dcfg.UpstreamTag
+	}
 
 	// When the manifest pins a fullsend_ref, fetch remote scaffold
 	// templates so the baseline matches the pinned version's templates
@@ -425,7 +531,7 @@ func ExpectedScaffoldContent(ctx context.Context, resolved ResolvedConfig, dcfg 
 	// When vendored, the running binary's embedded templates match the
 	// binary being committed to the repo — no version-skew concern, so
 	// skip the remote fetch to avoid unnecessary API calls.
-	if manifestRef != "" && refResolver != nil && !installCfg.VendorBinary {
+	if manifestRef != "" && !matchingRelease && refResolver != nil && !installCfg.VendorBinary {
 		ref := manifestRef
 		if isSemver(manifestRef) {
 			if sha := refResolver.Resolve(ctx, manifestRef); sha != manifestRef {
@@ -441,9 +547,11 @@ func ExpectedScaffoldContent(ctx context.Context, resolved ResolvedConfig, dcfg 
 		)
 		if fetchErr == nil {
 			installCfg.PrebuiltScaffoldFiles = scaffoldFiles
+		} else if resolved.Forge == ForgeGitLab {
+			return nil, fmt.Errorf("fetching pinned GitLab scaffold: %w", fetchErr)
 		}
-		// On fetch failure, fall back to embedded templates — same
-		// best-effort semantics as the converge path.
+		// GitHub may fall back to embedded templates. GitLab must preserve
+		// the pinned dispatch contract and therefore rejects fetch failures.
 	}
 
 	return BuildScaffoldFiles(installCfg)

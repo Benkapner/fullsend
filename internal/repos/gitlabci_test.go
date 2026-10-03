@@ -33,6 +33,31 @@ func TestMergeGitLabCI_NoExistingFile(t *testing.T) {
 	assert.Less(t, debugIdx, scheduleIdx, "debug-trace deny must precede schedule admit")
 }
 
+func TestMergeGitLabCI_InstallsPipelineInputContract(t *testing.T) {
+	result, err := MergeGitLabCI(nil)
+	require.NoError(t, err)
+	s := string(result)
+	assert.Contains(t, s, "spec:")
+	assert.Contains(t, s, "event_payload_chunk_08:")
+	assert.Contains(t, s, "inputs:")
+	assert.Contains(t, s, "stage: $[[ inputs.stage ]]")
+}
+
+func TestMergeGitLabCI_AddsInputContractToExistingRoot(t *testing.T) {
+	existing := []byte(`include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+stages:
+  - build
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+	assert.Contains(t, s, "spec:")
+	assert.Contains(t, s, "event_type: $[[ inputs.event_type ]]")
+	assert.Contains(t, s, "- local: '.gitlab/ci/fullsend-pipeline.yml'")
+	assert.Contains(t, s, "event_payload_chunk_08: $[[ inputs.event_payload_chunk_08 ]]")
+}
+
 func TestMergeGitLabCI_EmptyFile(t *testing.T) {
 	result, err := MergeGitLabCI([]byte(""))
 	require.NoError(t, err)

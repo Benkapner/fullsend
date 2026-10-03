@@ -803,6 +803,7 @@ func newInstallFakeClient(repoNames ...string) *forge.FakeClient {
 	fc.AuthenticatedUser = "fullsend-app[bot]"
 	fc.CollaboratorPermissions = make(map[string]string)
 	for _, r := range repoNames {
+		fc.PipelineVarOverrideRoles[r] = forge.PipelineVarOverrideNoOneAllowed
 		parts := strings.SplitN(r, "/", 2)
 		fc.Repos = append(fc.Repos, forge.Repository{
 			FullName:      r,
@@ -2317,6 +2318,7 @@ gitlab:
 	manifestPath := writeTestManifest(t, gitlabManifest)
 
 	fc := forge.NewFakeClient()
+	seedGitLabInputPrerequisites(fc, "group/project", "v1.0.0")
 	fc.InstallationToken = true
 	fc.AuthenticatedUser = "fullsend-app[bot]"
 	fc.CollaboratorPermissions = map[string]string{
@@ -2438,6 +2440,7 @@ gitlab:
 	manifestPath := writeTestManifest(t, gitlabManifest)
 
 	fc := forge.NewFakeClient()
+	seedGitLabInputPrerequisites(fc, "group/project", "v0.43.0")
 	fc.InstallationToken = true
 	fc.AuthenticatedUser = "fullsend-app[bot]"
 	fc.CollaboratorPermissions = map[string]string{
@@ -2943,7 +2946,7 @@ func TestCheckAllForgeScopes_MissingScopes(t *testing.T) {
 	assert.Contains(t, err.Error(), "workflow")
 }
 
-func TestRunReposInstall_GitLabFilterSucceedsWithoutGitHubCreds(t *testing.T) {
+func TestRunReposInstall_GitLabPinRejectsMissingUpstreamClient(t *testing.T) {
 	manifestPath := writeTestManifest(t, mixedForgeManifestYAML)
 	factory := &filterForgeFactory{
 		clients: map[string]forge.Client{
@@ -2954,18 +2957,22 @@ func TestRunReposInstall_GitLabFilterSucceedsWithoutGitHubCreds(t *testing.T) {
 		},
 	}
 
-	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:               manifestPath,
-		concurrency:            1,
-		repoFilter:             []string{"group/project"},
-		roles:                  []string{"triage"},
-		dryRun:                 true,
-		inferenceProject:       "inf-proj",
-		inferenceProjectNumber: "123456789",
-		inferenceRegion:        "us-central1",
-		testFactory:            factory,
+	var err error
+	output := captureStdout(t, func() {
+		err = runReposInstall(context.Background(), &reposInstallConfig{
+			manifest:               manifestPath,
+			concurrency:            1,
+			repoFilter:             []string{"group/project"},
+			roles:                  []string{"triage"},
+			dryRun:                 true,
+			inferenceProject:       "inf-proj",
+			inferenceProjectNumber: "123456789",
+			inferenceRegion:        "us-central1",
+			testFactory:            factory,
+		})
 	})
-	require.NoError(t, err, "GitLab-only filter must not fail when GitHub credentials are missing")
+	require.Error(t, err, "a pin cannot silently use embedded GitLab templates without an upstream client")
+	assert.Contains(t, output, "matching pinned GitLab templates require an upstream GitHub client")
 	assert.True(t, factory.requested(repos.ForgeGitLab))
 }
 
@@ -2997,27 +3004,22 @@ func TestRunReposInstall_GitLabFilterSkipsGitHubGlobExpansion(t *testing.T) {
 		},
 	}
 
-	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:               manifestPath,
-		concurrency:            1,
-		repoFilter:             []string{"group/project"},
-		roles:                  []string{"triage"},
-		dryRun:                 true,
-		inferenceProject:       "inf-proj",
-		inferenceProjectNumber: "123456789",
-		inferenceRegion:        "us-central1",
-		testFactory:            factory,
+	var err error
+	output := captureStdout(t, func() {
+		err = runReposInstall(context.Background(), &reposInstallConfig{
+			manifest:               manifestPath,
+			concurrency:            1,
+			repoFilter:             []string{"group/project"},
+			roles:                  []string{"triage"},
+			dryRun:                 true,
+			inferenceProject:       "inf-proj",
+			inferenceProjectNumber: "123456789",
+			inferenceRegion:        "us-central1",
+			testFactory:            factory,
+		})
 	})
-	// Without threading the repo filter into glob expansion, Converge
-	// would call ExpandGlobs unconditionally, which resolves the GitHub
-	// "acme/*" entry via clients.ConfigFor(ForgeGitHub) — hard-failing the
-	// whole install on the injected error even though no GitHub repo is
-	// targeted. (A separate, best-effort GitHub lookup for ref resolution
-	// also calls ConfigFor(GitHub) and tolerates its own error, so this
-	// test does not assert that GitHub is never requested at all — only
-	// that a GitHub credential failure must not block a GitLab-only
-	// install.)
-	require.NoError(t, err, "GitLab-only filter must not fail when the manifest's GitHub entry is a glob and GH_TOKEN is unavailable")
+	require.Error(t, err, "a pin cannot silently use embedded GitLab templates without an upstream client")
+	assert.Contains(t, output, "matching pinned GitLab templates require an upstream GitHub client")
 	assert.True(t, factory.requested(repos.ForgeGitLab))
 }
 

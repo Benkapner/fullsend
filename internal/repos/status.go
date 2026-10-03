@@ -152,7 +152,9 @@ type StatusResult struct {
 // Status compares the manifest's desired state against the actual forge
 // state for each repo. It returns a StatusResult with per-repo status
 // and aggregate counts. API calls are parallelised up to maxConcurrency.
-func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory, maxConcurrency int, repoFilter []string) (*StatusResult, error) {
+// The optional release supplies the running binary's ref/tag for matching
+// embedded scaffold templates after release-default manifest writeback.
+func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory, maxConcurrency int, repoFilter []string, release ...DriftConfig) (*StatusResult, error) {
 	resolved, err := manifest.ExpandGlobs(ctx, clients)
 	if err != nil {
 		return nil, fmt.Errorf("resolving repos: %w", err)
@@ -192,6 +194,10 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 	dcfg := DriftConfig{
 		AgentRunnerTags:   gitlabAgentRunnerTags(manifest),
 		ControlRunnerTags: gitlabControlRunnerTags(manifest),
+	}
+	if len(release) > 0 {
+		dcfg.UpstreamRef = release[0].UpstreamRef
+		dcfg.UpstreamTag = release[0].UpstreamTag
 	}
 
 	results := make([]RepoStatus, len(resolved))
@@ -338,8 +344,17 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	// installed ref stays symbolic.
 	if workflowPresent && cfg.FullsendRef != "" && status.CurrentRef != cfg.FullsendRef {
 		expectedSHA := cfg.FullsendRef
-		if resolver != nil {
+		switch {
+		case resolver != nil:
 			expectedSHA = resolver.Resolve(ctx, cfg.FullsendRef)
+		case dcfg.UpstreamRef != "" && (cfg.FullsendRef == dcfg.UpstreamTag || cfg.FullsendRef == dcfg.UpstreamRef):
+			// Release-default match: the manifest ref is the running
+			// release's own tag (written back by install without a
+			// GitHub client — see ExpectedScaffoldContent's release-
+			// default support), not an explicit pin. Compare against
+			// the release's own SHA directly instead of requiring a
+			// GitHub resolver to resolve the tag it already came from.
+			expectedSHA = dcfg.UpstreamRef
 		}
 		if status.CurrentRef != expectedSHA {
 			status.Drifts = append(status.Drifts, Drift{

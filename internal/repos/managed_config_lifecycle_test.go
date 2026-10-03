@@ -901,7 +901,7 @@ func TestStatus_UnmanagedConfigDoesNotCompare(t *testing.T) {
 }
 
 func TestStatus_GitLab_OverlayDrift(t *testing.T) {
-	fc := forge.NewFakeClient()
+	fc := newFakeClientForBatch("acme/api")
 	m := &Manifest{
 		Version:  1,
 		Defaults: DefaultsConfig{Config: mustManagedConfig(t, "kill_switch: true\n")},

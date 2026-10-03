@@ -1,7 +1,9 @@
 package repos
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -139,6 +141,16 @@ type ConvergeResult struct {
 	// on this field, so a retry where the schedules already exist does
 	// not delete and recreate them.
 	NeedsGitLabPipelineSchedules bool
+
+	// GitLabTypedDispatch reports whether the GitLab wrapper this run
+	// installed (still possibly queued in an unmerged upgrade MR) uses the
+	// pipeline-input dispatch contract rather than the legacy
+	// pipeline-variable one. Set from InstallResult.GitLabTypedDispatch
+	// for fresh installs (see Installed). Post-install schedule setup
+	// must use this instead of re-reading the default branch, which can
+	// still show the prior or absent wrapper while the install MR is
+	// unmerged.
+	GitLabTypedDispatch bool
 
 	// Converged is true when the repo had drifted components that were
 	// repaired (variables, refs, or missing scaffold files).
@@ -680,6 +692,33 @@ func convergeRepo(ctx context.Context,
 		Repo:        rr.Repo,
 		WIFProvider: wifProvider,
 	}
+	if resolved.Forge == ForgeGitLab {
+		vendor := resolved.Vendor
+		if cfg.VendorOverride != nil {
+			vendor = *cfg.VendorOverride
+		}
+		if vendor {
+			cr.Error = fmt.Errorf("GitLab vendor mode is unsupported: its installer does not execute a matching vendored binary")
+			return cr
+		}
+		// Only an explicit manifest fullsend_ref pin that actually differs
+		// from the running release's own default ref requires a matching
+		// upstream client: resolveTargetRef leaves manifestRef empty in
+		// that case, since its embedded templates already match and no
+		// remote fetch is attempted. A released CLI binary always has
+		// cfg.UpstreamRef/UpstreamTag set, so comparing only for
+		// non-emptiness here (instead of inequality) would reject every
+		// GitLab-only convergence once a prior successful install writes
+		// that same release-default ref back into the manifest as
+		// gitlab.fullsend_ref (see runReposInstall's writeback) — even
+		// though the recorded ref still matches the running release and
+		// no GitHub client is actually needed.
+		if refResolver == nil && resolved.FullsendRef != "" &&
+			resolved.FullsendRef != cfg.UpstreamRef && resolved.FullsendRef != cfg.UpstreamTag {
+			cr.Error = fmt.Errorf("matching pinned GitLab templates require an upstream GitHub client; refusing embedded-template fallback")
+			return cr
+		}
+	}
 
 	hasSecrets := secretsPresent(d.components)
 	// Treat the repo as new until the workflow file is on the default
@@ -735,8 +774,96 @@ func convergeRepo(ctx context.Context,
 			configSafetyRejected = checkManagedConfigSafetyGate(ctx, resolved, existing)
 		}
 
+		// Resolve the target ref and scaffold inputs before branching on
+		// DryRun, not after: a dry run must run the same pin-resolution,
+		// remote-fetch, and (for GitLab) typed-contract/restriction/root-
+		// merge preflight checks the real install below performs, so a
+		// fresh-install plan that would actually fail is reported as an
+		// error instead of "Would install (new)" (see the review finding
+		// on preview fidelity).
+		rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
+		ref, tag, manifestRef := rref.ref, rref.tag, rref.manifestRef
+
+		vendor := resolved.Vendor
+		if cfg.VendorOverride != nil {
+			vendor = *cfg.VendorOverride
+		}
+		if vendor && resolved.Forge == ForgeGitLab {
+			progress(rr.Owner+"/"+rr.Repo, "vendor",
+				"vendor enabled but GitLab CI templates do not yet reference the vendored binary")
+		}
+
+		installRoles := defaultRoles(cfg.Roles)
+		if len(d.preset) > 0 && !cfg.RolesExplicit {
+			// A base preset is declared and the caller did not
+			// explicitly pass --roles: leave Roles unset so
+			// BuildScaffoldFiles writes a stub overlay and the
+			// preset's own roles (or its code-default fallback) take
+			// effect via the layered accessor chain, instead of the
+			// fleet-wide default roles shadowing them.
+			installRoles = nil
+		}
+
+		installCfg := InstallConfig{
+			Owner:                         rr.Owner,
+			Repo:                          rr.Repo,
+			Forge:                         resolved.Forge,
+			Roles:                         installRoles,
+			MintURL:                       resolved.MintURL,
+			InferenceProject:              cfg.InferenceProject,
+			InferenceRegion:               cfg.InferenceRegion,
+			UpstreamRef:                   ref,
+			UpstreamTag:                   tag,
+			Pinned:                        manifestRef != "",
+			WIFProvider:                   wifProvider,
+			ReviewAppClientID:             d.reviewClientID,
+			AppSet:                        d.appSet,
+			AgentRunnerTags:               gitlabAgentRunnerTags(cfg.Manifest),
+			ControlRunnerTags:             gitlabControlRunnerTags(cfg.Manifest),
+			Runtime:                       resolved.Runtime,
+			Direct:                        cfg.Direct,
+			ReuseSecrets:                  hasSecrets,
+			ExistingSecrets:               existingSecretNames(d.components),
+			VendorBinary:                  vendor,
+			Preset:                        d.preset,
+			ManagedConfig:                 d.managedConfig,
+			ManagedConfigAdoptionRequired: configAdoptionRequired || configSafetyRejected != nil,
+		}
+
+		// When vendored, the running binary's embedded templates match the
+		// binary being committed to the repo — no version-skew concern, so
+		// skip the remote fetch to avoid unnecessary API calls.
+		if manifestRef != "" && refResolver != nil && !vendor {
+			scaffoldFiles, fetchErr := FetchRemoteScaffold(
+				ctx, refResolver.client,
+				manifestRef, ref, resolved.Forge,
+				gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest),
+				vendor,
+			)
+			if fetchErr == nil {
+				installCfg.PrebuiltScaffoldFiles = scaffoldFiles
+			} else {
+				if resolved.Forge == ForgeGitLab {
+					cr.Error = fmt.Errorf("fetching pinned GitLab scaffold: %w", fetchErr)
+					return cr
+				}
+				progress(repoFullName, "install", fmt.Sprintf("remote scaffold fetch failed, using embedded templates: %v", fetchErr))
+			}
+		}
+
 		if cfg.DryRun {
 			cr.Installed = true
+			if resolved.Forge == ForgeGitLab {
+				if err := gitlabFreshInstallDryRunPreflight(ctx, resolved, installCfg); err != nil {
+					cr.Error = err
+					cr.Actions = append(cr.Actions, ComponentAction{
+						Component: "gitlab-ci-inputs",
+						Action:    "error",
+						Detail:    err.Error(),
+					})
+					return cr
+				}
+			}
 			cr.Actions = append(cr.Actions, ComponentAction{
 				Component: "all",
 				Action:    "add",
@@ -777,71 +904,6 @@ func convergeRepo(ctx context.Context,
 			return cr
 		}
 
-		rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
-		ref, tag, manifestRef := rref.ref, rref.tag, rref.manifestRef
-
-		vendor := resolved.Vendor
-		if cfg.VendorOverride != nil {
-			vendor = *cfg.VendorOverride
-		}
-		if vendor && resolved.Forge == ForgeGitLab {
-			progress(rr.Owner+"/"+rr.Repo, "vendor",
-				"vendor enabled but GitLab CI templates do not yet reference the vendored binary")
-		}
-
-		installRoles := defaultRoles(cfg.Roles)
-		if len(d.preset) > 0 && !cfg.RolesExplicit {
-			// A base preset is declared and the caller did not
-			// explicitly pass --roles: leave Roles unset so
-			// BuildScaffoldFiles writes a stub overlay and the
-			// preset's own roles (or its code-default fallback) take
-			// effect via the layered accessor chain, instead of the
-			// fleet-wide default roles shadowing them.
-			installRoles = nil
-		}
-
-		installCfg := InstallConfig{
-			Owner:                         rr.Owner,
-			Repo:                          rr.Repo,
-			Forge:                         resolved.Forge,
-			Roles:                         installRoles,
-			MintURL:                       resolved.MintURL,
-			InferenceProject:              cfg.InferenceProject,
-			InferenceRegion:               cfg.InferenceRegion,
-			UpstreamRef:                   ref,
-			UpstreamTag:                   tag,
-			WIFProvider:                   wifProvider,
-			ReviewAppClientID:             d.reviewClientID,
-			AppSet:                        d.appSet,
-			AgentRunnerTags:               gitlabAgentRunnerTags(cfg.Manifest),
-			ControlRunnerTags:             gitlabControlRunnerTags(cfg.Manifest),
-			Runtime:                       resolved.Runtime,
-			Direct:                        cfg.Direct,
-			ReuseSecrets:                  hasSecrets,
-			ExistingSecrets:               existingSecretNames(d.components),
-			VendorBinary:                  vendor,
-			Preset:                        d.preset,
-			ManagedConfig:                 d.managedConfig,
-			ManagedConfigAdoptionRequired: configAdoptionRequired || configSafetyRejected != nil,
-		}
-
-		// When vendored, the running binary's embedded templates match the
-		// binary being committed to the repo — no version-skew concern, so
-		// skip the remote fetch to avoid unnecessary API calls.
-		if manifestRef != "" && refResolver != nil && !vendor {
-			scaffoldFiles, fetchErr := FetchRemoteScaffold(
-				ctx, refResolver.client,
-				manifestRef, ref, resolved.Forge,
-				gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest),
-				vendor,
-			)
-			if fetchErr == nil {
-				installCfg.PrebuiltScaffoldFiles = scaffoldFiles
-			} else {
-				progress(repoFullName, "install", fmt.Sprintf("remote scaffold fetch failed, using embedded templates: %v", fetchErr))
-			}
-		}
-
 		installResult, installErr := Install(ctx, installCfg, resolved.ForgeConfig.Client, commitScaffold, progress)
 		if installErr != nil {
 			cr.Error = installErr
@@ -853,6 +915,7 @@ func convergeRepo(ctx context.Context,
 
 		cr.Installed = true
 		cr.WIFProvider = installResult.WIFProvider
+		cr.GitLabTypedDispatch = installResult.GitLabTypedDispatch
 		cr.Actions = append(cr.Actions, ComponentAction{
 			Component: "all",
 			Action:    "add",
@@ -942,29 +1005,11 @@ func convergeRepo(ctx context.Context,
 	// workflow ref is already current, since the root file is only
 	// otherwise touched by the install (fresh install) and uninstall
 	// (teardown) paths.
-	rootCIFiles, rootCIActions := convergeGitLabRootCIFiles(ctx, resolved, cfg, progress)
-	cr.Actions = append(cr.Actions, rootCIActions...)
-
-	var rootCIErrors []string
-	for _, a := range rootCIActions {
-		if a.Action == "error" {
-			rootCIErrors = append(rootCIErrors, a.Detail)
-		}
-	}
-	if len(rootCIErrors) > 0 {
-		cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(rootCIErrors, "; "))
-		return cr
-	}
-	allScaffoldFiles = append(allScaffoldFiles, rootCIFiles...)
-
 	// Track paths already queued so missing-component repair and
 	// content-drift detection skip duplicates. GitLab rejects two
 	// create actions for the same path in one commit (#7645).
-	refFileSet := make(map[string]bool, len(refFiles)+len(rootCIFiles))
+	refFileSet := make(map[string]bool, len(refFiles))
 	for _, f := range refFiles {
-		refFileSet[f.Path] = true
-	}
-	for _, f := range rootCIFiles {
 		refFileSet[f.Path] = true
 	}
 
@@ -1027,6 +1072,18 @@ func convergeRepo(ctx context.Context,
 	}
 	allScaffoldFiles = append(allScaffoldFiles, contentDriftFiles...)
 
+	// Root input migration uses the wrapper that will actually be committed,
+	// including ref upgrades, repairs and remote pinned templates.
+	rootCIFiles, rootCIActions := convergeGitLabRootCIFiles(ctx, resolved, cfg, progress, allScaffoldFiles)
+	cr.Actions = append(cr.Actions, rootCIActions...)
+	for _, action := range rootCIActions {
+		if action.Action == "error" {
+			cr.Error = fmt.Errorf("convergence errors: %s", action.Detail)
+			return cr
+		}
+	}
+	allScaffoldFiles = append(allScaffoldFiles, rootCIFiles...)
+
 	// 2d-iii: Configuration preset — replace .fullsend/config.base.yaml
 	// wholesale when a preset is declared and the installed bytes differ.
 	// No declared preset is a no-op so an existing base file is preserved
@@ -1079,7 +1136,20 @@ func convergeRepo(ctx context.Context,
 				Action:    "error",
 				Detail:    fmt.Sprintf("failed to commit scaffold changes: %v", err),
 			})
+		} else if resolved.Forge == ForgeGitLab {
+			// commitScaffold can fall back to opening a merge/pull request
+			// instead of landing a direct commit; activateGitLabTypedDispatch
+			// independently re-reads the wrapper and only activates once
+			// it actually observes the typed contract, so an unmerged
+			// upgrade MR correctly leaves activation for a later run.
+			cr.Actions = append(cr.Actions, activateGitLabTypedDispatch(ctx, resolved.ForgeConfig.Client, rr.Owner, rr.Repo)...)
 		}
+	} else if !cfg.DryRun && resolved.Forge == ForgeGitLab {
+		// Nothing needed to be committed to deliver compatible templates
+		// (e.g. the root CI contract and scaffold were already current),
+		// so it's already safe to check activation — there is nothing
+		// pending for a commit failure to leave stranded.
+		cr.Actions = append(cr.Actions, activateGitLabTypedDispatch(ctx, resolved.ForgeConfig.Client, rr.Owner, rr.Repo)...)
 	}
 
 	// Determine result state.
@@ -1152,6 +1222,58 @@ func resolveConvergeAppSet(ctx context.Context, client forge.Client, owner, repo
 		existing = ""
 	}
 	return appsetup.ResolvePersistedAppSet("", existing), nil
+}
+
+// gitlabFreshInstallDryRunPreflight runs the read-only portion of the
+// GitLab-specific fresh-install checks Install performs before writes:
+// resolving the effective wrapper, validating the typed pipeline-input
+// contract (or rejecting an incomplete one) and the live pipeline-variable
+// override restriction, refusing a typed-to-legacy transition, and
+// confirming the root .gitlab-ci.yml would merge cleanly (e.g. no STAGE
+// conflict). It performs no writes and never mutates project state. A
+// fresh-install dry run that skips these checks can report "Would install
+// (new)" for a plan the real installation would reject — see the review
+// finding on preview fidelity.
+func gitlabFreshInstallDryRunPreflight(ctx context.Context, resolved ResolvedConfig, installCfg InstallConfig) error {
+	client := resolved.ForgeConfig.Client
+	owner, repo := installCfg.Owner, installCfg.Repo
+
+	files, err := BuildScaffoldFiles(installCfg)
+	if err != nil {
+		return fmt.Errorf("generating scaffold files: %w", err)
+	}
+
+	existing, err := client.GetFileContent(ctx, owner, repo, ".gitlab-ci.yml")
+	if err != nil && !forge.IsNotFound(err) {
+		return fmt.Errorf("reading existing .gitlab-ci.yml: %w", err)
+	}
+	wrapper, err := effectiveGitLabWrapper(ctx, client, owner, repo, files)
+	if err != nil {
+		return fmt.Errorf("reading effective GitLab wrapper: %w", err)
+	}
+
+	if gitlabWrapperHasDispatchInputs(wrapper) {
+		if err := validateGitLabTypedContract(wrapper); err != nil {
+			return err
+		}
+		if err := requireGitLabRestrictionBeforeDelivery(ctx, client, owner, repo); err != nil {
+			return err
+		}
+		if err := requireGitLabPipelineVariableRestriction(ctx, client, owner, repo, true); err != nil {
+			return err
+		}
+	} else if err := requireCompleteGitLabDispatchContract(wrapper); err != nil {
+		return err
+	} else if gitlabWrapperHasDispatchInputs(existing) {
+		return fmt.Errorf("refusing GitLab typed-to-legacy transition: the installed root still forwards the typed pipeline-input contract, which the legacy wrapper does not declare; manually roll back the root contract before reverting to pipeline-variable dispatch")
+	}
+
+	if !HasFullsendEntries(existing) || gitlabWrapperHasDispatchInputs(wrapper) {
+		if _, err := mergeGitLabCIWithWrapper(existing, wrapper); err != nil {
+			return fmt.Errorf("merging .gitlab-ci.yml: %w", err)
+		}
+	}
+	return nil
 }
 
 // convergeVariables checks and repairs variable drift for an installed repo.
@@ -1310,6 +1432,42 @@ func convergeSecrets(ctx context.Context,
 // operators running off-system polling intentionally disable these
 // schedules, so by default a disabled schedule is only reported as
 // drift, not silently re-enabled.
+// scheduleErrorActions builds a uniform "error" ComponentAction for each
+// named schedule component, used when a check that gates all pending
+// schedule mutations (the effective dispatch transport, or the
+// pipeline-variable override restriction) fails before any of them run.
+func scheduleErrorActions(names []string, detail string) []ComponentAction {
+	actions := make([]ComponentAction, 0, len(names))
+	for _, name := range names {
+		actions = append(actions, ComponentAction{
+			Component: name,
+			Action:    "error",
+			Detail:    detail,
+		})
+	}
+	return actions
+}
+
+// scheduleDeferredActions builds a uniform "none" ComponentAction for each
+// named schedule component, used when compatible templates have not yet
+// landed on the default branch. This is a benign, expected wait state —
+// not a failure — so it must not surface as an "error" action: convergeRepo
+// treats any "error" action as a reason to bail out before collecting or
+// committing scaffold file changes, which would otherwise repair the very
+// templates this deferral is waiting on. Mirrors the "none" action already
+// used above for a disabled schedule that is intentionally left untouched.
+func scheduleDeferredActions(names []string, detail string) []ComponentAction {
+	actions := make([]ComponentAction, 0, len(names))
+	for _, name := range names {
+		actions = append(actions, ComponentAction{
+			Component: name,
+			Action:    "none",
+			Detail:    detail,
+		})
+	}
+	return actions
+}
+
 func convergeSchedules(ctx context.Context,
 	resolved ResolvedConfig,
 	components []ComponentStatus,
@@ -1382,6 +1540,68 @@ func convergeSchedules(ctx context.Context,
 		return actions
 	}
 
+	// Legacy (non-typed) templates select poll mode from a schedule
+	// pipeline variable rather than the schedule description, so schedule
+	// creation/repair must still set it for repos that haven't migrated to
+	// the typed pipeline-input contract. Checked once per call against the
+	// currently effective wrapper — not any scaffold queued by this same
+	// convergence run, which hasn't committed yet. Checked before either
+	// mutation below (reactivating or creating), not just before creating:
+	// for a typed installation, both actions resume scheduled polling, and
+	// resuming it ahead of the required pipeline-variable override
+	// restriction would let credential-bearing polling run under a weaker
+	// policy with no rollback once convergeGitLabRootCIFiles reports the
+	// restriction error later in this same convergence pass — see the
+	// review finding on this ordering.
+	//
+	// A typed wrapper alone is not sufficient evidence that scheduled
+	// polling is actually safe to resume: the root .gitlab-ci.yml may not
+	// yet declare/forward the dispatch-input contract, or a sibling agent
+	// or poll template repair may still be unmerged, leaving the legacy
+	// template's event-based polling in place. Gate typed schedule
+	// creation and reactivation on the same committed-template readiness
+	// checks ActivateGitLabTypedDispatch uses before activation, so a
+	// missing schedule can't start (or a disabled one resume) polling
+	// under a stale template ahead of compatible scaffold delivery.
+	typed, typedErr := GitLabUsesTypedDispatch(ctx, client, owner, repo)
+	if errors.Is(typedErr, errGitLabIncompatibleWrapper) {
+		// The installed wrapper's content is incompatible; a scaffold
+		// repair (collected by convergeRepo only when no action is an
+		// "error") is what fixes it. Defer schedule mutations instead of
+		// failing, so the repair can land. API/read failures below stay
+		// hard errors.
+		detail := fmt.Sprintf("deferring pipeline schedule creation/reactivation until the installed GitLab wrapper is repaired: %v", typedErr)
+		return append(actions, scheduleDeferredActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
+	}
+	if typedErr != nil {
+		detail := fmt.Sprintf("checking effective GitLab dispatch transport for schedule creation: %v", typedErr)
+		return append(actions, scheduleErrorActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
+	}
+	if typed {
+		rootReady, rootErr := gitlabRootDeclaresDispatchInputs(ctx, client, owner, repo)
+		if rootErr != nil {
+			detail := fmt.Sprintf("checking committed GitLab root CI input contract for schedule creation: %v", rootErr)
+			return append(actions, scheduleErrorActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
+		}
+		if !rootReady {
+			detail := "deferring pipeline schedule creation/reactivation until the root .gitlab-ci.yml declares and forwards the pipeline-input contract"
+			return append(actions, scheduleDeferredActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
+		}
+		landed, landedErr := gitlabPollAndAgentTemplatesLanded(ctx, client, owner, repo)
+		if landedErr != nil {
+			detail := fmt.Sprintf("checking committed GitLab agent/poll templates for schedule creation: %v", landedErr)
+			return append(actions, scheduleErrorActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
+		}
+		if !landed {
+			detail := "deferring pipeline schedule creation/reactivation until compatible agent and poll templates land"
+			return append(actions, scheduleDeferredActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
+		}
+		if err := requireGitLabRestrictionBeforeDelivery(ctx, client, owner, repo); err != nil {
+			detail := fmt.Sprintf("refusing to create or reactivate pipeline schedules before the GitLab pipeline-variable override restriction is established: %v", err)
+			return append(actions, scheduleErrorActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
+		}
+	}
+
 	if len(inactiveSchedules) > 0 {
 		actions = append(actions, activatePipelineSchedules(
 			ctx, client, owner, repo, repoFullName, inactiveSchedules, progress)...)
@@ -1420,7 +1640,7 @@ func convergeSchedules(ctx context.Context,
 		}
 
 		_, createErr := client.CreatePipelineSchedule(
-			ctx, owner, repo, defaultBranch, spec.Description, spec.Cron, spec.Variables)
+			ctx, owner, repo, defaultBranch, spec.Description, spec.Cron, ScheduleVariablesFor(*spec, typed))
 		if createErr != nil {
 			actions = append(actions, ComponentAction{
 				Component: name,
@@ -1533,7 +1753,7 @@ func activatePipelineSchedules(ctx context.Context, client forge.Client,
 func convergeGitLabRootCIFiles(ctx context.Context,
 	resolved ResolvedConfig,
 	cfg ConvergeConfig,
-	progress ProgressFunc) ([]forge.TreeFile, []ComponentAction) {
+	progress ProgressFunc, pending []forge.TreeFile) ([]forge.TreeFile, []ComponentAction) {
 
 	var actions []ComponentAction
 	if resolved.Forge != ForgeGitLab {
@@ -1545,10 +1765,7 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 	repoFullName := owner + "/" + repo
 
 	existing, err := client.GetFileContent(ctx, owner, repo, ".gitlab-ci.yml")
-	if err != nil {
-		if forge.IsNotFound(err) {
-			return nil, actions
-		}
+	if err != nil && !forge.IsNotFound(err) {
 		actions = append(actions, ComponentAction{
 			Component: "gitlab-ci-rules",
 			Action:    "error",
@@ -1559,6 +1776,11 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 
 	content := existing
 	changed := false
+	wrapper, wrapperErr := effectiveGitLabWrapper(ctx, client, owner, repo, pending)
+	if wrapperErr != nil {
+		return nil, []ComponentAction{{Component: "gitlab-ci-inputs", Action: "error",
+			Detail: fmt.Sprintf("error reading effective GitLab wrapper: %v", wrapperErr)}}
+	}
 
 	stripped, rulesChanged, stripErr := StripObsoleteGitLabWorkflowRules(content)
 	if stripErr != nil {
@@ -1632,7 +1854,7 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 		// trusting its verdict, confirm the on-repo pipeline wrapper it
 		// gated on doesn't itself still pull in the obsolete native-dispatch
 		// job — see gitlabPipelineWrapperStillIncludesDispatch.
-		pullsInDispatch, wrapperErr := gitlabPipelineWrapperStillIncludesDispatch(ctx, client, owner, repo)
+		pullsInDispatch, wrapperErr := gitlabWrapperContentIncludesDispatch(wrapper)
 		if wrapperErr != nil {
 			actions = append(actions, ComponentAction{
 				Component: "gitlab-ci-stages",
@@ -1663,6 +1885,70 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 			})
 			progress(repoFullName, "repair", "Removing obsolete dispatch stage from .gitlab-ci.yml")
 		}
+	}
+
+	// Dispatch now uses typed pipeline inputs. Existing installations were
+	// merged from the user's root file rather than the embedded root
+	// scaffold, so converge the root contract before an upgraded poller can
+	// create an inputs-only pipeline.
+	if gitlabWrapperHasDispatchInputs(wrapper) {
+		if err := validateGitLabTypedContract(wrapper); err != nil {
+			return nil, append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "error", Detail: err.Error()})
+		}
+		if err := requireGitLabRestrictionBeforeDelivery(ctx, client, owner, repo); err != nil {
+			return nil, append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "error", Detail: err.Error()})
+		}
+		// Validate only — never mutate — here. The wrapper checked above
+		// may still be queued in pending rather than already committed
+		// (see effectiveGitLabWrapper), so flipping the live schedule
+		// variables and project restriction at this point can activate
+		// typed dispatch before compatible templates actually reach the
+		// protected default branch. If the batched commit below then
+		// fails to land (or a later convergence step errors first), a
+		// legacy poller would be stranded behind a restriction it can't
+		// satisfy. The real activation runs from convergeRepo only after
+		// commitScaffold succeeds, re-checking the now-committed wrapper.
+		if err := requireGitLabPipelineVariableRestriction(ctx, client, owner, repo, true); err != nil {
+			return nil, append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "error", Detail: err.Error()})
+		}
+		migrated, mergeErr := mergeGitLabCIWithWrapper(content, wrapper)
+		if mergeErr != nil {
+			actions = append(actions, ComponentAction{
+				Component: "gitlab-ci-inputs",
+				Action:    "error",
+				Detail:    fmt.Sprintf("error migrating .gitlab-ci.yml to the pipeline-input contract: %v", mergeErr),
+			})
+			return nil, actions
+		}
+		if !bytes.Equal(migrated, content) {
+			content = migrated
+			changed = true
+			detail := "migrated .gitlab-ci.yml to the typed pipeline-input contract"
+			progressText, progressAction := "Migrating .gitlab-ci.yml to the typed pipeline-input contract", "repair"
+			if cfg.DryRun {
+				detail = "would migrate .gitlab-ci.yml to the typed pipeline-input contract"
+				progressText, progressAction = "Would migrate .gitlab-ci.yml to the typed pipeline-input contract", "dry-run"
+			}
+			actions = append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "update", Detail: detail})
+			progress(repoFullName, progressAction, progressText)
+		}
+	} else if err := requireCompleteGitLabDispatchContract(wrapper); err != nil {
+		return nil, append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "error", Detail: err.Error()})
+	} else if gitlabWrapperHasDispatchInputs(content) {
+		// Forced typed-to-legacy transition: the committed root already
+		// carries the typed spec:inputs header and include:inputs
+		// forwarding map from a previous typed install, but the
+		// effective wrapper for this convergence is legacy and declares
+		// none of those inputs. Nothing above migrates or reverts the
+		// root in that direction, so delivering the legacy wrapper
+		// alongside an untouched typed root would leave an invalid
+		// include and restriction/schedule state incompatible with
+		// legacy dispatch. Refuse rather than commit that broken mix.
+		return nil, append(actions, ComponentAction{
+			Component: "gitlab-ci-inputs",
+			Action:    "error",
+			Detail:    "refusing GitLab typed-to-legacy transition: the installed root still forwards the typed pipeline-input contract, which the legacy wrapper does not declare; manually roll back the root contract before reverting to pipeline-variable dispatch",
+		})
 	}
 
 	if !changed {
@@ -1761,14 +2047,30 @@ func convergeRefFiles(ctx context.Context,
 		}
 	}
 
+	// A targetRef matching the running release's own upstream ref/tag is
+	// the generated release-default baseline (see resolveTargetRef's doc
+	// comment and the matching guard in convergeRepo), not an explicit
+	// pin to a different release. Its installed/rendered ref and tag
+	// annotation must render as exactly cfg.UpstreamRef/cfg.UpstreamTag —
+	// not whatever the generic SHA-resolution logic below would produce
+	// from targetRef alone — so the marker comparison against the
+	// previously installed content stays idempotent across repeated
+	// convergence runs even when UpstreamRef (e.g. a release SHA) and
+	// UpstreamTag (its distinct version tag) differ. Applied in both the
+	// dry-run and real paths, and reused by the GitLab template-rendering
+	// decision below.
+	isExplicitPin := targetRef != cfg.UpstreamRef && targetRef != cfg.UpstreamTag
+
 	// DryRun path.
 	if cfg.DryRun {
 		dryRef := targetRef
 		dryTag := ""
-		// Only resolve to SHA for semver tags. Branch refs are used
-		// directly to match resolveTargetRef and avoid non-idempotent
-		// SHA pinning. See #6553.
-		if !isSHARef(targetRef) && isSHARef(currentRef) && isSemver(targetRef) {
+		if !isExplicitPin {
+			dryRef, dryTag = cfg.UpstreamRef, cfg.UpstreamTag
+		} else if !isSHARef(targetRef) && isSHARef(currentRef) && isSemver(targetRef) {
+			// Only resolve to SHA for semver tags. Branch refs are used
+			// directly to match resolveTargetRef and avoid non-idempotent
+			// SHA pinning. See #6553.
 			if resolver != nil {
 				if sha := resolver.Resolve(ctx, targetRef); sha != "" && sha != targetRef {
 					dryRef = sha
@@ -1838,7 +2140,9 @@ func convergeRefFiles(ctx context.Context,
 	// makes the write non-idempotent because each convergence commit
 	// shifts the branch HEAD. See #6553.
 	var newRef, newTag string
-	if isSHARef(targetRef) {
+	if !isExplicitPin {
+		newRef, newTag = cfg.UpstreamRef, cfg.UpstreamTag
+	} else if isSHARef(targetRef) {
 		newRef = targetRef
 	} else if isSHARef(currentRef) && isSemver(targetRef) {
 		var sha string
@@ -1887,9 +2191,32 @@ func convergeRefFiles(ctx context.Context,
 	// GitLab CI templates — include only when the ref changed.
 	// Unchanged-ref structural drift is repaired by convergeContentDriftFiles.
 	if changed && resolved.Forge == ForgeGitLab {
+		// A release-default targetRef (!isExplicitPin, computed above)
+		// already has newRef/newTag normalized to
+		// cfg.UpstreamRef/cfg.UpstreamTag. Its embedded templates already
+		// match the running binary, so render them directly instead of
+		// fetching remotely — a failed remote template read must not
+		// abort an upgrade that the embedded templates already satisfy.
+		templateRef, templateTag := newRef, newTag
 		templateFiles, tplErr := collectGitLabUpgradeTemplates(
-			gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest), newRef, newTag,
+			gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest), templateRef, templateTag,
 		)
+		vendor := resolved.Vendor
+		if cfg.VendorOverride != nil {
+			vendor = *cfg.VendorOverride
+		}
+		if resolver != nil && !vendor && isExplicitPin {
+			remote, remoteErr := FetchRemoteScaffold(ctx, resolver.client, targetRef, newRef, ForgeGitLab,
+				gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest), false)
+			if remoteErr != nil {
+				return nil, []ComponentAction{{Component: "ref", Action: "error",
+					Detail: fmt.Sprintf("fetching pinned GitLab scaffold: %v", remoteErr)}}
+			}
+			templateFiles = nil
+			for _, file := range remote {
+				templateFiles = append(templateFiles, forge.TreeFile{Path: file.Path, Content: file.Content, Mode: file.Mode})
+			}
+		}
 		if tplErr != nil {
 			actions = append(actions, ComponentAction{
 				Component: "ref",
@@ -2022,6 +2349,9 @@ func convergeScaffoldFiles(ctx context.Context,
 		if fetchErr == nil {
 			installCfg.PrebuiltScaffoldFiles = scaffoldFiles
 		} else {
+			if resolved.Forge == ForgeGitLab {
+				return nil, []ComponentAction{{Component: "scaffold", Action: "error", Detail: fmt.Sprintf("fetching pinned GitLab scaffold: %v", fetchErr)}}
+			}
 			progress(repoFullName, "repair", fmt.Sprintf("remote scaffold fetch failed, using embedded templates: %v", fetchErr))
 		}
 	}
@@ -2150,6 +2480,9 @@ func convergeContentDriftFiles(ctx context.Context,
 		if fetchErr == nil {
 			installCfg.PrebuiltScaffoldFiles = scaffoldFiles
 		} else {
+			if resolved.Forge == ForgeGitLab {
+				return nil, []ComponentAction{{Component: "scaffold", Action: "error", Detail: fmt.Sprintf("fetching pinned GitLab scaffold: %v", fetchErr)}}
+			}
 			progress(repoFullName, "content-drift",
 				fmt.Sprintf("remote scaffold fetch failed, using embedded templates: %v", fetchErr))
 		}
@@ -2187,6 +2520,7 @@ func convergeContentDriftFiles(ctx context.Context,
 			continue
 		}
 		if cfg.DryRun {
+			repairFiles = append(repairFiles, forge.TreeFile{Path: df.Path, Content: df.Expected, Mode: "100644"})
 			actions = append(actions, ComponentAction{
 				Component: df.Path,
 				Action:    "update",
@@ -2344,12 +2678,30 @@ type resolvedRef struct {
 // with each commit, making SHA resolution non-idempotent — each
 // convergence commit shifts the branch, causing the next run to
 // resolve a different SHA and re-converge. See #6553.
+//
+// fullsendRef matching upstreamRef or upstreamTag is treated the same
+// as an empty fullsendRef (manifestRef left empty, no "pin"): a
+// successful unpinned install writes the resolved release-default ref
+// back into the manifest as gitlab.fullsend_ref/github.fullsend_ref
+// (runReposInstall), so a subsequent run's resolved.FullsendRef is
+// that generated baseline, not an explicit pin to a different release.
+// Its embedded templates already match the running binary, so no
+// remote fetch or upstream client is required — see the GitLab-only
+// guard in convergeRepo and InstallConfig.Pinned.
 func resolveTargetRef(ctx context.Context, fullsendRef, upstreamRef, upstreamTag string, resolver *RefResolver) resolvedRef {
 	ref := fullsendRef
 	tag := upstreamTag
 	var manifestRef string
 
 	if ref == "" && upstreamRef != "" {
+		ref = upstreamRef
+	} else if ref != "" && (ref == upstreamRef || ref == upstreamTag) {
+		// The manifest's fullsendRef is the generated release-default
+		// baseline, not a differing explicit pin (see doc comment
+		// above). Resolve to upstreamRef exactly as the unpinned branch
+		// above does, so status/drift comparisons against the actually
+		// committed workflow ref stay consistent regardless of whether
+		// resolved.FullsendRef happens to be populated yet.
 		ref = upstreamRef
 	} else if ref != "" {
 		manifestRef = ref
