@@ -1085,6 +1085,19 @@ func TestFilterBotEvents_RemovesBotMergedMR(t *testing.T) {
 	}
 }
 
+func TestFilterBotEvents_RetainsBotAppliedLabel(t *testing.T) {
+	mc := newMockClient()
+	p := newEventsPoller(mc) // botUserID = 100
+
+	events := []RoutableEvent{
+		{Type: "issue_label", IID: 5, ChangedLabel: "ready-to-code", IsBot: true, NoteAuthorID: 100},
+	}
+	filtered := p.filterBotEvents(events)
+	if len(filtered) != 1 {
+		t.Errorf("expected bot-applied label addition to be retained, got %d events", len(filtered))
+	}
+}
+
 func TestFilterBotEvents_RetainsNonBotEvents(t *testing.T) {
 	mc := newMockClient()
 	p := newEventsPoller(mc)

@@ -351,6 +351,16 @@ func (p *Poller) filterBotEvents(events []RoutableEvent) []RoutableEvent {
 			filtered = append(filtered, event)
 			continue
 		}
+		// Bot-applied label additions (e.g. ready-to-code and
+		// ready-for-review) hand off between agents and must reach
+		// routing. Poll discovery leaves the actor fields unset until
+		// normalization, so its label events already survive this
+		// filter; webhook-built events carry the validated actor and
+		// need the same outcome.
+		if event.Type == "issue_label" {
+			filtered = append(filtered, event)
+			continue
+		}
 	}
 	return filtered
 }

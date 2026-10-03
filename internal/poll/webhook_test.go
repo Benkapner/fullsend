@@ -213,6 +213,38 @@ func TestBuildWebhookEvents_IssueMultiLabelDiff(t *testing.T) {
 	}
 }
 
+func TestBuildWebhookEvents_BotAppliedLabelAdditions(t *testing.T) {
+	botUser := UserRef{ID: 100, Username: "project_1_bot_abc", Bot: true}
+	mc := newMockClient()
+	mc.memberLevel[botUser.ID] = 30
+	mc.issue[5] = &Issue{IID: 5, State: "opened", Labels: []string{"ready-for-review", "ready-to-code"}, Author: bob, UpdatedAt: recent}
+	mc.labelEvents[5] = []ResourceLabelEvent{
+		labelEvent(1, "add", "ready-to-code", botUser, recent),
+		labelEvent(2, "add", "ready-for-review", botUser, recent),
+	}
+	p := newWebhookPoller(mc)
+
+	got, err := p.BuildWebhookEvents(context.Background(),
+		issuePayload(t, "update", botUser.ID, 5, labelChange(nil, []string{"ready-to-code", "ready-for-review"})))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d events, want 2 (bot-applied label additions must not be filtered)", len(got))
+	}
+	if got[0].Event.ChangedLabel != "ready-for-review" || got[1].Event.ChangedLabel != "ready-to-code" {
+		t.Errorf("labels = %q, %q", got[0].Event.ChangedLabel, got[1].Event.ChangedLabel)
+	}
+	if len(got[0].Stages) != 1 || got[0].Stages[0] != "review" || len(got[1].Stages) != 1 || got[1].Stages[0] != "code" {
+		t.Errorf("stages = %v, %v", got[0].Stages, got[1].Stages)
+	}
+	for i, we := range got {
+		if we.ActorID != botUser.ID || we.Event.NoteAuthorID != botUser.ID {
+			t.Errorf("event %d actor = %d / %d, want %d", i, we.ActorID, we.Event.NoteAuthorID, botUser.ID)
+		}
+	}
+}
+
 func TestBuildWebhookEvents_IssueLabelRemovedOnly(t *testing.T) {
 	mc := newMockClient()
 	mc.issue[5] = &Issue{IID: 5, State: "opened", Labels: []string{}, UpdatedAt: recent}
