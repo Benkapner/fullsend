@@ -136,21 +136,22 @@ type resultEvent struct {
 }
 
 // claudeModelUsage is one model's entry in the result event's modelUsage
-// map. Fields fullsend does not record (thinkingTokens, provider, ...) are
-// not decoded.
+// map. Fields fullsend does not record (provider, ...) are not decoded.
 type claudeModelUsage struct {
 	InputTokens              int     `json:"inputTokens"`
 	OutputTokens             int     `json:"outputTokens"`
 	CacheReadInputTokens     int     `json:"cacheReadInputTokens"`
 	CacheCreationInputTokens int     `json:"cacheCreationInputTokens"`
+	ThinkingTokens           int     `json:"thinkingTokens"`
 	CostUSD                  float64 `json:"costUSD"`
 }
 
 // newClaudeResultEvent converts a decoded result event into a ResultEvent.
 // When modelUsage is present and non-empty, the token totals are its sum
 // (whole tree, sub-agents included) and PerModelUsage carries one entry per
-// model; otherwise the parent-only usage block is used as before.
-// Requests is left zero: the result event has no counterpart for it.
+// model; ReasoningTokens is likewise the sum of thinkingTokens across entries.
+// Otherwise the parent-only usage block and the parser's reasoningTokens are
+// used as before. Requests is left zero: the result event has no counterpart for it.
 func newClaudeResultEvent(re resultEvent, reasoningTokens int) ResultEvent {
 	res := ResultEvent{
 		NumTurns:                 re.NumTurns,
@@ -169,12 +170,14 @@ func newClaudeResultEvent(re resultEvent, reasoningTokens int) ResultEvent {
 	}
 	res.InputTokens, res.OutputTokens = 0, 0
 	res.CacheCreationInputTokens, res.CacheReadInputTokens = 0, 0
+	res.ReasoningTokens = 0
 	res.PerModelUsage = make(map[string]ModelUsage, len(re.ModelUsage))
 	for model, u := range re.ModelUsage {
 		res.InputTokens += u.InputTokens
 		res.OutputTokens += u.OutputTokens
 		res.CacheCreationInputTokens += u.CacheCreationInputTokens
 		res.CacheReadInputTokens += u.CacheReadInputTokens
+		res.ReasoningTokens += u.ThinkingTokens
 		res.PerModelUsage[model] = ModelUsage{
 			InputTokens:              u.InputTokens,
 			OutputTokens:             u.OutputTokens,

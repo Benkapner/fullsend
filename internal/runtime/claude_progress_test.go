@@ -1780,6 +1780,9 @@ func TestParseClaudeStreamResultModelUsageSumsTotals(t *testing.T) {
 		res.CacheReadInputTokens != 46982 || res.CacheCreationInputTokens != 13023 {
 		t.Errorf("token totals are not the modelUsage sum: %+v", res)
 	}
+	if res.ReasoningTokens != 89 {
+		t.Errorf("ReasoningTokens = %d, want 89 (sum of thinkingTokens)", res.ReasoningTokens)
+	}
 	want := map[string]ModelUsage{
 		"claude-opus-4-6": {
 			InputTokens: 1000, OutputTokens: 2000,
@@ -1820,6 +1823,9 @@ func TestProgressParserModelUsageFillsMetrics(t *testing.T) {
 		t.Errorf("metrics token totals are not the modelUsage sum: in=%d out=%d cr=%d cw=%d",
 			metrics.InputTokens, metrics.OutputTokens, metrics.CacheReadInputTokens, metrics.CacheCreationInputTokens)
 	}
+	if metrics.ReasoningTokens != 89 {
+		t.Errorf("metrics.ReasoningTokens = %d, want 89", metrics.ReasoningTokens)
+	}
 	if len(metrics.PerModelUsage) != 2 {
 		t.Fatalf("expected 2 per_model_usage entries, got %+v", metrics.PerModelUsage)
 	}
@@ -1858,7 +1864,31 @@ func TestParseClaudeStreamResultWithoutModelUsageKeepsUsage(t *testing.T) {
 			if metrics.PerModelUsage != nil {
 				t.Errorf("expected no per-model breakdown, got %+v", metrics.PerModelUsage)
 			}
+			if metrics.ReasoningTokens != 0 {
+				t.Errorf("ReasoningTokens = %d, want 0", metrics.ReasoningTokens)
+			}
 		})
+	}
+}
+
+// TestNewClaudeResultEventReasoningTokens pins where ReasoningTokens comes
+// from: the parser's accumulated thinking when modelUsage is absent or empty,
+// the modelUsage thinkingTokens sum (sub-agents included) otherwise.
+func TestNewClaudeResultEventReasoningTokens(t *testing.T) {
+	const parserReasoning = 7
+	var absent, empty resultEvent
+	empty.ModelUsage = map[string]claudeModelUsage{}
+	for name, re := range map[string]resultEvent{"absent": absent, "empty": empty} {
+		if got := newClaudeResultEvent(re, parserReasoning).ReasoningTokens; got != parserReasoning {
+			t.Errorf("%s modelUsage: ReasoningTokens = %d, want parser value %d", name, got, parserReasoning)
+		}
+	}
+	present := resultEvent{ModelUsage: map[string]claudeModelUsage{
+		"claude-sonnet": {ThinkingTokens: 10},
+		"claude-haiku":  {ThinkingTokens: 44},
+	}}
+	if got := newClaudeResultEvent(present, parserReasoning).ReasoningTokens; got != 54 {
+		t.Errorf("present modelUsage: ReasoningTokens = %d, want 54", got)
 	}
 }
 
