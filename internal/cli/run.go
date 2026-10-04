@@ -4471,6 +4471,12 @@ func hostFileSource(hf harness.HostFile) (string, bool) {
 // when it has one or no such mount. Other setups are judged in the
 // sandbox, at dispatch.
 func vertexCredentialGap(h *harness.Harness) string {
+	// A second mounted credential file makes the sandbox path ambiguous: leave it to dispatch.
+	for _, hf := range h.HostFiles {
+		if path, copied := hostFileSource(hf); hf.Src != "${GOOGLE_APPLICATION_CREDENTIALS}" && copied && validateExistingGCPCredentialFile(path) == nil {
+			return ""
+		}
+	}
 	for _, hf := range h.HostFiles {
 		if hf.Src != "${GOOGLE_APPLICATION_CREDENTIALS}" {
 			continue

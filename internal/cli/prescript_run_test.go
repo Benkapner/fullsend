@@ -1177,9 +1177,13 @@ func newVertexChildDir(t *testing.T, marker, runtimeName, model, extra, subagent
 // Every other case passes and is judged at dispatch (#7980).
 func TestRunAgent_VertexSubagentCredentials(t *testing.T) {
 	credFile := filepath.Join(t.TempDir(), "creds.json")
-	require.NoError(t, os.WriteFile(credFile, []byte(`{"type":"external_account"}`), 0o600))
+	require.NoError(t, os.WriteFile(credFile, []byte(`{"type":"service_account"}`), 0o600))
 	emptyFile := filepath.Join(t.TempDir(), "empty.json")
 	require.NoError(t, os.WriteFile(emptyFile, nil, 0o600))
+	gacEnvFile := filepath.Join(t.TempDir(), "gcp.env")
+	require.NoError(t, os.WriteFile(gacEnvFile, []byte("export GOOGLE_APPLICATION_CREDENTIALS=/sandbox/sa.json\n"), 0o600))
+	textFile := filepath.Join(t.TempDir(), "notes.txt")
+	require.NoError(t, os.WriteFile(textFile, []byte("notes\n"), 0o600))
 	const optionalMount = "host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n"
 	const sonnetDefault = "    subagents:\n      default: sonnet\n"
 	const openAIParent = "openai/gpt-5.6-luna"
@@ -1214,6 +1218,15 @@ func TestRunAgent_VertexSubagentCredentials(t *testing.T) {
 			extra: optionalMount + "  - src: " + credFile + "\n    dest: /sandbox/sa.json\nenv:\n  sandbox:\n    GOOGLE_APPLICATION_CREDENTIALS: /sandbox/sa.json\n"},
 		{name: "env.sandbox equals the mount dest: still gated", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
 			extra:   optionalMount + "env:\n  sandbox:\n    GOOGLE_APPLICATION_CREDENTIALS: /tmp/.gcp-credentials.json\n",
+			wantErr: []string{"GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.default"}},
+		{name: "another mounted credential file and an env file", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
+			extra: optionalMount + "  - src: " + credFile + "\n    dest: /sandbox/sa.json\n  - src: " + gacEnvFile + "\n    dest: /sandbox/workspace/.env.d/gcp.env\n"},
+		{name: "a non-credential extra file: still gated", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
+			extra:   optionalMount + "  - src: " + textFile + "\n    dest: /sandbox/notes.txt\n",
+			wantErr: []string{"GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.default"}},
+		{name: "generated overlay shape: still gated", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
+			extra:   optionalMount + "  - src: ${GCP_OIDC_TOKEN_FILE}\n    dest: /sandbox/workspace/.gcp-oidc-token\n    optional: true\n",
+			env:     map[string]string{"GCP_OIDC_TOKEN_FILE": ""},
 			wantErr: []string{"GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.default"}},
 		{name: "credential file set", runtime: "pi", model: openAIParent, extra: optionalMount, subagents: sonnetDefault, gac: credFile},
 		{name: "dummy runtime", runtime: "dummy", model: openAIParent, extra: optionalMount, subagents: sonnetDefault},
