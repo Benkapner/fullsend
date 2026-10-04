@@ -511,6 +511,10 @@ type PendingLabel struct {
 	// keeps the dispatch key's retention anchored to the occurrence. Zero
 	// for handoffs written before the field existed.
 	OccurredAt int64 `json:"occurred_at,omitempty"`
+	// SnapshotAt is RoutableEvent.SnapshotAt in Unix milliseconds: the issue
+	// snapshot time the legacy label key derives from when At is the label
+	// event's own time. Zero when At is the snapshot time.
+	SnapshotAt int64 `json:"snapshot_at,omitempty"`
 	// Unresolved marks issue-level reconciliation work rather than a known
 	// occurrence: a writer could not resolve which occurrence of Label on
 	// IID is current (a label-event lookup failed), so it hands the poller
@@ -577,6 +581,9 @@ func pendingLabelFor(event RoutableEvent) PendingLabel {
 	if !event.OccurredAt.IsZero() {
 		pl.OccurredAt = event.OccurredAt.UnixMilli()
 	}
+	if !event.SnapshotAt.IsZero() {
+		pl.SnapshotAt = event.SnapshotAt.UnixMilli()
+	}
 	return pl
 }
 
@@ -587,8 +594,13 @@ func (pl PendingLabel) routableEvent() RoutableEvent {
 	if pl.OccurredAt != 0 {
 		occurredAt = time.UnixMilli(pl.OccurredAt)
 	}
+	var snapshotAt time.Time
+	if pl.SnapshotAt != 0 {
+		snapshotAt = time.UnixMilli(pl.SnapshotAt)
+	}
 	return RoutableEvent{
 		OccurredAt:      occurredAt,
+		SnapshotAt:      snapshotAt,
 		Type:            "issue_label",
 		IID:             pl.IID,
 		UpdatedAt:       time.UnixMilli(pl.At),
@@ -671,9 +683,13 @@ func (p *Poller) applyPersistDeltas(state persistedPollState, deltas persistDelt
 		unionDispatchedKeys(&state, p.slashCommandsOnly, deltas.dispatched, deltas.pruneCut, protectedDispatchKey(state.PendingLabels))
 	}
 	if deltas.failed != nil {
+		loadedFailed := make(map[string]int, len(state.FailedKeysFull))
+		for k, c := range state.FailedKeysFull {
+			loadedFailed[k] = c
+		}
 		unionFailedKeys(&state, p.slashCommandsOnly, deltas.failed)
 		if !p.slashCommandsOnly {
-			restoreSharedFailureMirrors(&state, deltas.failed)
+			restoreSharedFailureMirrors(&state, deltas.failed, loadedFailed)
 		}
 	}
 	if !p.slashCommandsOnly {
@@ -1435,16 +1451,43 @@ func unionFailedKeys(state *persistedPollState, slash bool, keys map[string]int)
 // 1 but the union keeps 2), and an older poller reading the mirror would see
 // B's occurrence with a count it never reached. A mirror with no registered
 // owner is genuine legacy evidence and is left to the union.
-func restoreSharedFailureMirrors(state *persistedPollState, incoming map[string]int) {
+//
+// loaded is the document's failed-key counts before this writer's union. A
+// mirror there above all of its owners' counts holds a retry an older writer
+// advanced after this writer read its state; recomputation keeps it (and
+// moves a single owner's count up to it) instead of restoring retry budget.
+func restoreSharedFailureMirrors(state *persistedPollState, incoming map[string]int, loaded map[string]int) {
 	for k, c := range incoming {
 		owners := state.LegacyMirrors.owners(mirrorKindFailure, k)
 		if c > 0 && len(owners) == 0 {
 			continue
 		}
 		best := 0
+		loadedBest := 0
 		for _, owner := range owners {
 			if n := state.FailedKeysFull[owner]; n > best {
 				best = n
+			}
+			if n := loaded[owner]; n > loadedBest {
+				loadedBest = n
+			}
+		}
+		// A current writer keeps the mirror equal to its largest owner count, so
+		// a loaded mirror above every loaded owner count is an advance only an
+		// older writer could have made (it knows no occurrence keys). It is a
+		// retry the document already holds, not something this writer's
+		// recomputation may roll back. A tombstone (c == 0) is this writer's
+		// explicit resolution and never preserves it.
+		if advance := loaded[k]; c > 0 && advance > loadedBest {
+			if len(owners) == 1 && incoming[owners[0]] != 0 {
+				// An unambiguous single owner: the advance is that occurrence's
+				// own retry, so carry it onto the occurrence key as well.
+				if state.FailedKeysFull[owners[0]] < advance {
+					state.FailedKeysFull[owners[0]] = advance
+				}
+			}
+			if advance > best {
+				best = advance
 			}
 		}
 		if best > 0 {

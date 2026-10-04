@@ -37,7 +37,13 @@ type RoutableEvent struct {
 	// the legacy label keys; OccurredAt only extends dispatch-key retention
 	// (see dispatchedAtUnix) so a fresh addition seen through an older
 	// snapshot is not pruned as old.
-	OccurredAt      time.Time
+	OccurredAt time.Time
+	// SnapshotAt is the issue's updated_at as read when this label addition was
+	// observed, when that differs from UpdatedAt (webhook events carry the
+	// label event's own time in UpdatedAt). Pollers from before label event IDs
+	// key an addition on the issue's updated_at, so the legacy compatibility
+	// key derives from SnapshotAt; zero means UpdatedAt is the snapshot time.
+	SnapshotAt      time.Time
 	NoteBody        string
 	NoteID          int
 	NoteAuthorID    int
@@ -98,7 +104,11 @@ func (e RoutableEvent) LegacyLabelKey() string {
 	if e.NoteID != 0 || e.ChangedLabel == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s-%d-%s-%d", e.Type, e.IID, e.ChangedLabel, e.UpdatedAt.Unix())
+	t := e.UpdatedAt
+	if !e.SnapshotAt.IsZero() {
+		t = e.SnapshotAt
+	}
+	return fmt.Sprintf("%s-%d-%s-%d", e.Type, e.IID, e.ChangedLabel, t.Unix())
 }
 
 // FallbackLabelKey returns the millisecond-timestamp key this label event

@@ -493,6 +493,7 @@ func (p *Poller) webhookIssueLabelEvents(ctx context.Context, actorID int, issue
 			Type:            "issue_label",
 			IID:             issue.IID,
 			UpdatedAt:       latest.CreatedAt,
+			SnapshotAt:      issue.UpdatedAt,
 			Labels:          issue.Labels,
 			ChangedLabel:    d.title,
 			LabelEventID:    latest.ID,
