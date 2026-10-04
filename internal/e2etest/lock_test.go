@@ -242,13 +242,13 @@ func TestAcquireOrg_RateLimitBacksOff(t *testing.T) {
 
 const otherHolder = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
-// stubLockAge makes lockRepoCreatedAt report a lock created age ago, so
+// stubLockAge makes lockRepoCreatedAtFn report a lock created age ago, so
 // stale-lock decisions can be tested without calling the GitHub API.
 func stubLockAge(t *testing.T, age time.Duration) {
 	t.Helper()
-	orig := lockRepoCreatedAt
-	t.Cleanup(func() { lockRepoCreatedAt = orig })
-	lockRepoCreatedAt = func(context.Context, string, string, string) (time.Time, error) {
+	orig := lockRepoCreatedAtFn
+	t.Cleanup(func() { lockRepoCreatedAtFn = orig })
+	lockRepoCreatedAtFn = func(context.Context, string, string, string) (time.Time, error) {
 		return time.Now().Add(-age), nil
 	}
 }
@@ -304,9 +304,9 @@ func TestTryReclaimStaleLock_AgeBoundary(t *testing.T) {
 func TestTryReclaimStaleLock_AgeLookupError(t *testing.T) {
 	fake := forge.NewFakeClient()
 	seedLock(t, fake, testLockOrg, otherHolder)
-	orig := lockRepoCreatedAt
-	t.Cleanup(func() { lockRepoCreatedAt = orig })
-	lockRepoCreatedAt = func(context.Context, string, string, string) (time.Time, error) {
+	orig := lockRepoCreatedAtFn
+	t.Cleanup(func() { lockRepoCreatedAtFn = orig })
+	lockRepoCreatedAtFn = func(context.Context, string, string, string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("boom")
 	}
 
