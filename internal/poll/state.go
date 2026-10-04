@@ -1260,12 +1260,15 @@ func (p *Poller) removalSupersededByDispatchedAdd(ctx context.Context, state per
 
 // labelAdditionEvent builds the label-addition event for the add occurrence
 // latest of label on issue, binding the actor of that exact occurrence as
-// discovery does.
+// discovery does. SnapshotAt carries the issue's updated_at, which an older
+// poller keys the addition on, so the legacy compatibility mirror stays
+// recognisable to it.
 func labelAdditionEvent(issue *Issue, label string, latest ResourceLabelEvent) RoutableEvent {
 	event := RoutableEvent{
 		Type:         "issue_label",
 		IID:          issue.IID,
 		UpdatedAt:    latest.CreatedAt,
+		SnapshotAt:   issue.UpdatedAt,
 		Labels:       issue.Labels,
 		ChangedLabel: label,
 		LabelEventID: latest.ID,
@@ -1798,16 +1801,31 @@ func (p *Poller) readPendingLabels(ctx context.Context, owner, repo string) (map
 	return pending, nil
 }
 
-// readLegacyMirrors reads the ledger of Unix-second mirror keys (see
-// legacy_mirror.go). The returned set is a private copy the caller extends
-// with the mirrors it records. Empty for the slash poll, which keys no label
-// additions.
-func (p *Poller) readLegacyMirrors(ctx context.Context, owner, repo string) (mirrorSet, error) {
+// readDedupState reads the dispatched keys, failure counts, and legacy
+// mirror ledger from one poll-state snapshot. Deduplication depends on the
+// three corresponding (a mirror key is only genuine legacy evidence while
+// its ownership ledger entry is visible alongside it), so they must not be
+// loaded through separate branch-tip reads that another cycle's prune or
+// clear can interleave. The returned maps and set are private to the caller
+// where it extends them: the mirror set is a clone.
+func (p *Poller) readDedupState(ctx context.Context, owner, repo string) (map[string]int64, map[string]int, mirrorSet, error) {
 	state, err := p.loadPollState(ctx, owner, repo)
 	if err != nil {
-		return nil, fmt.Errorf("read legacy mirrors: %w", err)
+		return nil, nil, nil, fmt.Errorf("read dedup state: %w", err)
 	}
-	return state.LegacyMirrors.clone(), nil
+	dispatched := state.DispatchedKeysFull
+	failed := state.FailedKeysFull
+	if p.slashCommandsOnly {
+		dispatched = state.DispatchedKeysFast
+		failed = state.FailedKeysFast
+	}
+	if dispatched == nil {
+		dispatched = make(map[string]int64)
+	}
+	if failed == nil {
+		failed = make(map[string]int)
+	}
+	return dispatched, failed, state.LegacyMirrors.clone(), nil
 }
 
 // persistFailedKeys writes the failed event retry counts, pruning

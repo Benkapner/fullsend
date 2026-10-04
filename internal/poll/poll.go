@@ -140,18 +140,10 @@ func (p *Poller) Run(ctx context.Context) error {
 	}
 	discoveredCount := len(events) - len(pendingOnly)
 
-	previouslyDispatched, err := p.readDispatchedKeys(ctx, p.owner, p.repo)
+	// One snapshot for all three: see readDedupState.
+	previouslyDispatched, failedKeys, mirrors, err := p.readDedupState(ctx, p.owner, p.repo)
 	if err != nil {
-		return fmt.Errorf("dispatched keys: %w", err)
-	}
-
-	failedKeys, err := p.readFailedKeys(ctx, p.owner, p.repo)
-	if err != nil {
-		return fmt.Errorf("failed keys: %w", err)
-	}
-	mirrors, err := p.readLegacyMirrors(ctx, p.owner, p.repo)
-	if err != nil {
-		return fmt.Errorf("legacy mirrors: %w", err)
+		return fmt.Errorf("dedup state: %w", err)
 	}
 
 	dispatched := 0
