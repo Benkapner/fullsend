@@ -1090,7 +1090,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	if vertexGap != "" {
 		var configured []string
+		// pi's google-vertex also takes GOOGLE_CLOUD_API_KEY; a set (or unexpanded) key goes to dispatch.
+		googleKey := h.Env != nil && strings.TrimSpace(h.Env.Sandbox["GOOGLE_CLOUD_API_KEY"]) != ""
 		for _, c := range agentruntime.VertexChildren("pi", h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases) {
+			if googleKey && strings.HasPrefix(c.Spec, "google-vertex/") {
+				continue
+			}
 			if c.Configured {
 				configured = append(configured, c.String())
 			}
@@ -1101,7 +1106,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				"set GOOGLE_APPLICATION_CREDENTIALS to a credential file mounted in host_files, or move the sub-agent off Vertex",
 				vertexGap, strings.Join(configured, ", "))
 		}
-		printer.StepInfo("Vertex sub-agents unavailable: " + vertexGap)
+		if !googleKey {
+			printer.StepInfo("Vertex sub-agents unavailable: " + vertexGap)
+		}
 	}
 
 	// Expand env vars in runner_env values. FULLSEND_DIR is injected so
