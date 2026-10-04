@@ -352,6 +352,11 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		})
 	}
 
+	checkObsoleteInferenceSecrets(ctx, client, cfg, &status)
+	if status.Error != "" {
+		return status
+	}
+
 	// Resolve the manifest's fullsend_ref to a commit SHA for
 	// comparison. Skip when the workflow is absent — that is already
 	// reported as a component drift; an empty ref is a consequence,
@@ -418,6 +423,31 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	}
 
 	return status
+}
+
+// checkObsoleteInferenceSecrets reports Fullsend-managed inference
+// secrets that belong to a method the repository's inference.auth does
+// not select. A valid selection does not make leftover credentials
+// healthy desired state: convergence deletes these secrets once the
+// selected method is established, so status reports them as drift. Only
+// presence is checked — secret values are never read. GitLab's
+// unprefixed OPENAI_API_KEY is not Fullsend-managed and never reported.
+func checkObsoleteInferenceSecrets(ctx context.Context, client forge.Client, cfg ResolvedConfig, status *RepoStatus) {
+	for _, name := range obsoleteInferenceSecrets(cfg.InferenceAuth) {
+		exists, err := client.RepoSecretExists(ctx, cfg.Owner, cfg.Repo, name)
+		if err != nil {
+			status.Error = fmt.Sprintf("checking obsolete secret %s for %s/%s: %v", name, cfg.Owner, cfg.Repo, err)
+			return
+		}
+		if !exists {
+			continue
+		}
+		status.Drifts = append(status.Drifts, Drift{
+			Field:    name,
+			Expected: "absent",
+			Actual:   fmt.Sprintf("obsolete secret (inference.auth is %s)", cfg.InferenceAuth),
+		})
+	}
 }
 
 func appendGitLabRoleStatus(ctx context.Context, client forge.Client, owner, repo string, status *RepoStatus) {

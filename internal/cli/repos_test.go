@@ -1309,6 +1309,35 @@ func TestRunReposUninstall_InvalidManifest(t *testing.T) {
 	assert.Contains(t, err.Error(), "loading manifest")
 }
 
+// Uninstall must not require a valid inference.auth: it removes every
+// Fullsend-managed inference credential regardless of the selection.
+func TestRunReposUninstall_InvalidInferenceAuthStillUninstalls(t *testing.T) {
+	manifestPath := writeTestManifest(t, `version: 1
+defaults:
+  inference:
+    auth: bogus
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/api
+`)
+	fc := newInstalledFakeClientCLI("acme/api")
+	fc.Secrets["acme/api/"+forge.SecretOpenAIAPIKey] = true
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		direct:      true,
+		concurrency: 4,
+		testClient:  fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+	for _, name := range []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, forge.SecretOpenAIAPIKey} {
+		assert.False(t, fc.Secrets["acme/api/"+name], "%s still present after uninstall", name)
+	}
+}
+
 // --- repos install positional args ---
 
 func TestReposInstallCmd_PositionalArgs(t *testing.T) {

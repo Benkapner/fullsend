@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -915,6 +916,25 @@ func inferenceSecretsForAuth(auth string) []string {
 		return []string{forge.SecretOpenAIAPIKey}
 	}
 	return requiredSecrets
+}
+
+// managedInferenceSecrets returns every Fullsend-managed inference
+// secret across all inference.auth methods, on both forges. Orphan
+// detection treats these names as managed and uninstall deletes all of
+// them, so leftovers from an earlier selection are cleaned up even when
+// inference.auth is missing or invalid. GitLab's unprefixed
+// OPENAI_API_KEY is never included: it may be shared with other jobs
+// and Fullsend does not manage it.
+func managedInferenceSecrets() []string {
+	var names []string
+	for _, auth := range ValidInferenceAuths() {
+		for _, s := range inferenceSecretsForAuth(auth) {
+			if !slices.Contains(names, s) {
+				names = append(names, s)
+			}
+		}
+	}
+	return names
 }
 
 // obsoleteInferenceSecrets returns the Fullsend-managed inference secrets

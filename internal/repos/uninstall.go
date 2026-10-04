@@ -15,12 +15,14 @@ import (
 
 var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{forge.VarGCPRegion, forge.VarReviewClientID})
 
-// uninstallSecrets deletes every required secret plus the opt-in
-// FULLSEND_OPENAI_API_KEY if present. It must not become requiredSecrets
-// itself (or be added to it) — probe/converge use requiredSecretsForForge
-// to decide whether an installation is healthy, and the opt-in key's
-// absence is not a health problem, only its presence after uninstall is.
-var uninstallSecrets = slices.Concat(requiredSecrets, []string{forge.SecretOpenAIAPIKey})
+// uninstallSecrets deletes every Fullsend-managed inference secret of
+// every inference.auth method (managedInferenceSecrets), independent of
+// the repository's current selection, so leftovers from an earlier
+// selection are removed and a missing or invalid inference.auth does not
+// block cleanup. Deleting an absent secret is a no-op, so repeating
+// uninstall is safe. It must not become requiredSecrets — probe/converge
+// require only the selected method's secrets.
+var uninstallSecrets = managedInferenceSecrets()
 
 // gitlabUninstallVars intentionally does NOT include the legacy
 // FULLSEND_FORGE_TOKEN shared secret. Uninstall no longer retires it
@@ -56,12 +58,10 @@ var gitlabUninstallVars = []string{
 // project for other jobs. The Fullsend CI job no longer reads it (it maps
 // FULLSEND_OPENAI_API_KEY instead), and deleting an unprefixed,
 // potentially-shared variable on uninstall risks destroying a credential
-// unrelated jobs in the same project depend on.
-var gitlabUninstallSecrets = []string{
-	forge.SecretGCPProjectID,
-	forge.SecretGCPWIFProvider,
-	forge.SecretOpenAIAPIKey,
-}
+// unrelated jobs in the same project depend on. Like uninstallSecrets it
+// is derived from managedInferenceSecrets so both forges and orphan
+// detection share one classification.
+var gitlabUninstallSecrets = managedInferenceSecrets()
 
 // gitlabScaffoldPaths is the full set of files uninstall removes. It is
 // a superset of the current install set: fullsend-dispatch.yml is no

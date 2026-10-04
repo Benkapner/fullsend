@@ -525,7 +525,20 @@ func (m *Manifest) AllRepos() []RepoEntry {
 //   - no duplicate repo entries (before glob expansion)
 //   - glob patterns must be valid filepath.Match patterns
 //   - forge URLs must be valid HTTPS URLs with no path component
+//   - inference.auth values must be one of ValidInferenceAuths
 func (m *Manifest) Validate() error {
+	return m.validate(ValidateInferenceAuth)
+}
+
+// ValidateForUninstall is Validate without the inference.auth value
+// checks. Uninstall removes every Fullsend-managed inference credential
+// regardless of the selected method, so a missing or invalid
+// inference.auth must not block cleanup of an installation.
+func (m *Manifest) ValidateForUninstall() error {
+	return m.validate(func(_, _ string) error { return nil })
+}
+
+func (m *Manifest) validate(checkInferenceAuth func(key, value string) error) error {
 	if m.Version != 1 {
 		return fmt.Errorf("unsupported manifest version %d (expected 1)", m.Version)
 	}
@@ -533,7 +546,7 @@ func (m *Manifest) Validate() error {
 	if err := validateRuntimeValue("defaults.runtime", m.Defaults.Runtime); err != nil {
 		return err
 	}
-	if err := ValidateInferenceAuth("defaults.inference.auth", m.Defaults.Inference.Auth); err != nil {
+	if err := checkInferenceAuth("defaults.inference.auth", m.Defaults.Inference.Auth); err != nil {
 		return err
 	}
 	if err := ValidateAllowedRemoteResourcesFormat("defaults.allowed_remote_resources", m.Defaults.AllowedRemoteResources); err != nil {
@@ -561,7 +574,7 @@ func (m *Manifest) Validate() error {
 		if p.cfg == nil {
 			continue
 		}
-		if err := ValidateInferenceAuth(p.name+".inference.auth", p.cfg.Inference.Auth); err != nil {
+		if err := checkInferenceAuth(p.name+".inference.auth", p.cfg.Inference.Auth); err != nil {
 			return err
 		}
 		for i := range p.cfg.Repos {
@@ -569,7 +582,7 @@ func (m *Manifest) Validate() error {
 			if err := validateRuntimeValue(fmt.Sprintf("%s.repos[%s].runtime", p.name, e.Name), e.Runtime); err != nil {
 				return err
 			}
-			if err := ValidateInferenceAuth(fmt.Sprintf("%s.repos[%s].inference.auth", p.name, e.Name), e.Inference.Auth); err != nil {
+			if err := checkInferenceAuth(fmt.Sprintf("%s.repos[%s].inference.auth", p.name, e.Name), e.Inference.Auth); err != nil {
 				return err
 			}
 			if err := ValidateAllowedRemoteResourcesFormat(fmt.Sprintf("%s.repos[%s].allowed_remote_resources", p.name, e.Name), e.AllowedRemoteResources); err != nil {
@@ -1107,12 +1120,15 @@ func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *Pla
 
 // RequireInferenceAuth returns an actionable configuration error when no
 // manifest level (entry, forge section, defaults) selects an inference
-// authentication method for this repository. Install, convergence, and
-// status call it before any dependent forge reads or writes; uninstall
-// deliberately does not, so incomplete or older installations can still
-// be cleaned up.
+// authentication method for this repository, or when the effective
+// selection is not a valid method. Install, convergence, and status call
+// it before any dependent forge reads or writes; uninstall deliberately
+// does not, so incomplete or older installations can still be cleaned up.
 func (c ResolvedConfig) RequireInferenceAuth() error {
 	if c.InferenceAuth != "" {
+		if err := ValidateInferenceAuth("inference.auth", c.InferenceAuth); err != nil {
+			return fmt.Errorf("invalid inference authentication for %s/%s: %w", c.Owner, c.Repo, err)
+		}
 		return nil
 	}
 	return fmt.Errorf("no inference authentication selected for %s/%s: set inference.auth (%s) on the repository entry, in the %s section, or under defaults in repos.yaml, or pass --inference-auth to repos install",
