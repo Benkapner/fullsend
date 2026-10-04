@@ -67,7 +67,7 @@ func TestConverge_RejectsGCPInputsWhenNoRepoUsesVertex(t *testing.T) {
 	sc := &fakeScaffoldCommit{}
 	_, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--inference-project")
+	assert.Contains(t, err.Error(), "--vertex-project")
 	assert.Empty(t, fc.CreatedSecrets, "nothing may be written")
 	assert.False(t, sc.called)
 }

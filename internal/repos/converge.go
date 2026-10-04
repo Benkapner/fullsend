@@ -334,7 +334,7 @@ func missingSecretNames(components []ComponentStatus, auth string) []string {
 var gitlabMaskableRe = regexp.MustCompile(`^[A-Za-z0-9_+=/@:.~-]{8,}$`)
 
 // inferenceInputsSupplied reports whether this run supplied credential
-// inputs for auth: --inference-project for vertex-wif, --openai-api-key
+// inputs for auth: --vertex-project for vertex-wif, --openai-api-key
 // for openai-api-key.
 func inferenceInputsSupplied(cfg ConvergeConfig, auth string) bool {
 	if auth == InferenceAuthOpenAIAPIKey {
@@ -349,7 +349,7 @@ func inferenceInputFlags(auth string) string {
 	if auth == InferenceAuthOpenAIAPIKey {
 		return "--openai-api-key"
 	}
-	return "--inference-project and --inference-region (plus --inference-wif-provider when the project number cannot be derived)"
+	return "--vertex-project and --vertex-region (plus --vertex-wif-provider when the project number cannot be derived)"
 }
 
 // inferenceSecretValues returns the secret values to write for auth from
@@ -664,25 +664,25 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		return &ConvergeBatchResult{}, nil
 	}
 
-	// Validate inference flags. When --inference-wif-provider is set,
-	// --inference-project-number is not required (the project number is
+	// Validate inference flags. When --vertex-wif-provider is set,
+	// --vertex-project-number is not required (the project number is
 	// embedded in the provider path).
 	if cfg.WIFProvider != "" {
-		// --inference-project and --inference-region are required
-		// alongside --inference-wif-provider because the secret-writing
+		// --vertex-project and --vertex-region are required
+		// alongside --vertex-wif-provider because the secret-writing
 		// paths gate on InferenceProject to decide whether to write
 		// FULLSEND_GCP_PROJECT_ID and FULLSEND_GCP_WIF_PROVIDER.
 		if cfg.InferenceProject == "" {
-			return nil, fmt.Errorf("--inference-project is required when --inference-wif-provider is set")
+			return nil, fmt.Errorf("--vertex-project is required when --vertex-wif-provider is set")
 		}
 		if !IsValidGCPProjectID(cfg.InferenceProject) {
-			return nil, fmt.Errorf("--inference-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceProject)
+			return nil, fmt.Errorf("--vertex-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceProject)
 		}
 		if !IsValidGCPRegion(cfg.InferenceRegion) {
-			return nil, fmt.Errorf("--inference-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion)
+			return nil, fmt.Errorf("--vertex-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion)
 		}
 		if !WIFProviderPattern.MatchString(cfg.WIFProvider) {
-			return nil, fmt.Errorf("--inference-wif-provider %q is not a valid WIF provider (expected projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id})", cfg.WIFProvider)
+			return nil, fmt.Errorf("--vertex-wif-provider %q is not a valid WIF provider (expected projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id})", cfg.WIFProvider)
 		}
 	} else {
 		// A project number the caller can derive on demand counts as
@@ -693,9 +693,9 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			projectNumber = "derived"
 		}
 		inferenceFlags := []struct{ name, val string }{
-			{"--inference-project", cfg.InferenceProject},
-			{"--inference-project-number", projectNumber},
-			{"--inference-region", cfg.InferenceRegion},
+			{"--vertex-project", cfg.InferenceProject},
+			{"--vertex-project-number", projectNumber},
+			{"--vertex-region", cfg.InferenceRegion},
 		}
 		var inferenceSet, inferenceMissing []string
 		for _, f := range inferenceFlags {
@@ -712,13 +712,13 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 
 		if cfg.InferenceProject != "" {
 			if !IsValidGCPProjectID(cfg.InferenceProject) {
-				return nil, fmt.Errorf("--inference-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceProject)
+				return nil, fmt.Errorf("--vertex-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceProject)
 			}
 			if !IsValidGCPRegion(cfg.InferenceRegion) {
-				return nil, fmt.Errorf("--inference-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion)
+				return nil, fmt.Errorf("--vertex-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion)
 			}
 			if !derivable && !IsNumeric(cfg.InferenceProjectNumber) {
-				return nil, fmt.Errorf("--inference-project-number must be numeric, got %q", cfg.InferenceProjectNumber)
+				return nil, fmt.Errorf("--vertex-project-number must be numeric, got %q", cfg.InferenceProjectNumber)
 			}
 		}
 	}
@@ -738,7 +738,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			n, err := cfg.ResolveProjectNumber(ctx, cfg.InferenceProject)
 			switch {
 			case err != nil:
-				projectNumberErr = fmt.Errorf("deriving project number for --inference-project %q: %w (set --inference-wif-provider to skip the lookup)", cfg.InferenceProject, err)
+				projectNumberErr = fmt.Errorf("deriving project number for --vertex-project %q: %w (set --vertex-wif-provider to skip the lookup)", cfg.InferenceProject, err)
 			case !IsNumeric(n):
 				projectNumberErr = fmt.Errorf("derived project number for %q is not numeric: %q", cfg.InferenceProject, n)
 			default:
@@ -909,7 +909,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		return nil, fmt.Errorf("--openai-api-key was supplied but no selected repository uses inference.auth %s", InferenceAuthOpenAIAPIKey)
 	}
 	if cfg.InferenceProject != "" && !usesVertex {
-		return nil, fmt.Errorf("--inference-project was supplied but no selected repository uses inference.auth %s", InferenceAuthVertexWIF)
+		return nil, fmt.Errorf("--vertex-project was supplied but no selected repository uses inference.auth %s", InferenceAuthVertexWIF)
 	}
 
 	// Phase 2: parallel convergence — apply needed actions.

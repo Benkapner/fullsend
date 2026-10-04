@@ -209,7 +209,7 @@ gitlab:
 ```
 
 Only the selection is stored. Credentials and GCP values are still
-supplied separately on the command line (`--inference-project` for
+supplied separately on the command line (`--vertex-project` for
 `vertex-wif`, `--openai-api-key` for `openai-api-key`), and `none` is not
 a valid value. `repos install` provisions only the credentials of each
 repo's selected method; see
@@ -588,7 +588,7 @@ fullsend repos install acme/new-api --forge github --roles triage,coder,review
 Per-repo overrides can be specified with `--fullsend-ref`, `--mint-url`,
 `--app-set`, `--allowed-remote-resources`, `--inference-auth`, and
 `--vendor`. The
-`--inference-region` flag is install-time only and is not stored in the
+`--vertex-region` flag is install-time only and is not stored in the
 manifest.
 
 ### Removing repos

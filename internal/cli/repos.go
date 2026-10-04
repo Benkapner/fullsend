@@ -458,7 +458,7 @@ type reposInstallConfig struct {
 	// GCP credentials (install-time only)
 	inferenceProject       string
 	inferenceWIFProvider   string
-	inferenceProjectNumber string // auto-derived from --inference-project; not a CLI flag
+	inferenceProjectNumber string // auto-derived from --vertex-project; not a CLI flag
 	inferenceRegion        string
 
 	// openAIAPIKey is written as FULLSEND_OPENAI_API_KEY to selected
@@ -530,8 +530,8 @@ records the selection as inference.auth on each selected manifest entry
 
 Each repo's inference.auth selects the inference credentials provisioned on
 it: vertex-wif writes FULLSEND_GCP_PROJECT_ID, FULLSEND_GCP_WIF_PROVIDER and
-FULLSEND_GCP_REGION (from --inference-project, --inference-region and the
-derived or --inference-wif-provider WIF provider); openai-api-key writes
+FULLSEND_GCP_REGION (from --vertex-project, --vertex-region and the
+derived or --vertex-wif-provider WIF provider); openai-api-key writes
 FULLSEND_OPENAI_API_KEY (from --openai-api-key, GitHub and GitLab). Existing
 secrets are reused when no values are supplied; supplied values replace
 them. A repo missing its credentials with no values supplied fails before
@@ -562,9 +562,9 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().BoolVar(&opts.force, "force", false, "allow scaffold ref downgrades")
 	cmd.Flags().BoolVar(&opts.reactivateSchedules, "reactivate-schedules", false, "reactivate required GitLab pipeline schedules that exist but are disabled (leave disabled by default so off-system polling setups are not silently reverted)")
 	cmd.Flags().StringVar(&opts.forge, "forge", "", "forge type for repos not yet in the manifest (github or gitlab)")
-	cmd.Flags().StringVar(&opts.inferenceProject, "inference-project", "", "GCP project ID for inference")
-	cmd.Flags().StringVar(&opts.inferenceWIFProvider, "inference-wif-provider", "", "full WIF provider resource name (projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}); uses this provider for all repos instead of deriving per-repo providers")
-	cmd.Flags().StringVar(&opts.inferenceRegion, "inference-region", "", "GCP region for inference (default: global)")
+	cmd.Flags().StringVar(&opts.inferenceProject, "vertex-project", "", "GCP project ID for Vertex AI inference")
+	cmd.Flags().StringVar(&opts.inferenceWIFProvider, "vertex-wif-provider", "", "full WIF provider resource name (projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}); uses this provider for all repos instead of deriving per-repo providers")
+	cmd.Flags().StringVar(&opts.inferenceRegion, "vertex-region", "", "GCP region for Vertex AI inference (default: global)")
 	cmd.Flags().StringVar(&opts.openAIAPIKey, "openai-api-key", "", "OpenAI API key written as FULLSEND_OPENAI_API_KEY to selected repos whose inference.auth is openai-api-key; command-line only, never written to repos.yaml and never logged")
 	cmd.Flags().StringVar(&opts.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override")
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
@@ -587,10 +587,10 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return fmt.Errorf("--concurrency must be between 1 and 32, got %d", opts.concurrency)
 	}
 	if opts.inferenceProject != "" && !repos.IsValidGCPProjectID(opts.inferenceProject) {
-		return fmt.Errorf("--inference-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter, no trailing hyphen)", opts.inferenceProject)
+		return fmt.Errorf("--vertex-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter, no trailing hyphen)", opts.inferenceProject)
 	}
 	if opts.inferenceWIFProvider != "" {
-		if err := validateWIFProvider(opts.inferenceWIFProvider); err != nil {
+		if err := validateWIFProviderFlag("--vertex-wif-provider", opts.inferenceWIFProvider); err != nil {
 			return err
 		}
 	}
@@ -637,14 +637,14 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 
 	printer := ui.New(os.Stdout)
 
-	// Default --inference-region to "global" (matching admin install)
-	// when --inference-project is set but --inference-region is not.
+	// Default --vertex-region to "global" (matching admin install)
+	// when --vertex-project is set but --vertex-region is not.
 	if opts.inferenceProject != "" && opts.inferenceRegion == "" {
 		opts.inferenceRegion = "global"
 	}
 
-	// When --inference-wif-provider is not set, converge derives the
-	// project number from --inference-project via the GCP Resource
+	// When --vertex-wif-provider is not set, converge derives the
+	// project number from --vertex-project via the GCP Resource
 	// Manager API so that per-repo WIF provider paths can be constructed.
 	// The lookup is lazy: it runs only when a selected vertex-wif repo
 	// needs a derived provider, so OpenAI-only runs never call GCP.

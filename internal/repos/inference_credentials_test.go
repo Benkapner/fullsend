@@ -332,7 +332,7 @@ func TestConverge_ProjectNumberLookupErrorFailsBeforeWrites(t *testing.T) {
 	_, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "API unavailable")
-	assert.Contains(t, err.Error(), "--inference-wif-provider")
+	assert.Contains(t, err.Error(), "--vertex-wif-provider")
 	assert.Empty(t, fc.CreatedSecrets)
 	assert.False(t, sc.called)
 }

@@ -46,15 +46,15 @@ after the fact, update `app_set` in `repos.yaml` and run
 
 ### GitLab
 
-For initial GitLab setup, see [Configuring GitLab](configuring-gitlab.md). Secrets are checked for presence only, so `repos install` cannot update the *value* of an existing `FULLSEND_GCP_PROJECT_ID` or `FULLSEND_GCP_WIF_PROVIDER` — once those CI/CD secrets exist, a new `--inference-project` is a silent no-op for them. To change either one, edit the CI/CD variable directly in GitLab (Settings → CI/CD → Variables), since converge cannot read secret values back to compare or overwrite them.
+For initial GitLab setup, see [Configuring GitLab](configuring-gitlab.md). Secrets are checked for presence only, so `repos install` cannot update the *value* of an existing `FULLSEND_GCP_PROJECT_ID` or `FULLSEND_GCP_WIF_PROVIDER` — once those CI/CD secrets exist, a new `--vertex-project` is a silent no-op for them. To change either one, edit the CI/CD variable directly in GitLab (Settings → CI/CD → Variables), since converge cannot read secret values back to compare or overwrite them.
 
 `FULLSEND_GCP_REGION` is also a variable (not a secret), but converge treats
-`--inference-project` and `--inference-region` as an all-or-nothing set when
-`--inference-wif-provider` isn't set — passing
-`--inference-region` alone fails with `incomplete inference flags`. To update
+`--vertex-project` and `--vertex-region` as an all-or-nothing set when
+`--vertex-wif-provider` isn't set — passing
+`--vertex-region` alone fails with `incomplete inference flags`. To update
 the region through converge, pass both flags, for example
-`fullsend repos install <group/project> --inference-project <id>
---inference-region <region>`. This updates the plain `FULLSEND_GCP_REGION`
+`fullsend repos install <group/project> --vertex-project <id>
+--vertex-region <region>`. This updates the plain `FULLSEND_GCP_REGION`
 variable; the presence-only-checked project and WIF-provider secrets still
 must be edited directly in GitLab (Settings → CI/CD → Variables). Editing the
 region there remains an alternative.

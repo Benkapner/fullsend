@@ -17,10 +17,10 @@ GitHub repositories use a different command (`fullsend github setup`). See
   [Getting Inference](getting-inference.md). OpenAI-only installation does not
   need a GCP project. GitLab does **not** use
   `fullsend inference provision` — inference credentials are written by
-  `repos install --inference-project` (see [Inference Setup](#inference-setup)
-  below). Unless you also pass `--inference-wif-provider` (see
+  `repos install --vertex-project` (see [Inference Setup](#inference-setup)
+  below). Unless you also pass `--vertex-wif-provider` (see
   [Inference Setup](#inference-setup)), `repos install` derives the
-  project number from `--inference-project` via the GCP Resource
+  project number from `--vertex-project` via the GCP Resource
   Manager API, so the machine running `repos install` needs
   Application Default Credentials with `cloudresourcemanager.googleapis.com`
   `projects.get` access on that project.
@@ -143,7 +143,7 @@ fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
   --inference-auth vertex-wif \
-  --inference-project "<gcp-project>"
+  --vertex-project "<gcp-project>"
 ```
 
 Where `<group/project>` is the GitLab project path (nested groups are
@@ -159,7 +159,7 @@ project. See
 
 For an installation without Vertex credentials, pass
 `--inference-auth openai-api-key --openai-api-key <key>` and omit
-`--inference-project`. The key is written as the masked
+`--vertex-project`. The key is written as the masked
 `FULLSEND_OPENAI_API_KEY` CI/CD variable, and no GCP inference secrets are
 written or looked up. An unprefixed `OPENAI_API_KEY` CI/CD variable is no
 longer used; see the
@@ -199,7 +199,7 @@ then converges the project:
   re-enable it. Leave that flag unset on repos using [Off-system
   polling](#off-system-polling), where the schedules are disabled on
   purpose.
-* Writes inference CI/CD variables when `--inference-project` is set.
+* Writes inference CI/CD variables when `--vertex-project` is set.
 
 By default the scaffold lands as a merge request. Pass `--direct` to push
 to the default branch instead. Preview with `--dry-run`.
@@ -217,7 +217,7 @@ agents, pass `--roles`:
 fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
-  --inference-project "<gcp-project>" \
+  --vertex-project "<gcp-project>" \
   --roles triage,review
 ```
 
@@ -231,7 +231,7 @@ Pass `--runtime` to set it (`claude` is the stable default; `pi` and
 fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
-  --inference-project "<gcp-project>" \
+  --vertex-project "<gcp-project>" \
   --runtime claude
 ```
 
@@ -247,7 +247,7 @@ role with a personal access token:
 fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
-  --inference-project "<gcp-project>" \
+  --vertex-project "<gcp-project>" \
   --gitlab-role-token "poller=<poller-pat>" \
   --gitlab-role-token "analyst=<analyst-pat>" \
   --gitlab-role-token "coder=<coder-pat>"
@@ -427,7 +427,7 @@ the pipeline-ref falls back to `CI_COMMIT_REF_NAME` then
 
 ## Inference Setup
 
-Pass `--inference-project` so install writes `FULLSEND_GCP_PROJECT_ID`
+Pass `--vertex-project` so install writes `FULLSEND_GCP_PROJECT_ID`
 and `FULLSEND_GCP_WIF_PROVIDER`. **This only writes CI/CD variables
 that reference the shared `gitlab-oidc` provider's resource name — it
 does not create the Workload Identity Pool, the `gitlab-oidc`
@@ -690,13 +690,13 @@ resource name instead of relying on the default `gitlab-oidc` path:
 fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
-  --inference-project "<gcp-project>" \
-  --inference-wif-provider "projects/<number>/locations/global/workloadIdentityPools/fullsend-inference/providers/gitlab-oidc"
+  --vertex-project "<gcp-project>" \
+  --vertex-wif-provider "projects/<number>/locations/global/workloadIdentityPools/fullsend-inference/providers/gitlab-oidc"
 ```
 
 The GCP project still needs the Vertex AI APIs enabled as described in
-[Getting Inference](getting-inference.md). `--inference-region` defaults
-to `global` when `--inference-project` is set.
+[Getting Inference](getting-inference.md). `--vertex-region` defaults
+to `global` when `--vertex-project` is set.
 
 ## Runner Configuration
 
@@ -721,7 +721,7 @@ fullsend repos set-default gitlab.agent_runner_tags fullsend-gitlab-runner
 fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
-  --inference-project "<gcp-project>"
+  --vertex-project "<gcp-project>"
 ```
 
 To route the poll job to a different fleet than the sandbox agents (for
@@ -893,7 +893,7 @@ external scheduler instead — see [Off-system polling](#off-system-polling)
 | Bot identity | Per-role GitHub Apps | Role-specific project access tokens (`fullsend-poller`, `fullsend-analyst`, `fullsend-coder`); Free tier must enroll these via `--gitlab-role-token` since runtime authentication never falls back to the shared PAT or `fullsend-bot` |
 | Token mint | Required for App installation tokens | Not used — GitLab uses the stored PAT |
 | Event dispatch | Native Actions webhooks | Cron polling (`fullsend slash poll` / `fullsend event poll`) |
-| Inference WIF | Per-repo provider from `inference provision` | Shared `gitlab-oidc` provider via `--inference-project` |
+| Inference WIF | Per-repo provider from `inference provision` | Shared `gitlab-oidc` provider via `--vertex-project` |
 | CI entrypoint | `.github/workflows/fullsend.yaml` | `.gitlab/ci/fullsend-*.yml` included from `.gitlab-ci.yml` |
 
 ### `workflow:` block and `auto_cancel`
@@ -958,7 +958,7 @@ Pass `--gitlab-url` at install time to record the instance URL in
 ```bash
 fullsend repos install <group/project> \
   --gitlab-url https://gitlab.example.com \
-  --inference-project "<gcp-project>"
+  --vertex-project "<gcp-project>"
 ```
 
 That env-var fallback (`FULLSEND_GITLAB_URL` → `GITLAB_API_URL` →

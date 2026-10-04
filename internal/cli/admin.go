@@ -164,11 +164,17 @@ type perRepoInstallConfig struct {
 }
 
 func validateWIFProvider(raw string) error {
+	return validateWIFProviderFlag("--inference-wif-provider", raw)
+}
+
+// validateWIFProviderFlag validates a WIF provider resource name and
+// names flag in the error so each command reports its own flag.
+func validateWIFProviderFlag(flag, raw string) error {
 	if !repos.WIFProviderPattern.MatchString(raw) {
 		return fmt.Errorf(
-			"--inference-wif-provider must be a full WIF provider resource name "+
+			"%s must be a full WIF provider resource name "+
 				"(projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}), got %q",
-			raw,
+			flag, raw,
 		)
 	}
 	return nil

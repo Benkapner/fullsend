@@ -71,11 +71,11 @@ fullsend
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --roles <list>                   #   Agent roles (default: triage,coder,review,fix,retro,prioritize)
 │   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
-│   │   ├── --inference-project <id>         #   GCP project ID for inference (install-time only)
-│   │   ├── --inference-wif-provider <path>  #   Full WIF provider resource name (uses verbatim; skips per-repo derivation)
+│   │   ├── --vertex-project <id>            #   GCP project ID for Vertex inference (install-time only)
+│   │   ├── --vertex-wif-provider <path>     #   Full WIF provider resource name (uses verbatim; skips per-repo derivation)
 │   │   ├── --openai-api-key <key>           #   FULLSEND_OPENAI_API_KEY for openai-api-key repos (CLI-only; never in repos.yaml)
 │   │   ├── --forge <type>                   #   Forge type for new repos (github or gitlab)
-│   │   ├── --inference-region <region>      #   Per-repo GCP inference region override
+│   │   ├── --vertex-region <region>         #   Per-repo GCP inference region override
 │   │   ├── --fullsend-ref <ref>             #   Per-repo fullsend workflow ref override
 │   │   ├── --mint-url <url>                 #   Per-repo mint URL override
 │   │   ├── --app-set <prefix>               #   GitHub App set prefix override ($FULLSEND_APP_SET); GitHub-only
