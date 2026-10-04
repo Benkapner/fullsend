@@ -595,8 +595,8 @@ from `${GOOGLE_APPLICATION_CREDENTIALS}`
 ([bring your own agent › Pick a route](../guides/user/bring-your-own-agent.md#pick-a-route)).
 A `google-vertex` child can use `GOOGLE_CLOUD_API_KEY` in the sandbox instead. Without either:
 
-1. **A `subagents` entry on Vertex, and the variable has no usable file.** The run stops
-   before the pre-script:
+1. **A `subagents` entry on `anthropic-vertex` or `xai-vertex`, and the variable has no usable
+   file.** The run stops before the pre-script (a `google-vertex` entry is checked at dispatch):
 
    ```console
      ✗ Sub-agent model needs Vertex credentials
@@ -604,11 +604,11 @@ A `google-vertex` child can use `GOOGLE_CLOUD_API_KEY` in the sandbox instead. W
    ```
 
    Fix: set `GOOGLE_APPLICATION_CREDENTIALS` to a credential file, or move the entry off Vertex.
-2. **The variable has no usable file, and no `subagents` entry is on Vertex.** The run
+2. **The variable has no usable file, and no `subagents` entry fails early.** The run
    continues with one line:
 
    ```console
-       Vertex sub-agents unavailable: GOOGLE_APPLICATION_CREDENTIALS is not set
+       Vertex sub-agents need a credential file: GOOGLE_APPLICATION_CREDENTIALS is not set
    ```
 
    Fix: nothing, unless you want Vertex children. Then set the variable.

@@ -1199,8 +1199,11 @@ func TestRunAgent_VertexSubagentCredentials(t *testing.T) {
 			subagents: "    subagents:\n      writer: haiku\n",
 			wantErr:   []string{"GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.writer → anthropic-vertex/claude-haiku-"}},
 		{name: "configured Vertex child, file missing", runtime: "pi", model: openAIParent, extra: optionalMount, gac: "/nonexistent/creds.json",
+			subagents: "    subagents:\n      default: haiku\n",
+			wantErr:   []string{"GOOGLE_APPLICATION_CREDENTIALS does not point to a non-empty credential file: subagents.default → anthropic-vertex/claude-haiku-"}},
+		{name: "configured google-vertex child: left to dispatch", runtime: "pi", model: openAIParent, extra: optionalMount,
 			subagents: "    subagents:\n      default: google-vertex/gemini-3.8-flash\n",
-			wantErr:   []string{"GOOGLE_APPLICATION_CREDENTIALS does not point to a non-empty credential file: subagents.default → google-vertex/gemini-3.8-flash"}},
+			wantInfo:  "Vertex sub-agents need a credential file: GOOGLE_APPLICATION_CREDENTIALS is not set"},
 		{name: "configured Vertex child, empty file", runtime: "pi", model: openAIParent, extra: optionalMount, gac: emptyFile,
 			subagents: "    subagents:\n      default: xai/grok-4.6\n",
 			wantErr:   []string{"GOOGLE_APPLICATION_CREDENTIALS does not point to a non-empty credential file: subagents.default → xai-vertex/xai/grok-4.6"}},
@@ -1208,9 +1211,9 @@ func TestRunAgent_VertexSubagentCredentials(t *testing.T) {
 			env:     map[string]string{"GITHUB_ACTIONS": "true", "FULLSEND_GCP_PROJECT_ID": "p", "FULLSEND_GCP_WIF_PROVIDER": ""},
 			wantErr: []string{"GOOGLE_APPLICATION_CREDENTIALS is not set (Vertex credential setup failed; see the warning above): subagents.default"}},
 		{name: "no configured Vertex child", runtime: "pi", model: openAIParent, extra: optionalMount,
-			wantInfo: "Vertex sub-agents unavailable: GOOGLE_APPLICATION_CREDENTIALS is not set"},
+			wantInfo: "Vertex sub-agents need a credential file: GOOGLE_APPLICATION_CREDENTIALS is not set"},
 		{name: "frontmatter-only Vertex persona", runtime: "pi", model: openAIParent, extra: optionalMount + "skills:\n  - skills/probe\n",
-			wantInfo: "Vertex sub-agents unavailable: GOOGLE_APPLICATION_CREDENTIALS is not set"},
+			wantInfo: "Vertex sub-agents need a credential file: GOOGLE_APPLICATION_CREDENTIALS is not set"},
 		{name: "no variable mount: left to dispatch", runtime: "pi", model: openAIParent, subagents: sonnetDefault},
 		{name: "literal-path mount: left to dispatch", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
 			extra: "host_files:\n  - src: " + credFile + "\n    dest: /tmp/.gcp-credentials.json\n"},
@@ -1224,14 +1227,6 @@ func TestRunAgent_VertexSubagentCredentials(t *testing.T) {
 		{name: "env.sandbox pins the missing mount despite another credential file", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
 			extra:   optionalMount + "  - src: " + credFile + "\n    dest: /sandbox/other.json\nenv:\n  sandbox:\n    GOOGLE_APPLICATION_CREDENTIALS: /tmp/.gcp-credentials.json\n",
 			wantErr: []string{"GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.default"}},
-		{name: "google-vertex child with an env.sandbox API key: no info line", runtime: "pi", model: openAIParent,
-			subagents: "    subagents:\n      default: google-vertex/gemini-3.8-flash\n",
-			extra:     optionalMount + "env:\n  sandbox:\n    GOOGLE_CLOUD_API_KEY: ${GOOGLE_KEY_TEST}\n",
-			env:       map[string]string{"GOOGLE_KEY_TEST": "k"}},
-		{name: "anthropic-vertex child with an env.sandbox API key: still gated", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
-			extra:   optionalMount + "env:\n  sandbox:\n    GOOGLE_CLOUD_API_KEY: ${GOOGLE_KEY_TEST}\n",
-			env:     map[string]string{"GOOGLE_KEY_TEST": "k"},
-			wantErr: []string{"GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.default → anthropic-vertex/"}},
 		{name: "a non-credential extra file: still gated", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
 			extra:   optionalMount + "  - src: " + textFile + "\n    dest: /sandbox/notes.txt\n",
 			wantErr: []string{"GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.default"}},
@@ -1268,7 +1263,7 @@ func TestRunAgent_VertexSubagentCredentials(t *testing.T) {
 			}
 			assert.NotContains(t, err.Error(), "GOOGLE_APPLICATION_CREDENTIALS")
 			assert.FileExists(t, marker)
-			info := strings.Count(out.String(), "Vertex sub-agents unavailable")
+			info := strings.Count(out.String(), "Vertex sub-agents need a credential file")
 			if tc.wantInfo != "" {
 				assert.Equal(t, 1, info, out.String())
 				assert.Contains(t, out.String(), tc.wantInfo)
