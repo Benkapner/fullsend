@@ -160,7 +160,7 @@ gitlab:
     - name: group/project
 ```
 
-There is no implicit default. When no level selects a method, `repos install` (convergence) and `repos status` report a per-repo configuration error: `no inference authentication selected for <repo>`. The error names the levels where `inference.auth` can be set. Install reports it before any forge mutation for that repo, and other repos in the run still converge. An invalid value fails manifest validation. `repos uninstall` does not need the setting.
+There is no implicit default. When no level selects a method, `repos install` (convergence) and `repos status` report a per-repo configuration error: `no inference authentication selected for <repo>`. The error names the levels where `inference.auth` can be set. Install reports it before any forge mutation for that repo, and other repos in the run still converge. An invalid value fails manifest validation. `repos uninstall` does not need the setting and does not validate its value, so a missing or invalid selection never blocks teardown.
 
 `--inference-auth` takes the same two values. It has the highest precedence, because it is persisted as `inference.auth` on each selected manifest entry:
 
@@ -206,7 +206,7 @@ Each repo's effective `inference.auth` decides which credentials `repos install`
 
 #### GitLab: `FULLSEND_OPENAI_API_KEY` replaces `OPENAI_API_KEY` (breaking)
 
-GitLab CI now reads the OpenAI key only from the `FULLSEND_OPENAI_API_KEY` CI/CD variable. The Fullsend job maps it to `OPENAI_API_KEY` for `fullsend run`. There is no fallback: an unprefixed `OPENAI_API_KEY` CI/CD variable on its own no longer works and does not satisfy the install check. Fullsend never deletes the unprefixed variable, because other jobs may use it. Running `fullsend run` locally still reads `OPENAI_API_KEY`.
+GitLab CI now reads the OpenAI key only from the `FULLSEND_OPENAI_API_KEY` CI/CD variable. The Fullsend job maps it to `OPENAI_API_KEY` for `fullsend run`. There is no fallback: an unprefixed `OPENAI_API_KEY` CI/CD variable on its own no longer works and does not satisfy the install check or `repos status`, which reports `FULLSEND_OPENAI_API_KEY` as missing. Fullsend never deletes the unprefixed variable, not even on `repos uninstall`, because other jobs may use it. Running `fullsend run` locally still reads `OPENAI_API_KEY`.
 
 To upgrade an `openai-api-key` GitLab project that used `OPENAI_API_KEY`:
 
@@ -337,6 +337,14 @@ fullsend repos status --repo "acme/*" --json
 - **STATUS** — `installed`, `not installed`, or `error`. A repo with no resolved [inference authentication selection](#inference-authentication-selection) is reported as `error` with a configuration message, and its forge state is not inspected.
 - **DRIFT** — Fields that differ from the manifest, scaffold files whose template content has changed, orphan files or variables no longer in the managed set, or `none`
 
+Inference credentials are checked against each repo's own effective `inference.auth`, so a mixed fleet is evaluated repo by repo (see [Inference credentials](#inference-credentials)):
+
+- A missing secret or CI/CD variable of the selected method is reported as drift on that name (for example `FULLSEND_OPENAI_API_KEY` reported as `missing`). The other method's credentials are not required.
+- A Fullsend-managed secret of the method that is **not** selected (`FULLSEND_GCP_PROJECT_ID` / `FULLSEND_GCP_WIF_PROVIDER` on an `openai-api-key` repo, or `FULLSEND_OPENAI_API_KEY` on a `vertex-wif` repo) is reported as obsolete drift (`expected absent`). So is a leftover `FULLSEND_GCP_REGION` variable on an `openai-api-key` repo. This drift is reported even when the repo is otherwise not installed. `repos install` removes these once the replacement configuration is on the default branch. Only presence is checked, so values are never read or printed.
+- On GitLab, only `FULLSEND_OPENAI_API_KEY` satisfies the `openai-api-key` requirement. An unprefixed `OPENAI_API_KEY` CI/CD variable does not, and is neither reported nor touched. `FULLSEND_OPENAI_API_KEY` is always classified as Fullsend-managed, never as an orphan.
+
+Status is read-only and reports secret and variable names only, never their values.
+
 For GitLab repos, table and JSON output also include per-role credential
 lifecycle diagnostic lines for roles needing attention (`expiring`,
 `expired`, `revoked`, `unverified`, or `overlapping`); roles that are
@@ -376,6 +384,8 @@ Uninstall PR delivery intentionally reuses the same branch as `repos install`/`c
 GCP WIF pool/provider cleanup for GitHub repos is handled separately via `inference deprovision`. This does not cover GitLab's shared `gitlab-oidc` WIF provider — for GitLab repos, see [Operations § Per-repo teardown](../guides/getting-started/operations.md#per-repo-teardown) step 6 to revoke that repo's WIF trust.
 
 When multiple repos are targeted (via globs or explicit bulk lists), the command prompts for confirmation unless `--yes` is set. Credentials are required only for the forges of the targeted repos. Uninstall does not require an `inference.auth` selection, so manifests without one can still be torn down.
+
+Uninstall removes every Fullsend-managed inference credential, whatever the repo's `inference.auth` is (or whether it is set or valid at all): `FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`, and `FULLSEND_OPENAI_API_KEY`, plus the `FULLSEND_GCP_REGION` variable. Leftovers from an earlier method and partially installed repos are cleaned up the same way. A credential that is already absent is skipped, so re-running uninstall is safe. Uninstall never deletes an unprefixed `OPENAI_API_KEY` secret or CI/CD variable, or any other credential Fullsend does not manage. Remove `OPENAI_API_KEY` yourself if nothing else uses it.
 
 ```bash
 fullsend repos uninstall acme/old-api

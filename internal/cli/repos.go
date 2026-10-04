@@ -291,7 +291,10 @@ func runReposStatus(cmd *cobra.Command, opts *reposStatusConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := m.Validate(); err != nil {
+	// inference.auth values are validated per repository by
+	// repos.Status, so an invalid value on one entry is reported as that
+	// repository's error instead of aborting the whole command.
+	if err := m.ValidateStructure(); err != nil {
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 
@@ -1509,7 +1512,9 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	if err != nil {
 		return fmt.Errorf("loading manifest: %w", err)
 	}
-	if err := manifest.Validate(); err != nil {
+	// Uninstall removes every Fullsend-managed inference credential, so an
+	// invalid inference.auth selection must not block cleanup.
+	if err := manifest.ValidateForUninstall(); err != nil {
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", manifest.TotalRepoCount()))

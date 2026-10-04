@@ -180,7 +180,9 @@ Every repo must resolve an explicit inference authentication method,
 Identity Federation) or `openai-api-key`. There is no implicit default. A
 repo with no selection is reported as a configuration error by
 `repos install` and `repos status`, before any forge change is made for
-that repo. Uninstall does not need the setting.
+that repo. Uninstall does not need the setting: it removes every
+Fullsend-managed inference credential whether `inference.auth` is set,
+valid, or missing.
 
 The selection can be set under `defaults`, in each forge section, and on
 repo or glob entries. It resolves entry → forge section → `defaults`
@@ -482,6 +484,12 @@ fullsend repos status --repo acme/api --repo acme/web
 The command reports per-repo status (installed, not installed, error) and
 any configuration drift. Returns a non-zero exit code when drift or
 errors exist, making it suitable for CI checks.
+
+Inference credentials are checked against each repo's own
+`inference.auth`. A missing credential of the selected method and a
+leftover Fullsend-managed secret of the other method are both reported as
+drift, by name only. See
+[`repos status` output](../../cli/repos.md#output).
 
 Use `--json` for machine-readable output:
 

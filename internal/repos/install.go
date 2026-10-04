@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -917,6 +918,25 @@ func inferenceSecretsForAuth(auth string) []string {
 	return requiredSecrets
 }
 
+// managedInferenceSecrets returns every Fullsend-managed inference
+// secret across all inference.auth methods, on both forges. Orphan
+// detection treats these names as managed and uninstall deletes all of
+// them, so leftovers from an earlier selection are cleaned up even when
+// inference.auth is missing or invalid. GitLab's unprefixed
+// OPENAI_API_KEY is never included: it may be shared with other jobs
+// and Fullsend does not manage it.
+func managedInferenceSecrets() []string {
+	var names []string
+	for _, auth := range ValidInferenceAuths() {
+		for _, s := range inferenceSecretsForAuth(auth) {
+			if !slices.Contains(names, s) {
+				names = append(names, s)
+			}
+		}
+	}
+	return names
+}
+
 // obsoleteInferenceSecrets returns the Fullsend-managed inference secrets
 // that belong to the method auth did not select. Convergence removes them
 // only after the selected method's credentials are established. GitLab's
@@ -931,6 +951,18 @@ func obsoleteInferenceSecrets(auth string) []string {
 	default:
 		return nil
 	}
+}
+
+// obsoleteInferenceVariables returns the Fullsend-managed inference
+// variables that belong to a method auth did not select. Only Vertex uses
+// FULLSEND_GCP_REGION, so it is obsolete on openai-api-key repositories.
+// Like the obsolete secrets, convergence removes it only after the
+// selected method is established.
+func obsoleteInferenceVariables(auth string) []string {
+	if auth == InferenceAuthOpenAIAPIKey {
+		return []string{forge.VarGCPRegion}
+	}
+	return nil
 }
 
 // inferenceRegionForAuth returns region when auth uses Vertex and ""

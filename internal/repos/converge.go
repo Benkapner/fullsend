@@ -442,32 +442,69 @@ func selectedCredentialContractLive(ctx context.Context, resolved ResolvedConfig
 	return bytes.Contains(content, []byte(forge.SecretOpenAIAPIKey)), nil
 }
 
+// obsoleteInferenceItem is one Fullsend-managed inference secret or
+// variable that the repo's selected method no longer uses.
+type obsoleteInferenceItem struct {
+	name     string
+	variable bool
+}
+
+// kind is the noun used in messages ("secret" or "variable").
+func (i obsoleteInferenceItem) kind() string {
+	if i.variable {
+		return "variable"
+	}
+	return "secret"
+}
+
+// component is the ComponentAction component name ("var:" or "secret:").
+func (i obsoleteInferenceItem) component() string {
+	if i.variable {
+		return "var:" + i.name
+	}
+	return "secret:" + i.name
+}
+
 // removeObsoleteInferenceSecrets deletes the Fullsend-managed inference
-// secrets of the method the repo no longer selects. Callers invoke it
-// only after the selected method's credentials were written successfully,
-// so a failed setup keeps the old credentials. Dry runs report the
-// deletions without performing them.
+// secrets and variables of the method the repo no longer selects. Callers
+// invoke it only after the selected method's credentials were written
+// successfully, so a failed setup keeps the old credentials. Dry runs
+// report the deletions without performing them.
 //
 // scaffoldFiles are the files delivered in this run. Delivery can merely
 // open an unmerged pull/merge request, so before the first deletion they
 // must be observed on the default branch, and the default branch must
 // carry a job script that consumes the selected credential even when
-// nothing was delivered; until then the obsolete secrets are kept (a later
+// nothing was delivered; until then the obsolete items are kept (a later
 // run retries once the change is merged). Pass nil when nothing was
 // delivered.
 func removeObsoleteInferenceSecrets(ctx context.Context, resolved ResolvedConfig, dryRun bool, scaffoldFiles []forge.TreeFile, progress ProgressFunc) []ComponentAction {
 	repoFullName := resolved.Owner + "/" + resolved.Repo
 	client := resolved.ForgeConfig.Client
+	var items []obsoleteInferenceItem
+	for _, name := range obsoleteInferenceSecrets(resolved.InferenceAuth) {
+		items = append(items, obsoleteInferenceItem{name: name})
+	}
+	for _, name := range obsoleteInferenceVariables(resolved.InferenceAuth) {
+		items = append(items, obsoleteInferenceItem{name: name, variable: true})
+	}
 	var actions []ComponentAction
 	readinessChecked := false
 	ready := true
-	for _, name := range obsoleteInferenceSecrets(resolved.InferenceAuth) {
-		exists, err := client.RepoSecretExists(ctx, resolved.Owner, resolved.Repo, name)
+	for _, item := range items {
+		name := item.name
+		var exists bool
+		var err error
+		if item.variable {
+			_, exists, err = client.GetRepoVariable(ctx, resolved.Owner, resolved.Repo, name)
+		} else {
+			exists, err = client.RepoSecretExists(ctx, resolved.Owner, resolved.Repo, name)
+		}
 		if err != nil {
 			actions = append(actions, ComponentAction{
-				Component: "secret:" + name,
+				Component: item.component(),
 				Action:    "error",
-				Detail:    fmt.Sprintf("checking obsolete secret %s: %v; delete it manually if it is no longer needed", name, err),
+				Detail:    fmt.Sprintf("checking obsolete %s %s: %v; delete it manually if it is no longer needed", item.kind(), name, err),
 			})
 			continue
 		}
@@ -476,11 +513,11 @@ func removeObsoleteInferenceSecrets(ctx context.Context, resolved ResolvedConfig
 		}
 		if dryRun {
 			actions = append(actions, ComponentAction{
-				Component: "secret:" + name,
+				Component: item.component(),
 				Action:    "delete",
 				Detail:    fmt.Sprintf("would delete obsolete %s (inference.auth is %s)", name, resolved.InferenceAuth),
 			})
-			progress(repoFullName, "dry-run", fmt.Sprintf("Would delete obsolete secret %s", name))
+			progress(repoFullName, "dry-run", fmt.Sprintf("Would delete obsolete %s %s", item.kind(), name))
 			continue
 		}
 		if !readinessChecked {
@@ -496,7 +533,7 @@ func removeObsoleteInferenceSecrets(ctx context.Context, resolved ResolvedConfig
 			if readyErr != nil {
 				ready = false
 				actions = append(actions, ComponentAction{
-					Component: "secret:" + name,
+					Component: item.component(),
 					Action:    "error",
 					Detail:    fmt.Sprintf("kept obsolete %s: could not verify the replacement configuration on the default branch: %v", name, readyErr),
 				})
@@ -505,27 +542,32 @@ func removeObsoleteInferenceSecrets(ctx context.Context, resolved ResolvedConfig
 		}
 		if !ready {
 			actions = append(actions, ComponentAction{
-				Component: "secret:" + name,
+				Component: item.component(),
 				Action:    "none",
 				Detail:    fmt.Sprintf("kept obsolete %s: the replacement configuration is not yet on the default branch; re-run after the scaffold change is merged", name),
 			})
-			progress(repoFullName, "sync", fmt.Sprintf("Keeping obsolete secret %s until the scaffold change is merged", name))
+			progress(repoFullName, "sync", fmt.Sprintf("Keeping obsolete %s %s until the scaffold change is merged", item.kind(), name))
 			continue
 		}
-		if err := client.DeleteRepoSecret(ctx, resolved.Owner, resolved.Repo, name); err != nil {
+		if item.variable {
+			err = client.DeleteRepoVariable(ctx, resolved.Owner, resolved.Repo, name)
+		} else {
+			err = client.DeleteRepoSecret(ctx, resolved.Owner, resolved.Repo, name)
+		}
+		if err != nil {
 			actions = append(actions, ComponentAction{
-				Component: "secret:" + name,
+				Component: item.component(),
 				Action:    "error",
 				Detail:    fmt.Sprintf("failed to delete obsolete %s: %v; delete it manually", name, err),
 			})
 			continue
 		}
 		actions = append(actions, ComponentAction{
-			Component: "secret:" + name,
+			Component: item.component(),
 			Action:    "delete",
 			Detail:    fmt.Sprintf("deleted obsolete %s (inference.auth is %s)", name, resolved.InferenceAuth),
 		})
-		progress(repoFullName, "sync", fmt.Sprintf("Deleted obsolete secret %s", name))
+		progress(repoFullName, "sync", fmt.Sprintf("Deleted obsolete %s %s", item.kind(), name))
 	}
 	return actions
 }

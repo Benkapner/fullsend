@@ -314,6 +314,9 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		return status
 	}
 	if !anyComponentPresent(components) {
+		// Leftover credentials of an unselected method are drift even
+		// when none of the selected method's components exist.
+		checkObsoleteInferenceConfig(ctx, client, cfg, &status)
 		return status
 	}
 	status.Installed = true
@@ -350,6 +353,11 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 			Expected: expected,
 			Actual:   actual,
 		})
+	}
+
+	checkObsoleteInferenceConfig(ctx, client, cfg, &status)
+	if status.Error != "" {
+		return status
 	}
 
 	// Resolve the manifest's fullsend_ref to a commit SHA for
@@ -418,6 +426,55 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	}
 
 	return status
+}
+
+// checkObsoleteInferenceConfig reports Fullsend-managed inference secrets
+// and variables that belong to a method the repository's inference.auth
+// does not select. A valid selection does not make leftover configuration
+// healthy desired state: convergence deletes these once the selected
+// method is established, so status reports them as drift. Secrets are
+// checked for presence only — secret values are never read. GitLab's
+// unprefixed OPENAI_API_KEY is not Fullsend-managed and never reported.
+func checkObsoleteInferenceConfig(ctx context.Context, client forge.Client, cfg ResolvedConfig, status *RepoStatus) {
+	checkObsoleteInferenceSecrets(ctx, client, cfg, status)
+	if status.Error != "" {
+		return
+	}
+	for _, name := range obsoleteInferenceVariables(cfg.InferenceAuth) {
+		_, exists, err := client.GetRepoVariable(ctx, cfg.Owner, cfg.Repo, name)
+		if err != nil {
+			status.Error = fmt.Sprintf("checking obsolete variable %s for %s/%s: %v", name, cfg.Owner, cfg.Repo, err)
+			return
+		}
+		if !exists {
+			continue
+		}
+		status.Drifts = append(status.Drifts, Drift{
+			Field:    name,
+			Expected: "absent",
+			Actual:   fmt.Sprintf("obsolete variable (inference.auth is %s)", cfg.InferenceAuth),
+		})
+	}
+}
+
+// checkObsoleteInferenceSecrets reports the secret half of
+// checkObsoleteInferenceConfig.
+func checkObsoleteInferenceSecrets(ctx context.Context, client forge.Client, cfg ResolvedConfig, status *RepoStatus) {
+	for _, name := range obsoleteInferenceSecrets(cfg.InferenceAuth) {
+		exists, err := client.RepoSecretExists(ctx, cfg.Owner, cfg.Repo, name)
+		if err != nil {
+			status.Error = fmt.Sprintf("checking obsolete secret %s for %s/%s: %v", name, cfg.Owner, cfg.Repo, err)
+			return
+		}
+		if !exists {
+			continue
+		}
+		status.Drifts = append(status.Drifts, Drift{
+			Field:    name,
+			Expected: "absent",
+			Actual:   fmt.Sprintf("obsolete secret (inference.auth is %s)", cfg.InferenceAuth),
+		})
+	}
 }
 
 func appendGitLabRoleStatus(ctx context.Context, client forge.Client, owner, repo string, status *RepoStatus) {
