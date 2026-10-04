@@ -25,6 +25,7 @@ import defaultExport, {
   childTools,
   createAgentTool,
   isAgentEndPrefix,
+  isAssistantMessageEndPrefix,
   resolveModel,
 } from "./fullsend-agent.js";
 
@@ -891,6 +892,49 @@ test("run: an oversized agent_end does not hide an error stop reason", async () 
   assert.equal(res.isError, true);
   assert.equal(res.stopReason, "error");
   assert.match(res.error, /quota exhausted/);
+});
+
+test("isAssistantMessageEndPrefix: any message_end not shown to be user or toolResult", () => {
+  for (const line of ['{"type":"message_end","message":{"role":"assistant",', '{"type":"message_end","message":{"content":[', '{"type":"message_end"}']) {
+    assert.equal(isAssistantMessageEndPrefix(line), true, line);
+  }
+  for (const line of ['{"type":"message_end","message":{"role":"toolResult",', '{"type":"message_end","message":{"role":"user",', '{"type":"agent_end",', '{"type":"message_end_x",', ""]) {
+    assert.equal(isAssistantMessageEndPrefix(line), false, line);
+  }
+});
+
+// An oversized final assistant message is dropped together with the
+// agent_end envelope that repeats it, so neither the answer nor the stop
+// reason is known; the run must not report success on stale state.
+for (const stopReason of ["stop", "error", "aborted"]) {
+  for (const [name, split] of [["one chunk", (s) => [s]], ["pipe-sized chunks", chunked]]) {
+    test(`run: an oversized final assistant message_end (${stopReason}, ${name}) fails closed over a stale earlier message`, async () => {
+      const earlier = finalMessage("toolUse", "earlier answer");
+      const big = finalMessage(stopReason, "t".repeat(MAX_STDOUT_LINE_CHARS + 10), stopReason === "stop" ? {} : { errorMessage: "big failure" });
+      const stream = jsonLine({ type: "message_end", message: earlier }) +
+        jsonLine({ type: "message_end", message: big }) +
+        JSON.stringify({ type: "agent_end", messages: [earlier, big] }) + "\n";
+      const { res } = await runRaw(split(stream));
+      assert.equal(res.isError, true);
+      assert.equal(res.stopReason, "incomplete");
+      assert.match(res.error, /last assistant message exceeded/);
+    });
+  }
+}
+
+test("run: a dropped assistant message_end is forgotten once a later assistant message is read", async () => {
+  const big = finalMessage("toolUse", "t".repeat(MAX_STDOUT_LINE_CHARS + 10));
+  const stream = jsonLine({ type: "message_end", message: big }) + jsonLine({ type: "message_end", message: finalMessage("stop", "done") }) + bigAgentEnd(finalMessage("stop", "done")) + "\n";
+  const { res } = await runRaw(chunked(stream));
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.text, "done");
+});
+
+test("run: an oversized assistant message_end cut off by EOF is also a failure", async () => {
+  const big = finalMessage("stop", "t".repeat(MAX_STDOUT_LINE_CHARS + 10));
+  const { res } = await runRaw(chunked(jsonLine({ type: "message_end", message: finalMessage("toolUse", "earlier") }) + JSON.stringify({ type: "message_end", message: big })));
+  assert.equal(res.isError, true);
+  assert.match(res.error, /last assistant message exceeded/);
 });
 
 test("run: an oversized agent_end does not hide a non-zero exit", async () => {
