@@ -4475,6 +4475,12 @@ func vertexCredentialGap(h *harness.Harness) string {
 		if hf.Src != "${GOOGLE_APPLICATION_CREDENTIALS}" {
 			continue
 		}
+		// env.sandbox pointing anywhere else leaves the judgement to dispatch.
+		if h.Env != nil {
+			if v, ok := h.Env.Sandbox["GOOGLE_APPLICATION_CREDENTIALS"]; ok && v != hf.Dest {
+				return ""
+			}
+		}
 		path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
 		if path == "" {
 			return "GOOGLE_APPLICATION_CREDENTIALS is not set"

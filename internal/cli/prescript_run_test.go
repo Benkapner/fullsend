@@ -1210,6 +1210,11 @@ func TestRunAgent_VertexSubagentCredentials(t *testing.T) {
 		{name: "no variable mount: left to dispatch", runtime: "pi", model: openAIParent, subagents: sonnetDefault},
 		{name: "literal-path mount: left to dispatch", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
 			extra: "host_files:\n  - src: " + credFile + "\n    dest: /tmp/.gcp-credentials.json\n"},
+		{name: "env.sandbox points at another usable mount", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
+			extra: optionalMount + "  - src: " + credFile + "\n    dest: /sandbox/sa.json\nenv:\n  sandbox:\n    GOOGLE_APPLICATION_CREDENTIALS: /sandbox/sa.json\n"},
+		{name: "env.sandbox equals the mount dest: still gated", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
+			extra:   optionalMount + "env:\n  sandbox:\n    GOOGLE_APPLICATION_CREDENTIALS: /tmp/.gcp-credentials.json\n",
+			wantErr: []string{"GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.default"}},
 		{name: "credential file set", runtime: "pi", model: openAIParent, extra: optionalMount, subagents: sonnetDefault, gac: credFile},
 		{name: "dummy runtime", runtime: "dummy", model: openAIParent, extra: optionalMount, subagents: sonnetDefault},
 		{name: "Vertex parent keeps its own check", runtime: "pi", model: "anthropic-vertex/claude-opus-4-6", extra: optionalMount, subagents: sonnetDefault,
@@ -1264,6 +1269,12 @@ func TestVertexCredentialGap(t *testing.T) {
 	assert.Equal(t, "GOOGLE_APPLICATION_CREDENTIALS is not set", vertexCredentialGap(h))
 	assert.Empty(t, vertexCredentialGap(&harness.Harness{HostFiles: []harness.HostFile{{Src: cred, Dest: "/tmp/.gcp-credentials.json"}}}),
 		"no variable mount: nothing to judge here")
+	withEnv := func(v string) *harness.Harness {
+		return &harness.Harness{HostFiles: []harness.HostFile{mount}, Env: &harness.EnvConfig{Sandbox: map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": v}}}
+	}
+	assert.Empty(t, vertexCredentialGap(withEnv("/sandbox/sa.json")), "env.sandbox elsewhere: left to dispatch")
+	assert.Empty(t, vertexCredentialGap(withEnv("${SANDBOX_GAC}")), "unexpanded env.sandbox: left to dispatch")
+	assert.Equal(t, "GOOGLE_APPLICATION_CREDENTIALS is not set", vertexCredentialGap(withEnv("/tmp/.gcp-credentials.json")))
 	for name, path := range map[string]string{"missing": "/nonexistent/creds.json", "empty": empty, "directory": t.TempDir()} {
 		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
 		assert.Equal(t, "GOOGLE_APPLICATION_CREDENTIALS does not point to a non-empty credential file", vertexCredentialGap(h), name)
