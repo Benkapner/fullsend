@@ -953,6 +953,18 @@ func obsoleteInferenceSecrets(auth string) []string {
 	}
 }
 
+// obsoleteInferenceVariables returns the Fullsend-managed inference
+// variables that belong to a method auth did not select. Only Vertex uses
+// FULLSEND_GCP_REGION, so it is obsolete on openai-api-key repositories.
+// Like the obsolete secrets, convergence removes it only after the
+// selected method is established.
+func obsoleteInferenceVariables(auth string) []string {
+	if auth == InferenceAuthOpenAIAPIKey {
+		return []string{forge.VarGCPRegion}
+	}
+	return nil
+}
+
 // inferenceRegionForAuth returns region when auth uses Vertex and ""
 // otherwise, so OpenAI-only repositories never get FULLSEND_GCP_REGION
 // written or value-checked.

@@ -340,7 +340,7 @@ fullsend repos status --repo "acme/*" --json
 Inference credentials are checked against each repo's own effective `inference.auth`, so a mixed fleet is evaluated repo by repo (see [Inference credentials](#inference-credentials)):
 
 - A missing secret or CI/CD variable of the selected method is reported as drift on that name (for example `FULLSEND_OPENAI_API_KEY` reported as `missing`). The other method's credentials are not required.
-- A Fullsend-managed secret of the method that is **not** selected (`FULLSEND_GCP_PROJECT_ID` / `FULLSEND_GCP_WIF_PROVIDER` on an `openai-api-key` repo, or `FULLSEND_OPENAI_API_KEY` on a `vertex-wif` repo) is reported as obsolete drift (`expected absent`). `repos install` removes it.
+- A Fullsend-managed secret of the method that is **not** selected (`FULLSEND_GCP_PROJECT_ID` / `FULLSEND_GCP_WIF_PROVIDER` on an `openai-api-key` repo, or `FULLSEND_OPENAI_API_KEY` on a `vertex-wif` repo) is reported as obsolete drift (`expected absent`). So is a leftover `FULLSEND_GCP_REGION` variable on an `openai-api-key` repo. This drift is reported even when the repo is otherwise not installed. `repos install` removes these once the replacement configuration is on the default branch. Only presence is checked, so values are never read or printed.
 - On GitLab, only `FULLSEND_OPENAI_API_KEY` satisfies the `openai-api-key` requirement. An unprefixed `OPENAI_API_KEY` CI/CD variable does not, and is neither reported nor touched. `FULLSEND_OPENAI_API_KEY` is always classified as Fullsend-managed, never as an orphan.
 
 Status is read-only and reports secret and variable names only, never their values.
