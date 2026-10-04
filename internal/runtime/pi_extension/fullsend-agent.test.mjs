@@ -894,14 +894,31 @@ test("run: an oversized agent_end does not hide an error stop reason", async () 
   assert.match(res.error, /quota exhausted/);
 });
 
-test("isAssistantMessageEndPrefix: any message_end not shown to be user or toolResult", () => {
+test("isAssistantMessageEndPrefix: any message_end not shown to be user, toolResult, custom or system", () => {
   for (const line of ['{"type":"message_end","message":{"role":"assistant",', '{"type":"message_end","message":{"content":[', '{"type":"message_end"}']) {
     assert.equal(isAssistantMessageEndPrefix(line), true, line);
   }
-  for (const line of ['{"type":"message_end","message":{"role":"toolResult",', '{"type":"message_end","message":{"role":"user",', '{"type":"agent_end",', '{"type":"message_end_x",', ""]) {
+  for (const line of ['{"type":"message_end","message":{"role":"toolResult",', '{"type":"message_end","message":{"role":"user",', '{"type":"message_end","message":{"role":"custom",', '{"type":"message_end","message":{"role":"system",', '{"type":"agent_end",', '{"type":"message_end_x",', ""]) {
     assert.equal(isAssistantMessageEndPrefix(line), false, line);
   }
 });
+
+// A custom message queued during streaming is emitted after the final
+// assistant response; when it and the completion envelope both exceed the
+// cap, the child still completed and its final assistant message was read.
+for (const [name, split] of [["one chunk", (s) => [s]], ["pipe-sized chunks", chunked]]) {
+  test(`run: an oversized custom message after the final assistant message does not fail the child (${name})`, async () => {
+    const bigCustom = { role: "custom", customType: "note", content: "c".repeat(MAX_STDOUT_LINE_CHARS + 10), display: false, timestamp: 1 };
+    const final = finalMessage("stop", "done");
+    const stream = jsonLine({ type: "message_end", message: final }) +
+      jsonLine({ type: "message_end", message: bigCustom }) +
+      JSON.stringify({ type: "agent_end", messages: [bigCustom, final] }) + "\n";
+    const { res } = await runRaw(split(stream));
+    assert.equal(res.isError, false, res.error);
+    assert.equal(res.text, "done");
+    assert.equal(res.stopReason, "stop");
+  });
+}
 
 // An oversized final assistant message is dropped together with the
 // agent_end envelope that repeats it, so neither the answer nor the stop

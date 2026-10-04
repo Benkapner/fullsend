@@ -82,10 +82,13 @@ export const OVERSIZED_PREFIX_CHARS = 256;
 // pi-agent-core dist/agent-loop.js and dist/agent.js).
 const AGENT_END_PREFIX = /^\s*\{\s*"type"\s*:\s*"agent_end"\s*[,}]/;
 // MESSAGE_END_PREFIX and NON_ASSISTANT_END_PREFIX recognize a message_end
-// event the same way, and the ones whose message is provably a user or
-// toolResult message (those never carry the stop reason or the answer).
+// event the same way, and the ones whose message is provably a user,
+// toolResult, custom or system message (those never carry the stop reason or
+// the answer). A custom message can be queued during streaming and emitted
+// after the final assistant response (pi 0.99.2 sendCustomMessage), so it
+// must not be mistaken for a lost assistant message.
 const MESSAGE_END_PREFIX = /^\s*\{\s*"type"\s*:\s*"message_end"\s*[,}]/;
-const NON_ASSISTANT_END_PREFIX = /^\s*\{\s*"type"\s*:\s*"message_end"\s*,\s*"message"\s*:\s*\{\s*"role"\s*:\s*"(?:user|toolResult)"/;
+const NON_ASSISTANT_END_PREFIX = /^\s*\{\s*"type"\s*:\s*"message_end"\s*,\s*"message"\s*:\s*\{\s*"role"\s*:\s*"(?:user|toolResult|custom|system)"/;
 // MAX_DESCRIPTION_BYTES caps the label copied into the usage file. Children
 // append to one file concurrently, and only a write below PIPE_BUF (4096 on
 // Linux) is atomic; the rest of a record is bounded by construction.
@@ -512,7 +515,7 @@ export function isAgentEndPrefix(lineStart) {
 
 // isAssistantMessageEndPrefix reports whether a dropped line, given from its
 // start, may be an assistant message_end: any message_end not shown to be a
-// user or toolResult message. Dropping one loses the text and stop reason it
+// user, toolResult, custom or system message. Dropping one loses the text and stop reason it
 // carried, which nothing else repeats once the agent_end envelope is also
 // dropped, so a caller must not report success on top of it.
 export function isAssistantMessageEndPrefix(lineStart) {
