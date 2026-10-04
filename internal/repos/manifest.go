@@ -530,12 +530,21 @@ func (m *Manifest) Validate() error {
 	return m.validate(ValidateInferenceAuth)
 }
 
+// ValidateStructure is Validate without the inference.auth value checks.
+// Callers that evaluate repositories independently (status, uninstall)
+// use it so one invalid inference.auth does not abort the whole command;
+// the effective selection is checked per repository via
+// ResolvedConfig.RequireInferenceAuth where it matters.
+func (m *Manifest) ValidateStructure() error {
+	return m.validate(func(_, _ string) error { return nil })
+}
+
 // ValidateForUninstall is Validate without the inference.auth value
 // checks. Uninstall removes every Fullsend-managed inference credential
 // regardless of the selected method, so a missing or invalid
 // inference.auth must not block cleanup of an installation.
 func (m *Manifest) ValidateForUninstall() error {
-	return m.validate(func(_, _ string) error { return nil })
+	return m.ValidateStructure()
 }
 
 func (m *Manifest) validate(checkInferenceAuth func(key, value string) error) error {

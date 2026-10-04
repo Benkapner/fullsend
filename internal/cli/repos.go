@@ -291,7 +291,10 @@ func runReposStatus(cmd *cobra.Command, opts *reposStatusConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := m.Validate(); err != nil {
+	// inference.auth values are validated per repository by
+	// repos.Status, so an invalid value on one entry is reported as that
+	// repository's error instead of aborting the whole command.
+	if err := m.ValidateStructure(); err != nil {
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 

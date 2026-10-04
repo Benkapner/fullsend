@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -444,4 +445,78 @@ func TestRunReposInstall_AppSetOnGlobCoveredRepoMissingSelectionLeavesManifestUn
 	data, readErr := os.ReadFile(manifestPath)
 	require.NoError(t, readErr)
 	assert.Equal(t, noAuthGlobManifestYAML, string(data), "--app-set must not persist an entry without an effective inference.auth")
+}
+
+// mixedInferenceAuthManifestYAML has one repository with a valid selection
+// and one whose entry carries an invalid inference.auth value.
+const mixedInferenceAuthManifestYAML = `version: 1
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/api
+      inference:
+        auth: vertex-wif
+    - name: acme/web
+      inference:
+        auth: bogus
+`
+
+func runStatusJSONFiltered(t *testing.T, manifestPath string, filter []string) (repos.StatusResult, error) {
+	t.Helper()
+	cmd := newReposStatusCmd()
+	cmd.SetContext(context.Background())
+	var buf strings.Builder
+	cmd.SetOut(&buf)
+	err := runReposStatus(cmd, &reposStatusConfig{
+		manifest:    manifestPath,
+		jsonOutput:  true,
+		concurrency: 4,
+		repoFilter:  filter,
+		testClient:  newInstallFakeClient("acme/api", "acme/web"),
+	})
+	var result repos.StatusResult
+	require.NotEmpty(t, buf.String(), "status must render output despite the invalid entry")
+	require.NoError(t, json.Unmarshal([]byte(buf.String()), &result))
+	return result, err
+}
+
+func TestRunReposStatus_InvalidInferenceAuthIsPerRepoError(t *testing.T) {
+	manifestPath := writeTestManifest(t, mixedInferenceAuthManifestYAML)
+
+	result, err := runStatusJSONFiltered(t, manifestPath, nil)
+	require.Error(t, err, "an errored repository still fails the command")
+	assert.NotContains(t, err.Error(), "manifest validation failed")
+	require.Len(t, result.Repos, 2, "healthy repositories are still evaluated")
+	assert.Equal(t, 1, result.Summary.Errored)
+
+	byRepo := map[string]repos.RepoStatus{}
+	for _, rs := range result.Repos {
+		byRepo[rs.Owner+"/"+rs.Repo] = rs
+	}
+	assert.Empty(t, byRepo["acme/api"].Error)
+	assert.Contains(t, byRepo["acme/web"].Error, "acme/web")
+	assert.Contains(t, byRepo["acme/web"].Error, "bogus")
+}
+
+func TestRunReposStatus_InvalidInferenceAuthFilteredToHealthyRepo(t *testing.T) {
+	manifestPath := writeTestManifest(t, mixedInferenceAuthManifestYAML)
+
+	result, err := runStatusJSONFiltered(t, manifestPath, []string{"acme/api"})
+	require.Len(t, result.Repos, 1)
+	assert.Equal(t, "api", result.Repos[0].Repo)
+	assert.Empty(t, result.Repos[0].Error)
+	assert.Zero(t, result.Summary.Errored)
+	if err != nil {
+		assert.NotContains(t, err.Error(), "manifest validation failed")
+	}
+}
+
+func TestRunReposStatus_StructuralManifestErrorsStillFail(t *testing.T) {
+	manifestPath := writeTestManifest(t, "version: 2\n")
+	cmd := newReposStatusCmd()
+	cmd.SetContext(context.Background())
+	err := runReposStatus(cmd, &reposStatusConfig{manifest: manifestPath, concurrency: 4, testClient: newInstallFakeClient()})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "manifest validation failed")
 }
