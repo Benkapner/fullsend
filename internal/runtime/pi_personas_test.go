@@ -3,6 +3,7 @@ package runtime
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -639,4 +640,67 @@ func TestPiConfiguredOpenAIIDs(t *testing.T) {
 		)
 		assert.Equal(t, []string{"gpt-5.6-luna"}, ids)
 	})
+}
+
+// VertexChildren shares OpenAIChildren's resolver, so the same persona
+// discovery, alias resolution and tombstone rules decide which configured
+// children need Vertex credentials (#7980).
+func TestVertexChildren(t *testing.T) {
+	agentDir := t.TempDir()
+	agentPath := filepath.Join(agentDir, "code.md")
+	require.NoError(t, os.WriteFile(agentPath, []byte("---\nname: code\nmodel: openai/gpt-5.6-luna\n---\nYou review.\n"), 0o644))
+	noAgent := filepath.Join(agentDir, "no-agent.md")
+	require.NoError(t, os.WriteFile(noAgent, []byte("---\nname: code\nmodel: openai/gpt-5.6-luna\ntools: Read\n---\nYou review.\n"), 0o644))
+
+	sonnet := piAgentModels("openai/gpt-5.6-luna", nil)["sonnet"]
+	require.True(t, strings.HasPrefix(sonnet, "anthropic-vertex/"), sonnet)
+
+	personas := t.TempDir()
+	writePersonaFile(t, personas, "writer", "---\nname: writer\nmodel: sonnet\n---\nWrite.\n")
+	writePersonaFile(t, personas, "checker", "---\nname: checker\nmodel: openai/gpt-5.6-luna\n---\nCheck.\n")
+	writePersonaFile(t, personas, "bashy", "---\nname: bashy\nmodel: sonnet\ntools: Bash(git)\n---\nRun git.\n")
+
+	for _, tc := range []struct {
+		name          string
+		backend       string
+		agentPath     string
+		subagentsCfg  map[string]*string
+		skillDirs     []string
+		configAliases map[string]string
+		want          []PiChild
+	}{
+		{name: "not pi", backend: "codex", subagentsCfg: map[string]*string{"default": strp("sonnet")}},
+		{name: "no Agent tool", backend: "pi", agentPath: noAgent, subagentsCfg: map[string]*string{"default": strp("sonnet")}},
+		{name: "subagents.default alias resolves to anthropic-vertex", backend: "pi",
+			subagentsCfg: map[string]*string{"default": strp("sonnet")},
+			want:         []PiChild{{Source: "subagents.default", Spec: sonnet, Configured: true}}},
+		{name: "a Claude id with @suffix resolves through the bare-id table", backend: "pi",
+			subagentsCfg: map[string]*string{"default": strp(strings.TrimPrefix(sonnet, "anthropic-vertex/") + "@default")},
+			want:         []PiChild{{Source: "subagents.default", Spec: sonnet, Configured: true}}},
+		{name: "subagents.<persona> on google-vertex", backend: "pi", skillDirs: []string{personas},
+			subagentsCfg: map[string]*string{"writer": strp("google-vertex/gemini-3.8-flash"), "checker": nil},
+			want:         []PiChild{{Source: "subagents.writer", Spec: "google-vertex/gemini-3.8-flash", Configured: true}}},
+		{name: "short xai spec normalizes to xai-vertex", backend: "pi",
+			subagentsCfg: map[string]*string{"default": strp("xai/grok-4.6")},
+			want:         []PiChild{{Source: "subagents.default", Spec: "xai-vertex/xai/grok-4.6", Configured: true}}},
+		{name: "a models.aliases entry on xai-vertex", backend: "pi",
+			subagentsCfg: map[string]*string{"default": strp("grok")}, configAliases: map[string]string{"grok": "xai/grok-4.6"},
+			want: []PiChild{{Source: "subagents.default", Spec: "xai-vertex/xai/grok-4.6", Configured: true}}},
+		{name: "frontmatter only; unregistrable persona skipped", backend: "pi", skillDirs: []string{personas},
+			want: []PiChild{{Source: `persona "writer" frontmatter model`, Spec: sonnet}}},
+		{name: "an override off Vertex beats the frontmatter", backend: "pi", skillDirs: []string{personas},
+			subagentsCfg: map[string]*string{"writer": strp("openai/gpt-5.6-luna")}},
+		{name: "a key naming an unregistrable persona is left to Bootstrap", backend: "pi", skillDirs: []string{personas},
+			subagentsCfg: map[string]*string{"bashy": strp("sonnet"), "writer": strp("openai/gpt-5.6-luna")}},
+		{name: "a tombstoned default is no reference", backend: "pi", subagentsCfg: map[string]*string{"default": nil}},
+		{name: "an openai default is not Vertex", backend: "pi", subagentsCfg: map[string]*string{"default": strp("openai/gpt-5.6-luna")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := tc.agentPath
+			if path == "" {
+				path = agentPath
+			}
+			assert.Equal(t, tc.want, VertexChildren(tc.backend, path, tc.subagentsCfg, tc.skillDirs, "code", tc.configAliases))
+		})
+	}
 }

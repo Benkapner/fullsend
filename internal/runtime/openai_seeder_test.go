@@ -139,7 +139,7 @@ func TestOpenAIChildren(t *testing.T) {
 		skillDirs     []string
 		configAliases map[string]string
 		providerEnv   string
-		want          []OpenAIChild
+		want          []PiChild
 	}{
 		{name: "not pi: always empty regardless of config", backend: "codex",
 			subagentsCfg: map[string]*string{"default": strp(luna)}},
@@ -148,23 +148,23 @@ func TestOpenAIChildren(t *testing.T) {
 		{name: "no config, no openai persona frontmatter", backend: "pi",
 			skillDirs: []string{noOpenAI}, subagentsCfg: map[string]*string{"correctness": strp("opus")}},
 		{name: "a persona's own frontmatter names openai", backend: "pi", skillDirs: []string{withOpenAI},
-			want: []OpenAIChild{{Source: `persona "checker" frontmatter model`, Spec: luna}}},
+			want: []PiChild{{Source: `persona "checker" frontmatter model`, Spec: luna}}},
 		{name: "a mixed-case frontmatter alias with @suffix resolves through models.aliases", backend: "pi",
 			skillDirs: []string{withAlias}, configAliases: aliases,
-			want: []OpenAIChild{{Source: `persona "checker" frontmatter model`, Spec: luna}}},
+			want: []PiChild{{Source: `persona "checker" frontmatter model`, Spec: luna}}},
 		{name: "the same alias without models.aliases is not openai", backend: "pi", skillDirs: []string{withAlias}},
 		{name: "a bare id that is an alias's target resolves to it", backend: "pi",
 			subagentsCfg: map[string]*string{"default": strp("gpt-5.6-luna")}, configAliases: aliases,
-			want: []OpenAIChild{{Source: "subagents.default", Spec: luna, Configured: true}}},
+			want: []PiChild{{Source: "subagents.default", Spec: luna, Configured: true}}},
 		{name: "FULLSEND_PI_PROVIDER=openai does not move a Claude alias to openai", backend: "pi",
 			skillDirs: []string{noOpenAI}, providerEnv: "openai"},
 		{name: "personas Bootstrap would skip do not count", backend: "pi", skillDirs: []string{unregistrable}},
 		{name: "subagents.default names openai", backend: "pi",
 			subagentsCfg: map[string]*string{"default": strp(luna)},
-			want:         []OpenAIChild{{Source: "subagents.default", Spec: luna, Configured: true}}},
+			want:         []PiChild{{Source: "subagents.default", Spec: luna, Configured: true}}},
 		{name: "subagents.<persona> override names openai", backend: "pi", skillDirs: []string{noOpenAI},
 			subagentsCfg: map[string]*string{"style": strp(luna)},
-			want:         []OpenAIChild{{Source: "subagents.style", Spec: luna, Configured: true}}},
+			want:         []PiChild{{Source: "subagents.style", Spec: luna, Configured: true}}},
 		{name: "a key naming no discovered persona is left to Bootstrap", backend: "pi", skillDirs: []string{noOpenAI},
 			subagentsCfg: map[string]*string{"typo": strp(luna)}},
 		{name: "a key naming a persona Bootstrap would skip is left to Bootstrap", backend: "pi",
@@ -175,7 +175,7 @@ func TestOpenAIChildren(t *testing.T) {
 			subagentsCfg: map[string]*string{"default": nil}},
 		{name: "several sources are listed sorted", backend: "pi", skillDirs: []string{withOpenAI},
 			subagentsCfg: map[string]*string{"default": strp(luna)},
-			want: []OpenAIChild{
+			want: []PiChild{
 				{Source: `persona "checker" frontmatter model`, Spec: luna},
 				{Source: "subagents.default", Spec: luna, Configured: true},
 			}},

@@ -409,7 +409,7 @@ func piChildSpecResolver(modelsTable map[string]string) func(model string) strin
 // piPersonaTools maps a persona's declared Claude tools to the pi tools a
 // child gets, minus Agent/Task (children cannot dispatch), and lists the
 // ones pi cannot serve. resolvePersonaModels skips a persona with any
-// unsupported tool or an empty result; piConfiguredOpenAIChildren applies
+// unsupported tool or an empty result; piConfiguredChildren applies
 // the same rule so a persona that will not register never counts.
 func piPersonaTools(claudeTools []string) (filtered, unsupported []string) {
 	piTools, unsupported := piToolsFor(claudeTools)
@@ -436,34 +436,35 @@ func piPersonaRegistrable(p piPersona) bool {
 	return len(unsupported) == 0 && len(filtered) > 0
 }
 
-// OpenAIChild is one configured pi child whose model resolves to the
-// openai provider. Source says where the model came from ("subagents.x",
-// "subagents.default", or a persona's frontmatter) and Spec is the
-// resolved "openai/<id>". Configured is true for a subagents entry: the
-// repo asked for that model, so a run that cannot serve it must fail. A
-// persona's own frontmatter model is not configured that way; Bootstrap
-// skips such a persona with a warning when its model cannot be served.
-type OpenAIChild struct {
+// PiChild is one configured pi child whose model resolves to a provider
+// the runner must prepare for (openai, or a Vertex provider). Source says
+// where the model came from ("subagents.x", "subagents.default", or a
+// persona's frontmatter) and Spec is the resolved "<provider>/<id>".
+// Configured is true for a subagents entry: the repo asked for that model,
+// so a run that cannot serve it must fail. A persona's own frontmatter
+// model is not configured that way; it is refused later, at Bootstrap or
+// dispatch.
+type PiChild struct {
 	Source     string
 	Spec       string
 	Configured bool
 }
 
-func (c OpenAIChild) String() string { return c.Source + " → " + c.Spec }
+func (c PiChild) String() string { return c.Source + " → " + c.Spec }
 
-// piConfiguredOpenAIChildren is the single resolver behind OpenAIChildren
-// (the runner's provider gate and pre-sandbox check) and
-// piConfiguredOpenAIIDs (the children's openai allowlist) (#7981). It
-// resolves each model with piChildSpecResolver over modelsTable, exactly as
+// piConfiguredChildren is the single resolver behind OpenAIChildren,
+// VertexChildren and piConfiguredOpenAIIDs (#7981, #7980): the configured
+// children whose model resolves to one of providers. It resolves each
+// model with piChildSpecResolver over modelsTable, exactly as
 // resolvePersonaModels does, and follows its order: a subagents.<persona>
 // entry wins over that persona's frontmatter, and a tombstoned (nil) entry
 // is no reference. subagents.default counts on its own, since anonymous
 // children use it. A frontmatter model counts only for a persona
 // resolvePersonaModels would register (no Bash(...) allowlist, tools pi
 // can serve). Sorted by source.
-func piConfiguredOpenAIChildren(personas []piPersona, subagentsCfg map[string]*string, modelsTable map[string]string) []OpenAIChild {
+func piConfiguredChildren(personas []piPersona, subagentsCfg map[string]*string, modelsTable map[string]string, providers ...string) []PiChild {
 	resolveSpec := piChildSpecResolver(modelsTable)
-	var out []OpenAIChild
+	var out []PiChild
 	add := func(source, model string, configured bool) {
 		if strings.TrimSpace(model) == "" {
 			return
@@ -476,13 +477,15 @@ func piConfiguredOpenAIChildren(personas []piPersona, subagentsCfg map[string]*s
 		if !config.ValidModelRef(spec) {
 			return
 		}
-		if head, id, ok := strings.Cut(spec, "/"); ok && id != "" && strings.EqualFold(head, piOpenAIProvider) {
-			out = append(out, OpenAIChild{Source: source, Spec: piOpenAIProvider + "/" + id, Configured: configured})
+		head, id, ok := strings.Cut(spec, "/")
+		head = strings.ToLower(head)
+		if ok && id != "" && slices.Contains(providers, head) {
+			out = append(out, PiChild{Source: source, Spec: head + "/" + id, Configured: configured})
 		}
 	}
 	// registrable is the subset of personas resolvePersonaModels would
 	// register; a subagents key naming any other one gets Bootstrap's own
-	// error instead of an openai one.
+	// error instead of a provider one.
 	names := make(map[string]bool, len(personas))
 	for _, p := range personas {
 		names[p.Name] = piPersonaRegistrable(p)
@@ -500,11 +503,45 @@ func piConfiguredOpenAIChildren(personas []piPersona, subagentsCfg map[string]*s
 		}
 		add(fmt.Sprintf("persona %q frontmatter model", p.Name), p.Model, false)
 	}
-	slices.SortFunc(out, func(a, b OpenAIChild) int { return strings.Compare(a.Source, b.Source) })
+	slices.SortFunc(out, func(a, b PiChild) int { return strings.Compare(a.Source, b.Source) })
 	return out
 }
 
-// piConfiguredOpenAIIDs is the bare ids of piConfiguredOpenAIChildren,
+// piVertexProviders are the pi providers that authenticate with the
+// sandbox's Vertex ADC (GOOGLE_APPLICATION_CREDENTIALS).
+var piVertexProviders = []string{piDefaultProvider, piGoogleVertexProvider, piXaiVertexProvider}
+
+// piChildrenOn loads the agent definition and its personas the way
+// Bootstrap does and returns the configured children on providers. It is
+// empty for every backend other than pi and for an agent without the
+// Agent tool, which dispatches no children.
+func piChildrenOn(backend, agentPath string, subagentsCfg map[string]*string, skillDirs []string, agentName string, configAliases map[string]string, providers ...string) []PiChild {
+	if backend != "pi" {
+		return nil
+	}
+	data, err := os.ReadFile(agentPath)
+	if err != nil {
+		return nil
+	}
+	def, err := parsePiAgent(data)
+	if err != nil || !piAgentToolEnabled(def) {
+		return nil
+	}
+	// discoverPersonas never returns a non-nil error; Bootstrap runs the
+	// same discovery on the same directories.
+	personas, _, _ := discoverPersonas(skillDirs, agentName)
+	return piConfiguredChildren(personas, subagentsCfg, piAgentModels(def.Model, configAliases), providers...)
+}
+
+// VertexChildren lists the configured pi children whose model resolves to
+// a Vertex provider (anthropic-vertex, google-vertex, xai-vertex). The
+// runner fails a non-Vertex parent before the sandbox when a subagents
+// entry is among them and no Vertex credential reaches the sandbox (#7980).
+func VertexChildren(backend, agentPath string, subagentsCfg map[string]*string, skillDirs []string, agentName string, configAliases map[string]string) []PiChild {
+	return piChildrenOn(backend, agentPath, subagentsCfg, skillDirs, agentName, configAliases, piVertexProviders...)
+}
+
+// piConfiguredOpenAIIDs is the bare ids of the configured openai children,
 // deduplicated, for the manifest's openai allowlist. These are
 // repo-controlled and known before the sandbox starts, so piAgentManifestFor
 // extends the allowlist with them the way piGoogleVertexModels and
@@ -513,7 +550,7 @@ func piConfiguredOpenAIChildren(personas []piPersona, subagentsCfg map[string]*s
 func piConfiguredOpenAIIDs(personas []piPersona, subagentsCfg map[string]*string, modelsTable map[string]string) []string {
 	seen := map[string]bool{}
 	var ids []string
-	for _, c := range piConfiguredOpenAIChildren(personas, subagentsCfg, modelsTable) {
+	for _, c := range piConfiguredChildren(personas, subagentsCfg, modelsTable, piOpenAIProvider) {
 		id := strings.TrimPrefix(c.Spec, piOpenAIProvider+"/")
 		if !seen[id] {
 			seen[id] = true

@@ -39,6 +39,8 @@ const (
 	// used by translatePiModel to normalize short-form xai/ specs and by
 	// buildPiRunCommand to gate extension loading and env hygiene.
 	piXaiVertexProvider = "xai-vertex"
+	// piGoogleVertexProvider is pi's built-in Gemini-on-Vertex provider.
+	piGoogleVertexProvider = "google-vertex"
 	// piOpenAIProvider is the lowercase provider name used as a gate in
 	// buildPiRunCommand. Unlike Vertex providers, OpenAI models use pi's
 	// built-in openai provider, which reads OPENAI_API_KEY from the env —

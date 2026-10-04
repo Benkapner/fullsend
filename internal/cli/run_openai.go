@@ -1028,7 +1028,7 @@ func cleanupRunScopedProvider(name string, keys []string, sandboxKept bool, prin
 
 // anyConfiguredOpenAIChild reports whether a subagents entry (not just a
 // persona's frontmatter) resolves to the openai provider.
-func anyConfiguredOpenAIChild(children []runtime.OpenAIChild) bool {
+func anyConfiguredOpenAIChild(children []runtime.PiChild) bool {
 	for _, c := range children {
 		if c.Configured {
 			return true
