@@ -775,7 +775,7 @@ func installSecretsForForge(cfg InstallConfig, wifProvider string) map[string]st
 
 // requiredVariables lists the per-repo variables that must exist for a
 // complete installation. FULLSEND_GCP_REGION is excluded because it is
-// conditionally set (only when --inference-region is provided) and may
+// conditionally set (only when --vertex-region is provided) and may
 // not be present when secrets are reused. FULLSEND_APP_SET is required:
 // every GitHub install writes it (defaulting to the built-in app set), so
 // its absence on an existing repo is drift that convergence repairs.

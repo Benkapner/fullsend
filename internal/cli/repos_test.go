@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1519,7 +1520,7 @@ func TestReposInstallCmd_VendorFlagValidation(t *testing.T) {
 
 func TestReposInstallCmd_PerRepoOverrideFlags(t *testing.T) {
 	cmd := newReposInstallCmd()
-	for _, name := range []string{"inference-region", "inference-wif-provider", "fullsend-ref", "mint-url", "allowed-remote-resources"} {
+	for _, name := range []string{"vertex-project", "vertex-region", "vertex-wif-provider", "fullsend-ref", "mint-url", "allowed-remote-resources"} {
 		f := cmd.Flags().Lookup(name)
 		require.NotNil(t, f, "expected --%s flag", name)
 	}
@@ -1527,8 +1528,65 @@ func TestReposInstallCmd_PerRepoOverrideFlags(t *testing.T) {
 
 func TestReposInstallCmd_NoInferenceProjectNumberFlag(t *testing.T) {
 	cmd := newReposInstallCmd()
-	f := cmd.Flags().Lookup("inference-project-number")
-	assert.Nil(t, f, "--inference-project-number flag should be removed")
+	for _, name := range []string{"inference-project-number", "vertex-project-number"} {
+		assert.Nil(t, cmd.Flags().Lookup(name), "--%s must not be a flag", name)
+	}
+}
+
+func TestReposInstallCmd_RemovedInferenceFlagsRejected(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	for _, name := range []string{"inference-project", "inference-wif-provider", "inference-region"} {
+		t.Run(name, func(t *testing.T) {
+			cmd := newRootCmd()
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"repos", "install", "--manifest", manifestPath, "--" + name, "value"})
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unknown flag: --"+name)
+		})
+	}
+}
+
+func TestReposInstallCmd_VertexFlagsParsed(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+
+	t.Run("vertex-project validated", func(t *testing.T) {
+		cmd := newRootCmd()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs([]string{"repos", "install", "--manifest", manifestPath, "--vertex-project", "INVALID-CAPS"})
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `--vertex-project "INVALID-CAPS" is not a valid GCP project ID`)
+	})
+
+	t.Run("vertex-wif-provider validated", func(t *testing.T) {
+		cmd := newRootCmd()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs([]string{"repos", "install", "--manifest", manifestPath,
+			"--vertex-project", "my-project", "--vertex-region", "us-central1", "--vertex-wif-provider", "not-a-valid-provider"})
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `--vertex-wif-provider must be a full WIF provider resource name`)
+		assert.Contains(t, err.Error(), "not-a-valid-provider")
+	})
+}
+
+func TestOtherCommandsKeepInferenceFlags(t *testing.T) {
+	root := newRootCmd()
+	for _, path := range [][]string{{"github", "setup"}, {"admin", "install"}} {
+		cmd, _, err := root.Find(path)
+		require.NoError(t, err)
+		require.Equal(t, path[len(path)-1], cmd.Name())
+		for _, name := range []string{"inference-project", "inference-wif-provider", "inference-region"} {
+			assert.NotNil(t, cmd.Flags().Lookup(name), "%v must keep --%s", path, name)
+		}
+		for _, name := range []string{"vertex-project", "vertex-wif-provider", "vertex-region"} {
+			assert.Nil(t, cmd.Flags().Lookup(name), "%v must not gain --%s", path, name)
+		}
+	}
 }
 
 func TestRunReposInstall_AddsNewReposToManifest(t *testing.T) {
@@ -1813,7 +1871,7 @@ func TestRunReposInstall_InvalidInferenceProject(t *testing.T) {
 		testClient:       newInstallFakeClient(),
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--inference-project")
+	assert.Contains(t, err.Error(), "--vertex-project")
 }
 
 func TestRunReposInstall_InvalidInferenceWIFProvider(t *testing.T) {
@@ -1825,7 +1883,7 @@ func TestRunReposInstall_InvalidInferenceWIFProvider(t *testing.T) {
 		testClient:           newInstallFakeClient(),
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--inference-wif-provider")
+	assert.Contains(t, err.Error(), "--vertex-wif-provider")
 }
 
 func TestRunReposInstall_DerivesProjectNumber(t *testing.T) {
@@ -1919,7 +1977,7 @@ func TestRunReposInstall_WIFProviderSkipsProjectNumberLookup(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.False(t, lookupCalled,
-		"project number lookup should be skipped when --inference-wif-provider is set")
+		"project number lookup should be skipped when --vertex-wif-provider is set")
 }
 
 func TestRunReposInstall_DefaultsInferenceRegion(t *testing.T) {
@@ -1941,7 +1999,7 @@ func TestRunReposInstall_DefaultsInferenceRegion(t *testing.T) {
 	err := runReposInstall(context.Background(), opts)
 	require.NoError(t, err)
 	assert.Equal(t, "global", opts.inferenceRegion,
-		"inference region should default to global when --inference-project is set")
+		"inference region should default to global when --vertex-project is set")
 }
 
 func TestRunReposInstall_ProjectNumberLookupError(t *testing.T) {
@@ -1962,7 +2020,7 @@ func TestRunReposInstall_ProjectNumberLookupError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "deriving project number")
 	assert.Contains(t, err.Error(), "API unavailable")
-	assert.Contains(t, err.Error(), "--inference-wif-provider")
+	assert.Contains(t, err.Error(), "--vertex-wif-provider")
 }
 
 func TestRunReposInstall_PerRepoOverrideFlags_Applied(t *testing.T) {

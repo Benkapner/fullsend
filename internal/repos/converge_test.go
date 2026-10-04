@@ -122,7 +122,7 @@ func TestConverge_FreshInstallWithoutGCPFailsBeforeWrites(t *testing.T) {
 		t.Fatalf("want one failed repo, got %d", len(failed))
 	}
 	msg := failed[0].Error.Error()
-	for _, want := range []string{"acme/api", InferenceAuthVertexWIF, forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, "--inference-project", "--inference-region"} {
+	for _, want := range []string{"acme/api", InferenceAuthVertexWIF, forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, "--vertex-project", "--vertex-region"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error %q does not mention %q", msg, want)
 		}
@@ -978,7 +978,7 @@ func TestConverge_PartialSecretState(t *testing.T) {
 		}
 	}
 	if !rewritten {
-		t.Error("expected supplied --inference-project to replace FULLSEND_GCP_PROJECT_ID")
+		t.Error("expected supplied --vertex-project to replace FULLSEND_GCP_PROJECT_ID")
 	}
 }
 
@@ -5736,7 +5736,7 @@ func TestConverge_WIFProviderRequiresInferenceProject(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when WIFProvider is set without InferenceProject")
 	}
-	if !strings.Contains(err.Error(), "--inference-project is required when --inference-wif-provider is set") {
+	if !strings.Contains(err.Error(), "--vertex-project is required when --vertex-wif-provider is set") {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }
