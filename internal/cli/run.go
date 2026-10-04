@@ -4468,24 +4468,23 @@ func hostFileSource(hf harness.HostFile) (string, bool) {
 
 // vertexCredentialGap returns why a harness that mounts
 // ${GOOGLE_APPLICATION_CREDENTIALS} has no usable credential file, or ""
-// when it has one or no such mount. Other setups are judged in the
-// sandbox, at dispatch.
+// when it has one or the sandbox path is not clearly that mount: env.sandbox
+// names another path, or it is unset and another credential file is
+// mounted. Those cases are judged in the sandbox, at dispatch.
 func vertexCredentialGap(h *harness.Harness) string {
-	// A second mounted credential file makes the sandbox path ambiguous: leave it to dispatch.
-	for _, hf := range h.HostFiles {
-		if path, copied := hostFileSource(hf); hf.Src != "${GOOGLE_APPLICATION_CREDENTIALS}" && copied && validateExistingGCPCredentialFile(path) == nil {
-			return ""
-		}
-	}
 	for _, hf := range h.HostFiles {
 		if hf.Src != "${GOOGLE_APPLICATION_CREDENTIALS}" {
 			continue
 		}
-		// env.sandbox pointing anywhere else leaves the judgement to dispatch.
+		pinned, set := "", false
 		if h.Env != nil {
-			if v, ok := h.Env.Sandbox["GOOGLE_APPLICATION_CREDENTIALS"]; ok && v != hf.Dest {
-				return ""
-			}
+			pinned, set = h.Env.Sandbox["GOOGLE_APPLICATION_CREDENTIALS"]
+		}
+		if set && pinned != hf.Dest {
+			return ""
+		}
+		if !set && otherGCPCredentialMounted(h) {
+			return ""
 		}
 		path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
 		if path == "" {
@@ -4497,6 +4496,17 @@ func vertexCredentialGap(h *harness.Harness) string {
 		return ""
 	}
 	return ""
+}
+
+// otherGCPCredentialMounted reports whether a host_files entry other than
+// ${GOOGLE_APPLICATION_CREDENTIALS} is copied and holds a GCP credential file.
+func otherGCPCredentialMounted(h *harness.Harness) bool {
+	for _, hf := range h.HostFiles {
+		if path, copied := hostFileSource(hf); hf.Src != "${GOOGLE_APPLICATION_CREDENTIALS}" && copied && validateExistingGCPCredentialFile(path) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // runPreScript executes the harness pre-script with the pre-script output

@@ -24,6 +24,7 @@ import defaultExport, {
   childTools,
   createAgentTool,
   resolveModel,
+  vertexChildAuthenticated,
   vertexCredentialsUsable,
 } from "./fullsend-agent.js";
 
@@ -292,6 +293,17 @@ test("Vertex children are refused at dispatch without an ADC file (#7980)", asyn
   const ok = await createAgentTool(manifest, { spawn, ...quiet, env: { ...noADC, GOOGLE_APPLICATION_CREDENTIALS: "/x.json" }, stat }).run({ prompt: "ok", model: "sonnet" }, { parentModel });
   assert.equal(ok.isError, false, ok.error);
   assert.equal(ok.model, "anthropic-vertex/claude-sonnet-4-6");
+  // pi's google-vertex takes GOOGLE_CLOUD_API_KEY before ADC; the other
+  // Vertex providers do not.
+  const withKey = { ...noADC, GOOGLE_CLOUD_API_KEY: "k" };
+  assert.equal(vertexChildAuthenticated("google-vertex", withKey), true);
+  assert.equal(vertexChildAuthenticated("anthropic-vertex", withKey), false);
+  assert.equal(vertexChildAuthenticated("xai-vertex", withKey), false);
+  const keyTool = createAgentTool(manifest, { spawn, ...quiet, env: withKey });
+  const gemini = await keyTool.run({ prompt: "ok", model: "google-vertex/gemini-3.8-flash" }, { parentModel });
+  assert.equal(gemini.isError, false, gemini.error);
+  const claude = await keyTool.run({ prompt: "ok", model: "sonnet" }, { parentModel });
+  assert.match(claude.error, why);
   const own = await createAgentTool(manifest, { spawn, ...quiet, env: noADC }).run({ prompt: "ok", model: parentModel }, { parentModel });
   assert.notEqual(own.stopReason, "rejected", own.error);
   rmSync(dir, { recursive: true, force: true });

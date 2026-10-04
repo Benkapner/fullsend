@@ -404,6 +404,14 @@ export function vertexCredentialsUsable(env, stat = statSync) {
   return home !== "" && usable(`${home}/.config/gcloud/application_default_credentials.json`);
 }
 
+// vertexChildAuthenticated reports whether a child on a Vertex provider can
+// authenticate: pi's google-vertex also takes GOOGLE_CLOUD_API_KEY before
+// ADC; anthropic-vertex and xai-vertex need the ADC file.
+export function vertexChildAuthenticated(provider, env, stat = statSync) {
+  if (provider === "google-vertex" && typeof env?.GOOGLE_CLOUD_API_KEY === "string" && env.GOOGLE_CLOUD_API_KEY.trim() !== "") return true;
+  return vertexCredentialsUsable(env, stat);
+}
+
 // lookupPersona returns the persona entry from the manifest's personas table
 // for the given subagent_type, or undefined if it is not a persona name. The
 // match is case-insensitive to mirror the CLI's key normalisation.
@@ -782,7 +790,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
       }
     }
     // A Vertex child without an ADC file would fail on its first call.
-    if (VERTEX_PROVIDERS.has(providerOf(modelSpec)) && !vertexCredentialsUsable(env, stat)) {
+    if (VERTEX_PROVIDERS.has(providerOf(modelSpec)) && !vertexChildAuthenticated(providerOf(modelSpec), env, stat)) {
       const arg = typeof params?.model === "string" ? params.model.trim() : "";
       const subject = persona ? `persona "${subagentType}"` : arg !== "" ? `model "${arg}"` : `the default sub-agent model "${modelSpec}"`;
       const error = `${subject}: provider "${providerOf(modelSpec)}" is not available in this run (Vertex sub-agents need GOOGLE_APPLICATION_CREDENTIALS set on the runner and mounted in host_files)`;

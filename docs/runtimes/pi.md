@@ -593,7 +593,7 @@ A child on `anthropic-vertex`, `google-vertex` or `xai-vertex` (`sonnet`, for ex
 GCP credential file in the sandbox, even when the parent runs on `openai/`. The harness mounts it
 from `${GOOGLE_APPLICATION_CREDENTIALS}`
 ([bring your own agent › Pick a route](../guides/user/bring-your-own-agent.md#pick-a-route)).
-Without a usable file:
+A `google-vertex` child can use `GOOGLE_CLOUD_API_KEY` in the sandbox instead. Without either:
 
 1. **A `subagents` entry on Vertex, and the variable has no usable file.** The run stops
    before the pre-script:
