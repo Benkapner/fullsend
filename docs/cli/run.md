@@ -91,10 +91,18 @@ subagents: docs-currency → google-vertex/gemini-3.8-flash (from subagents.docs
 A malformed `subagents` key or model reference is rejected by config validation, before the
 sandbox is created, like the other invalid overrides above. A key that names no discovered
 persona, or a model this run cannot serve, is caught slightly later — at Bootstrap, once the
-harness's skills have been read — so the sandbox exists but the agent has not started. One
-exception fails earlier: a `subagents` entry that resolves to `openai/` when the harness declares
-no `openai` provider stops the run before the sandbox is created
-([pi § Route a persona to OpenAI](../runtimes/pi.md#route-a-persona-to-openai)). See
+harness's skills have been read — so the sandbox exists but the agent has not started. Two
+cases fail earlier:
+
+- A `subagents` entry on `openai/` when the harness declares no `openai` provider stops the run
+  before the sandbox is created
+  ([pi § Route a persona to OpenAI](../runtimes/pi.md#route-a-persona-to-openai)).
+- A `subagents` entry on a Vertex provider, under a parent off Vertex, stops the run before the
+  pre-script when the harness mounts `${GOOGLE_APPLICATION_CREDENTIALS}` and the variable has no
+  usable file
+  ([pi § Vertex sub-agents under an OpenAI parent](../runtimes/pi.md#vertex-sub-agents-under-an-openai-parent)).
+
+See
 [pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration).
 
 ## Output artifacts
