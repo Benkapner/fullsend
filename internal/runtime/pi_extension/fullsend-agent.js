@@ -72,6 +72,23 @@ export const DEFAULT_KILL_GRACE_MS = 3000;
 // buffered: a child that emits an unbounded line must not grow the
 // orchestrator's heap without limit.
 export const MAX_STDOUT_LINE_CHARS = 1024 * 1024;
+// OVERSIZED_PREFIX_CHARS is how much of a dropped line is looked at, enough
+// to tell whether it was the agent_end envelope (see isAgentEndPrefix).
+export const OVERSIZED_PREFIX_CHARS = 256;
+// AGENT_END_PREFIX matches the start of pi's agent_end event as --mode json
+// writes it: every emitter builds it as `{ type: "agent_end", ... }` and
+// print mode serializes it with JSON.stringify, so `type` is the first key
+// (pi 0.99.2 dist/modes/print-mode.js, dist/core/agent-session.js,
+// pi-agent-core dist/agent-loop.js and dist/agent.js).
+const AGENT_END_PREFIX = /^\s*\{\s*"type"\s*:\s*"agent_end"\s*[,}]/;
+// MESSAGE_END_PREFIX and NON_ASSISTANT_END_PREFIX recognize a message_end
+// event the same way, and the ones whose message is provably a user,
+// toolResult, custom or system message (those never carry the stop reason or
+// the answer). A custom message can be queued during streaming and emitted
+// after the final assistant response (pi 0.99.2 sendCustomMessage), so it
+// must not be mistaken for a lost assistant message.
+const MESSAGE_END_PREFIX = /^\s*\{\s*"type"\s*:\s*"message_end"\s*[,}]/;
+const NON_ASSISTANT_END_PREFIX = /^\s*\{\s*"type"\s*:\s*"message_end"\s*,\s*"message"\s*:\s*\{\s*"role"\s*:\s*"(?:user|toolResult|custom|system)"/;
 // MAX_DESCRIPTION_BYTES caps the label copied into the usage file. Children
 // append to one file concurrently, and only a write below PIPE_BUF (4096 on
 // Linux) is atomic; the rest of a record is bounded by construction.
@@ -424,12 +441,17 @@ function newStreamState() {
     model: "",
     provider: "",
     ended: false,
+    // assistantLost is set when an assistant message_end was dropped for
+    // being over the line cap, and cleared by the next assistant message
+    // that is read. While set, text and stopReason may be stale.
+    assistantLost: false,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
   };
 }
 
 function noteAssistant(state, msg) {
   if (!msg || msg.role !== "assistant") return;
+  state.assistantLost = false;
   const text = joinText(msg.content);
   if (text.trim() !== "") state.text = text;
   if (typeof msg.stopReason === "string") state.stopReason = msg.stopReason;
@@ -473,6 +495,32 @@ export function consumeLine(state, line) {
       }
     }
   }
+}
+
+// isAgentEndPrefix reports whether a line dropped for being over
+// MAX_STDOUT_LINE_CHARS, given from its start, is the agent_end envelope.
+// That envelope grows with the whole run's messages and is the line most
+// likely to cross the cap; without this a child that finished cleanly
+// would be reported as "produced no agent_end". Only the completion marker
+// is taken from it. Its last assistant message was already emitted as a
+// message_end (pi emits one for every assistant message, failure ones
+// included), so the text and stop reason consumeLine would take from the
+// envelope are already in the state, unless that message_end was itself
+// dropped (see isAssistantMessageEndPrefix, which makes the run fail). Only the first OVERSIZED_PREFIX_CHARS
+// are examined, and the caller keeps the boolean, not the text, so nothing
+// of the dropped line outlives it.
+export function isAgentEndPrefix(lineStart) {
+  return AGENT_END_PREFIX.test(lineStart.slice(0, OVERSIZED_PREFIX_CHARS));
+}
+
+// isAssistantMessageEndPrefix reports whether a dropped line, given from its
+// start, may be an assistant message_end: any message_end not shown to be a
+// user, toolResult, custom or system message. Dropping one loses the text and stop reason it
+// carried, which nothing else repeats once the agent_end envelope is also
+// dropped, so a caller must not report success on top of it.
+export function isAssistantMessageEndPrefix(lineStart) {
+  const head = lineStart.slice(0, OVERSIZED_PREFIX_CHARS);
+  return MESSAGE_END_PREFIX.test(head) && !NON_ASSISTANT_END_PREFIX.test(head);
 }
 
 function capText(text) {
@@ -641,6 +689,9 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
       let stderr = "";
       let buffered = "";
       let dropping = false;
+      // dropAgentEnd records whether the line being dropped began as an
+      // agent_end envelope, decided when the buffer first overflows.
+      let dropAgentEnd = false;
       let droppedLines = 0;
       let killTimer;
       // terminate is the whole stop sequence: SIGTERM first so pi runs its
@@ -679,6 +730,8 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
           if (dropping) {
             dropping = false;
             droppedLines++;
+            if (dropAgentEnd) state.ended = true;
+            dropAgentEnd = false;
             continue;
           }
           // A complete oversized line (its newline arrived in the same
@@ -686,11 +739,19 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
           // has not terminated yet is dropped by the buffer cap below.
           if (line.length > MAX_STDOUT_LINE_CHARS) {
             droppedLines++;
+            if (isAgentEndPrefix(line)) state.ended = true;
+            if (isAssistantMessageEndPrefix(line)) state.assistantLost = true;
             continue;
           }
           consumeLine(state, line);
         }
         if (buffered.length > MAX_STDOUT_LINE_CHARS) {
+          // Only the first overflow holds the line's start; a later one
+          // (a line several times the cap) is mid-line content.
+          if (!dropping) {
+            dropAgentEnd = isAgentEndPrefix(buffered);
+            if (isAssistantMessageEndPrefix(buffered)) state.assistantLost = true;
+          }
           dropping = true;
           buffered = "";
         }
@@ -704,6 +765,11 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
         if (killTimer !== undefined) clearTimeout(killTimer);
         running.delete(handle);
         if (!dropping && buffered.trim() !== "") consumeLine(state, buffered);
+        // An oversized line still open at EOF is not taken as agent_end
+        // even if its prefix says so: pi writes each event and its newline
+        // in one write, so a missing newline means the envelope was cut
+        // short, and its end cannot be checked the way JSON.parse checks a
+        // short unterminated line above.
         if (dropping) droppedLines++;
         resolve({ state, startedAt, exitCode, signal, spawnError, stderr, timedOut, pid: child.pid, droppedLines });
       };
@@ -825,6 +891,11 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
     } else if (exitCode !== 0) {
       error = `pi exited ${exitCode ?? `on ${exitSignal}`}${tail ? `: ${tail}` : ""}`;
       stopReason = stopReason || "error";
+    } else if (state.assistantLost) {
+      // The final assistant message was too large to read, so the text and
+      // stop reason in hand may be from an earlier message; fail closed.
+      error = `sub-agent's last assistant message exceeded ${MAX_STDOUT_LINE_CHARS} chars and was dropped; its result and stop reason are unknown`;
+      stopReason = "incomplete";
     } else if (stopReason === "error" || stopReason === "aborted") {
       error = state.errorMessage || `sub-agent stopped with stopReason ${stopReason}`;
     } else if (!state.ended) {
