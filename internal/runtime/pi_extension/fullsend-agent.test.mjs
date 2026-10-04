@@ -18,11 +18,13 @@ import defaultExport, {
   CHILD_SYSTEM_NOTE,
   MAX_DESCRIPTION_BYTES,
   MAX_STDOUT_LINE_CHARS,
+  OVERSIZED_PREFIX_CHARS,
   RESULT_MAX_BYTES,
   childArgs,
   childEnv,
   childTools,
   createAgentTool,
+  isAgentEndPrefix,
   resolveModel,
 } from "./fullsend-agent.js";
 
@@ -803,6 +805,143 @@ test("run: result text is capped at 64 KB with a marker", async () => {
   assert.equal(res.isError, false);
   assert.ok(res.text.endsWith("\n[truncated]"));
   assert.ok(Buffer.byteLength(res.text) <= RESULT_MAX_BYTES + "\n[truncated]".length);
+});
+
+// Oversized completion envelopes (#8073). pi's agent_end carries every
+// message of the run, so a long run's envelope crosses the line cap while
+// the final answer is small and already arrived as a message_end.
+const finalMessage = (stopReason, text = "[]", extra = {}) => ({
+  role: "assistant", content: [{ type: "text", text }], model: "m", provider: "p",
+  usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } }, stopReason, ...extra,
+});
+const bigToolResult = { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "text", text: "r".repeat(MAX_STDOUT_LINE_CHARS + 10) }] };
+const jsonLine = (o) => JSON.stringify(o) + "\n";
+const bigAgentEnd = (final) => JSON.stringify({ type: "agent_end", messages: [bigToolResult, final] });
+
+// finishRaw writes stdout exactly as given (each string one write, so one
+// chunk) and closes the child once stdout has drained, the order a real
+// child's "close" follows.
+async function finishRaw(child, chunks, code = 0) {
+  child.exitCode = code;
+  const drained = new Promise((r) => child.stdout.once("end", r));
+  for (const c of chunks) child.stdout.write(c);
+  child.stdout.end();
+  child.stderr.end();
+  await drained;
+  child.emit("close", code, null);
+}
+
+// chunked splits s into 64 KiB pieces, the size a pipe delivers.
+function chunked(s, size = 64 * 1024) {
+  const out = [];
+  for (let i = 0; i < s.length; i += size) out.push(s.slice(i, i + size));
+  return out;
+}
+
+async function runRaw(chunksFor, { code = 0, manifestEdit } = {}) {
+  const { manifest } = fixture();
+  if (manifestEdit) manifestEdit(manifest);
+  const { spawn, children } = fakeSpawn();
+  const logs = [];
+  const tool = createAgentTool(manifest, { log: (l) => logs.push(l), spawn });
+  const p = tool.run({ prompt: "p" }, {});
+  await new Promise((r) => setImmediate(r));
+  await finishRaw(children[0].child, chunksFor, code);
+  return { res: await p, logs };
+}
+
+test("isAgentEndPrefix: only a line that starts as an agent_end envelope matches", () => {
+  for (const line of ['{"type":"agent_end","messages":[', '{"type":"agent_end"}', '  { "type" : "agent_end" ,', bigAgentEnd(finalMessage("stop"))]) {
+    assert.equal(isAgentEndPrefix(line), true, line.slice(0, 40));
+  }
+  for (const line of ['{"type":"message_end","message":{', '{"type":"agent_end_x",', '{"pad":"{\\"type\\":\\"agent_end\\",', 'rrrr{"type":"agent_end",', "",
+    " ".repeat(OVERSIZED_PREFIX_CHARS) + '{"type":"agent_end",']) {
+    assert.equal(isAgentEndPrefix(line), false, line.slice(0, 40));
+  }
+});
+
+test("run: an oversized agent_end in one chunk still completes the child (#8073)", async () => {
+  const { res, logs } = await runRaw([
+    jsonLine({ type: "message_end", message: finalMessage("stop") }) + bigAgentEnd(finalMessage("stop")) + "\n" + jsonLine({ type: "agent_settled" }),
+  ]);
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.text, "[]");
+  assert.equal(res.stopReason, "stop");
+  assert.ok(logs.some((l) => /dropped 1 stdout line/.test(l)), "the envelope itself is still dropped, not parsed");
+});
+
+test("run: an oversized agent_end delivered in pipe-sized chunks still completes the child (#8073)", async () => {
+  const stream = jsonLine({ type: "agent_start" }) + jsonLine({ type: "message_end", message: finalMessage("stop") }) + bigAgentEnd(finalMessage("stop")) + "\n" + jsonLine({ type: "agent_settled" });
+  const { res, logs } = await runRaw(chunked(stream));
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.text, "[]");
+  assert.ok(logs.some((l) => /dropped 1 stdout line/.test(l)));
+});
+
+test("run: an oversized intermediate line followed by a small agent_end completes the child", async () => {
+  const stream = jsonLine({ type: "message_end", message: bigToolResult }) + jsonLine({ type: "message_end", message: finalMessage("stop", "done") }) + jsonLine({ type: "agent_end", messages: [] });
+  const { res } = await runRaw(chunked(stream));
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.text, "done");
+});
+
+test("run: an oversized agent_end does not hide an error stop reason", async () => {
+  const failed = finalMessage("error", "", { errorMessage: "quota exhausted" });
+  const { res } = await runRaw(chunked(jsonLine({ type: "message_end", message: failed }) + bigAgentEnd(failed) + "\n"));
+  assert.equal(res.isError, true);
+  assert.equal(res.stopReason, "error");
+  assert.match(res.error, /quota exhausted/);
+});
+
+test("run: an oversized agent_end does not hide a non-zero exit", async () => {
+  const { res } = await runRaw(chunked(jsonLine({ type: "message_end", message: finalMessage("stop") }) + bigAgentEnd(finalMessage("stop")) + "\n"), { code: 3 });
+  assert.equal(res.isError, true);
+  assert.match(res.error, /exited 3/);
+});
+
+test("run: oversized junk alone, or an agent_end cut off before its newline, is still no agent_end", async () => {
+  const start = jsonLine({ type: "message_end", message: finalMessage("stop") });
+  const junk = await runRaw(chunked(start + JSON.stringify({ type: "junk", pad: "z".repeat(MAX_STDOUT_LINE_CHARS + 10) }) + "\n"));
+  assert.equal(junk.res.isError, true);
+  assert.match(junk.res.error, /no agent_end/);
+
+  const cut = await runRaw(chunked(start + bigAgentEnd(finalMessage("stop"))));
+  assert.equal(cut.res.isError, true, "an unterminated envelope may be truncated");
+  assert.match(cut.res.error, /no agent_end/);
+  assert.equal(cut.res.text, "[]", "whatever text arrived is still returned");
+});
+
+test("run: agent_end-looking content deep inside an oversized line is not its prefix", async () => {
+  // The line overflows the buffer twice; the second overflow begins with
+  // text shaped like an agent_end envelope, which must not be mistaken for
+  // the start of the line.
+  const head = '{"type":"junk","pad":"' + "z".repeat(MAX_STDOUT_LINE_CHARS);
+  const decoy = '{"type":"agent_end","messages":[]}' + "y".repeat(MAX_STDOUT_LINE_CHARS);
+  const chunks = [jsonLine({ type: "message_end", message: finalMessage("stop") }), head, decoy, '"}\n'];
+  const { res, logs } = await runRaw(chunks);
+  assert.equal(res.isError, true);
+  assert.match(res.error, /no agent_end/);
+  assert.ok(logs.some((l) => /dropped 1 stdout line/.test(l)), "one line, dropped once");
+});
+
+test("run: a timeout during an oversized agent_end is still a timeout", async () => {
+  const { manifest } = fixture();
+  manifest.agent.timeoutSeconds = 0.05;
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn, killGraceMs: 5 });
+  const p = tool.run({ prompt: "p" }, {});
+  await new Promise((r) => setImmediate(r));
+  const { child } = children[0];
+  const envelope = bigAgentEnd(finalMessage("stop"));
+  child.stdout.write(jsonLine({ type: "message_end", message: finalMessage("stop") }));
+  child.stdout.write(envelope.slice(0, MAX_STDOUT_LINE_CHARS + 100));
+  for (let i = 0; i < 100 && child.signals.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(child.signals.slice(0, 1), ["SIGTERM"]);
+  await finishRaw(child, [envelope.slice(MAX_STDOUT_LINE_CHARS + 100) + "\n"], 143);
+  const res = await p;
+  assert.equal(res.isError, true);
+  assert.equal(res.stopReason, "timeout");
+  assert.match(res.error, /timed out/);
 });
 
 test("shutdown stops in-flight children, fails their calls and settles the queue", async () => {

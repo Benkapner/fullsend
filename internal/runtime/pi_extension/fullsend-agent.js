@@ -72,6 +72,15 @@ export const DEFAULT_KILL_GRACE_MS = 3000;
 // buffered: a child that emits an unbounded line must not grow the
 // orchestrator's heap without limit.
 export const MAX_STDOUT_LINE_CHARS = 1024 * 1024;
+// OVERSIZED_PREFIX_CHARS is how much of a dropped line is looked at, enough
+// to tell whether it was the agent_end envelope (see isAgentEndPrefix).
+export const OVERSIZED_PREFIX_CHARS = 256;
+// AGENT_END_PREFIX matches the start of pi's agent_end event as --mode json
+// writes it: every emitter builds it as `{ type: "agent_end", ... }` and
+// print mode serializes it with JSON.stringify, so `type` is the first key
+// (pi 0.99.2 dist/modes/print-mode.js, dist/core/agent-session.js,
+// pi-agent-core dist/agent-loop.js and dist/agent.js).
+const AGENT_END_PREFIX = /^\s*\{\s*"type"\s*:\s*"agent_end"\s*[,}]/;
 // MAX_DESCRIPTION_BYTES caps the label copied into the usage file. Children
 // append to one file concurrently, and only a write below PIPE_BUF (4096 on
 // Linux) is atomic; the rest of a record is bounded by construction.
@@ -475,6 +484,21 @@ export function consumeLine(state, line) {
   }
 }
 
+// isAgentEndPrefix reports whether a line dropped for being over
+// MAX_STDOUT_LINE_CHARS, given from its start, is the agent_end envelope.
+// That envelope grows with the whole run's messages and is the line most
+// likely to cross the cap; without this a child that finished cleanly
+// would be reported as "produced no agent_end". Only the completion marker
+// is taken from it. Its last assistant message was already emitted as a
+// message_end (pi emits one for every assistant message, failure ones
+// included), so the text and stop reason consumeLine would take from the
+// envelope are already in the state. Only the first OVERSIZED_PREFIX_CHARS
+// are examined, and the caller keeps the boolean, not the text, so nothing
+// of the dropped line outlives it.
+export function isAgentEndPrefix(lineStart) {
+  return AGENT_END_PREFIX.test(lineStart.slice(0, OVERSIZED_PREFIX_CHARS));
+}
+
 function capText(text) {
   const trimmed = text.trim();
   if (Buffer.byteLength(trimmed) <= RESULT_MAX_BYTES) return trimmed;
@@ -641,6 +665,9 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
       let stderr = "";
       let buffered = "";
       let dropping = false;
+      // dropAgentEnd records whether the line being dropped began as an
+      // agent_end envelope, decided when the buffer first overflows.
+      let dropAgentEnd = false;
       let droppedLines = 0;
       let killTimer;
       // terminate is the whole stop sequence: SIGTERM first so pi runs its
@@ -679,6 +706,8 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
           if (dropping) {
             dropping = false;
             droppedLines++;
+            if (dropAgentEnd) state.ended = true;
+            dropAgentEnd = false;
             continue;
           }
           // A complete oversized line (its newline arrived in the same
@@ -686,11 +715,15 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
           // has not terminated yet is dropped by the buffer cap below.
           if (line.length > MAX_STDOUT_LINE_CHARS) {
             droppedLines++;
+            if (isAgentEndPrefix(line)) state.ended = true;
             continue;
           }
           consumeLine(state, line);
         }
         if (buffered.length > MAX_STDOUT_LINE_CHARS) {
+          // Only the first overflow holds the line's start; a later one
+          // (a line several times the cap) is mid-line content.
+          if (!dropping) dropAgentEnd = isAgentEndPrefix(buffered);
           dropping = true;
           buffered = "";
         }
@@ -704,6 +737,11 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
         if (killTimer !== undefined) clearTimeout(killTimer);
         running.delete(handle);
         if (!dropping && buffered.trim() !== "") consumeLine(state, buffered);
+        // An oversized line still open at EOF is not taken as agent_end
+        // even if its prefix says so: pi writes each event and its newline
+        // in one write, so a missing newline means the envelope was cut
+        // short, and its end cannot be checked the way JSON.parse checks a
+        // short unterminated line above.
         if (dropping) droppedLines++;
         resolve({ state, startedAt, exitCode, signal, spawnError, stderr, timedOut, pid: child.pid, droppedLines });
       };
