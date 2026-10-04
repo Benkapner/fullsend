@@ -38,7 +38,7 @@
 // PiRuntime.Bootstrap wrote (FULLSEND_PI_MANIFEST).
 import { spawn as nodeSpawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 
 export const DEFAULT_MANIFEST_PATH = "/sandbox/pi-config/fullsend-manifest.json";
@@ -64,6 +64,8 @@ const TOOL_ALIAS = "Task";
 // Providers pi serves without an extension and with the same Vertex ADC
 // the sandbox already carries.
 const BUILTIN_PROVIDERS = ["google-vertex"];
+// VERTEX_PROVIDERS authenticate with the sandbox's Google ADC file.
+const VERTEX_PROVIDERS = new Set(["anthropic-vertex", "google-vertex", "xai-vertex"]);
 // DEFAULT_KILL_GRACE_MS is how long a child gets to handle SIGTERM (kill
 // its own detached bash grandchildren and flush the session) before SIGKILL.
 export const DEFAULT_KILL_GRACE_MS = 3000;
@@ -383,6 +385,25 @@ export function childEnv(base, modelSpec) {
   return env;
 }
 
+// vertexCredentialsUsable reports whether a Vertex child would find an ADC
+// file: GOOGLE_APPLICATION_CREDENTIALS when set, else gcloud's well-known
+// $HOME/.config/gcloud/application_default_credentials.json. The file must
+// be a non-empty regular file (#7980).
+export function vertexCredentialsUsable(env, stat = statSync) {
+  const usable = (path) => {
+    try {
+      const st = stat(path);
+      return st.isFile() && st.size > 0;
+    } catch {
+      return false;
+    }
+  };
+  const gac = typeof env?.GOOGLE_APPLICATION_CREDENTIALS === "string" ? env.GOOGLE_APPLICATION_CREDENTIALS.trim() : "";
+  if (gac !== "") return usable(gac);
+  const home = typeof env?.HOME === "string" ? env.HOME : "";
+  return home !== "" && usable(`${home}/.config/gcloud/application_default_credentials.json`);
+}
+
 // lookupPersona returns the persona entry from the manifest's personas table
 // for the given subagent_type, or undefined if it is not a persona name. The
 // match is case-insensitive to mirror the CLI's key normalisation.
@@ -499,7 +520,7 @@ function signalChild(child, signal) {
 // `now` are injectable for tests. run() never throws for a failed child —
 // it returns { isError, error } — so the registered execute() decides how
 // to surface it (pi marks a result isError only when execute throws).
-export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => console.error(m), now = () => Date.now(), env = process.env, killGraceMs = DEFAULT_KILL_GRACE_MS, manifestPath = "", manifestSum = "" } = {}) {
+export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => console.error(m), now = () => Date.now(), env = process.env, stat = statSync, killGraceMs = DEFAULT_KILL_GRACE_MS, manifestPath = "", manifestSum = "" } = {}) {
   const agent = manifest?.agent ?? {};
   const maxConcurrent = Math.max(1, Number(agent.maxConcurrent) || DEFAULT_MAX_CONCURRENT);
   const timeoutMs = Math.max(1, (Number(agent.timeoutSeconds) || DEFAULT_TIMEOUT_SECONDS) * 1000);
@@ -759,6 +780,13 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
       } catch (err) {
         return { seq: id, isError: true, error: err.message, text: "", stopReason: "rejected", model: "" };
       }
+    }
+    // A Vertex child without an ADC file would fail on its first call.
+    if (VERTEX_PROVIDERS.has(providerOf(modelSpec)) && !vertexCredentialsUsable(env, stat)) {
+      const arg = typeof params?.model === "string" ? params.model.trim() : "";
+      const subject = persona ? `persona "${subagentType}"` : arg !== "" ? `model "${arg}"` : `the default sub-agent model "${modelSpec}"`;
+      const error = `${subject}: provider "${providerOf(modelSpec)}" is not available in this run (Vertex sub-agents need GOOGLE_APPLICATION_CREDENTIALS set on the runner and mounted in host_files)`;
+      return { seq: id, isError: true, error, text: "", stopReason: "rejected", model: "" };
     }
     if (typeof params?.prompt !== "string" || params.prompt.trim() === "") {
       return { seq: id, isError: true, error: "prompt is required", text: "", stopReason: "rejected", model: modelSpec };

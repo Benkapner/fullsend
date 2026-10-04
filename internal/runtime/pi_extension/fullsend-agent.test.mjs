@@ -24,7 +24,15 @@ import defaultExport, {
   childTools,
   createAgentTool,
   resolveModel,
+  vertexCredentialsUsable,
 } from "./fullsend-agent.js";
+
+// Vertex children need an ADC file at dispatch (#7980). Give the whole file
+// one, so a test that does not exercise that check is independent of the
+// machine it runs on.
+const ADC_DIR = mkdtempSync(join(tmpdir(), "fullsend-agent-adc-"));
+process.env.GOOGLE_APPLICATION_CREDENTIALS = join(ADC_DIR, "creds.json");
+writeFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, "{}");
 
 // FAKE_PI reads its prompt from stdin, the way real pi does in --print
 // mode, and answers by prompt: "ok" prints a successful stream whose final
@@ -231,6 +239,62 @@ test("resolveModel: openai under a non-openai parent needs a configured openai c
   // An empty list admits nothing.
   const empty = { ...manifest.agent, providerModels: { ...manifest.agent.providerModels, openai: [] } };
   assert.throws(() => resolveModel(empty, "openai/gpt-5.6-luna", parent), /provider "openai" is not available in this run/);
+});
+
+test("vertexCredentialsUsable: a non-empty regular file, else gcloud's ADC file (#7980)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fullsend-adc-"));
+  const file = join(dir, "creds.json");
+  writeFileSync(file, "{}");
+  const empty = join(dir, "empty.json");
+  writeFileSync(empty, "");
+  const home = join(dir, "home");
+  mkdirSync(join(home, ".config", "gcloud"), { recursive: true });
+  assert.equal(vertexCredentialsUsable({ GOOGLE_APPLICATION_CREDENTIALS: file }), true);
+  for (const [name, env] of Object.entries({
+    missing: { GOOGLE_APPLICATION_CREDENTIALS: join(dir, "nope.json") },
+    empty: { GOOGLE_APPLICATION_CREDENTIALS: empty },
+    directory: { GOOGLE_APPLICATION_CREDENTIALS: dir },
+    unset: { HOME: home },
+    "no home": {},
+  })) {
+    assert.equal(vertexCredentialsUsable(env), false, name);
+  }
+  writeFileSync(join(home, ".config", "gcloud", "application_default_credentials.json"), "{}");
+  assert.equal(vertexCredentialsUsable({ HOME: home }), true, "gcloud's ADC file when the variable is unset");
+  assert.equal(vertexCredentialsUsable({ HOME: home, GOOGLE_APPLICATION_CREDENTIALS: empty }), false, "a set variable is not bypassed");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("Vertex children are refused at dispatch without an ADC file (#7980)", async () => {
+  const { dir, manifest } = personaFixture();
+  const parentModel = "openai/gpt-5.6-luna";
+  const why = /: provider "anthropic-vertex" is not available in this run \(Vertex sub-agents need GOOGLE_APPLICATION_CREDENTIALS set on the runner and mounted in host_files\)$/;
+  const noADC = { ...process.env, GOOGLE_APPLICATION_CREDENTIALS: "", HOME: join(dir, "no-home") };
+  const tool = createAgentTool(manifest, { spawn, ...quiet, env: noADC });
+  const cases = [
+    [{ prompt: "ok", model: "sonnet" }, /^model "sonnet"/],
+    [{ prompt: "ok", subagent_type: "style" }, /^persona "style"/],
+  ];
+  for (const [params, subject] of cases) {
+    const res = await tool.run(params, { parentModel });
+    assert.equal(res.isError, true);
+    assert.equal(res.stopReason, "rejected");
+    assert.match(res.error, subject);
+    assert.match(res.error, why);
+  }
+  manifest.agent.subagentDefault = "anthropic-vertex/claude-haiku-4-5";
+  const def = await createAgentTool(manifest, { spawn, ...quiet, env: noADC }).run({ prompt: "ok" }, { parentModel });
+  assert.match(def.error, /^the default sub-agent model "anthropic-vertex\/claude-haiku-4-5": provider "anthropic-vertex"/);
+
+  // The stat is injectable; a usable file serves the child, and a
+  // non-Vertex child never needs one.
+  const stat = () => ({ isFile: () => true, size: 10 });
+  const ok = await createAgentTool(manifest, { spawn, ...quiet, env: { ...noADC, GOOGLE_APPLICATION_CREDENTIALS: "/x.json" }, stat }).run({ prompt: "ok", model: "sonnet" }, { parentModel });
+  assert.equal(ok.isError, false, ok.error);
+  assert.equal(ok.model, "anthropic-vertex/claude-sonnet-4-6");
+  const own = await createAgentTool(manifest, { spawn, ...quiet, env: noADC }).run({ prompt: "ok", model: parentModel }, { parentModel });
+  assert.notEqual(own.stopReason, "rejected", own.error);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test("childTools: Explore is read-only, everything else is the parent's built-ins minus Agent/Task", () => {
