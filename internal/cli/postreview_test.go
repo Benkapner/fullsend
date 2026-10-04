@@ -76,7 +76,33 @@ func TestParseReviewResult_Findings(t *testing.T) {
 	require.Len(t, result.Findings, 1)
 	assert.Equal(t, "low", result.Findings[0].Severity)
 	assert.True(t, result.Findings[0].Actionable)
-	assert.Equal(t, "f_abc123", result.Findings[0].ID)
+	assert.EqualValues(t, "f_abc123", result.Findings[0].ID)
+}
+
+func TestParseReviewResult_NonStringIDIgnored(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+	}{
+		{"number", "123"},
+		{"boolean", "true"},
+		{"object", `{"x":1}`},
+		{"array", `["f_abc"]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := fmt.Sprintf(`{"body":"Review","action":"approve","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","findings":[{"severity":"low","category":"docs","file":"README.md","line":12,"description":"note","id":%s}]}`, tt.id)
+			result, err := parseReviewResult(input)
+			require.NoError(t, err)
+			assert.Equal(t, "Review", result.Body)
+			assert.Equal(t, "approve", result.Action)
+			assert.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", result.HeadSHA)
+			require.Len(t, result.Findings, 1)
+			assert.Equal(t, "note", result.Findings[0].Description)
+			assert.Empty(t, result.Findings[0].ID)
+			assert.NotContains(t, formatFindingComment(result.Findings[0]), "<!-- finding:")
+		})
+	}
 }
 
 func TestReviewActionToEvent(t *testing.T) {
@@ -1536,6 +1562,53 @@ func TestSanitizeReviewResult_NoSecretsPassesThrough(t *testing.T) {
 	assert.Equal(t, "Consider renaming variable.", sanitized.Findings[0].Description, "clean finding should pass through unchanged")
 	assert.Equal(t, "low", sanitized.Findings[0].Severity, "clean severity should pass through unchanged")
 	assert.Equal(t, "style", sanitized.Findings[0].Category, "clean category should pass through unchanged")
+}
+
+func TestSanitizeReviewResult_DropsSecretFindingID(t *testing.T) {
+	printer := ui.New(io.Discard)
+	// f_ plus a Google API key (AIza + 35 alnum) still matches findingIDRe.
+	secretID := "f_AIzaabcdefghijklmnopqrstuvwxyz012345678"
+	r := ReviewResult{
+		Body:   "Review body without secrets.",
+		Action: "comment",
+		Findings: []ReviewFinding{
+			{
+				ID:          findingID(secretID),
+				Severity:    "high",
+				Category:    "bug",
+				File:        "a.go",
+				Line:        10,
+				Description: "Missing nil check.",
+			},
+		},
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.Empty(t, sanitized.Findings[0].ID)
+	assert.NotContains(t, formatFindingComment(sanitized.Findings[0]), "<!-- finding:")
+	assert.NotContains(t, formatFindingComment(sanitized.Findings[0]), secretID)
+}
+
+func TestSanitizeReviewResult_PreservesOrdinaryFindingID(t *testing.T) {
+	printer := ui.New(io.Discard)
+	r := ReviewResult{
+		Body:   "Review body without secrets.",
+		Action: "comment",
+		Findings: []ReviewFinding{
+			{
+				ID:          "f_abc123",
+				Severity:    "high",
+				Category:    "bug",
+				File:        "a.go",
+				Line:        10,
+				Description: "Missing nil check.",
+			},
+		},
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.EqualValues(t, "f_abc123", sanitized.Findings[0].ID)
+	assert.Contains(t, formatFindingComment(sanitized.Findings[0]), "<!-- finding:f_abc123 -->")
 }
 
 func TestSanitizeReviewResult_EmptyBody(t *testing.T) {
