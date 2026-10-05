@@ -23,13 +23,13 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-type cliCutoverTokens struct{}
+type cliRoleTokenInventory struct{}
 
-func (cliCutoverTokens) CreateProjectAccessToken(context.Context, string, string, string, []string, int, string) (*repos.ProjectAccessToken, error) {
+func (cliRoleTokenInventory) CreateProjectAccessToken(context.Context, string, string, string, []string, int, string) (*repos.ProjectAccessToken, error) {
 	return nil, nil
 }
 
-func (cliCutoverTokens) ListProjectAccessTokens(context.Context, string, string) ([]repos.ProjectAccessToken, error) {
+func (cliRoleTokenInventory) ListProjectAccessTokens(context.Context, string, string) ([]repos.ProjectAccessToken, error) {
 	return []repos.ProjectAccessToken{
 		{ID: 1, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-01-01"},
 		{ID: 2, Name: gitlabroles.AnalystTokenName, Active: true, ExpiresAt: "2027-01-01"},
@@ -37,7 +37,7 @@ func (cliCutoverTokens) ListProjectAccessTokens(context.Context, string, string)
 	}, nil
 }
 
-func (cliCutoverTokens) RevokeProjectAccessToken(context.Context, string, string, int) error {
+func (cliRoleTokenInventory) RevokeProjectAccessToken(context.Context, string, string, int) error {
 	return nil
 }
 
@@ -50,22 +50,54 @@ func (cliCutoverTokens) RevokeProjectAccessToken(context.Context, string, string
 func TestSetupGitLabPipelineSchedules(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("creates two poll schedules with correct variables", func(t *testing.T) {
-		fake := &forge.FakeClient{}
+	t.Run("creates two poll schedules without pipeline variables", func(t *testing.T) {
+		fake := forge.NewFakeClient()
 		var buf bytes.Buffer
 		printer := ui.New(&buf)
 
-		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+		// typed=true: the install queued a typed-dispatch wrapper, so poll
+		// mode is selected from the schedule description and schedules
+		// must stay variable-free.
+		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", true)
 		require.NoError(t, err)
 		require.Len(t, fake.CreatedSchedules, 2)
 
 		// Slash poll: every 5 minutes.
 		assert.Equal(t, "*/5 * * * *", fake.CreatedSchedules[0].Cron)
 		assert.Equal(t, "fullsend slash poll", fake.CreatedSchedules[0].Description)
-		assert.Equal(t, map[string]string{forge.VarPollMode: "slash"}, fake.CreatedSchedules[0].Variables)
+		assert.Empty(t, fake.CreatedSchedules[0].Variables)
 
 		// Event poll: offset cron to avoid collision with slash poll.
 		assert.Equal(t, "2,17,32,47 * * * *", fake.CreatedSchedules[1].Cron)
+		assert.Equal(t, "fullsend event poll", fake.CreatedSchedules[1].Description)
+		assert.Empty(t, fake.CreatedSchedules[1].Variables)
+	})
+
+	// TestSetupGitLabPipelineSchedules/legacy-pin guards the regression
+	// where fresh-install schedule creation always submitted the
+	// (now variable-free) canonical spec.Variables, even for a repo whose
+	// effective wrapper is still the legacy variable-based dispatch
+	// contract. That wrapper selects poll mode from the schedule's
+	// FULLSEND_POLL_MODE pipeline variable, not its description, so
+	// omitting the variable collapses the slash schedule into event
+	// polling. setupGitLabPipelineSchedules must select variables the same
+	// transport-aware way convergeSchedules does.
+	t.Run("legacy pin keeps FULLSEND_POLL_MODE on both schedules", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		var buf bytes.Buffer
+		printer := ui.New(&buf)
+
+		// typed=false: the install queued (or left in place) the legacy
+		// variable-based wrapper, which selects poll mode from the
+		// schedule's FULLSEND_POLL_MODE pipeline variable, not its
+		// description.
+		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", false)
+		require.NoError(t, err)
+		require.Len(t, fake.CreatedSchedules, 2)
+
+		assert.Equal(t, "fullsend slash poll", fake.CreatedSchedules[0].Description)
+		assert.Equal(t, map[string]string{forge.VarPollMode: "slash"}, fake.CreatedSchedules[0].Variables)
+
 		assert.Equal(t, "fullsend event poll", fake.CreatedSchedules[1].Description)
 		assert.Equal(t, map[string]string{forge.VarPollMode: "events"}, fake.CreatedSchedules[1].Variables)
 	})
@@ -79,7 +111,7 @@ func TestSetupGitLabPipelineSchedules_ScheduleError(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating fullsend slash poll schedule")
 }
@@ -94,7 +126,7 @@ func TestSetupGitLabPipelineSchedules_EventScheduleError_RollsBackSlash(t *testi
 		var buf bytes.Buffer
 		printer := ui.New(&buf)
 
-		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "creating fullsend event poll schedule")
 		require.Len(t, fake.CreatedSchedules, 1, "only slash schedule should have been created")
@@ -109,7 +141,7 @@ func TestSetupGitLabPipelineSchedules_EventScheduleError_RollsBackSlash(t *testi
 		var buf bytes.Buffer
 		printer := ui.New(&buf)
 
-		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "creating fullsend event poll schedule")
 		assert.Contains(t, buf.String(), "Failed to clean up schedule")
@@ -124,7 +156,7 @@ func TestSetupGitLabPipelineSchedules_ListError(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", false)
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "Could not list existing schedules")
 }
@@ -163,7 +195,7 @@ func TestSetupGitLabPipelineSchedules_DeletesExisting(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", false)
 	require.NoError(t, err)
 	assert.Equal(t, []int64{5}, fake.DeletedScheduleIDs, "should delete existing fullsend schedule")
 	require.Len(t, fake.CreatedSchedules, 2)
@@ -409,22 +441,19 @@ func TestSetupGitLabRoleCredentials_FakeClientPartialAndNoLeak(t *testing.T) {
 
 func TestShowGitLabRoleStatus(t *testing.T) {
 	assert.False(t, showGitLabRoleStatus(repos.RepoStatus{}))
-	assert.False(t, showGitLabRoleStatus(repos.RepoStatus{
-		GitLabRoleMode:        "disabled",
-		GitLabRoleDiagnostics: []string{"mode=disabled"},
+	// Any role diagnostic must remain visible in the status table.
+	assert.True(t, showGitLabRoleStatus(repos.RepoStatus{
+		GitLabRoleDiagnostics: []string{"role credentials incomplete"},
 	}))
 	assert.True(t, showGitLabRoleStatus(repos.RepoStatus{
-		GitLabRoleMode:        "migrating",
-		GitLabRoleDiagnostics: []string{"mode=migrating"},
+		GitLabRoleDiagnostics: []string{"role credentials pending"},
 	}))
 	assert.True(t, showGitLabRoleStatus(repos.RepoStatus{
-		GitLabRoleMode:        "disabled",
 		GitLabRolesPartial:    true,
 		GitLabRoleDiagnostics: []string{"partial"},
 	}))
-	// GitLabRoleMode is left empty by appendGitLabRoleStatus on a
-	// parse/read/registry error, but a diagnostic is still recorded — the
-	// table view must surface it, not just JSON output.
+	// A parse/read/registry error still records a diagnostic — the table view
+	// must surface it, not just JSON output.
 	assert.True(t, showGitLabRoleStatus(repos.RepoStatus{
 		GitLabRoleDiagnostics: []string{"invalid GitLab role registry"},
 	}))
@@ -461,8 +490,7 @@ func TestPrintGitLabRoleProvisionCoversBranches(t *testing.T) {
 		Skipped:     []gitlabroles.Role{gitlabroles.RoleCoder},
 		Reused:      []gitlabroles.Role{gitlabroles.Role("deployer")},
 		Failed:      []repos.RoleProvisionFailure{{Role: gitlabroles.Role("scanner"), Secret: "FULLSEND_GITLAB_ROLE_SCANNER_TOKEN", Reason: "pending"}},
-		Mode:        gitlabroles.ModeMigrating,
-		Diagnostics: []string{"mode=migrating"},
+		Diagnostics: []string{"role credentials pending"},
 	})
 	out := buf.String()
 	assert.Contains(t, out, "Would create poller")
@@ -470,7 +498,7 @@ func TestPrintGitLabRoleProvisionCoversBranches(t *testing.T) {
 	assert.Contains(t, out, "coder role credential already present")
 	assert.Contains(t, out, "deployer reuses")
 	assert.Contains(t, out, "scanner role credential pending")
-	assert.Contains(t, out, "mode=migrating")
+	assert.Contains(t, out, "role credentials pending")
 	assert.NotContains(t, out, "glpat-")
 }
 
@@ -526,11 +554,12 @@ func TestSetupGitLabRoleCredentials_RegistryReadError(t *testing.T) {
 }
 
 // maybeCutoverGitLabRoles, gitLabRoleWorkNeeded's mode-dependent branches,
-// and ProvisionGitLabRoleCredentials's migration-gate write path were
-// removed: registered role credentials are now the only supported runtime
-// path (#7782 PR2), so the CLI no longer reads, writes, or branches on
-// FULLSEND_GITLAB_ROLE_MIGRATION. The tests that exercised those branches
-// were deleted rather than left skipped.
+// ProvisionGitLabCredentials' historical-state write path, and the legacy
+// shared-credential retirement path (maybeRetireGitLabSharedCredential)
+// were removed: registered role credentials are now the only supported
+// runtime path, and automated cleanup of pre-rollout installations is no
+// longer performed. The tests that exercised those branches were deleted
+// rather than left skipped.
 
 func TestPrepareGitLabRoleFlagsRotateNames(t *testing.T) {
 	opts := &reposInstallConfig{rotateGitLabRoleNames: []string{"Poller", " scanner "}}
@@ -541,7 +570,7 @@ func TestPrepareGitLabRoleFlagsRotateNames(t *testing.T) {
 	require.Error(t, err)
 }
 
-// maybeRotateGitLabRoles no longer branches on FULLSEND_GITLAB_ROLE_MIGRATION
+// maybeRotateGitLabRoles no longer branches on legacy migration state
 // (rotation is unconditional now that role credentials are the only
 // supported runtime path), so the "skip when disabled" behavior no longer
 // exists; that coverage was deleted rather than left skipped.
@@ -572,7 +601,7 @@ func TestPrintGitLabRoleRotateCoversBranches(t *testing.T) {
 			Role: gitlabroles.RolePoller, Secret: forge.SecretGitLabPollerToken,
 			Reason: "storing replacement credential failed",
 		}},
-		Diagnostics: []string{"mode=migrating"},
+		Diagnostics: []string{"role credentials pending"},
 		DryRun:      true,
 	})
 	out := buf.String()
@@ -589,11 +618,9 @@ func TestPrintGitLabRoleRotateCoversBranches(t *testing.T) {
 
 func TestAnnotateGitLabRoleLifecycleSkipsNonLiveClient(t *testing.T) {
 	result := &repos.StatusResult{Repos: []repos.RepoStatus{{
-		Owner: "group", Repo: "project", GitLabRoleMode: "migrating",
-		GitLabRoleDiagnostics: []string{"mode=migrating"},
+		Owner: "group", Repo: "project", GitLabRoleDiagnostics: []string{"role credentials pending"},
 	}}}
 	annotateGitLabRoleLifecycle(context.Background(), nil, result)
-	assert.Equal(t, "migrating", result.Repos[0].GitLabRoleMode)
 }
 
 func TestAnnotateGitLabRoleLifecycleDoesNotDoubleCountDrifted(t *testing.T) {
@@ -610,7 +637,6 @@ func TestAnnotateGitLabRoleLifecycleDoesNotDoubleCountDrifted(t *testing.T) {
 		})
 	}
 	for _, project := range []string{"group%2Fproject-a", "group%2Fproject-b"} {
-		serveVariable(project, forge.VarGitLabRoleMigration, "enforced")
 		serveVariable(project, forge.VarGitLabRoleRegistry, registryJSON)
 		serveVariable(project, forge.SecretForgeToken, "present")
 		serveVariable(project, scannerSecret, "present")
@@ -631,8 +657,7 @@ func TestAnnotateGitLabRoleLifecycleDoesNotDoubleCountDrifted(t *testing.T) {
 	t.Run("repo already counted as drifted is not double-counted", func(t *testing.T) {
 		result := &repos.StatusResult{
 			Repos: []repos.RepoStatus{{
-				Owner: "group", Repo: "project-a", GitLabRoleMode: "enforced",
-				Drifts: []repos.Drift{{Field: "current_ref", Expected: "a", Actual: "b"}},
+				Owner: "group", Repo: "project-a", Drifts: []repos.Drift{{Field: "current_ref", Expected: "a", Actual: "b"}},
 			}},
 			Summary: repos.StatusSummary{Drifted: 1},
 		}
@@ -644,8 +669,7 @@ func TestAnnotateGitLabRoleLifecycleDoesNotDoubleCountDrifted(t *testing.T) {
 	t.Run("repo with no prior drift is counted once on the new drift", func(t *testing.T) {
 		result := &repos.StatusResult{
 			Repos: []repos.RepoStatus{{
-				Owner: "group", Repo: "project-b", GitLabRoleMode: "enforced",
-			}},
+				Owner: "group", Repo: "project-b"}},
 			Summary: repos.StatusSummary{Drifted: 0},
 		}
 		annotateGitLabRoleLifecycle(ctx, clients, result)
@@ -691,7 +715,7 @@ func TestGitLabUninstallTokens(t *testing.T) {
 	printer := ui.New(&bytes.Buffer{})
 
 	t.Run("test hook wins", func(t *testing.T) {
-		hook := cliCutoverTokens{}
+		hook := cliRoleTokenInventory{}
 		got := gitLabUninstallTokens(&reposUninstallConfig{testGitLabTokens: hook}, nil, printer, manifest, []string{"group/project"})
 		assert.Equal(t, hook, got)
 	})
@@ -859,13 +883,7 @@ func TestAnnotateGitLabRoleLifecycleReportsPipelineRefDrift(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v4/projects/group%2Fproject/variables/", func(w http.ResponseWriter, r *http.Request) {
 		varsCalled = true
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, forge.VarGitLabRoleMigration):
-			json.NewEncoder(w).Encode(map[string]any{"value": "migrating"})
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
+		w.WriteHeader(http.StatusNotFound)
 	})
 	mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
 		tokensCalled = true
@@ -901,8 +919,7 @@ func TestAnnotateGitLabRoleLifecycleReportsPipelineRefDrift(t *testing.T) {
 
 	result := &repos.StatusResult{
 		Repos: []repos.RepoStatus{{
-			Owner: "group", Repo: "project", GitLabRoleMode: "migrating",
-		}},
+			Owner: "group", Repo: "project"}},
 	}
 	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
 	assert.True(t, varsCalled, "variables handler was not called")
@@ -1018,8 +1035,7 @@ func TestAnnotateGitLabRoleLifecyclePipelineRefWithoutTokenList(t *testing.T) {
 
 	result := &repos.StatusResult{
 		Repos: []repos.RepoStatus{{
-			Owner: "group", Repo: "project", GitLabRoleMode: "migrating",
-		}},
+			Owner: "group", Repo: "project"}},
 	}
 	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
 	assert.True(t, tokensCalled, "access_tokens handler was not called")
@@ -1034,245 +1050,32 @@ func TestAnnotateGitLabRoleLifecyclePipelineRefWithoutTokenList(t *testing.T) {
 	assert.True(t, found, "pipeline-ref drift should still be reported without token inventory")
 }
 
-// retryTestGitLabTokens is a minimal repos.ProjectAccessTokenClient whose
-// RevokeProjectAccessToken call can be made to fail on demand, used to
-// reproduce a retry across two maybeRetireGitLabSharedCredential calls.
-type retryTestGitLabTokens struct {
-	tokens     []repos.ProjectAccessToken
-	failRevoke bool
-	revoked    []int
-}
-
-func (f *retryTestGitLabTokens) CreateProjectAccessToken(context.Context, string, string, string, []string, int, string) (*repos.ProjectAccessToken, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-func (f *retryTestGitLabTokens) ListProjectAccessTokens(context.Context, string, string) ([]repos.ProjectAccessToken, error) {
-	out := make([]repos.ProjectAccessToken, len(f.tokens))
-	copy(out, f.tokens)
-	return out, nil
-}
-
-func (f *retryTestGitLabTokens) RevokeProjectAccessToken(_ context.Context, _, _ string, tokenID int) error {
-	if f.failRevoke {
-		return fmt.Errorf("revoke transiently failed")
-	}
-	f.revoked = append(f.revoked, tokenID)
-	for i := range f.tokens {
-		if f.tokens[i].ID == tokenID {
-			f.tokens[i].Active = false
-		}
-	}
-	return nil
-}
-
-// TestMaybeRetireGitLabSharedCredential_RetryAfterRevokeFailureStillRevokes
-// is a regression test for the review finding that maybeRetireGitLabShared
-// Credential used "the secret is already gone" as its sole skip condition:
-// if a first attempt deletes FULLSEND_FORGE_TOKEN but then fails to revoke
-// the matching fullsend-bot project access token, a retry must not treat
-// the missing secret as "nothing left to do" — it must still see the
-// leftover active PAT and revoke it.
-func TestMaybeRetireGitLabSharedCredential_RetryAfterRevokeFailureStillRevokes(t *testing.T) {
+func TestAnnotateGitLabRoleLifecycleSkipsConfigRejectedRepos(t *testing.T) {
 	ctx := context.Background()
-	fake := forge.NewFakeClient()
-	fake.Secrets["group/project/"+forge.SecretForgeToken] = true
-	for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
-		fake.Secrets["group/project/"+name] = true
-	}
-	tokens := &retryTestGitLabTokens{
-		tokens: []repos.ProjectAccessToken{
-			{ID: 1, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-01-01"},
-			{ID: 2, Name: gitlabroles.AnalystTokenName, Active: true, ExpiresAt: "2027-01-01"},
-			{ID: 3, Name: gitlabroles.CoderTokenName, Active: true, ExpiresAt: "2027-01-01"},
-			{ID: 4, Name: gitlabroles.SharedTokenName, Active: true, ExpiresAt: "2027-01-01"},
-		},
-		failRevoke: true,
-	}
-	opts := &reposInstallConfig{testGitLabTokenInventory: tokens}
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-
-	err := maybeRetireGitLabSharedCredential(ctx, opts, fake, printer, "group", "project")
-	require.Error(t, err, "a revoke failure must surface, not silently succeed")
-	assert.False(t, fake.Secrets["group/project/"+forge.SecretForgeToken], "the secret is deleted before revoke is attempted")
-	assert.Empty(t, tokens.revoked)
-
-	// Retry: the shared secret is already gone, but the fullsend-bot PAT is
-	// still active in the inventory. The old "!exists { return nil }"
-	// early-return would stop here forever, leaving a live Developer-scope
-	// token outstanding.
-	tokens.failRevoke = false
-	err = maybeRetireGitLabSharedCredential(ctx, opts, fake, printer, "group", "project")
+	var calledPaths []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		calledPaths = append(calledPaths, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
 	require.NoError(t, err)
-	assert.Contains(t, tokens.revoked, 4, "retry must still revoke the leftover shared PAT")
-}
 
-// failRoleSecretExistsClient fails RepoSecretExists only for the built-in
-// GitLab role secrets, leaving every other secret check (in particular
-// FULLSEND_FORGE_TOKEN) delegating to the wrapped FakeClient. This isolates
-// gitLabAllBuiltinRoleCredentialsPresent's own error path from the initial
-// shared-secret existence check in maybeRetireGitLabSharedCredential, which
-// reuses the same RepoSecretExists method.
-type failRoleSecretExistsClient struct {
-	*forge.FakeClient
-}
-
-func (c *failRoleSecretExistsClient) RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error) {
-	switch name {
-	case forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken:
-		return false, fmt.Errorf("denied")
+	// A GitLab repo rejected for a missing inference.auth selection was
+	// never evaluated, so annotation must not inspect its project or
+	// append drift.
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{{
+			Owner: "group", Repo: "project", Forge: repos.ForgeGitLab,
+			Error:          "no inference authentication selected for group/project",
+			ConfigRejected: true,
+		}},
+		Summary: repos.StatusSummary{Total: 1, Errored: 1, NotInstalled: 1},
 	}
-	return c.FakeClient.RepoSecretExists(ctx, owner, repo, name)
-}
-
-// failListGitLabTokens is a minimal repos.ProjectAccessTokenClient whose
-// ListProjectAccessTokens call always fails, simulating GitLab Free's 403 on
-// the project-access-tokens API (or any other inventory failure).
-type failListGitLabTokens struct{}
-
-func (failListGitLabTokens) CreateProjectAccessToken(context.Context, string, string, string, []string, int, string) (*repos.ProjectAccessToken, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-func (failListGitLabTokens) ListProjectAccessTokens(context.Context, string, string) ([]repos.ProjectAccessToken, error) {
-	return nil, fmt.Errorf("project access tokens API unavailable")
-}
-
-func (failListGitLabTokens) RevokeProjectAccessToken(context.Context, string, string, int) error {
-	return fmt.Errorf("not implemented")
-}
-
-// TestMaybeRetireGitLabSharedCredential_InventoryUnavailableRequiresAllRoles
-// is a regression test for the review finding that the inventory-unavailable
-// branch of maybeRetireGitLabSharedCredential retired FULLSEND_FORGE_TOKEN
-// once ANY ONE built-in role secret was present. A list error is not proof
-// the legacy fullsend-bot PAT is gone, so this path must require all three
-// built-in role secrets (poller, analyst, coder) before deleting the shared
-// secret.
-func TestMaybeRetireGitLabSharedCredential_InventoryUnavailableRequiresAllRoles(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("list error, all three roles present: deletes and succeeds", func(t *testing.T) {
-		fake := forge.NewFakeClient()
-		fake.Secrets["group/project/"+forge.SecretForgeToken] = true
-		for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
-			fake.Secrets["group/project/"+name] = true
-		}
-		opts := &reposInstallConfig{testGitLabTokenInventory: failListGitLabTokens{}}
-		var buf bytes.Buffer
-		printer := ui.New(&buf)
-
-		err := maybeRetireGitLabSharedCredential(ctx, opts, fake, printer, "group", "project")
-		require.NoError(t, err)
-		assert.False(t, fake.Secrets["group/project/"+forge.SecretForgeToken], "shared secret should be deleted once all three role secrets are present")
-		assert.Contains(t, buf.String(), "retired without a project-token inventory")
-	})
-
-	t.Run("list error, only one role present: does not delete", func(t *testing.T) {
-		fake := forge.NewFakeClient()
-		fake.Secrets["group/project/"+forge.SecretForgeToken] = true
-		fake.Secrets["group/project/"+forge.SecretGitLabPollerToken] = true
-		opts := &reposInstallConfig{testGitLabTokenInventory: failListGitLabTokens{}}
-		var buf bytes.Buffer
-		printer := ui.New(&buf)
-
-		err := maybeRetireGitLabSharedCredential(ctx, opts, fake, printer, "group", "project")
-		require.NoError(t, err, "deferring is not itself an error")
-		assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken], "shared secret must not be deleted when a list error prevents confirming the legacy PAT is gone and not all roles are present")
-		assert.Contains(t, buf.String(), "retirement deferred")
-	})
-
-	t.Run("list error after secret already deleted: no-op", func(t *testing.T) {
-		fake := forge.NewFakeClient()
-		// No FULLSEND_FORGE_TOKEN and no role secrets either. If role
-		// presence were (incorrectly) checked before the `!exists`
-		// early-return, this would report a deferral instead of doing
-		// nothing.
-		opts := &reposInstallConfig{testGitLabTokenInventory: failListGitLabTokens{}}
-		var buf bytes.Buffer
-		printer := ui.New(&buf)
-
-		err := maybeRetireGitLabSharedCredential(ctx, opts, fake, printer, "group", "project")
-		require.NoError(t, err)
-		assert.Empty(t, buf.String(), "nothing to retire and no inventory available should be a silent no-op")
-	})
-
-	t.Run("tokens is nil: same all-or-nothing check applies", func(t *testing.T) {
-		fake := forge.NewFakeClient()
-		fake.Secrets["group/project/"+forge.SecretForgeToken] = true
-		fake.Secrets["group/project/"+forge.SecretGitLabPollerToken] = true
-		fake.Secrets["group/project/"+forge.SecretGitLabAnalystToken] = true
-		// No testGitLabTokenInventory, and fake is not a *gitlab.LiveClient,
-		// so gitLabTokenInventory resolves to nil.
-		opts := &reposInstallConfig{}
-		var buf bytes.Buffer
-		printer := ui.New(&buf)
-
-		err := maybeRetireGitLabSharedCredential(ctx, opts, fake, printer, "group", "project")
-		require.NoError(t, err)
-		assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken], "must not delete with only 2/3 roles present even when tokens is nil")
-		assert.Contains(t, buf.String(), "retirement deferred")
-	})
-
-	t.Run("dry-run: reports without deleting", func(t *testing.T) {
-		fake := forge.NewFakeClient()
-		fake.Secrets["group/project/"+forge.SecretForgeToken] = true
-		for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
-			fake.Secrets["group/project/"+name] = true
-		}
-		opts := &reposInstallConfig{testGitLabTokenInventory: failListGitLabTokens{}, dryRun: true}
-		var buf bytes.Buffer
-		printer := ui.New(&buf)
-
-		err := maybeRetireGitLabSharedCredential(ctx, opts, fake, printer, "group", "project")
-		require.NoError(t, err)
-		assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken], "dry-run must not delete")
-		assert.Contains(t, buf.String(), "Would retire legacy GitLab shared credential")
-	})
-
-	t.Run("list error, role-presence secret check fails", func(t *testing.T) {
-		fake := forge.NewFakeClient()
-		fake.Secrets["group/project/"+forge.SecretForgeToken] = true
-		// Only the built-in role secret checks fail; the initial
-		// FULLSEND_FORGE_TOKEN existence check (which reuses the same
-		// RepoSecretExists method) must still succeed so this test reaches
-		// gitLabAllBuiltinRoleCredentialsPresent's own error path.
-		client := &failRoleSecretExistsClient{FakeClient: fake}
-		opts := &reposInstallConfig{testGitLabTokenInventory: failListGitLabTokens{}}
-		var buf bytes.Buffer
-		printer := ui.New(&buf)
-
-		err := maybeRetireGitLabSharedCredential(ctx, opts, client, printer, "group", "project")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "checking GitLab role credential presence")
-	})
-}
-
-// TestMaybeRetireGitLabSharedCredential_AlreadyFullyRetiredIsNoop covers the
-// path where the token inventory is available (unlike the list-error tests
-// above): the shared secret is already gone and no fullsend-bot project
-// access token is still active, so there is nothing left to retire.
-func TestMaybeRetireGitLabSharedCredential_AlreadyFullyRetiredIsNoop(t *testing.T) {
-	ctx := context.Background()
-	fake := forge.NewFakeClient()
-	for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
-		fake.Secrets["group/project/"+name] = true
-	}
-	tokens := &retryTestGitLabTokens{
-		tokens: []repos.ProjectAccessToken{
-			{ID: 1, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-01-01"},
-			{ID: 2, Name: gitlabroles.AnalystTokenName, Active: true, ExpiresAt: "2027-01-01"},
-			{ID: 3, Name: gitlabroles.CoderTokenName, Active: true, ExpiresAt: "2027-01-01"},
-			{ID: 4, Name: gitlabroles.SharedTokenName, Active: false, ExpiresAt: "2027-01-01"},
-		},
-	}
-	opts := &reposInstallConfig{testGitLabTokenInventory: tokens}
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-
-	err := maybeRetireGitLabSharedCredential(ctx, opts, fake, printer, "group", "project")
-	require.NoError(t, err)
-	assert.Empty(t, buf.String(), "nothing to retire should be a silent no-op")
-	assert.Empty(t, tokens.revoked)
+	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
+	assert.Empty(t, calledPaths, "rejected repo must not be inspected, got requests: %v", calledPaths)
+	assert.Empty(t, result.Repos[0].Drifts)
+	assert.Equal(t, 0, result.Summary.Drifted)
 }

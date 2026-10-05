@@ -5,6 +5,7 @@ package forge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -39,6 +40,7 @@ const (
 	VarMintURL        = "FULLSEND_MINT_URL"
 	VarGCPRegion      = "FULLSEND_GCP_REGION"
 	VarReviewClientID = "FULLSEND_REVIEW_CLIENT_ID"
+	VarAppSet         = "FULLSEND_APP_SET"
 
 	// Retired GitLab poller state variables. Superseded by HMAC-signed
 	// state.json on fullsend-poll-state-slash / fullsend-poll-state-events.
@@ -59,11 +61,20 @@ const (
 	SecretForgeToken = "FULLSEND_FORGE_TOKEN"
 
 	// Optional GitLab role credentials (docs/contributing/gitlab-role-credentials.md).
-	// These are not required on leftover shared-token installations.
-	// Probe/converge must not treat their absence as health drift while
-	// the gate is leftover disabled or rollback. Built-in names are fixed;
-	// custom roles derive FULLSEND_GITLAB_ROLE_<NAME>_TOKEN. Provisioning
-	// is #7498; job routing is #7499 (`internal/gitlabroles.Select`).
+	// These are absent on an installation that has not yet completed role
+	// provisioning; FULLSEND_FORGE_TOKEN may still be present as leftover
+	// state from an installation predating the role-only model, but current
+	// runtime jobs require their selected role credential and fail closed
+	// when it is missing: gitlabroles.Resolve returns ErrUnconfigured, and
+	// select-gitlab-role-token.sh errors out rather than falling back to
+	// FULLSEND_FORGE_TOKEN. requiredSecretsForForge (internal/repos)
+	// deliberately omits these secrets, so probe/converge do not treat
+	// their absence as health drift; GitLab role readiness is tracked
+	// separately through the role registry/status path
+	// (gitlabroles.CheckBuiltinReadiness, `repos status`). Built-in names
+	// are fixed; custom roles derive FULLSEND_GITLAB_ROLE_<NAME>_TOKEN.
+	// Provisioning is #7498; job routing is #7499
+	// (`internal/gitlabroles.Select`).
 	SecretGitLabPollerToken  = "FULLSEND_GITLAB_POLLER_TOKEN"
 	SecretGitLabAnalystToken = "FULLSEND_GITLAB_ANALYST_TOKEN"
 	SecretGitLabCoderToken   = "FULLSEND_GITLAB_CODER_TOKEN"
@@ -84,18 +95,16 @@ const (
 	// masked, protected CI/CD variable. Never logged.
 	SecretWebhookSecret = "FULLSEND_WEBHOOK_SECRET"
 
-	// Opt-in OpenAI static-key secret (ADR 0092), GitHub only: never part
-	// of requiredSecrets/requiredSecretsForForge — a repository with no
-	// OpenAI WIF and no static key configured is not unhealthy. Uninstall
-	// deletes it if present so a torn-down repo doesn't keep a long-lived
-	// key around. It's a dedicated, FULLSEND_-namespaced secret (via
-	// `fullsend github set` or pasted directly into GitHub settings)
-	// fullsend can safely delete regardless of who created it — unlike
+	// OpenAI static-key secret (ADR 0092). `fullsend repos install`
+	// writes it on GitHub and GitLab for repositories whose inference.auth
+	// is openai-api-key, and probe/converge require it for those repos
+	// only — it is never part of requiredSecrets/requiredSecretsForForge.
+	// GitHub uninstall deletes it if present so a torn-down repo doesn't
+	// keep a long-lived key around. GitLab CI maps it to OPENAI_API_KEY
+	// for the job. GitLab uninstall deletes this prefixed key too;
 	// GitLab's unprefixed, potentially-shared OPENAI_API_KEY CI/CD
-	// variable, which fullsend never forwards and does not delete on
-	// uninstall — see gitlabUninstallSecrets
-	// in internal/repos/uninstall.go for why that one is deliberately not
-	// deleted.
+	// variable is no longer read by the job and is never deleted — see
+	// gitlabUninstallSecrets in internal/repos/uninstall.go.
 	SecretOpenAIAPIKey = "FULLSEND_OPENAI_API_KEY"
 
 	// Legacy uninstall-only variables — GitLab.
@@ -109,14 +118,6 @@ const (
 	VarPollJobURL     = "FULLSEND_POLL_JOB_URL"
 	VarPollMode       = "FULLSEND_POLL_MODE"
 	VarGitLabBotToken = "FULLSEND_GITLAB_BOT_TOKEN"
-
-	// VarGitLabRoleMigration is the GitLab role-identity gate. Absent or
-	// empty means disabled leftover shared-token install state. Runtime
-	// jobs require a registered role credential regardless of gate mode.
-	// Operator-settable values are enforced and rollback. Leftover
-	// disabled and migrating values remain parseable. See
-	// internal/gitlabroles.
-	VarGitLabRoleMigration = "FULLSEND_GITLAB_ROLE_MIGRATION"
 
 	// VarGitLabRoleRegistry is the administrator-controlled GitLab role
 	// registry (JSON policy and credential *references*, never raw
@@ -297,6 +298,26 @@ var ErrNotSupported = errors.New("operation not supported by this forge")
 // IsNotSupported reports whether err indicates an unsupported operation.
 func IsNotSupported(err error) bool {
 	return errors.Is(err, ErrNotSupported)
+}
+
+// SecretProtection describes the exposure controls on an existing repo
+// secret. Forges that always encrypt and mask secrets report both true.
+type SecretProtection struct {
+	// Exists reports whether the secret is present.
+	Exists bool
+	// Masked reports that the forge redacts the value in job logs.
+	Masked bool
+	// Protected reports that the value is only exposed to jobs on
+	// protected branches and tags.
+	Protected bool
+	// FileType reports that the secret is a file-type variable, whose
+	// value jobs receive as a temporary file path rather than the value.
+	// Forges without variable types always report false.
+	FileType bool
+	// EnvironmentScoped reports that the secret is limited to specific
+	// environments, so jobs that declare no environment do not receive
+	// it. Forges without environment scopes always report false.
+	EnvironmentScoped bool
 }
 
 // Repository represents a repository on a git forge.
@@ -770,8 +791,16 @@ type Client interface {
 	IsInstallationToken(ctx context.Context) (bool, error)
 
 	// Secrets and variables
+	//
+	// On GitLab, RepoSecretExists, GetRepoSecretProtection, and
+	// DeleteRepoSecret address only the wildcard-scoped (environment_scope
+	// "*") variable; an environment-specific variable with the same key is
+	// ignored and left untouched.
 	CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
+	// GetRepoSecretProtection reports whether a repo secret exists and the
+	// masking/protection controls applied to it. It never returns the value.
+	GetRepoSecretProtection(ctx context.Context, owner, repo, name string) (SecretProtection, error)
 	DeleteRepoSecret(ctx context.Context, owner, repo, name string) error
 	CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error
 	RepoVariableExists(ctx context.Context, owner, repo, name string) (bool, error)
@@ -779,28 +808,17 @@ type Client interface {
 	ListRepoVariables(ctx context.Context, owner, repo string) (map[string]string, error)
 	DeleteRepoVariable(ctx context.Context, owner, repo, name string) error
 
-	// Org-level secrets (for cross-repo dispatch tokens)
-	CreateOrgSecret(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
+	// Org-level secrets (cleanup of legacy dispatch tokens)
 	OrgSecretExists(ctx context.Context, org, name string) (bool, error)
 	DeleteOrgSecret(ctx context.Context, org, name string) error
-	SetOrgSecretRepos(ctx context.Context, org, name string, repoIDs []int64) error
-	// GetOrgSecretRepos returns the list of repository IDs that have access
-	// to the given org-level secret.
-	GetOrgSecretRepos(ctx context.Context, org, name string) ([]int64, error)
 
-	// Org-level variables (for dispatch function URL)
-	CreateOrUpdateOrgVariable(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
+	// Org-level variables (foreign-mint authorization and mint discovery)
 	// CreateOrUpdateOrgVariableAll creates or updates an org-wide Actions variable
 	// (visibility all). Used for mint FOREIGN policy variables read via the org API.
 	CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error
-	OrgVariableExists(ctx context.Context, org, name string) (bool, error)
 	GetOrgVariable(ctx context.Context, org, name string) (value string, exists bool, err error)
 	ListOrgVariables(ctx context.Context, org string) ([]OrgVariable, error)
 	DeleteOrgVariable(ctx context.Context, org, name string) error
-	SetOrgVariableRepos(ctx context.Context, org, name string, repoIDs []int64) error
-	// GetOrgVariableRepos returns the list of repository IDs that have access
-	// to the given org-level variable.
-	GetOrgVariableRepos(ctx context.Context, org, name string) ([]int64, error)
 
 	// CI/Workflow operations
 	GetWorkflow(ctx context.Context, owner, repo, workflowFile string) (*Workflow, error)
@@ -816,6 +834,10 @@ type Client interface {
 	ListOpenIssues(ctx context.Context, owner, repo string, labels ...string) ([]Issue, error)
 	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]IssueComment, error)
 	CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*IssueComment, error)
+	// GetIssueComment fetches a single comment by ID. Returns ErrNotFound if
+	// the comment does not exist (or, on GitLab, if it could not be located
+	// by the ID-scan lookup UpdateIssueComment/DeleteIssueComment also use).
+	GetIssueComment(ctx context.Context, owner, repo string, commentID int) (*IssueComment, error)
 	UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error
 	DeleteIssueComment(ctx context.Context, owner, repo string, commentID int) error
 	MinimizeComment(ctx context.Context, nodeID, reason string) error
@@ -858,6 +880,14 @@ type Client interface {
 	// ListPullRequestFiles returns the relative file paths changed by a pull
 	// request. On GitHub, the API caps results at 3000 files total.
 	ListPullRequestFiles(ctx context.Context, owner, repo string, number int) ([]string, error)
+	// ListPullRequestCommits returns the commit SHAs on a pull request,
+	// oldest first. The result is the pull request's current commit list,
+	// not a historical record: force-pushing or rebasing the head branch
+	// can replace it, and the first entry is the commit the PR was opened
+	// with only while the PR has not been rewritten (and, for a
+	// multi-commit PR, the PR opens at its last commit). On GitHub the
+	// API caps results at 250 commits.
+	ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error)
 	// ListPullRequestFileDiffs returns the files changed by a pull request
 	// along with their unified diff patches. Use this when you need to
 	// determine which lines are within diff hunks (e.g. for inline comments).
@@ -882,6 +912,13 @@ type Client interface {
 
 	// Workflow run listing
 	ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]WorkflowRun, error)
+	// ListWorkflowRunsSince returns workflow runs for workflowFile created at
+	// or after since, paginating as needed rather than returning only the
+	// newest page. Use this instead of ListWorkflowRuns when the caller must
+	// not miss an older-but-still-eligible run that newer runs (including
+	// ones for other agents) could otherwise push off the first page (#7996
+	// review).
+	ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time) ([]WorkflowRun, error)
 	// ListRecentWorkflowRuns returns recent workflow runs across all workflows.
 	ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]WorkflowRun, error)
 
@@ -939,8 +976,26 @@ type Client interface {
 	// the API instead of bridge jobs and child pipelines.
 	CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (*Pipeline, error)
 
+	// CreatePipelineWithInputs creates a new pipeline on the given ref using
+	// GitLab CI/CD Inputs (spec:inputs) instead of user-defined pipeline
+	// variables. It is additive to CreatePipeline, not a replacement:
+	// callers that still need the variables-map path keep using
+	// CreatePipeline unchanged. Unlike CreatePipeline, this never sends a
+	// "variables" value on the wire, so it remains usable when a project's
+	// ci_pipeline_variables_minimum_override_role is
+	// PipelineVarOverrideNoOneAllowed — GitLab's variable-override gate does
+	// not govern pipeline inputs. See PipelineInputValue for the supported
+	// value shapes. Returns ErrNotSupported on forges with no equivalent
+	// concept (e.g. GitHub Actions).
+	CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]PipelineInputValue) (*Pipeline, error)
+
 	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
 	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
+	// GetPipelineSchedule includes variables omitted by GitLab's list endpoint.
+	GetPipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) (*PipelineSchedule, error)
+	// DeletePipelineScheduleVariable deletes one schedule-level variable from
+	// an existing pipeline schedule. GitHub returns ErrNotSupported.
+	DeletePipelineScheduleVariable(ctx context.Context, owner, repo string, scheduleID int64, key string) error
 	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
 	// UpdatePipelineSchedule sets whether an existing pipeline schedule is
 	// active. Used to reactivate required GitLab schedules that exist but
@@ -1014,6 +1069,73 @@ type Client interface {
 type Pipeline struct {
 	ID     int64
 	WebURL string
+}
+
+// pipelineInputKind identifies which of PipelineInputValue's typed fields
+// is populated.
+type pipelineInputKind int
+
+const (
+	pipelineInputString pipelineInputKind = iota
+	pipelineInputNumber
+	pipelineInputBoolean
+	pipelineInputArray
+)
+
+// PipelineInputValue is a single typed value for a GitLab CI/CD pipeline
+// input (spec:inputs in .gitlab-ci.yml). GitLab's pipeline-creation API
+// accepts string, number, boolean, and array-of-string values for inputs;
+// this type constrains callers to exactly those shapes rather than
+// accepting an untyped any that could silently serialize something GitLab
+// rejects (e.g. a nested object). Construct one with StringInput,
+// NumberInput, BoolInput, or ArrayInput. See
+// https://docs.gitlab.com/ee/ci/inputs/.
+type PipelineInputValue struct {
+	kind pipelineInputKind
+	str  string
+	num  float64
+	bl   bool
+	arr  []string
+}
+
+// StringInput constructs a string-typed pipeline input value.
+func StringInput(v string) PipelineInputValue {
+	return PipelineInputValue{kind: pipelineInputString, str: v}
+}
+
+// NumberInput constructs a number-typed pipeline input value.
+func NumberInput(v float64) PipelineInputValue {
+	return PipelineInputValue{kind: pipelineInputNumber, num: v}
+}
+
+// BoolInput constructs a boolean-typed pipeline input value.
+func BoolInput(v bool) PipelineInputValue {
+	return PipelineInputValue{kind: pipelineInputBoolean, bl: v}
+}
+
+// ArrayInput constructs an array-typed pipeline input value from a slice
+// of strings. The slice is copied so later mutation by the caller does not
+// affect the constructed value.
+func ArrayInput(v []string) PipelineInputValue {
+	cp := make([]string, len(v))
+	copy(cp, v)
+	return PipelineInputValue{kind: pipelineInputArray, arr: cp}
+}
+
+// MarshalJSON renders the value as the bare JSON primitive GitLab expects
+// for a pipeline input: a JSON string, number, boolean, or array of
+// strings — never an object wrapper.
+func (v PipelineInputValue) MarshalJSON() ([]byte, error) {
+	switch v.kind {
+	case pipelineInputNumber:
+		return json.Marshal(v.num)
+	case pipelineInputBoolean:
+		return json.Marshal(v.bl)
+	case pipelineInputArray:
+		return json.Marshal(v.arr)
+	default:
+		return json.Marshal(v.str)
+	}
 }
 
 // ProtectedBranchAccess is one grant on a protected branch.
@@ -1113,4 +1235,24 @@ type GitHubExtensions interface {
 	// Returns forge.ErrNotFound when the user is not a member and has
 	// no pending invitation.
 	GetOrgMembership(ctx context.Context, org, username string) (OrgMembership, error)
+}
+
+// GitLabExtensions provides GitLab-specific operations that are not part
+// of the cross-forge Client interface. Callers type-assert to this
+// interface when they already know a note's parent noteable (issue or
+// merge request) type and IID, and want to address it directly instead
+// of through GetIssueComment/UpdateIssueComment's ID-only scan — the
+// scan is bounded and, because it is driven by the client's own fixed
+// noteTarget, cannot find a note whose actual parent type differs from
+// how the client was constructed.
+type GitLabExtensions interface {
+	// GetNoteOnParent fetches a note by its parent noteable's IID and the
+	// note's own ID, addressing the GitLab Notes API path directly.
+	// parentType must be "issues" or "merge_requests".
+	GetNoteOnParent(ctx context.Context, owner, repo, parentType string, parentIID, noteID int) (*IssueComment, error)
+
+	// UpdateNoteOnParent updates a note's body by its parent noteable's
+	// IID and the note's own ID, addressing the GitLab Notes API path
+	// directly. parentType must be "issues" or "merge_requests".
+	UpdateNoteOnParent(ctx context.Context, owner, repo, parentType string, parentIID, noteID int, body string) error
 }

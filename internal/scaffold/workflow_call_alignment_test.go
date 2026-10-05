@@ -768,6 +768,87 @@ func TestReusableDispatchWorkflowContent(t *testing.T) {
 	assert.Regexp(t, `(?s)ready-for-review"\s*\]\];\s*then\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
 }
 
+// TestCustomAppSetReviewBotWiring ensures every GitHub review/fix dispatch
+// path receives the configured app-set prefix and recognizes its exact review
+// bot identity. The scaffold dispatch workflow is a legacy, deprecated
+// per-org compatibility path retained only until ADR 0044 removal; workflow
+// parity requires it to stay aligned with the supported per-repo path.
+func TestCustomAppSetReviewBotWiring(t *testing.T) {
+	cases := []struct {
+		name         string
+		content      func(*testing.T) []byte
+		assertCustom bool
+	}{
+		{"reusable-dispatch", loadRepoFile(".github/workflows/reusable-dispatch.yml"), true},
+		{"reusable-fix", loadRepoFile(".github/workflows/reusable-fix.yml"), true},
+		{"reusable-review", loadRepoFile(".github/workflows/reusable-review.yml"), false},
+		{"scaffold-dispatch", loadScaffoldFile(".github/workflows/dispatch.yml"), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := string(tc.content(t))
+			assert.Contains(t, s, "FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}")
+			if tc.assertCustom {
+				assert.Contains(t, s, `CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"`)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name    string
+		content func(*testing.T) []byte
+	}{
+		{"reusable-dispatch", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+		{"scaffold-dispatch", loadScaffoldFile(".github/workflows/dispatch.yml")},
+	} {
+		t.Run(tc.name+"-route", func(t *testing.T) {
+			s := string(tc.content(t))
+			section := extractStepSection(t, s, "Determine stage")
+			assert.Contains(t, section, "FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}")
+			assert.Contains(t, section, `CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"`)
+			assert.Regexp(t,
+				regexp.QuoteMeta(`"${REVIEW_USER_LOGIN}" == "${CUSTOM_REVIEW_BOT}"`),
+				section,
+				"custom review identity must be part of the stage-routing comparison")
+		})
+	}
+
+	for _, tc := range []struct {
+		name    string
+		content func(*testing.T) []byte
+		steps   []string
+	}{
+		{
+			"reusable-dispatch",
+			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
+			[]string{"Pre-fetch prior review context", "Check fix eligibility", "Pre-fetch review body"},
+		},
+		{
+			"reusable-fix",
+			loadRepoFile(".github/workflows/reusable-fix.yml"),
+			[]string{"Check fix eligibility", "Pre-fetch review body"},
+		},
+		{
+			"reusable-review",
+			loadRepoFile(".github/workflows/reusable-review.yml"),
+			[]string{"Pre-fetch prior review context"},
+		},
+	} {
+		t.Run(tc.name+"-consumers", func(t *testing.T) {
+			s := string(tc.content(t))
+			for _, stepName := range tc.steps {
+				section := extractStepSection(t, s, stepName)
+				assert.Contains(t, section, "FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}",
+					"%s must receive the configured app-set prefix", stepName)
+				if stepName == "Pre-fetch review body" {
+					assert.Contains(t, section, `--arg custom_bot "${CUSTOM_REVIEW_BOT}"`)
+					assert.Contains(t, section, `($custom_bot != "" and .user.login == $custom_bot)`)
+				}
+			}
+		})
+	}
+}
+
 // TestDispatchPunctuationStrip ensures both dispatch files strip trailing
 // punctuation clusters (not just a single char) from COMMAND and SECOND_WORD.
 // See #5582.
@@ -1809,7 +1890,10 @@ func TestHarnessRunMapsHyphensInRoleIdentifiers(t *testing.T) {
 // embedded scaffold by `fullsend run` instead. policies/ is on neither list:
 // the scaffold ships no policy (#6834).
 func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
-	notLayered := map[string]bool{"profiles": true}
+	// providers/ and profiles/ stay in layeredDirs so they are never
+	// installed, but CI does not layer them: fullsend run resolves a bare
+	// provider name and its profile from the binary (#7268).
+	notLayered := map[string]bool{"profiles": true, "providers": true}
 	want := make([]string, 0, len(layeredDirs))
 	for _, d := range layeredDirs {
 		if d := strings.TrimSuffix(d, "/"); !notLayered[d] {
@@ -1840,4 +1924,101 @@ func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
 			assert.Equal(t, want, got, "%s LAYERED_DIRS must match scaffold.layeredDirs", f.name)
 		})
 	}
+}
+
+// TestGCPSetupOccursInsideSingleRun pins the per-agent route: dispatch passes
+// optional GCP inputs to the action, which invokes fullsend run once and lets
+// that process prepare credentials only when it resolves Vertex.
+func TestGCPSetupOccursInsideSingleRun(t *testing.T) {
+	stages := []string{"dispatch"}
+	for _, stage := range stages {
+		t.Run("reusable-"+stage, func(t *testing.T) {
+			path := filepath.Join("..", "..", ".github", "workflows", fmt.Sprintf("reusable-%s.yml", stage))
+			content, err := os.ReadFile(path)
+			require.NoError(t, err)
+			var wf reusableWorkflow
+			require.NoError(t, yaml.Unmarshal(content, &wf))
+			for _, name := range []string{"FULLSEND_GCP_WIF_PROVIDER", "FULLSEND_GCP_PROJECT_ID"} {
+				decl, ok := wf.On.WorkflowCall.Secrets[name]
+				require.True(t, ok, "%s must still declare secret %s", path, name)
+				assert.False(t, decl.Required, "%s: secret %s must be optional", path, name)
+			}
+		})
+	}
+
+	t.Run("fullsend action", func(t *testing.T) {
+		path := filepath.Join("..", "..", "action.yml")
+		content, err := os.ReadFile(path)
+		require.NoError(t, err)
+		var action struct {
+			Inputs map[string]struct {
+				Required bool `yaml:"required"`
+			} `yaml:"inputs"`
+			Runs struct {
+				Steps []struct {
+					Name string            `yaml:"name"`
+					If   string            `yaml:"if"`
+					Env  map[string]string `yaml:"env"`
+					Run  string            `yaml:"run"`
+				} `yaml:"steps"`
+			} `yaml:"runs"`
+		}
+		require.NoError(t, yaml.Unmarshal(content, &action))
+		assert.False(t, action.Inputs["gcp_wif_provider"].Required, "gcp_wif_provider must be optional")
+		assert.False(t, action.Inputs["gcp_project_id"].Required, "gcp_project_id must be optional")
+
+		steps := make(map[string]struct {
+			If  string
+			Env map[string]string
+		}, len(action.Runs.Steps))
+		runInvocations := 0
+		for _, step := range action.Runs.Steps {
+			steps[step.Name] = struct {
+				If  string
+				Env map[string]string
+			}{If: step.If, Env: step.Env}
+			runInvocations += strings.Count(step.Run, "fullsend run ")
+		}
+		for _, name := range []string{
+			"Resolve inference provider",
+			"Check Vertex credentials",
+			"Pre-mask GCP credential file path",
+			"Authenticate to Google Cloud (WIF)",
+			"Mask GCP credential file paths",
+			"Prepare sandbox credentials",
+		} {
+			assert.NotContains(t, steps, name)
+		}
+		require.Contains(t, steps, "Run fullsend")
+		assert.Equal(t, "${{ inputs.gcp_wif_provider }}", steps["Run fullsend"].Env["FULLSEND_GCP_WIF_PROVIDER"])
+		assert.Equal(t, "${{ inputs.gcp_project_id }}", steps["Run fullsend"].Env["FULLSEND_GCP_PROJECT_ID"])
+		assert.Equal(t, 1, runInvocations)
+	})
+
+	t.Run("functional tests", func(t *testing.T) {
+		path := filepath.Join("..", "..", ".github", "workflows", "functional-tests.yml")
+		content, err := os.ReadFile(path)
+		require.NoError(t, err)
+		var workflow struct {
+			Jobs map[string]struct {
+				Steps []struct {
+					Name string            `yaml:"name"`
+					Env  map[string]string `yaml:"env"`
+				} `yaml:"steps"`
+			} `yaml:"jobs"`
+		}
+		require.NoError(t, yaml.Unmarshal(content, &workflow))
+		var runEnv map[string]string
+		for _, step := range workflow.Jobs["functional-tests"].Steps {
+			if step.Name == "Run functional tests" {
+				runEnv = step.Env
+				break
+			}
+		}
+		require.NotNil(t, runEnv, "Run functional tests step not found")
+		// Functional tests authenticate in an earlier step; GCP inputs here
+		// would make the run replace that credential file with direct WIF.
+		assert.NotContains(t, runEnv, "FULLSEND_GCP_WIF_PROVIDER")
+		assert.NotContains(t, runEnv, "FULLSEND_GCP_PROJECT_ID")
+	})
 }

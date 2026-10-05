@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"os"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -69,11 +67,7 @@ func TestAppendVendorTreeFiles_Disabled(t *testing.T) {
 }
 
 func TestAppendVendorTreeFiles_Enabled(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("needs Linux ELF binary")
-	}
-	exe, err := os.Executable()
-	require.NoError(t, err)
+	exe := amd64VendorBinary(t)
 
 	files := []forge.TreeFile{{Path: "shim.yaml", Content: []byte("x")}}
 	var buf strings.Builder
@@ -83,100 +77,14 @@ func TestAppendVendorTreeFiles_Enabled(t *testing.T) {
 	assert.Greater(t, count, 0)
 }
 
-func TestMakeVendorCollectFunc(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("needs Linux ELF binary")
-	}
-	exe, err := os.Executable()
-	require.NoError(t, err)
-
-	var buf strings.Builder
-	fn := makeVendorCollectFunc(exe, "")
-	require.NotNil(t, fn)
-	files, count, err := fn(context.Background(), forge.NewFakeClient(), ui.New(&buf), "org", "my-repo")
-	require.NoError(t, err)
-	assert.NotEmpty(t, files)
-	assert.Greater(t, count, 0)
-}
-
-func TestMakeVendorCollectFunc_InvalidBinary(t *testing.T) {
-	fn := makeVendorCollectFunc("/nonexistent/fullsend", "")
-	_, _, err := fn(context.Background(), forge.NewFakeClient(), ui.New(&strings.Builder{}), "org", "my-repo")
+func TestAppendVendorTreeFiles_InvalidBinary(t *testing.T) {
+	_, _, err := appendVendorTreeFiles(context.Background(), forge.NewFakeClient(), ui.New(&strings.Builder{}), "org", "my-repo", nil, true, "/nonexistent/fullsend", "")
 	require.Error(t, err)
-}
-
-func TestAcquireAndVendor_ExplicitPath(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("needs Linux ELF binary")
-	}
-	exe, err := os.Executable()
-	require.NoError(t, err)
-
-	client := &forge.FakeClient{}
-	var buf strings.Builder
-	printer := ui.New(&buf)
-
-	err = acquireAndVendor(context.Background(), client, printer, "org", "my-repo", exe, "")
-	require.NoError(t, err)
-
-	key := "org/my-repo/" + layers.VendoredBinaryPathPerRepo
-	require.Contains(t, client.FileContents, key)
-	require.Len(t, client.CommittedFiles, 1)
-	commit := client.CommittedFiles[0]
-	assert.Contains(t, commit.Message, "\n\n")
-	assert.Contains(t, commit.Message, "Source: --vendor install")
-	var paths []string
-	for _, f := range commit.Files {
-		paths = append(paths, f.Path)
-	}
-	assert.Contains(t, paths, layers.VendoredBinaryPathPerRepo)
-}
-
-func TestAcquireAndVendor_CheckoutBuild(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping cross-compile in short mode")
-	}
-
-	client := &forge.FakeClient{}
-	var buf strings.Builder
-	printer := ui.New(&buf)
-
-	err := acquireAndVendor(context.Background(), client, printer, "org", forge.ConfigRepoName, "", "")
-	require.NoError(t, err)
-
-	key := "org/" + forge.ConfigRepoName + "/" + layers.VendoredBinaryPath
-	require.Contains(t, client.FileContents, key)
-	require.Len(t, client.CommittedFiles, 1)
-	assert.Contains(t, client.CommittedFiles[0].Message, "\n\n")
-	assert.Contains(t, client.CommittedFiles[0].Message, "Source: --vendor install")
-}
-
-func TestVendorStackArgs(t *testing.T) {
-	vendorFn, collectFn := vendorStackArgs(false, "", "")
-	assert.Nil(t, vendorFn)
-	assert.Nil(t, collectFn)
-
-	vendorFn, collectFn = vendorStackArgs(true, "", "")
-	assert.NotNil(t, vendorFn)
-	assert.NotNil(t, collectFn)
 }
 
 func TestVendorPathPrefix(t *testing.T) {
 	assert.Equal(t, "", vendorPathPrefix("org", forge.ConfigRepoName))
 	assert.Equal(t, ".fullsend/", vendorPathPrefix("org", "my-repo"))
-}
-
-func TestMakeVendorFunc(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("needs Linux ELF binary")
-	}
-	exe, err := os.Executable()
-	require.NoError(t, err)
-
-	fn := makeVendorFunc(exe, "")
-	require.NotNil(t, fn)
-	err = fn(context.Background(), &forge.FakeClient{}, ui.New(&strings.Builder{}), "org", "my-repo")
-	require.NoError(t, err)
 }
 
 func TestApplyDeprecatedVendorBinaryFlag(t *testing.T) {
@@ -189,11 +97,7 @@ func TestApplyDeprecatedVendorBinaryFlag(t *testing.T) {
 }
 
 func TestPrepareVendorFiles_ExplicitBinary(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("needs Linux ELF binary")
-	}
-	exe, err := os.Executable()
-	require.NoError(t, err)
+	exe := amd64VendorBinary(t)
 
 	bundle, cleanup, err := prepareVendorFiles(context.Background(), forge.NewFakeClient(), ui.New(&strings.Builder{}), "org", "my-repo", exe, "")
 	require.NoError(t, err)

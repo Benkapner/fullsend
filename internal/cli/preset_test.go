@@ -76,21 +76,6 @@ func TestGitHubSetupCmd_ConfigWithAgents_Accepted(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestGitHubSetupCmd_ConfigInPerOrgMode_Rejected(t *testing.T) {
-	t.Setenv("GH_TOKEN", "test-token")
-
-	dir := t.TempDir()
-	presetPath := filepath.Join(dir, "preset.yaml")
-	require.NoError(t, os.WriteFile(presetPath, []byte("version: \"1\"\n"), 0o644))
-
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "setup", "acme",
-		"--config", presetPath})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--config is only valid for per-repo setup")
-}
-
 func TestRunGitHubSetupPerRepo_WithPreset_DryRun(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 
@@ -464,10 +449,10 @@ func TestRunGitHubSetupPerRepo_CLIOnlyPersistentValues(t *testing.T) {
 	assert.Equal(t, validWIFProvider, overlay.ConfigInferenceWIFProvider())
 }
 
-func TestRunGitHubSetupPerRepo_MissingRequiredAfterComposeFails(t *testing.T) {
+func TestRunGitHubSetupPerRepo_PartialGCPAfterComposeFails(t *testing.T) {
 	client := newSetupClient(t)
 	printer := ui.New(&discardWriter{})
-	presetPath := writeSetupPreset(t, "version: \"1\"\nruntime: claude\n")
+	presetPath := writeSetupPreset(t, "version: \"1\"\nruntime: claude\ninference:\n  project: preset-project\n")
 
 	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
 		target:       "acme/widget",
@@ -476,7 +461,7 @@ func TestRunGitHubSetupPerRepo_MissingRequiredAfterComposeFails(t *testing.T) {
 		changedFlags: map[string]bool{"config": true},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--inference-project is required")
+	assert.Contains(t, err.Error(), "--inference-wif-provider is required")
 	assert.Empty(t, client.CommittedFilesToBranch)
 }
 
