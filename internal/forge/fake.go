@@ -3,6 +3,7 @@ package forge
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,11 +31,16 @@ func NewFakeClient() *FakeClient {
 		Refs:                     make(map[string]string),
 		ProtectedBranches:        make(map[string]bool),
 		ProtectedBranchRules:     make(map[string]*ProtectedBranchRule),
+		ProtectedTags:            make(map[string]bool),
 		PipelineSchedules:        make(map[string][]PipelineSchedule),
 		ForceReachableCommits:    make(map[string]int),
 		PipelineTriggerTokens:    make(map[string][]PipelineTriggerToken),
 		ProjectHooks:             make(map[string][]ProjectHook),
 		PipelineVarOverrideRoles: make(map[string]string),
+		// New trigger tokens are owned by a Developer-level user unless a
+		// test says otherwise.
+		TriggerTokenOwnerID: 1001,
+		ProjectMemberAccess: map[int64]int{1001: GitLabAccessLevelDeveloper},
 	}
 }
 
@@ -230,6 +236,7 @@ type FakeClient struct {
 
 	// Org-level variable state
 	OrgVariables      map[string]bool   // key: "org/name"
+	InstanceVariables []string          // instance-level CI/CD variable names
 	OrgVariableValues map[string]string // key: "org/name" → value
 
 	// Protected branches for IsProtectedBranch.
@@ -240,6 +247,9 @@ type FakeClient struct {
 	// protected even if ProtectedBranches is false.
 	ProtectedBranchRules map[string]*ProtectedBranchRule
 
+	// ProtectedTags lists protected-tag rules for ListProtectedTags.
+	ProtectedTags map[string]bool // key: "owner/repo/tag-pattern"
+
 	// GrantedProtectedBranchMergeUsers records GrantProtectedBranchMergeUser calls.
 	GrantedProtectedBranchMergeUsers []ProtectedBranchMergeGrantRecord
 
@@ -248,6 +258,12 @@ type FakeClient struct {
 
 	// PipelineTriggerTokens stores trigger tokens keyed by "owner/repo".
 	PipelineTriggerTokens map[string][]PipelineTriggerToken
+	// TriggerTokenOwnerID is the owner recorded on tokens minted by
+	// CreatePipelineTriggerToken (GitLab binds a token to its creator).
+	TriggerTokenOwnerID int64
+	// ProjectMemberAccess maps a user ID to its effective project access
+	// level for GetProjectMemberAccessLevel; absent users are not members.
+	ProjectMemberAccess map[int64]int
 
 	// ProjectHooks stores project webhooks keyed by "owner/repo".
 	ProjectHooks map[string][]ProjectHook
@@ -2232,6 +2248,22 @@ func (f *FakeClient) GetOrgVariable(_ context.Context, org, name string) (string
 	return f.OrgVariableValues[key], true, nil
 }
 
+// ListInstanceVariables returns the instance-level CI/CD variable names
+// configured in InstanceVariables.
+func (f *FakeClient) ListInstanceVariables(_ context.Context) ([]OrgVariable, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListInstanceVariables"); e != nil {
+		return nil, e
+	}
+	out := make([]OrgVariable, 0, len(f.InstanceVariables))
+	for _, name := range f.InstanceVariables {
+		out = append(out, OrgVariable{Name: name})
+	}
+	return out, nil
+}
+
 func (f *FakeClient) ListOrgVariables(_ context.Context, org string) ([]OrgVariable, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2315,10 +2347,66 @@ func (f *FakeClient) GetProtectedBranch(_ context.Context, owner, repo, branch s
 		// Developers can merge, so a Developer-level poller can create pipelines.
 		return &ProtectedBranchRule{
 			Name:              branch,
-			MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: 30}},
+			MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: GitLabAccessLevelDeveloper}},
 		}, nil
 	}
 	return nil, nil
+}
+
+func (f *FakeClient) ListProtectedBranches(_ context.Context, owner, repo string) ([]ProtectedBranchRule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListProtectedBranches"); e != nil {
+		return nil, e
+	}
+
+	prefix := owner + "/" + repo + "/"
+	seen := map[string]bool{}
+	var out []ProtectedBranchRule
+	for key, rule := range f.ProtectedBranchRules {
+		name, ok := strings.CutPrefix(key, prefix)
+		if !ok || rule == nil {
+			continue
+		}
+		seen[name] = true
+		r := *cloneProtectedBranchRule(rule)
+		r.Name = name
+		out = append(out, r)
+	}
+	for key, protected := range f.ProtectedBranches {
+		name, ok := strings.CutPrefix(key, prefix)
+		if !ok || !protected || seen[name] {
+			continue
+		}
+		out = append(out, ProtectedBranchRule{
+			Name:              name,
+			MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: GitLabAccessLevelDeveloper}},
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (f *FakeClient) ListProtectedTags(_ context.Context, owner, repo string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListProtectedTags"); e != nil {
+		return nil, e
+	}
+
+	prefix := owner + "/" + repo + "/"
+	var out []string
+	for key, protected := range f.ProtectedTags {
+		name, ok := strings.CutPrefix(key, prefix)
+		if !ok || !protected {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func (f *FakeClient) GrantProtectedBranchMergeUser(_ context.Context, owner, repo, branch string, userID int) error {
@@ -2341,7 +2429,7 @@ func (f *FakeClient) GrantProtectedBranchMergeUser(_ context.Context, owner, rep
 	if rule == nil && f.ProtectedBranches[key] {
 		rule = &ProtectedBranchRule{
 			Name:              branch,
-			MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: 30}},
+			MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: GitLabAccessLevelDeveloper}},
 		}
 	}
 	if rule == nil {
@@ -2651,6 +2739,7 @@ func (f *FakeClient) CreatePipelineTriggerToken(_ context.Context, owner, repo, 
 		ID:          f.triggerTokenSeq,
 		Description: description,
 		Token:       fmt.Sprintf("glptt-fake-%d", f.triggerTokenSeq),
+		OwnerID:     f.TriggerTokenOwnerID,
 	}
 	f.CreatedTriggerTokens = append(f.CreatedTriggerTokens, tok)
 	key := owner + "/" + repo
@@ -2677,6 +2766,20 @@ func (f *FakeClient) ListPipelineTriggerTokens(_ context.Context, owner, repo st
 	out := make([]PipelineTriggerToken, len(src))
 	copy(out, src)
 	return out, nil
+}
+
+func (f *FakeClient) GetProjectMemberAccessLevel(_ context.Context, _, _ string, userID int64) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetProjectMemberAccessLevel"); e != nil {
+		return 0, e
+	}
+	level, ok := f.ProjectMemberAccess[userID]
+	if !ok {
+		return 0, fmt.Errorf("%w: project member %d", ErrNotFound, userID)
+	}
+	return level, nil
 }
 
 func (f *FakeClient) RevokePipelineTriggerToken(_ context.Context, owner, repo string, tokenID int64) error {

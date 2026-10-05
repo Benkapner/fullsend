@@ -74,6 +74,66 @@ func TestListPipelineTriggerTokens(t *testing.T) {
 	assert.Equal(t, "other", tokens[1].Description)
 }
 
+func TestPipelineTriggerTokens_RecordOwner(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var postCalls, getCalls int
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/triggers", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			postCalls++
+			writeJSON(t, w, http.StatusCreated, map[string]any{
+				"id": 7, "description": "d", "token": "glptt-x",
+				"owner": map[string]any{"id": 42, "username": "installer"},
+			})
+			return
+		}
+		getCalls++
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"id": 1, "description": "d", "owner": map[string]any{"id": 43}},
+			{"id": 2, "description": "legacy", "owner": nil},
+		})
+	})
+
+	created, err := client.CreatePipelineTriggerToken(ctx, "myorg", "myrepo", "d")
+	require.NoError(t, err)
+	assert.Equal(t, int64(42), created.OwnerID)
+	assert.Equal(t, 1, postCalls, "the POST handler must be invoked")
+
+	listed, err := client.ListPipelineTriggerTokens(ctx, "myorg", "myrepo")
+	require.NoError(t, err)
+	assert.Equal(t, 1, getCalls, "the GET handler must be invoked")
+	require.Len(t, listed, 2)
+	assert.Equal(t, int64(43), listed[0].OwnerID)
+	assert.Zero(t, listed[1].OwnerID, "a token without an owner reports 0 so callers fail closed")
+}
+
+func TestGetProjectMemberAccessLevel(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var memberCalls, missingCalls int
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/members/all/42", func(w http.ResponseWriter, r *http.Request) {
+		memberCalls++
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{"id": 42, "access_level": 40})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/members/all/99", func(w http.ResponseWriter, r *http.Request) {
+		missingCalls++
+		writeJSON(t, w, http.StatusNotFound, map[string]any{"message": "404 Not found"})
+	})
+
+	level, err := client.GetProjectMemberAccessLevel(ctx, "myorg", "myrepo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, forge.GitLabAccessLevelMaintainer, level)
+	assert.Equal(t, 1, memberCalls, "the member handler must be invoked")
+
+	_, err = client.GetProjectMemberAccessLevel(ctx, "myorg", "myrepo", 99)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrNotFound)
+	assert.Equal(t, 1, missingCalls, "the not-found handler must be invoked, not ServeMux's default 404")
+}
+
 func TestListPipelineTriggerTokens_StripsTokenFromPayload(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -273,6 +333,30 @@ func TestListProjectHooks(t *testing.T) {
 	assert.True(t, hooks[0].IssuesEvents)
 	assert.Empty(t, hooks[0].Token)
 	assert.Equal(t, "https://example.test/two", hooks[1].URL)
+}
+
+func TestListProjectHooks_DeliveryState(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/hooks", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"id": 1, "url": "https://example.test/one", "alert_status": "executable", "disabled_until": nil},
+			{"id": 2, "url": "https://example.test/two", "alert_status": "temporarily_disabled", "disabled_until": "2099-01-01T00:00:00.000Z"},
+			{"id": 3, "url": "https://example.test/three", "alert_status": "disabled"},
+			{"id": 4, "url": "https://example.test/four"},
+		})
+	})
+
+	hooks, err := client.ListProjectHooks(ctx, "myorg", "myrepo")
+	require.NoError(t, err)
+	require.Len(t, hooks, 4)
+	assert.False(t, hooks[0].HookDeliveryDisabled())
+	assert.Equal(t, "temporarily_disabled", hooks[1].AlertStatus)
+	assert.Equal(t, "2099-01-01T00:00:00.000Z", hooks[1].DisabledUntil)
+	assert.False(t, hooks[1].HookDeliveryDisabled())
+	assert.True(t, hooks[2].HookDeliveryDisabled())
+	assert.False(t, hooks[3].HookDeliveryDisabled())
 }
 
 func TestListProjectHooks_Paginates(t *testing.T) {

@@ -4206,6 +4206,11 @@ func (c *LiveClient) GetOrgVariable(ctx context.Context, org, name string) (stri
 	}
 }
 
+// ListInstanceVariables is not supported on GitHub.
+func (c *LiveClient) ListInstanceVariables(_ context.Context) ([]forge.OrgVariable, error) {
+	return nil, forge.ErrNotSupported
+}
+
 // ListOrgVariables lists org-level Actions variables (paginated).
 func (c *LiveClient) ListOrgVariables(ctx context.Context, org string) ([]forge.OrgVariable, error) {
 	var all []forge.OrgVariable
@@ -4351,6 +4356,11 @@ func (c *LiveClient) RevokePipelineTriggerToken(_ context.Context, _, _ string, 
 	return forge.ErrNotSupported
 }
 
+// GetProjectMemberAccessLevel is not supported on GitHub.
+func (c *LiveClient) GetProjectMemberAccessLevel(_ context.Context, _, _ string, _ int64) (int, error) {
+	return 0, forge.ErrNotSupported
+}
+
 // CreateProjectHook is not supported on GitHub.
 func (c *LiveClient) CreateProjectHook(_ context.Context, _, _ string, _ forge.ProjectHook) (*forge.ProjectHook, error) {
 	return nil, forge.ErrNotSupported
@@ -4369,6 +4379,16 @@ func (c *LiveClient) UpdateProjectHook(_ context.Context, _, _ string, _ int64, 
 // DeleteProjectHook is not supported on GitHub.
 func (c *LiveClient) DeleteProjectHook(_ context.Context, _, _ string, _ int64) error {
 	return forge.ErrNotSupported
+}
+
+// ListProtectedBranches is not supported on GitHub.
+func (c *LiveClient) ListProtectedBranches(_ context.Context, _, _ string) ([]forge.ProtectedBranchRule, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// ListProtectedTags is not supported on GitHub.
+func (c *LiveClient) ListProtectedTags(_ context.Context, _, _ string) ([]string, error) {
+	return nil, forge.ErrNotSupported
 }
 
 // GetPipelineVariablesMinimumOverrideRole is not supported on GitHub.
