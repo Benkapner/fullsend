@@ -118,6 +118,7 @@ func TestCodexRuntimeBootstrap_WritesConfigAndManifest(t *testing.T) {
 	assert.Contains(t, cfg, "You are the triage agent. Use gh.")
 	assert.Contains(t, cfg, "FULLSEND_RUNTIME=codex", "the runtime note tells skills which runtime they are on")
 	assert.Contains(t, cfg, "at most 200 lines", "the runtime note tells Codex to chunk long skill reads (#7831)")
+	assert.Contains(t, cfg, "END { print NR }", "the runtime note counts lines with awk, so an unterminated last line is read (#7831)")
 	assert.Contains(t, cfg, "never skip the back half", "the runtime note's retry rule must not silently drop lines on retry (#7831)")
 
 	// The auth script is uploaded byte-identical to the embedded copy — the
@@ -281,7 +282,8 @@ func TestCodexDeveloperInstructions(t *testing.T) {
 	// Codex 0.157.0 truncates a single exec at 10k tokens (head+tail),
 	// which drops the middle of long SKILL.md files (#7831). The note
 	// must keep the operational rule, not just mention truncation.
-	assert.Contains(t, got, "`wc -l`")
+	// awk's NR, not `wc -l`: see the comment on codexNoSubagentNote.
+	assert.Contains(t, got, "`awk 'END { print NR }' <file>`")
 	assert.Contains(t, got, "`sed -n")
 	assert.Contains(t, got, "at most 200 lines")
 	assert.Contains(t, got, "one range per tool call")

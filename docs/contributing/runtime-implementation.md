@@ -1086,7 +1086,8 @@ flowchart TB
   0.159.3) its `.codex/skills` even with the project untrusted; both are covered by the host-side
   and in-sandbox context scans, which match `SKILL.md` anywhere in the repo. The agent reads those
   files through the shell, and Codex 0.157.0 truncates a single exec at 10,000 tokens (head and
-  tail), so `codexNoSubagentNote` tells it to `wc -l` then `sed -n` a long `SKILL.md` in at most
+  tail), so `codexNoSubagentNote` tells it to count lines with `awk 'END { print NR }'` (`wc -l`
+  misses a last line with no trailing newline) then `sed -n` a long `SKILL.md` in at most
   200-line ranges, one per tool call (#7831).
 - **AGENTS.md** — codex skips a project's own `AGENTS.md` while the project is untrusted
   (`codex-rs/core/src/agents_md.rs`), but always loads `$CODEX_HOME/AGENTS.md` as user
