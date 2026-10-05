@@ -194,6 +194,60 @@ func triggerGlobalExecProblem(content []byte, file string) string {
 	return ""
 }
 
+// triggerDispatcherExecProblem reports execution configuration set directly
+// on the dispatcher job in the committed dispatcher template that runs
+// outside the dispatcher's payload authorization and secret unsets: a
+// job-level after_script (a separate shell that runs even after script-level
+// authentication fails), services, and hooks (pre_get_sources_script). These
+// job-level keys are not governed by inherit: default: false, which only
+// controls global and default configuration. Merge-derived and aliased
+// values are resolved; a job whose effective configuration cannot be
+// evaluated (extends, an unresolvable merge source or alias) is reported
+// too, because the dispatcher's execution contract cannot be established.
+// Only an explicitly empty value is accepted.
+func triggerDispatcherExecProblem(content []byte, file string) string {
+	docs, err := decodeGitLabDocuments(content)
+	if err != nil || len(docs) == 0 || docs[len(docs)-1].Kind != yaml.DocumentNode || len(docs[len(docs)-1].Content) == 0 {
+		return ""
+	}
+	root := docs[len(docs)-1].Content[0]
+	if root.Kind != yaml.MappingNode {
+		return ""
+	}
+	jobNode, ok := effectiveMappingValue(root, gitlabDispatcherJobName)
+	if !ok || jobNode == nil {
+		return ""
+	}
+	unevaluable := func(what string) string {
+		return fmt.Sprintf("%s has a dispatcher job with %s that cannot be evaluated, so the execution configuration it runs outside the dispatcher's authorization cannot be established; remove after_script, services and hooks from the dispatcher job", file, what)
+	}
+	job := resolveAlias(jobNode)
+	if job == nil || job.Kind != yaml.MappingNode {
+		return unevaluable("a job definition")
+	}
+	if findMappingValue(job, "extends") != nil {
+		return unevaluable("extends")
+	}
+	for _, key := range []string{"after_script", "services", "hooks"} {
+		v, ok := effectiveMappingValue(job, key)
+		if !ok {
+			return unevaluable("a merge or alias")
+		}
+		if v == nil {
+			continue
+		}
+		resolved := resolveAlias(v)
+		if resolved == nil {
+			return unevaluable("a " + key + " alias")
+		}
+		if (resolved.Kind == yaml.SequenceNode || resolved.Kind == yaml.MappingNode) && len(resolved.Content) == 0 {
+			continue
+		}
+		return fmt.Sprintf("%s defines job-level %s on the dispatcher job, which would run in a trigger pipeline outside the dispatcher's payload authorization and secret unsets; remove it", file, key)
+	}
+	return ""
+}
+
 // dispatcherDisablesDefaultInheritance reports whether the committed
 // dispatcher template's job sets inherit: default: false, which stops it
 // inheriting any global or default execution configuration.
@@ -262,6 +316,13 @@ func gitlabTriggerExtraWorkProblem(ctx context.Context, client forge.Client, own
 		}
 		if problem := triggerExtraWorkProblem(content, "the committed "+f.path, defaultBranch, f.allowInclude, f.allowJob); problem != "" {
 			return "webhook fast-path deferred: " + problem, nil
+		}
+		if f.path == fullsendDispatcherTemplatePath {
+			// The dispatcher job itself is skipped by the job checks above;
+			// its own job-level execution surfaces are checked here.
+			if problem := triggerDispatcherExecProblem(content, "the committed "+f.path); problem != "" {
+				return "webhook fast-path deferred: " + problem, nil
+			}
 		}
 		if checkInherited {
 			if problem := triggerGlobalExecProblem(content, "the committed "+f.path); problem != "" {

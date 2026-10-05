@@ -121,6 +121,15 @@ type gitlabWebhookState struct {
 	webhookSecret string                       // usable stored FULLSEND_WEBHOOK_SECRET value ("" when missing or unsafe)
 	hooks         []forge.ProjectHook          // Fullsend-managed webhooks
 
+	// unboundPrivilegedTrigger reports that the project has a pipeline trigger
+	// token that Fullsend does not manage and whose owner is at or above
+	// Maintainer (or cannot be verified). GitLab never returns trigger token
+	// values on list, so the stored FULLSEND_TRIGGER_TOKEN cannot be proven
+	// to belong to the managed trigger the webhook description names; it could
+	// be that unmanaged token. While this is set the stored token is never
+	// reused.
+	unboundPrivilegedTrigger bool
+
 	// triggerUnsafe and secretUnsafe report a stored credential whose
 	// CI/CD variable is not a masked, protected, wildcard-scoped
 	// environment variable. Its value is discarded and regenerated.
@@ -253,9 +262,12 @@ func probeGitLabWebhookState(ctx context.Context, client forge.Client, baseURL, 
 		// Trigger token values may be echoed and none are known yet.
 		return st, safeAPIError("listing pipeline trigger tokens", err)
 	}
+	var unmanaged []forge.PipelineTriggerToken
 	for _, t := range triggers {
 		if t.Description == GitLabWebhookTriggerDescription {
 			st.triggers = append(st.triggers, t)
+		} else {
+			unmanaged = append(unmanaged, t)
 		}
 	}
 
@@ -306,6 +318,10 @@ func probeGitLabWebhookState(ctx context.Context, client forge.Client, baseURL, 
 		*cred.store = cred.value
 	}
 
+	if st.triggerToken != "" {
+		st.unboundPrivilegedTrigger = unmanagedTriggerExceedsCeiling(ctx, client, owner, repo, unmanaged)
+	}
+
 	hooks, err := client.ListProjectHooks(ctx, owner, repo)
 	if err != nil {
 		// Existing hooks may carry a bearer token different from the stored
@@ -320,23 +336,67 @@ func probeGitLabWebhookState(ctx context.Context, client forge.Client, baseURL, 
 	return st, nil
 }
 
+// unmanagedTriggerExceedsCeiling reports whether any trigger token Fullsend
+// does not manage is owned at or above Maintainer, or has an owner that
+// cannot be identified or looked up. Such a token could be the one stored in
+// FULLSEND_TRIGGER_TOKEN, because the stored value cannot be tied to a
+// specific trigger, so its owner must satisfy the same runtime privilege
+// ceiling as a managed trigger before the stored value is reused. An owner
+// without project membership holds no project privilege.
+func unmanagedTriggerExceedsCeiling(ctx context.Context, client forge.Client, owner, repo string, unmanaged []forge.PipelineTriggerToken) bool {
+	for _, t := range unmanaged {
+		if t.OwnerID == 0 {
+			return true
+		}
+		level, err := client.GetProjectMemberAccessLevel(ctx, owner, repo, t.OwnerID)
+		switch {
+		case err == nil:
+			if level >= forge.GitLabAccessLevelMaintainer {
+				return true
+			}
+		case forge.IsNotFound(err):
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// activeHookIndex returns the index in st.hooks of the managed webhook whose
+// trigger URL embeds the stored FULLSEND_TRIGGER_TOKEN, or -1 when none does.
+// Stale duplicates may precede it, so every managed hook is searched.
+func (st gitlabWebhookState) activeHookIndex(baseURL string) int {
+	if st.triggerToken == "" {
+		return -1
+	}
+	for i, h := range st.hooks {
+		if tok, ok := hookTriggerToken(h.URL, baseURL, st.target.projectID); ok && tok == st.triggerToken {
+			return i
+		}
+	}
+	return -1
+}
+
 // activeTriggerID returns the ID of the managed trigger token the stored
 // FULLSEND_TRIGGER_TOKEN belongs to, or 0 when it cannot be established
 // (the caller then mints a fresh token and replaces the stored one).
 // GitLab never returns trigger token values on list, so identity needs
-// evidence tying the stored value to a trigger: the managed webhook must
-// embed the stored token, and the trigger ID recorded in its description
-// (or, for a hook that predates the recorded ID, the only managed
-// trigger) names the token. A stored value that differs from the hook's,
+// evidence tying the stored value to a trigger: a managed webhook must embed
+// the stored token, and the trigger ID recorded in its description (or, for
+// a hook that predates the recorded ID, the only managed trigger) names the
+// token. That description is editable, so it is trusted only when no
+// unmanaged trigger could instead be the stored bearer (see
+// unboundPrivilegedTrigger). A stored value that differs from the hook's,
 // or that has no hook to corroborate it, is never trusted.
 func (st gitlabWebhookState) activeTriggerID(baseURL string) int64 {
-	if st.triggerToken == "" || len(st.hooks) == 0 {
+	if st.triggerToken == "" || st.unboundPrivilegedTrigger {
 		return 0
 	}
-	hook := st.hooks[0]
-	if tok, ok := hookTriggerToken(hook.URL, baseURL, st.target.projectID); !ok || tok != st.triggerToken {
+	idx := st.activeHookIndex(baseURL)
+	if idx < 0 {
 		return 0
 	}
+	hook := st.hooks[idx]
 	if m := gitlabWebhookActiveTokenRe.FindStringSubmatch(hook.Description); m != nil {
 		id, err := strconv.ParseInt(m[1], 10, 64)
 		if err != nil {
@@ -383,11 +443,12 @@ func (st gitlabWebhookState) activeCompliant(baseURL string) bool {
 	}
 	// A hook GitLab disabled after delivery failures is configured but never
 	// fires, so it is not a working fast path.
-	if st.hooks[0].HookDeliveryDisabled() {
+	active := st.hooks[st.activeHookIndex(baseURL)]
+	if active.HookDeliveryDisabled() {
 		return false
 	}
 	want := desiredGitLabWebhook(baseURL, st.target, st.triggerToken, st.webhookSecret, activeID)
-	return gitlabWebhookMatches(st.hooks[0], want)
+	return gitlabWebhookMatches(active, want)
 }
 
 // GitLabWebhookNeedsProvisioning reports whether the webhook fast-path is
@@ -1642,7 +1703,13 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseU
 			res.Details = append(res.Details, fmt.Sprintf("Would create project webhook pinned to %q", st.target.defaultBranch))
 		}
 	} else {
-		keep := st.hooks[0]
+		// Keep the hook that corroborates the stored token, even behind a
+		// stale duplicate; every other managed hook is deleted below.
+		keepIdx := 0
+		if idx := st.activeHookIndex(baseURL); idx >= 0 && !rotate && activeID != 0 {
+			keepIdx = idx
+		}
+		keep := st.hooks[keepIdx]
 		if keep.HookDeliveryDisabled() {
 			// An update does not reliably clear GitLab's permanent
 			// disablement, so recreate the owned hook with the desired
@@ -1667,7 +1734,10 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseU
 			}
 			res.Details = append(res.Details, fmt.Sprintf("%s project webhook (ID %d) pinned to %q", verb("Updated", "Would update"), keep.ID, st.target.defaultBranch))
 		}
-		for _, dup := range st.hooks[1:] {
+		for i, dup := range st.hooks {
+			if i == keepIdx {
+				continue
+			}
 			if !dryRun {
 				if delErr := client.DeleteProjectHook(ctx, owner, repo, dup.ID); delErr != nil && !forge.IsNotFound(delErr) {
 					return res, fmt.Errorf("deleting duplicate project webhook ID %d: %w", dup.ID, delErr)

@@ -339,7 +339,9 @@ func TestListProjectHooks_DeliveryState(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
 
+	handlerCalled := false
 	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/hooks", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 		writeJSON(t, w, http.StatusOK, []map[string]any{
 			{"id": 1, "url": "https://example.test/one", "alert_status": "executable", "disabled_until": nil},
 			{"id": 2, "url": "https://example.test/two", "alert_status": "temporarily_disabled", "disabled_until": "2099-01-01T00:00:00.000Z"},
@@ -350,6 +352,7 @@ func TestListProjectHooks_DeliveryState(t *testing.T) {
 
 	hooks, err := client.ListProjectHooks(ctx, "myorg", "myrepo")
 	require.NoError(t, err)
+	assert.True(t, handlerCalled, "hooks handler should have been invoked")
 	require.Len(t, hooks, 4)
 	assert.False(t, hooks[0].HookDeliveryDisabled())
 	assert.Equal(t, "temporarily_disabled", hooks[1].AlertStatus)
