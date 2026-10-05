@@ -3,6 +3,7 @@ package runtime
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,12 +55,17 @@ if [ "$2" = "download" ]; then
   exit 0
 fi
 if [ "$2" = "upload" ]; then
+  case "$5" in /tmp/fs-upload-*/) cp -- "$4" "$5/"; exit $? ;; esac
   cp "$4" '` + storeDir + `'/"$(printf '%s' "$5" | tr '/' '_')"
   exit 0
 fi
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
+    "mkdir -m 700 -- /tmp/"*|"mkdir -m 700 -- '/tmp/"*|"rm -f -- '/tmp/fs-upload-"*) sh -c "$last"; exit $? ;;
+    "test -f '/tmp/fs-upload-"*)
+      sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
+      exit $? ;;
     "codex --version") echo "` + versionOutput + `"; exit 0 ;;
     "command -v python3") echo "/usr/bin/python3"; exit 0 ;;
     *"sys.version_info"*) echo "${FULLSEND_TEST_PYVER:-3.12}"; exit 0 ;;
@@ -531,24 +537,18 @@ func TestCodexReadHarnessSecurityEnv(t *testing.T) {
 		}, got)
 	})
 
-	// Nothing to re-assert when the harness set neither, and an agent that
-	// *sets* one later can only cause spurious blocks, not slip past a check.
-	t.Run("skips unset values", func(t *testing.T) {
-		fakeOpenshellCodex(t, filepath.Join(t.TempDir(), "log"), t.TempDir(), "codex-cli 0.152.1")
-		t.Setenv("FULLSEND_TEST_ENV_READ", codexEnvReadSeparator)
-
-		got, err := codexReadHarnessSecurityEnv("sb")
-		require.NoError(t, err)
-		assert.Empty(t, got)
-	})
-
-	t.Run("keeps one when only one is set", func(t *testing.T) {
+	// Pinned as empty, so an agent that sets the allowlist in .env later
+	// cannot widen the fail-closed empty set the harness left.
+	t.Run("pins an unset value as empty", func(t *testing.T) {
 		fakeOpenshellCodex(t, filepath.Join(t.TempDir(), "log"), t.TempDir(), "codex-cli 0.152.1")
 		t.Setenv("FULLSEND_TEST_ENV_READ", "canary-abc"+codexEnvReadSeparator)
 
 		got, err := codexReadHarnessSecurityEnv("sb")
 		require.NoError(t, err)
-		assert.Equal(t, []codexEnvPair{{"FULLSEND_CANARY_TOKEN", "canary-abc"}}, got)
+		assert.Equal(t, []codexEnvPair{
+			{"FULLSEND_CANARY_TOKEN", "canary-abc"},
+			{"FULLSEND_TOOL_ALLOWLIST", ""},
+		}, got)
 	})
 
 	t.Run("refuses a malformed answer", func(t *testing.T) {
@@ -558,6 +558,54 @@ func TestCodexReadHarnessSecurityEnv(t *testing.T) {
 		_, err := codexReadHarnessSecurityEnv("sb")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "expected 2 values")
+	})
+}
+
+// TestCodexReadHarnessSecurityEnvCmd runs the read command through a real sh:
+// the fake openshell above answers it without evaluating it, which is how
+// single-quoted references re-asserted the literal "${KEY:-}" text.
+func TestCodexReadHarnessSecurityEnvCmd(t *testing.T) {
+	for name, tc := range map[string]struct{ env, want string }{
+		"both set":     {"export FULLSEND_CANARY_TOKEN='canary-abc'\nexport FULLSEND_TOOL_ALLOWLIST='Bash,Read'\n", "canary-abc|fullsend-env-sep|Bash,Read"},
+		"canary unset": {"export FULLSEND_TOOL_ALLOWLIST='Bash,Read'\n", "|fullsend-env-sep|Bash,Read"},
+		"none set":     {"", "|fullsend-env-sep|"},
+		"chatty .env":  {"echo hello\nexport FULLSEND_CANARY_TOKEN='canary-abc'\n", "canary-abc|fullsend-env-sep|"},
+		// The runner's .env ends with these lines; an empty .env.d and a
+		// missing iteration.env must not read as a failed source.
+		"runner-shaped .env": {"export FULLSEND_CANARY_TOKEN='canary-abc'\nfor f in /nonexistent/.env.d/*.env; do [ -f \"$f\" ] && . \"$f\"; done\nif [ -f /nonexistent/iteration.env ]; then . /nonexistent/iteration.env; fi\n", "canary-abc|fullsend-env-sep|"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			envFile := filepath.Join(t.TempDir(), ".env")
+			require.NoError(t, os.WriteFile(envFile, []byte(tc.env), 0o600))
+			cmd := exec.Command("/bin/sh", "-c", codexReadHarnessSecurityEnvCmd(envFile))
+			cmd.Env = []string{"PATH=/usr/bin:/bin"}
+			out, err := cmd.Output()
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(out))
+		})
+	}
+
+	// A .env that cannot be sourced must fail the read, not pin empty values.
+	for name, env := range map[string]string{
+		"syntax error": "export FULLSEND_CANARY_TOKEN='canary-abc'\nif then\n",
+		"failing last": "export FULLSEND_CANARY_TOKEN='canary-abc'\nfalse\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			envFile := filepath.Join(t.TempDir(), ".env")
+			require.NoError(t, os.WriteFile(envFile, []byte(env), 0o600))
+			cmd := exec.Command("/bin/sh", "-c", codexReadHarnessSecurityEnvCmd(envFile))
+			cmd.Env = []string{"PATH=/usr/bin:/bin"}
+			out, err := cmd.Output()
+			require.Error(t, err)
+			assert.Empty(t, string(out))
+		})
+	}
+	t.Run("missing file", func(t *testing.T) {
+		cmd := exec.Command("/bin/sh", "-c", codexReadHarnessSecurityEnvCmd(filepath.Join(t.TempDir(), ".env")))
+		cmd.Env = []string{"PATH=/usr/bin:/bin"}
+		out, err := cmd.Output()
+		require.Error(t, err)
+		assert.Empty(t, string(out))
 	})
 }
 

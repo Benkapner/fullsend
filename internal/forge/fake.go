@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Compile-time interface checks.
 var _ Client = (*FakeClient)(nil)
 var _ GitHubExtensions = (*FakeClient)(nil)
+var _ GitLabExtensions = (*FakeClient)(nil)
 
 // NewFakeClient returns a FakeClient with all maps initialised.
 func NewFakeClient() *FakeClient {
@@ -17,6 +19,7 @@ func NewFakeClient() *FakeClient {
 		FileContents:             make(map[string][]byte),
 		WorkflowRuns:             make(map[string]*WorkflowRun),
 		Secrets:                  make(map[string]bool),
+		SecretProtections:        make(map[string]SecretProtection),
 		VariablesExist:           make(map[string]bool),
 		VariableValues:           make(map[string]string),
 		Errors:                   make(map[string]error),
@@ -70,6 +73,12 @@ type PipelineCallRecord struct {
 	Variables        map[string]string
 }
 
+// PipelineInputsCallRecord records a CreatePipelineWithInputs invocation.
+type PipelineInputsCallRecord struct {
+	Owner, Repo, Ref string
+	Inputs           map[string]PipelineInputValue
+}
+
 // ProtectedBranchMergeGrantRecord records a GrantProtectedBranchMergeUser call.
 type ProtectedBranchMergeGrantRecord struct {
 	Owner, Repo, Branch string
@@ -81,6 +90,16 @@ type UpdatedCommentRecord struct {
 	Owner, Repo string
 	CommentID   int
 	Body        string
+}
+
+// NoteOnParentRecord records a GetNoteOnParent/UpdateNoteOnParent call,
+// letting tests assert that a caller addressed a note directly by its
+// parent's type and IID instead of going through the ID-only scan that
+// GetIssueComment/UpdateIssueComment use.
+type NoteOnParentRecord struct {
+	Owner, Repo, ParentType string
+	ParentIID, NoteID       int
+	Body                    string // empty for GetNoteOnParent calls
 }
 
 // CreatedIssueRecord records an issue creation call.
@@ -181,6 +200,7 @@ type FakeClient struct {
 	OrgPlan                   string                          // plan name returned by GetOrgPlan (default: "free")
 	Installations             []Installation
 	Secrets                   map[string]bool             // key: "owner/repo/name"
+	SecretProtections         map[string]SecretProtection // key: "owner/repo/name"; overrides the default fully-protected report for existing secrets
 	PullRequests              map[string][]ChangeProposal // key: "owner/repo"
 	TokenScopes               []string                    // scopes returned by GetTokenScopes
 	InstallationToken         bool                        // IsInstallationToken return value
@@ -318,6 +338,9 @@ type FakeClient struct {
 	// Pull request files for ListPullRequestFiles.
 	PRFiles map[string][]string // key: "owner/repo/number"
 
+	// Pull request commit SHAs (oldest first) for ListPullRequestCommits.
+	PRCommits map[string][]string // key: "owner/repo/number"
+
 	// Pull request file diffs for ListPullRequestFileDiffs.
 	PRFileDiffs map[string][]PullRequestFileDiff // key: "owner/repo/number"
 
@@ -350,6 +373,8 @@ type FakeClient struct {
 	DeletedOrgVariables     []string // "org/name"
 	CreatedIssues           []CreatedIssueRecord
 	UpdatedComments         []UpdatedCommentRecord
+	GetNoteOnParentCalls    []NoteOnParentRecord
+	UpdateNoteOnParentCalls []NoteOnParentRecord
 	MinimizedComments       []MinimizedCommentRecord
 	AddedReactions          []ReactionRecord
 	DeletedReactions        []int64
@@ -365,6 +390,7 @@ type FakeClient struct {
 	DeletedComments         []int    // comment IDs
 	CreatedPipelines        []Pipeline
 	PipelineCalls           []PipelineCallRecord
+	PipelineInputsCalls     []PipelineInputsCallRecord
 	CreatedSchedules        []PipelineSchedule
 	DeletedScheduleIDs      []int64
 	UpdatedScheduleIDs      []int64
@@ -1258,6 +1284,24 @@ func (f *FakeClient) RepoSecretExists(_ context.Context, owner, repo, name strin
 	return f.Secrets[owner+"/"+repo+"/"+name], nil
 }
 
+func (f *FakeClient) GetRepoSecretProtection(_ context.Context, owner, repo, name string) (SecretProtection, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetRepoSecretProtection"); e != nil {
+		return SecretProtection{}, e
+	}
+
+	key := owner + "/" + repo + "/" + name
+	if p, ok := f.SecretProtections[key]; ok {
+		return p, nil
+	}
+	if !f.Secrets[key] {
+		return SecretProtection{}, nil
+	}
+	return SecretProtection{Exists: true, Masked: true, Protected: true}, nil
+}
+
 func (f *FakeClient) CreateOrUpdateRepoVariable(_ context.Context, owner, repo, name, value string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1573,6 +1617,69 @@ func (f *FakeClient) CreateIssueComment(_ context.Context, owner, repo string, n
 	return &comment, nil
 }
 
+func (f *FakeClient) GetIssueComment(_ context.Context, _, _ string, commentID int) (*IssueComment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("GetIssueComment"); e != nil {
+		return nil, e
+	}
+	for _, comments := range f.IssueComments {
+		for _, c := range comments {
+			if c.ID == commentID {
+				found := c
+				return &found, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("%w: comment %d", ErrNotFound, commentID)
+}
+
+// GetNoteOnParent implements GitLabExtensions. Unlike the real GitLab
+// client, FakeClient has no notion of noteTarget-vs-parentType mismatch;
+// it records the call (so tests can assert the direct-addressing path
+// was taken) and otherwise looks the note up the same way GetIssueComment
+// does.
+func (f *FakeClient) GetNoteOnParent(_ context.Context, owner, repo, parentType string, parentIID, noteID int) (*IssueComment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.GetNoteOnParentCalls = append(f.GetNoteOnParentCalls, NoteOnParentRecord{
+		Owner: owner, Repo: repo, ParentType: parentType, ParentIID: parentIID, NoteID: noteID,
+	})
+	if e := f.err("GetNoteOnParent"); e != nil {
+		return nil, e
+	}
+	for _, comments := range f.IssueComments {
+		for _, c := range comments {
+			if c.ID == noteID {
+				found := c
+				return &found, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("%w: comment %d", ErrNotFound, noteID)
+}
+
+// UpdateNoteOnParent implements GitLabExtensions. See GetNoteOnParent.
+func (f *FakeClient) UpdateNoteOnParent(_ context.Context, owner, repo, parentType string, parentIID, noteID int, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.UpdateNoteOnParentCalls = append(f.UpdateNoteOnParentCalls, NoteOnParentRecord{
+		Owner: owner, Repo: repo, ParentType: parentType, ParentIID: parentIID, NoteID: noteID, Body: body,
+	})
+	if e := f.err("UpdateNoteOnParent"); e != nil {
+		return e
+	}
+	for key, comments := range f.IssueComments {
+		for i, c := range comments {
+			if c.ID == noteID {
+				f.IssueComments[key][i].Body = body
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%w: comment %d", ErrNotFound, noteID)
+}
+
 func (f *FakeClient) UpdateIssueComment(_ context.Context, owner, repo string, commentID int, body string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1741,6 +1848,16 @@ func (f *FakeClient) ListPullRequestFiles(_ context.Context, owner, repo string,
 	return nil, nil
 }
 
+func (f *FakeClient) ListPullRequestCommits(_ context.Context, owner, repo string, number int) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListPullRequestCommits"); e != nil {
+		return nil, e
+	}
+	key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+	return f.PRCommits[key], nil
+}
+
 func (f *FakeClient) ListPullRequestFileDiffs(_ context.Context, owner, repo string, number int) ([]PullRequestFileDiff, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1862,6 +1979,35 @@ func (f *FakeClient) ListWorkflowRuns(_ context.Context, owner, repo, workflowFi
 		return []WorkflowRun{*run}, nil
 	}
 	return nil, nil
+}
+
+// ListWorkflowRunsSince returns the same configured runs as ListWorkflowRuns,
+// filtered to those created at or after since. Unlike the live GitHub
+// client's ListWorkflowRuns (capped at per_page=10), FakeClient never
+// truncates its configured list, so this filters rather than paginates —
+// tests configure WorkflowRunsList directly with as many runs as a scenario
+// needs, including more than a single live-API page, to exercise
+// since-bounded selection (#7996 review).
+func (f *FakeClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time) ([]WorkflowRun, error) {
+	f.mu.Lock()
+	e := f.err("ListWorkflowRunsSince")
+	f.mu.Unlock()
+	if e != nil {
+		return nil, e
+	}
+	runs, err := f.ListWorkflowRuns(ctx, owner, repo, workflowFile)
+	if err != nil {
+		return nil, err
+	}
+	var matched []WorkflowRun
+	for _, run := range runs {
+		runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+		if parseErr != nil || runTime.Before(since) {
+			continue
+		}
+		matched = append(matched, run)
+	}
+	return matched, nil
 }
 
 func (f *FakeClient) ListWorkflowRunJobs(_ context.Context, _, _ string, runID int) ([]WorkflowJob, error) {
@@ -2356,6 +2502,37 @@ func (f *FakeClient) CreatePipeline(_ context.Context, owner, repo, ref string, 
 	return &p, nil
 }
 
+// CreatePipelineWithInputs records the call and returns a fake pipeline,
+// mirroring CreatePipeline's behavior but without ever touching the
+// variables-based call record — callers can use PipelineInputsCalls to
+// assert that no user-defined variables were required for a dispatch.
+func (f *FakeClient) CreatePipelineWithInputs(_ context.Context, owner, repo, ref string, inputs map[string]PipelineInputValue) (*Pipeline, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	in := make(map[string]PipelineInputValue, len(inputs))
+	for k, v := range inputs {
+		in[k] = v
+	}
+	f.PipelineInputsCalls = append(f.PipelineInputsCalls, PipelineInputsCallRecord{
+		Owner:  owner,
+		Repo:   repo,
+		Ref:    ref,
+		Inputs: in,
+	})
+
+	if e := f.err("CreatePipelineWithInputs"); e != nil {
+		return nil, e
+	}
+
+	p := Pipeline{
+		ID:     int64(len(f.CreatedPipelines) + 1),
+		WebURL: fmt.Sprintf("https://gitlab.example.com/-/pipelines/%d", len(f.CreatedPipelines)+1),
+	}
+	f.CreatedPipelines = append(f.CreatedPipelines, p)
+	return &p, nil
+}
+
 func (f *FakeClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2408,6 +2585,40 @@ func (f *FakeClient) DeletePipelineSchedule(_ context.Context, owner, repo strin
 		f.PipelineSchedules[key] = filtered
 	}
 	return nil
+}
+
+func (f *FakeClient) GetPipelineSchedule(_ context.Context, owner, repo string, scheduleID int64) (*PipelineSchedule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.err("GetPipelineSchedule"); err != nil {
+		return nil, err
+	}
+	for _, schedule := range f.PipelineSchedules[owner+"/"+repo] {
+		if schedule.ID == scheduleID {
+			result := schedule
+			result.Variables = make(map[string]string, len(schedule.Variables))
+			for key, value := range schedule.Variables {
+				result.Variables[key] = value
+			}
+			return &result, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (f *FakeClient) DeletePipelineScheduleVariable(_ context.Context, owner, repo string, scheduleID int64, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.err("DeletePipelineScheduleVariable"); err != nil {
+		return err
+	}
+	for _, schedule := range f.PipelineSchedules[owner+"/"+repo] {
+		if schedule.ID == scheduleID {
+			delete(schedule.Variables, key)
+			return nil
+		}
+	}
+	return ErrNotFound
 }
 
 func (f *FakeClient) UpdatePipelineSchedule(_ context.Context, owner, repo string, scheduleID int64, active bool) error {
