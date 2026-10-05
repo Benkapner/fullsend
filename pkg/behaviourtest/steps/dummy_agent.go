@@ -33,6 +33,9 @@ func registerDummyAgentSteps(sc *godog.ScenarioContext) {
 }
 
 func parseDummyAgentTable(w *world.World, table *godog.Table) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before dummy-agent operations")
+	}
 	if len(table.Rows) < 2 {
 		return fmt.Errorf("dummy agent table requires a header and at least one row")
 	}
@@ -63,6 +66,17 @@ func parseDummyAgentTable(w *world.World, table *godog.Table) error {
 			Op:          strings.TrimSpace(row.Cells[col["op"]].Value),
 			Args:        strings.TrimSpace(row.Cells[col["args"]].Value),
 		}
+		// <issue> expansion is scoped to checkout_branch: it is the only
+		// op whose args embed the scenario issue number, and keeping the
+		// substitution off the generic ops avoids surprising rewrites of
+		// paths or URLs that happen to contain the token.
+		if op.Op == "checkout_branch" {
+			args, err := expandIssuePlaceholder(w, op.Args)
+			if err != nil {
+				return err
+			}
+			op.Args = args
+		}
 		if op.Op == "write_fixture" {
 			parts := strings.SplitN(op.Args, ",", 2)
 			if len(parts) != 2 {
@@ -86,7 +100,7 @@ func parseDummyAgentTable(w *world.World, table *godog.Table) error {
 	}
 
 	message := fmt.Sprintf("behaviour: set dummy agent script (%s)", time.Now().UTC().Format(time.RFC3339))
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), w.BehaviourScriptPath(), message, data); err != nil {
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, w.BehaviourScriptPath(), message, data); err != nil {
 		return fmt.Errorf("committing behaviour script: %w", err)
 	}
 
@@ -145,17 +159,33 @@ func assertAgentOutput(w *world.World, fileName, doc string) error {
 }
 
 func findModuleSubdir(rel string) (string, error) {
+	dir, err := moduleRootDir()
+	if err != nil {
+		return "", err
+	}
+	candidate := filepath.Join(dir, rel)
+	if st, err := os.Stat(candidate); err == nil && st.IsDir() {
+		return candidate, nil
+	}
+	return "", fmt.Errorf("could not find %s under module root %s", rel, dir)
+}
+
+// moduleRootDir returns the directory containing go.mod, walking up from
+// the current working directory. It is the trust boundary fixtureSubpath
+// (playback.go) anchors its symlink-containment check to: everything
+// beneath it that this package reads fixture/scenario data from (the
+// fixtures root, its category subdirectories, and requested fixture
+// names) must be checked for symlink escapes, but the module root itself
+// is the checked-out repository and not attacker-influenced fixture
+// content (#7957 review).
+func moduleRootDir() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			candidate := filepath.Join(dir, rel)
-			if st, err := os.Stat(candidate); err == nil && st.IsDir() {
-				return candidate, nil
-			}
-			return "", fmt.Errorf("could not find %s under module root %s", rel, dir)
+			return dir, nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -163,5 +193,5 @@ func findModuleSubdir(rel string) (string, error) {
 		}
 		dir = parent
 	}
-	return "", fmt.Errorf("could not find go.mod while searching for %s", rel)
+	return "", fmt.Errorf("could not find go.mod while searching from %s", dir)
 }

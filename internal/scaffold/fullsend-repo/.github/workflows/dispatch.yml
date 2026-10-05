@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=575
+# lint-workflow-size: max-lines=682
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -13,6 +13,9 @@ on:
         description: 'The event action (github.event.action) forwarded by the shim'
         required: true
         type: string
+    outputs:
+      dispatched_count:
+        value: ${{ jobs.dispatch.outputs.dispatched_count }}
 
 permissions: {}
 
@@ -24,7 +27,21 @@ jobs:
       contents: read
       id-token: write
       pull-requests: read
+    outputs:
+      dispatched_count: ${{ steps.dispatch.outputs.dispatched_count }}
     steps:
+      - name: Checkout config and OWNERS files
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+          sparse-checkout: |
+            .fullsend/config.yaml
+            /OWNERS
+            /OWNERS_ALIASES
+          sparse-checkout-cone-mode: false
+
       - name: Determine stage
         id: route
         env:
@@ -33,7 +50,7 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
           COMMENT_USER_TYPE: ${{ github.event.comment.user.type }}
           COMMENT_USER_LOGIN: ${{ github.event.comment.user.login }}
-          COMMENT_AUTHOR_ASSOC: ${{ github.event.comment.author_association }}
+
           ISSUE_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           ISSUE_HAS_PR: ${{ github.event.issue.pull_request && 'true' || 'false' }}
@@ -46,6 +63,7 @@ jobs:
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
           ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -53,11 +71,72 @@ jobs:
           STAGE=""
           TRIGGER_SOURCE=""
 
+          # Report whether the lowercased user is in an OWNERS list. An entry
+          # that names an OWNERS_ALIASES key matches only that alias's members,
+          # never a login of the same name. A yq/jq failure means "no match",
+          # so the caller falls through to the collaborator API; a malformed
+          # OWNERS_ALIASES disables OWNERS matching (alias keys cannot be told
+          # apart from logins without it).
+          _owners_has_user() {
+            local key="${1}" user="${2}" aliases="" entry
+            if [[ -f "OWNERS_ALIASES" ]]; then
+              aliases=$(yq -o=json -I=0 '.aliases // {}' OWNERS_ALIASES 2>/dev/null) || return 1
+              # Same shape the Go resolver accepts; case-folded duplicate keys are malformed.
+              aliases=$(jq -ce 'select(type == "object"
+                and all(.[]; . == null or (type == "array" and all(.[]; type != "array" and type != "object")))
+                and (keys | length) == (keys | map(ascii_downcase) | unique | length))
+                | with_entries(.key |= ascii_downcase)' <<<"${aliases}" 2>/dev/null) || return 1
+            fi
+            # A login equal to any alias key never matches (nested aliases included).
+            if [[ -n "${aliases}" ]] && jq -e --arg u "${user}" 'has($u)' <<<"${aliases}" >/dev/null 2>&1; then
+              return 1
+            fi
+            while IFS= read -r entry; do
+              [[ ! "${entry}" =~ ^[a-zA-Z0-9_-]+$ ]] && continue
+              entry="${entry,,}"
+              if [[ -n "${aliases}" ]] && jq -e --arg a "${entry}" 'has($a)' <<<"${aliases}" >/dev/null 2>&1; then
+                jq -e --arg a "${entry}" --arg u "${user}" '.[$a] // [] | any(.[]; . != null and (tostring | ascii_downcase) == $u)' <<<"${aliases}" >/dev/null 2>&1 && return 0
+                continue
+              fi
+              [[ "${entry}" == "${user}" ]] && return 0
+            done < <(yq ".${key}[]" OWNERS 2>/dev/null)
+            return 1
+          }
+
           # Collaborator role_name vs min (write|triage). See #5223 / ADR 0054.
           # API resolves org membership regardless of visibility (gh-aw-mcpg#2862).
           has_repo_permission() {
             local username="${1:-}" min="${2:-write}" role api_err
             [[ -z "${username}" ]] && return 1
+
+            # OWNERS-file authorization (opt-in via authorization providers list in config.yaml).
+            # Approvers get write-equivalent access; reviewers get triage-equivalent.
+            # Safe: sparse-checkout pins to base branch SHA for PR-scoped events,
+            # so PR authors cannot self-authorize by adding themselves to OWNERS.
+            if [[ -f "OWNERS" && -f ".fullsend/config.yaml" ]]; then
+              if [[ "$(yq '[.authorization[]? | select(.provider == "owners_file")] | length' .fullsend/config.yaml 2>/dev/null)" =~ ^[1-9] ]]; then
+                if [[ ! "${username}" =~ ^[a-zA-Z0-9-]+$ ]]; then
+                  echo "::warning::OWNERS auth skipped: username contains characters outside [A-Za-z0-9-]" >&2
+                else
+                  local lc_user="${username,,}"
+                  case "${min}" in
+                    write|triage)
+                      if _owners_has_user approvers "${lc_user}"; then
+                        echo "::notice::OWNERS file resolved user '${username}' as approver (requested: ${min})"
+                        return 0
+                      fi
+                      ;;&
+                    triage)
+                      if _owners_has_user reviewers "${lc_user}"; then
+                        echo "::notice::OWNERS file resolved user '${username}' as reviewer (requested: ${min})"
+                        return 0
+                      fi
+                      ;;
+                  esac
+                fi
+              fi
+            fi
+
             api_err=$(mktemp) || {
               echo "::warning::Failed to create temp file for permission check of ${username}" >&2
               return 1
@@ -88,11 +167,6 @@ jobs:
             has_repo_permission "${1:-}" "${2:-write}"
           }
 
-          # Helper: check if user is the PR/issue author
-          is_issue_author() {
-            [[ "${COMMENT_USER_LOGIN}" == "${ISSUE_USER_LOGIN}" ]]
-          }
-
           # Helper: check if a label is present in a comma-separated list.
           # Usage: has_label <name> [label_csv]  (defaults to ISSUE_LABELS)
           has_label() {
@@ -108,7 +182,7 @@ jobs:
           # Extract the first word of the comment as the command
           COMMAND=""
           if [[ -n "${COMMENT_BODY:-}" ]]; then
-            COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}')"
+            COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}' | sed 's/[.,;:!?]*$//')"
           fi
 
           case "${EVENT_NAME}" in
@@ -141,16 +215,9 @@ jobs:
                     fi
                   fi
                   ;;
-                /fs-retro|/fullsend)
+                /fs-retro)
                   if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
-                    if [[ "${COMMAND}" == "/fullsend" ]]; then
-                      SECOND_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
-                      if [[ "${SECOND_WORD}" == "retro" ]]; then
-                        STAGE="retro"
-                      fi
-                    else
-                      STAGE="retro"
-                    fi
+                    STAGE="retro"
                   fi
                   ;;
                 /fs-prioritize)
@@ -159,17 +226,8 @@ jobs:
                   fi
                   ;;
                 *)
-                  # Intentionally weaker gate: allows external reporters to
-                  # re-trigger triage by providing clarification on needs-info
-                  # issues. Full write-permission check is not required here.
-                  if has_label "needs-info" && ! has_label "feature"; then
-                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]]; then
-                      if [[ "${COMMENT_AUTHOR_ASSOC}" != "NONE" ]] || is_issue_author; then
-                        STAGE="triage"
-                      fi
-                    fi
-                  fi
                   ;;
+
               esac
               ;;
 
@@ -201,7 +259,7 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  if is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
+                  if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
                     STAGE="review"
                   fi
                   ;;
@@ -220,8 +278,15 @@ jobs:
 
             pull_request_review)
               if [[ "${EVENT_ACTION}" == "submitted" && "${REVIEW_STATE}" == "changes_requested" ]]; then
+                # Legacy per-org compatibility path; per-repo is the sole supported
+                # installation model under ADR 0044.
                 REVIEW_BOT="${ORG_NAME}-review[bot]"
-                if [[ "${REVIEW_USER_LOGIN}" == "${REVIEW_BOT}" ]]; then
+                SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
+                CUSTOM_REVIEW_BOT=""
+                if [[ -n "${FULLSEND_APP_SET:-}" ]]; then
+                  CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+                fi
+                if [[ "${REVIEW_USER_LOGIN}" == "${REVIEW_BOT}" || "${REVIEW_USER_LOGIN}" == "${SHARED_REVIEW_BOT}" || "${REVIEW_USER_LOGIN}" == "${CUSTOM_REVIEW_BOT}" ]]; then
                   # Block fork PRs — fail closed if we cannot determine.
                   # Human PRs need fullsend-fix + write+ author (not triage-only).
                   if [[ -n "${PR_HEAD_REPO}" && -n "${PR_BASE_REPO}" ]]; then
@@ -261,15 +326,46 @@ jobs:
           SOURCE_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          BOT_LOGIN="fullsend-ai[bot]"
-          CODER_BOT_LOGIN="fullsend-ai-coder[bot]"
-          MENTIONING_PRS="$(gh pr list --repo "${SOURCE_REPO}" --state open \
-            --search "${ISSUE_NUMBER} in:title,body" \
-            --json number,author \
-            --jq "[.[] | select(.author.login != \"${BOT_LOGIN}\" and .author.login != \"${CODER_BOT_LOGIN}\")] | .[].number" \
-            2>/dev/null || true)"
-          if [[ -n "${MENTIONING_PRS}" ]]; then
-            echo "::notice::Open PR(s) mentioning issue #${ISSUE_NUMBER} found — skipping code dispatch"
+          # Query for PRs that actually close this issue (Fixes/Closes/Resolves
+          # keywords), not a substring search over title/body — the latter
+          # false-positives on any PR that merely references the issue (#5575).
+          # closedByPullRequestsReferences also returns MERGED PRs regardless of
+          # includeClosedPrs, so filter on .state explicitly. Exclude the code-
+          # agent bot via __typename + login so it can re-dispatch even when it
+          # already has an open PR (#5974); other bots (e.g. Renovate) still
+          # block. See docs/contributing/bot-identities.md for the login format.
+          #
+          # NOTE (org/workflow_call mode): this job's token lacks `issues: read`
+          # (neither this job nor the shim-workflow-call.yaml caller grants it),
+          # so this query is denied and the guard fails open BY DESIGN —
+          # pre-code.sh still dedups on a minted app token. Do NOT add the scope
+          # to this job alone: a called workflow cannot exceed its caller's
+          # grant, so repos with un-reconciled shims would hard-fail. Roll out
+          # shim-first if ever wanted (per-repo mode already grants it).
+          OWNER="${SOURCE_REPO%%/*}"
+          REPO_NAME="${SOURCE_REPO##*/}"
+          GQL_ERR=$(mktemp)
+          if ! LINKED_PRS=$(gh api graphql -f query='
+            query($owner: String!, $repo: String!, $number: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $number) {
+                  closedByPullRequestsReferences(first: 20) {
+                    nodes { number state author { login __typename } }
+                  }
+                }
+              }
+            }' -f owner="${OWNER}" -f repo="${REPO_NAME}" -F number="${ISSUE_NUMBER}" \
+            --jq '[.data.repository.issue.closedByPullRequestsReferences.nodes[]
+                   | select(.state == "OPEN")
+                   | select(.author.__typename != "Bot" or .author.login != "fullsend-ai-coder")]
+                   | map("#\(.number)") | join(", ")' \
+            2>"${GQL_ERR}"); then
+            echo "::warning::Linked-PR query failed for issue #${ISSUE_NUMBER}: $(tr '\n' ' ' < "${GQL_ERR}" | sed 's/::/__/g')"
+            LINKED_PRS=""
+          fi
+          rm -f "${GQL_ERR}"
+          if [[ -n "${LINKED_PRS}" ]]; then
+            echo "::notice::Skipping code dispatch — issue #${ISSUE_NUMBER} has open PR(s) ${LINKED_PRS}"
             echo "skipped=true" >> "${GITHUB_OUTPUT}"
           fi
 
@@ -296,7 +392,7 @@ jobs:
           TOKEN=$(curl -sSf --retry 5 --retry-delay 5 --retry-all-errors \
             -H "Authorization: Bearer $OIDC_TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"role":"fullsend","repos":[".fullsend"]}' \
+            -d '{"role":"fullsend","level":"write","repos":[".fullsend"]}' \
             "${MINT_URL}/v1/token" | jq -r '.token')
           if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
             echo "::error::Token mint returned no token"
@@ -464,6 +560,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Find and trigger agent workflows for stage
+        id: dispatch
         if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true'
         env:
           GH_TOKEN: ${{ steps.oidc-mint.outputs.token }}
@@ -484,7 +581,7 @@ jobs:
             pull_request: (.pull_request // null | if . then {number, html_url,
               head: {ref: .head.ref, sha: .head.sha, repo: {full_name: .head.repo.full_name}},
               base: {ref: .base.ref, repo: {full_name: .base.repo.full_name}}} else null end),
-            comment: (.comment // null | if . then {body: .body[:4096]} else null end)
+            comment: (.comment // null | if . then {id, body: .body[:4096]} else null end)
           }' "$GITHUB_EVENT_PATH")
 
           # For issue_comment events on PRs, the raw event has no top-level

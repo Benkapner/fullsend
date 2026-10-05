@@ -24,29 +24,13 @@ func FullsendRepoFile(path string) ([]byte, error) {
 // embed.FS does not preserve permission bits, so we track them here.
 // TestFileModeMatchesFilesystem verifies this set stays in sync.
 var executableFiles = map[string]struct{}{
-	"scripts/extract-transcript-error.sh":    {},
-	"scripts/post-code.sh":                   {},
-	"scripts/post-prioritize.sh":             {},
-	"scripts/post-retro.sh":                  {},
-	"scripts/post-review.sh":                 {},
-	"scripts/post-triage.sh":                 {},
-	"scripts/post-triage-test.sh":            {},
-	"scripts/post-prioritize-test.sh":        {},
-	"scripts/pre-code.sh":                    {},
-	"scripts/pre-prioritize.sh":              {},
-	"scripts/pre-review.sh":                  {},
-	"scripts/pre-triage.sh":                  {},
+	"scripts/fullsend-check-output":          {},
+	"scripts/install-precommit-tools.sh":     {},
 	"scripts/prepare-sandbox-credentials.sh": {},
 	"scripts/reconcile-repos.sh":             {},
-	"scripts/scan-secrets":                   {},
-	"scripts/setup-prioritize.sh":            {},
-	"scripts/pre-retro.sh":                   {},
-	"scripts/validate-output-schema.sh":      {},
-	"scripts/fullsend-check-output":          {},
-	"scripts/validate-output-schema-test.sh": {},
-	"scripts/validate-source-repo.sh":        {},
-	"scripts/install-precommit-tools.sh":     {},
 	"scripts/resolve-precommit-tools.py":     {},
+	"scripts/setup-prioritize.sh":            {},
+	"scripts/validate-source-repo.sh":        {},
 }
 
 // FileMode returns the Git tree mode for a scaffold file.
@@ -58,19 +42,23 @@ func FileMode(path string) string {
 }
 
 // layeredDirs contain upstream defaults provided at runtime via reusable
-// workflow workspace preparation. The scaffold does not install these —
-// orgs add overrides in customized/<dir>/ instead. See ADR 0035.
+// workflow workspace preparation. The scaffold does not install these;
+// customization uses base: harness composition instead. See ADR 0064.
 //
-// When adding or removing harness YAML files (default agents), update
-// docs/agents/README.md and add a corresponding docs/agents/<name>.md.
-// The lint-agent-docs pre-commit hook enforces this.
+// profiles/ and providers/ are listed so they are never installed, but
+// workspace preparation does not layer them: fullsend run resolves a bare
+// built-in provider name and its profile from this embed (#7268). See
+// TestLayeredDirsMatchWorkspacePreparation.
+//
+// policies/ is absent: the scaffold ships no policy, and workspace
+// preparation's [[ -d ]] guard skips an entry with no embedded files (#6834).
+// See TestLayeredDirsShipContent.
 var layeredDirs = []string{
 	"agents/",
 	"skills/",
 	"schemas/",
 	"harness/",
 	"plugins/",
-	"policies/",
 	"profiles/",
 	"providers/",
 	"scripts/",
@@ -119,26 +107,6 @@ func PerRepoShimTemplate() ([]byte, error) {
 	return content.ReadFile("fullsend-repo/templates/shim-per-repo.yaml")
 }
 
-// CustomizedDirs returns the set of customized/ subdirectories
-// that should be scaffolded in a per-org .fullsend config repo.
-func CustomizedDirs() []string {
-	dirs := make([]string, 0, len(layeredDirs))
-	for _, d := range layeredDirs {
-		dirs = append(dirs, "customized/"+strings.TrimSuffix(d, "/"))
-	}
-	return dirs
-}
-
-// PerRepoCustomizedDirs returns the set of customized/ subdirectories
-// that should be scaffolded in a per-repo .fullsend/ setup.
-func PerRepoCustomizedDirs() []string {
-	dirs := make([]string, 0, len(layeredDirs))
-	for _, d := range layeredDirs {
-		dirs = append(dirs, ".fullsend/customized/"+strings.TrimSuffix(d, "/"))
-	}
-	return dirs
-}
-
 // IsLayeredPath reports whether path is in a layered content directory.
 func IsLayeredPath(path string) bool {
 	for _, prefix := range layeredDirs {
@@ -163,6 +131,9 @@ func IsUpstreamOnlyPath(path string) bool {
 func WalkLayeredContent(fn func(path string, content []byte) error) error {
 	return WalkFullsendRepoAll(func(path string, data []byte) error {
 		if !IsLayeredPath(path) && path != ".github/scripts/setup-agent-env.sh" {
+			return nil
+		}
+		if isLayeredRepoTestFile(path) {
 			return nil
 		}
 		return fn(path, data)
@@ -194,7 +165,7 @@ func ManagedHeader(path string) string {
 			upstreamBase, path,
 		)
 	default:
-		// Check for extensionless scripts (e.g. scripts/scan-secrets)
+		// Check for extensionless scripts (e.g. scripts/fullsend-check-output)
 		if strings.HasPrefix(path, "scripts/") && ext == "" {
 			return fmt.Sprintf(
 				"# This file is managed by fullsend. Do not edit it directly.\n# Upstream: %s%s\n",
@@ -258,8 +229,9 @@ func GitLabPerRepoFile(path string) ([]byte, error) {
 
 // WalkGitLabPerRepo calls fn for each file in the GitLab per-repo scaffold.
 // Unlike WalkFullsendRepo, this does not filter layered directories because
-// the GitLab scaffold contains only CI pipeline YAML and .fullsend/config.yaml
-// — it has no layered content (harness, agents, policies) to filter. Harness
+// the GitLab scaffold contains only CI pipeline YAML, helper scripts, and
+// .fullsend/config.yaml — it has no layered content (harness, agents,
+// policies) to filter. Harness
 // resolution at runtime is handled by fullsend run's config-driven lookup.
 func WalkGitLabPerRepo(fn func(path string, content []byte) error) error {
 	return walkEmbedFS(gitlabContent, "fullsend-repo-gitlab", fn, nil)

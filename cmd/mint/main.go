@@ -21,29 +21,15 @@ import (
 
 // buildHandler creates the HTTP handler chain from environment variables.
 func buildHandler() (http.Handler, error) {
-	allowedOrgs := mintcore.SplitCSV(os.Getenv("ALLOWED_ORGS"))
-	allowedWorkflows := mintcore.SplitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES"))
-
-	perRepoWIFRepos := make(map[string]bool)
-	for _, entry := range mintcore.SplitCSV(os.Getenv("PER_REPO_WIF_REPOS")) {
-		perRepoWIFRepos[strings.ToLower(entry)] = true
-	}
-
-	if len(allowedWorkflows) == 0 {
+	if len(mintcore.SplitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES"))) == 0 {
 		log.Printf("warning: ALLOWED_WORKFLOW_FILES is not set; all token requests will be rejected")
 	}
 
-	verifier := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL:            "https://token.actions.githubusercontent.com",
-		Audience:             os.Getenv("OIDC_AUDIENCE"),
-		HTTPClient:           &http.Client{Timeout: 30 * time.Second},
-		AllowedOrgs:          allowedOrgs,
-		AllowedWorkflowFiles: allowedWorkflows,
-		PerRepoWIFRepos:      perRepoWIFRepos,
+	verifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
+		IssuerURL: "https://token.actions.githubusercontent.com",
 	})
-
-	if err := registerCustomPermissions(); err != nil {
-		return nil, err
+	if err != nil {
+		return nil, fmt.Errorf("creating OIDC verifier: %w", err)
 	}
 
 	pemAccessor, err := mintcore.NewFilesystemPEMAccessor(os.Getenv("PEM_DIR"))
@@ -75,7 +61,7 @@ func buildHandler() (http.Handler, error) {
 }
 
 func run(ctx context.Context) error {
-	missing := checkRequired("ALLOWED_ORGS", "ROLE_APP_IDS", "OIDC_AUDIENCE", "PEM_DIR")
+	missing := checkRequired("ROLE_APP_IDS", "PEM_DIR")
 	if len(missing) > 0 {
 		return fmt.Errorf("required environment variables not set: %s", strings.Join(missing, ", "))
 	}
@@ -149,27 +135,6 @@ func parseLocalRoles(raw string) (map[string]bool, error) {
 		}
 	}
 	return roles, nil
-}
-
-func registerCustomPermissions() error {
-	raw := os.Getenv("CUSTOM_ROLE_PERMISSIONS")
-	if raw == "" {
-		return nil
-	}
-	var perms map[string]map[string]string
-	if err := json.Unmarshal([]byte(raw), &perms); err != nil {
-		return fmt.Errorf("failed to parse CUSTOM_ROLE_PERMISSIONS: %w", err)
-	}
-	if err := mintcore.RegisterCustomRolePermissions(perms); err != nil {
-		return fmt.Errorf("registering custom role permissions: %w", err)
-	}
-	roles := make([]string, 0, len(perms))
-	for r := range perms {
-		roles = append(roles, r)
-	}
-	sort.Strings(roles)
-	log.Printf("custom role permissions registered: %v", roles)
-	return nil
 }
 
 func sortedKeys(m map[string]bool) []string {

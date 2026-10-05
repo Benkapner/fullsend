@@ -36,10 +36,14 @@ Runtime selection is shared with production via `defaults.runtime` in org `confi
 
 - Behaviour tests can pass while prompt quality regresses; LLM evals remain necessary for instruction coverage.
 - Behaviour orgs are provisioned at suite start with `--runtime dummy`; production orgs must not use dummy unintentionally.
-- **Note (2026-07, #5439 / PR #5489):** Numbered behaviour pool repos (`test-repo-NN`) are lazily created and installed on first scenario use via `RepoEnsurer`; suite-start provisioning still applies to the shared admin/`test-repo` install path where used.
+- **Note (2026-07, #5439 / PR #5489):** Numbered behaviour pool repos (`test-repo-NN`) are lazily created and installed on first scenario use via the ensurer internal to `install.Driver`; suite-start provisioning still applies to the shared admin/`test-repo` install path where used.
 - Adding GitLab or Tekton requires new drivers and runner env values, not feature file rewrites.
 - Dummy runtime op vocabulary stays minimal; new ops require runtime + docs updates when scenarios need them.
 - Behaviour tests depend on live external infrastructure: GitHub API, GitHub Actions runners, GCP WIF/mint, and the shared halfsend org pool. Transient outages, API rate limits, or pool org state corruption can fail the suite; CI distinguishes infrastructure failures from regressions via workflow logs and artifact inspection, but there is no offline fallback.
 - Behaviour tests share the halfsend org pool and lock mechanism with admin e2e tests (`e2e.yml` runs both jobs). Lock hold time scales with scenario count; pool size was doubled to absorb the additional load and can be increased again if contention appears.
 
 > **Note (2026-07):** Shared live-test infrastructure (org pool, CLI runner, cleanup) lives in `pkg/e2etest/`; the Gherkin framework lives in `pkg/behaviourtest/`. In-repo runners remain under `e2e/behaviour/` and `e2e/admin/`.
+>
+> **Note (2026-09):** Live-test infrastructure moved from `pkg/e2etest/` to `internal/e2etest/` so it is not part of the public module surface ([#7279](https://github.com/fullsend-ai/fullsend/issues/7279)).
+
+> **Note (2026-09):** [ADR 0116](0116-dummy-playback-runtime.md) adds the dummy-playback runtime for multi-agent sequential scenarios. The dummy runtime (this ADR) continues to handle single-agent sandbox verification.

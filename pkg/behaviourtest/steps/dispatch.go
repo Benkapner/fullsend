@@ -9,7 +9,11 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
+	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/agentnew"
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -35,9 +39,71 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a review comment is submitted on the pull request$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, whenPullRequestReviewComment(world.FromContext(ctx))
 	})
+	sc.Step(`^the kill switch is active$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, givenKillSwitchActive(world.FromContext(ctx))
+	})
+}
+
+// givenKillSwitchActive sets kill_switch: true in the enrolled repo's
+// config.yaml, causing Dispatch to return an empty matrix for all agents.
+// It also marks w.KillSwitchActivated so CleanupScenario deactivates the
+// switch before the slot is reused by another scenario.
+func givenKillSwitchActive(w *world.World) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before kill-switch operations")
+	}
+	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
+	if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
+	if err != nil {
+		return fmt.Errorf("parsing config: %w", err)
+	}
+	cfg.SetKillSwitch(true)
+	merged, err := cfg.Marshal()
+	if err != nil {
+		return err
+	}
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: activate kill switch", merged); err != nil {
+		return fmt.Errorf("updating config: %w", err)
+	}
+	w.KillSwitchActivated = true
+	return nil
+}
+
+// DeactivateKillSwitch sets kill_switch: false in the enrolled repo's
+// config.yaml. Exported so CleanupScenario (in package steps) can call
+// it during scenario teardown.
+func DeactivateKillSwitch(w *world.World) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before kill-switch operations")
+	}
+	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
+	if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
+	if err != nil {
+		return fmt.Errorf("parsing config: %w", err)
+	}
+	cfg.SetKillSwitch(false)
+	merged, err := cfg.Marshal()
+	if err != nil {
+		return err
+	}
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: deactivate kill switch", merged); err != nil {
+		return fmt.Errorf("updating config: %w", err)
+	}
+	return nil
 }
 
 func givenDisabledCustomHarness(w *world.World, name, doc string) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before harness operations")
+	}
 	name = strings.TrimSpace(name)
 	doc = strings.TrimSpace(doc)
 	if name == "" || doc == "" {
@@ -45,12 +111,21 @@ func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 	}
 
 	harnessPath := filepath.Join(".fullsend", "harness", name+".yaml")
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), harnessPath, fmt.Sprintf("behaviour: add harness %s", name), []byte(doc)); err != nil {
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, harnessPath, fmt.Sprintf("behaviour: add harness %s", name), []byte(doc)); err != nil {
 		return fmt.Errorf("committing harness: %w", err)
 	}
 
+	if err := commitLocalHarnessResources(context.Background(), w, name, doc); err != nil {
+		return err
+	}
+
+	// Snapshot agents before modification so CleanupScenario can restore.
+	if err := snapshotAgents(w); err != nil {
+		return fmt.Errorf("snapshotting agents: %w", err)
+	}
+
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
@@ -77,13 +152,16 @@ func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath, fmt.Sprintf("behaviour: register disabled harness %s", name), merged); err != nil {
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, fmt.Sprintf("behaviour: register disabled harness %s", name), merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
 }
 
 func givenCustomHarness(w *world.World, name, doc string) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before harness operations")
+	}
 	name = strings.TrimSpace(name)
 	doc = strings.TrimSpace(doc)
 	if name == "" || doc == "" {
@@ -92,12 +170,21 @@ func givenCustomHarness(w *world.World, name, doc string) error {
 	w.DispatchAgent = name
 
 	harnessPath := filepath.Join(".fullsend", "harness", name+".yaml")
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), harnessPath, fmt.Sprintf("behaviour: add harness %s", name), []byte(doc)); err != nil {
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, harnessPath, fmt.Sprintf("behaviour: add harness %s", name), []byte(doc)); err != nil {
 		return fmt.Errorf("committing harness: %w", err)
 	}
 
+	if err := commitLocalHarnessResources(context.Background(), w, name, doc); err != nil {
+		return err
+	}
+
+	// Snapshot agents before modification so CleanupScenario can restore.
+	if err := snapshotAgents(w); err != nil {
+		return fmt.Errorf("snapshotting agents: %w", err)
+	}
+
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
@@ -123,9 +210,85 @@ func givenCustomHarness(w *world.World, name, doc string) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath, fmt.Sprintf("behaviour: register harness %s", name), merged); err != nil {
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, fmt.Sprintf("behaviour: register harness %s", name), merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
+	return nil
+}
+
+// commitLocalHarnessResources parses the harness YAML doc and commits
+// any relative resource files (agent, policy) under .fullsend/ on the
+// config repo. This ensures local custom harnesses can reference agent
+// and policy files that exist on disk when the harness is validated.
+//
+// This mirrors commitRelativeResources in url_dispatch.go but commits
+// to the config repo with the .fullsend/ prefix instead of to a hosting
+// repo at the repo root.
+func commitLocalHarnessResources(ctx context.Context, w *world.World, harnessName, doc string) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before harness operations")
+	}
+	var h struct {
+		Agent     string   `yaml:"agent"`
+		Policy    string   `yaml:"policy"`
+		Providers []string `yaml:"providers"`
+		OpenShell struct {
+			Profiles []string `yaml:"profiles"`
+		} `yaml:"openshell"`
+	}
+	if err := yaml.Unmarshal([]byte(doc), &h); err != nil {
+		return fmt.Errorf("parsing harness YAML for resource paths: %w", err)
+	}
+
+	owner := w.Org
+	repo := w.RepoName
+
+	if h.Agent != "" && !strings.HasPrefix(h.Agent, "/") && !strings.HasPrefix(h.Agent, "https://") {
+		agentPath := filepath.Join(".fullsend", h.Agent)
+		if err := w.SCM.CommitFile(ctx, owner, repo, agentPath,
+			fmt.Sprintf("behaviour: add agent resource for %s", harnessName),
+			[]byte(minimalAgentContent)); err != nil {
+			return fmt.Errorf("committing agent resource %s: %w", agentPath, err)
+		}
+	}
+
+	if h.Policy != "" && !strings.HasPrefix(h.Policy, "/") && !strings.HasPrefix(h.Policy, "https://") {
+		policyPath := filepath.Join(".fullsend", h.Policy)
+		policy := agentnew.BasePolicy()
+		if err := w.SCM.CommitFile(ctx, owner, repo, policyPath,
+			fmt.Sprintf("behaviour: add policy resource for %s", harnessName),
+			policy); err != nil {
+			return fmt.Errorf("committing policy resource %s: %w", policyPath, err)
+		}
+	}
+
+	// Relative profiles/providers entries grant the sandbox network egress
+	// (ADR-0065), so a placeholder would not do: commit the real files the
+	// per-repo scaffold embeds (e.g. profiles/fullsend-vertex-ai.yaml,
+	// providers/vertex-ai.yaml). The scaffold install ships only .gitkeeps
+	// for these directories, and a local harness resolves them relative to
+	// .fullsend/, so a scenario that needs a real model must reference them
+	// and they must exist. Entries the scaffold does not carry are an error.
+	for _, group := range []struct {
+		field string
+		paths []string
+	}{{"profiles", h.OpenShell.Profiles}, {"providers", h.Providers}} {
+		for _, rel := range group.paths {
+			if rel == "" || strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "https://") {
+				continue
+			}
+			data, err := scaffold.FullsendRepoFile(rel)
+			if err != nil {
+				return fmt.Errorf("%s entry %q for %s is not a file the per-repo scaffold ships: %w", group.field, rel, harnessName, err)
+			}
+			dest := filepath.Join(".fullsend", rel)
+			if err := w.SCM.CommitFile(ctx, owner, repo, dest,
+				fmt.Sprintf("behaviour: add %s resource for %s", group.field, harnessName), data); err != nil {
+				return fmt.Errorf("committing %s resource %s: %w", group.field, dest, err)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -135,11 +298,16 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 		return fmt.Errorf("no workflow trigger time recorded")
 	}
 	ctx := context.Background()
-	run, err := w.CI.WaitForHarnessAgent(ctx, w.Org, w.Install.TriageWorkflowRepo(), agent, w.ScenarioStart)
+	run, err := w.CI.WaitForHarnessAgent(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
 	if err != nil {
+		// A failed harness run is the one whose logs matter most, and the
+		// pool repository (with its run logs) is deleted when the lease
+		// ends, so save them before returning.
+		saveWorkflowRunLogs(ctx, w, agent, run)
 		return err
 	}
 	w.WorkflowRun = run
+	saveWorkflowRunLogs(ctx, w, agent, run)
 	return ensureHarnessArtifacts(w, agent)
 }
 
@@ -186,7 +354,7 @@ func thenHarnessAgentDidNotRun(w *world.World, agent string) error {
 		case <-time.After(d):
 		}
 	}
-	return w.CI.AssertNoHarnessAgentArtifact(ctx, w.Org, w.Install.TriageWorkflowRepo(), agent, w.ScenarioStart)
+	return w.CI.AssertNoHarnessAgentArtifact(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
 }
 
 func ensureHarnessArtifacts(w *world.World, agent string) error {
@@ -201,7 +369,7 @@ func ensureHarnessArtifacts(w *world.World, agent string) error {
 	if w.WorkflowRun == nil {
 		return fmt.Errorf("no workflow run recorded")
 	}
-	if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.Install.TriageWorkflowRepo(), w.WorkflowRun.ID, "fullsend-"+agent, dest); err != nil {
+	if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.RepoName, w.WorkflowRun.ID, "fullsend-"+agent, dest); err != nil {
 		_ = os.RemoveAll(dest)
 		return err
 	}
@@ -211,8 +379,7 @@ func ensureHarnessArtifacts(w *world.World, agent string) error {
 
 func whenPullRequestOpened(w *world.World) error {
 	if w.RepoOwner == "" || w.RepoName == "" {
-		w.RepoOwner = w.Org
-		w.RepoName = w.Install.TestRepo()
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before PR operations")
 	}
 	w.ScenarioStart = time.Now()
 	branch := fmt.Sprintf("behaviour-pr-%d", time.Now().UnixNano())

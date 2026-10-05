@@ -8,22 +8,18 @@ package function
 
 import (
 	"log"
-	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/GoogleCloudPlatform/functions-framework-go/functions"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
 
 var requiredEnvVars = []string{
-	"ALLOWED_ORGS",
 	"GCP_PROJECT_NUMBER",
 	"WIF_POOL_NAME",
 	"WIF_PROVIDER_NAME",
 	"ROLE_APP_IDS",
-	"OIDC_AUDIENCE",
 }
 
 func init() {
@@ -41,24 +37,6 @@ func init() {
 		log.Fatalf("required environment variables not set: %s", strings.Join(missing, ", "))
 	}
 
-	oidcAudience := os.Getenv("OIDC_AUDIENCE")
-
-	var allowedOrgs []string
-	for _, entry := range strings.Split(os.Getenv("ALLOWED_ORGS"), ",") {
-		if trimmed := strings.TrimSpace(entry); trimmed != "" {
-			allowedOrgs = append(allowedOrgs, trimmed)
-		}
-	}
-
-	var allowedWorkflows []string
-	if wf := os.Getenv("ALLOWED_WORKFLOW_FILES"); wf != "" {
-		for _, entry := range strings.Split(wf, ",") {
-			if trimmed := strings.TrimSpace(entry); trimmed != "" {
-				allowedWorkflows = append(allowedWorkflows, trimmed)
-			}
-		}
-	}
-
 	perRepoWIFRepos := make(map[string]bool)
 	if raw := os.Getenv("PER_REPO_WIF_REPOS"); raw != "" {
 		for _, entry := range strings.Split(raw, ",") {
@@ -69,23 +47,20 @@ func init() {
 	}
 
 	gcpProjectNum := os.Getenv("GCP_PROJECT_NUMBER")
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	wifPoolName := os.Getenv("WIF_POOL_NAME")
+	defaultWIFProvider := os.Getenv("WIF_PROVIDER_NAME")
 
-	verifier := mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
-		HTTPClient:         httpClient,
+	verifier, err := mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
 		GCPProjectNum:      gcpProjectNum,
-		WIFPoolName:        os.Getenv("WIF_POOL_NAME"),
-		DefaultWIFProvider: os.Getenv("WIF_PROVIDER_NAME"),
-		AllowedOrgs:        allowedOrgs,
-		AllowedWorkflows:   allowedWorkflows,
+		WIFPoolName:        wifPoolName,
+		DefaultWIFProvider: defaultWIFProvider,
 		PerRepoWIFRepos:    perRepoWIFRepos,
-		OIDCAudience:       oidcAudience,
 	})
+	if err != nil {
+		log.Fatalf("creating OIDC verifier: %v", err)
+	}
 
-	pemAccessor := mintcore.NewGCPSecretPEMAccessor(
-		&http.Client{Timeout: 10 * time.Second},
-		gcpProjectNum,
-	)
+	pemAccessor := mintcore.NewGCPSecretPEMAccessor(gcpProjectNum)
 
 	handler, err := mintcore.NewHandler(pemAccessor, verifier)
 	if err != nil {

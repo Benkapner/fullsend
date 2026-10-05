@@ -1,6 +1,10 @@
 package repos
 
-import "regexp"
+import (
+	"regexp"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
+)
 
 var (
 	ghWorkflowRefPattern = regexp.MustCompile(
@@ -9,18 +13,29 @@ var (
 	ghShimRefPattern = regexp.MustCompile(
 		`(uses:\s+` + shimOwner + `/` + shimRepo + `/[^@]+@)\S+([ \t]*#.*)?`,
 	)
+	// \b anchors the match to a bare ref: token so it does not match a
+	// longer *_ref: key. The optional (?:\s+\(.*?\))? matches SHA
+	// annotations like "(v0.34.0)". The GitLab version marker is a ref:
+	// line injected into the pipeline wrapper at install time. Native
+	// dispatch, and its jq scripts, were removed in #7322; the leftover
+	// dispatch stub stopped carrying the marker in #7707.
 	glWorkflowRefPattern = regexp.MustCompile(
-		`(?m)ref:\s+['"]?(\S+?)['"]?[ \t]*$`,
+		`(?m)\bref:\s+['"]?(\S+?)['"]?(?:\s+\(.*?\))?[ \t]*$`,
 	)
 	glShimRefPattern = regexp.MustCompile(
-		`(?m)(ref:\s+)['"]?\S+?['"]?[ \t]*$`,
+		`(?m)(\bref:\s+)['"]?\S+?['"]?(?:\s+\(.*?\))?[ \t]*$`,
 	)
 )
 
 // ForgeConfig holds forge-specific CI paths and regex patterns used by
 // status and upgrade operations. Each forge has different workflow file
-// conventions and ref syntax.
+// conventions and ref syntax. When populated by a ForgeClientFactory,
+// the Client field carries a live API client for the forge.
 type ForgeConfig struct {
+	// Client is the API client for this forge. Set by ForgeClientFactory;
+	// nil when ForgeConfig is constructed by ForgeConfigFor (pattern-only).
+	Client forge.Client
+
 	// WorkflowPaths lists the shim workflow file paths to try, in order.
 	WorkflowPaths []string
 
@@ -30,6 +45,15 @@ type ForgeConfig struct {
 	// ShimRefPattern matches all @ref occurrences in fullsend uses: lines
 	// within a workflow file, used by upgrade to rewrite refs.
 	ShimRefPattern *regexp.Regexp
+}
+
+// ForgeClientFactory creates ForgeConfig instances with a live Client.
+// The CLI layer implements this with lazy client creation and caching.
+type ForgeClientFactory interface {
+	// ConfigFor returns a ForgeConfig with a live Client for the named forge.
+	// The factory lazily creates and caches clients, so a GitLab token is
+	// only required if the manifest actually contains GitLab entries.
+	ConfigFor(forgeName string) (ForgeConfig, error)
 }
 
 // GitHubForgeConfig returns the ForgeConfig for GitHub repositories.
@@ -48,14 +72,15 @@ func GitHubForgeConfig() ForgeConfig {
 
 // GitLabForgeConfig returns the ForgeConfig for GitLab repositories.
 // GitLab CI files live under .gitlab/ci/ and use include: directives
-// with ref: fields. Patterns here are placeholders for the GitLab CI
-// dispatch template structure (see ADR 0067). The ShimRefPattern
-// matches any ref: line in the file — the dispatch file must contain
-// only the fullsend include (single-include constraint).
+// with ref: fields. The pipeline wrapper carries the version marker
+// (#7707). Native dispatch itself was removed in #7322 (see ADR 0067).
+// ShimRefPattern matches the injected ref: marker line for upgrade
+// drift detection. Leftover fullsend-dispatch.yml from installs before
+// #7707 is still read for the installed ref by readWorkflowMarker.
 func GitLabForgeConfig() ForgeConfig {
 	return ForgeConfig{
 		WorkflowPaths: []string{
-			".gitlab/ci/fullsend-dispatch.yml",
+			fullsendPipelineInclude,
 		},
 		WorkflowRefPattern: glWorkflowRefPattern,
 		ShimRefPattern:     glShimRefPattern,

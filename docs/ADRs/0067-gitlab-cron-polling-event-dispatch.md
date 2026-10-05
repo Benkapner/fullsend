@@ -24,12 +24,201 @@ Date: 2026-06-13
 
 Accepted
 
+The dispatch topology (native-CI two-path, then pure cron-polling after
+[#7322](https://github.com/fullsend-ai/fullsend/issues/7322)) is superseded
+by [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md). The single-bot
+credential model is superseded by the three-role decision in
+[#7424](https://github.com/fullsend-ai/fullsend/issues/7424) and
+[#7496](https://github.com/fullsend-ai/fullsend/issues/7496) (see
+[gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md));
+poller internals, HMAC dispatch signing, and forge-interface
+extensions remain current. Of this ADR's security guardrails, the
+protected/masked CI variable model, the poller reconciliation backstop, and
+the in-job dispatch gate remain current; the "no inbound attack surface / no
+webhook parser / no trigger token" and "events read only from the GitLab
+API, never from spoofable webhook payloads" properties are **superseded** by
+ADR 0125's webhook fast-path — see ADR 0125's trust boundaries and
+trigger-token threat model for the new inbound-surface controls.
+
 <!-- ADRs are point-in-time records, but not fully frozen after acceptance.
      Minor annotations are welcome: cross-references to related ADRs, short
      notes linking to newer decisions, or clarifying remarks. However, do not
      substantially rewrite the Context, Decision, or Consequences sections. If
      the decision itself needs to change, write a new ADR that supersedes this
      one. For evolving design narrative, use docs/architecture.md. -->
+
+> **Update (2026-09, #7502 / #7424 / #7496):** The shared-identity
+> assumption in "Credential model" below is superseded. Fullsend uses
+> three built-in GitLab responsibility identities per repository —
+> **Poller**, **Analyst**, and **Coder** — decided in
+> [#7424](https://github.com/fullsend-ai/fullsend/issues/7424) and
+> implemented under [#7496](https://github.com/fullsend-ai/fullsend/issues/7496).
+> Administrator-registered custom roles are an optional extension of
+> the same registry, not a replacement of the three built-ins. Runtime
+> never authenticates as `FULLSEND_FORGE_TOKEN`. Separate identities do
+> not grant finer GitLab API permissions: every role token remains
+> Developer (30) with the `api` scope. See
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+>
+> **Update (2026-09, #7758):** Dispatch topology is superseded by
+> [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md): a GitLab-native
+> webhook fast-path with this ADR's cron-poller as the reconciliation
+> backstop. The Decision below is the historical record; do not treat
+> poll-only dispatch as current.
+>
+> **Update (2026-07, #5556):** The child-pipeline output driver described in
+> this ADR was replaced by direct API-triggered pipelines
+> (`POST /projects/:id/pipeline`). The poller now creates standalone pipelines
+> with dispatch variables instead of generating child pipeline YAML. This
+> eliminates the bridge job, YAML generation, and 2-level pipeline nesting.
+> The cron-polling input driver and dispatch core are unchanged. Superseded
+> sections: "Relationship to the dispatch driver architecture" (child-pipeline
+> output driver), "Pipeline nesting" under GitLab tier considerations, and the
+> architecture diagram showing parent-child pipeline flow.
+>
+> **Trust boundary change:** With child pipelines, dispatch variables were
+> computed server-side by the trusted poller and injected via the trigger YAML
+> artifact — only the poller could produce them. With API-triggered pipelines,
+> any user with pipeline-create access on the protected branch can POST
+> arbitrary variables (STAGE, EVENT_TYPE, EVENT_PAYLOAD_B64, RESOURCE_KEY,
+> IS_FORK, MR_AUTHOR_ID, ACTOR_ID, STATUS_IID, FULLSEND_POLL_JOB_URL,
+> ORIGINATING_URL, REPO_FULL_NAME). The
+> in-job authorization gate and fork
+> protection read these attacker-supplied variables. Mitigation #1 is
+> implemented: the agent job uses the Pipelines API
+> (`GET /projects/:id/pipelines/$CI_PIPELINE_ID`) to fetch the server-side
+> `.source` field and `.user.id`, then branches with a deny-by-default
+> `case` statement. For API-triggered pipelines (`.source == "api"`), it
+> verifies the pipeline creator matches the bot PAT identity. MR child
+> pipelines (`.source == "parent_pipeline"`) skip this check since their
+> creator is the MR author. A missing or unrecognized `.source` aborts the
+> job (fail-closed). Both dispatch paths now depend on a successful
+> pipeline-record read. The `.source` field is server-computed and cannot
+> be overridden by pipeline variables, unlike the `CI_PIPELINE_SOURCE` env
+> var. Residual risk: `CI_API_V4_URL` and `CI_PIPELINE_ID` are still
+> overridable, so a sophisticated attacker can redirect the API calls.
+> Mitigation #2 (HMAC signing, #5572) reduces this residual risk: the
+> poller signs dispatch variables with `FULLSEND_DISPATCH_SECRET` using
+> HMAC-SHA256 and the agent job verifies the signature before trusting
+> any dispatch variable. The HMAC computation itself uses no CI-provided
+> URLs, but the verification is gated on PIPELINE_SOURCE (derived from
+> CI_API_V4_URL), so the risk is reduced rather than fully closed. `FULLSEND_DISPATCH_SECRET`
+> MUST be configured as a protected, masked CI/CD variable — pipeline
+> variables can be overridden by API-triggered pipelines, so protection
+> is required to prevent a Developer+ user from supplying their own
+> secret and computing a valid HMAC over forged variables.
+>
+> **New permission requirement:** The bot PAT must have merge or push access
+> to the protected branch to create pipelines via the API endpoint. The
+> child-pipeline path had no such requirement (the trigger ran inside an
+> existing pipeline context).
+>
+> **Pipeline visibility change:** Dispatched pipelines are first-class
+> pipelines on the default branch, not nested children. Agent failures mark
+> the latest pipeline on main as failed. The scaffold sets
+> `workflow:auto_cancel:on_new_commit:none` to prevent new commits from
+> canceling queued agent pipelines. This setting applies globally (including
+> MR pipelines) because GitLab does not scope auto_cancel per pipeline
+> source. MR dispatch jobs are fast (<30s) so the impact on MR pipeline
+> redundancy is negligible.
+>
+> **Observability trade-off:** The old `trigger: strategy: depend` mirrored
+> child pipeline pass/fail into the poll job's own status. API-triggered
+> pipelines are fire-and-forget — the poll job reports success after creating
+> the pipeline, regardless of downstream agent outcome. Dispatched pipeline
+> URLs are logged for manual inspection.
+>
+> **Update (2026-09, #7293):** Native `merge_request_event` review is
+> incompatible with protected CI/CD variables. MR pipelines run on the
+> unprotected `refs/merge-requests/N/head` ref, so `FULLSEND_FORGE_TOKEN`
+> is empty and the review agent aborts. MR-open review now uses the cron
+> poller (`created_at` > watermark → `transition.kind: opened`) which
+> dispatches on the protected default branch. The native dispatch job
+> no-ops the review stage the same way it already no-ops merged retro.
+> This trades sub-second latency for up to one poll interval. Superseded
+> sections: the "MR opened/updated/reopened → native CI → review" row in
+> Event routing, the architecture diagram line routing MR open to
+> `fullsend-dispatch.yml`, and "MR review latency is unaffected" under
+> Consequences. Push-to-open-MR (GitHub `synchronize`) is not detected
+> by the poller; use `/fs-review`.
+>
+> **Update (2026-09, #7323):** The single shared bot PAT (see "Credential
+> model" below) means GitLab's own `merge_requests_author_approval=false`
+> default always rejects `POST .../approve` with 401 whenever the
+> authenticated bot identity is also the MR author — which is always true
+> for fullsend-authored MRs on GitLab, since code and review share one
+> identity. That outcome is a certainty, not a possible failure to
+> recover from after the fact, so `CreatePullRequestReview` (APPROVE)
+> checks the authenticated identity against the MR author via
+> `GetAuthenticatedUser` / `GetPullRequestInfo` *before* calling
+> `/approve`, and only when they affirmatively match, skips the call
+> outright and posts an MR note recording the approve verdict instead. A
+> post-hoc check using the same identity comparison remains as a safety
+> net for a 401 that arrives despite the pre-call check (e.g., the
+> identity lookup itself errored, or a future per-role PAT is not the
+> author but project settings still block the approval). In both the
+> pre-call and post-hoc paths, a 401 whose body matches known
+> credential-failure phrasing (`isCredentialFailure` — invalid, expired,
+> or revoked token) is always a hard error, never a note, and any error
+> while performing the identity check itself (including an empty
+> username from either lookup) also fails closed as a hard error rather
+> than falling back. This is a documented trade-off of the single-shared-PAT
+> credential model's interaction with the "no self-approval"
+> defense-in-depth control in [Threat 2 of the security threat
+> model](../problems/security-threat-model.md#threat-2-insider-threat--compromised-credentials):
+> GitHub keeps that separation via distinct bot identities; GitLab's
+> single-PAT model (chosen here for operational simplicity) does not, and
+> this fallback is an accepted consequence of that tradeoff rather than a
+> per-role-token gap to close.
+>
+> **Update (2026-09, #7502 / #7424):** The single-shared-PAT self-approval
+> trade-off above is superseded when Analyst and Coder are distinct GitLab
+> users: native `POST .../approve` can succeed because the Analyst token
+> is not the MR author. The pre-call identity check remains as a safety
+> net when those identities coincide (for example a Free-tier one-user
+> PAT arrangement). See
+> [configuring-gitlab.md](../guides/getting-started/configuring-gitlab.md#role-identities-and-gitlab-free).
+>
+> **Update (2026-09, #7322):** Native `merge_request_event` dispatch is
+> removed. After #7293 moved MR-open review to the poller, the only
+> remaining native path was best-effort `closed` → retro (a
+> push-then-close race that generated no-op child pipelines for every
+> other MR event). All GitLab events now route through the cron poller,
+> including closed-unmerged MRs (`closed_at` > watermark and `merged_at`
+> empty → `transition.kind: closed` → retro). This is Option 4 (pure
+> cron-polling), originally rejected for sub-second MR review latency
+> that #7293 already gave up. `fullsend-dispatch.yml` is retained as a
+> version-marker carrier and is no longer included by the pipeline
+> wrapper.
+>
+> **Update (2026-09, #7707):** The leftover `fullsend-dispatch.yml` stub
+> is no longer scaffolded. The `# fullsend-ref:` version marker now lives
+> in `fullsend-pipeline.yml`. Status, probe, and upgrade still read a
+> leftover dispatch stub so already-enrolled repos keep reporting a ref;
+> converge deletes the stub and writes the marker onto the pipeline
+> wrapper. Uninstall still removes the file when it is present. Superseded sections: the two-path Decision, the native-CI
+> architecture-diagram line, and the #5556 auto_cancel note's "MR
+> pipelines / MR dispatch jobs are fast (<30s)" claim above — no MR
+> pipelines or dispatch jobs exist anymore. ("MR review latency is
+> unaffected" under Consequences was already superseded by the #7293
+> note above.)
+>
+> **Transitional risk on already-enrolled repos:** the root
+> `.gitlab-ci.yml` is user-owned and, prior to this note, was only
+> touched by the install merge path (fresh installs) and the uninstall
+> unmerge path (teardown) — neither runs during `repos upgrade`/`repos
+> install` convergence. Without a migration, an already-enrolled repo
+> that converges after #7322 would keep the obsolete
+> `merge_request_event` workflow rule while the newly-synced pipeline
+> wrapper defines no job matching that source, so GitLab would create
+> an empty/config-error pipeline on every MR event. Converge now
+> strips this specific obsolete rule from the root file in place
+> (`StripObsoleteGitLabWorkflowRules`, `internal/repos/gitlabci.go`),
+> leaving fullsend's current rules and all user configuration
+> untouched. See risk item 6 under Consequences. #7337 subsequently
+> dropped the leftover empty `dispatch` stage from the required stage
+> list and strips it from already-enrolled root files on converge
+> (`StripObsoleteGitLabStages`).
 
 ## Context
 
@@ -135,12 +324,12 @@ and harness CEL `trigger` evaluation ([ADR 0061](0061-harness-cel-dispatch.md))
 input driver does not duplicate trigger routing or authorization logic.
 
 ```
-ENROLLED PROJECT                           GCP (optional, WIF mode only)
+ENROLLED PROJECT                           GCP (optional, for inference)
 ────────────────                           ────
-.gitlab-ci.yml (root pipeline)             WIF pool/provider (validates GitLab OIDC)
-.gitlab/ci/fullsend-dispatch.yml (MR routing)  Service Account (impersonated by jobs)
-.gitlab/ci/fullsend-poll.yml (cron-poller)     Secret Manager:
-.gitlab/ci/fullsend-agent.yml (generic stage)      - bot PAT per enrolled project
+.gitlab-ci.yml (root pipeline)             WIF pool/provider (inference OIDC validation)
+.gitlab/ci/fullsend-dispatch.yml (MR routing)
+.gitlab/ci/fullsend-poll.yml (cron-poller)
+.gitlab/ci/fullsend-agent.yml (generic stage)
   (replaces per-stage templates — see PR #3193)
 .fullsend/ (config workspace)
 
@@ -153,39 +342,129 @@ MR merge (cron):
 Issues, comments, labels (cron):
   Pipeline schedule (5 min) → fullsend-poll.yml → GitLab API → dispatch agent stage
 
-Credentials (WIF mode):
-  Pipeline job → OIDC token → GCP STS → WIF → SA → Secret Manager → bot PAT
-
-Credentials (variable mode):
+Credentials:
   Pipeline job → protected CI/CD variable FULLSEND_FORGE_TOKEN → bot PAT
 ```
+
+> **See also (#7424, #7496, #7497, #7498):** The registered-role credential contract
+> (built-in Poller/Analyst/Coder plus administrator-registered custom
+> roles) is specified in
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+> `repos install` can provision those credentials additively without
+> revoking `FULLSEND_FORGE_TOKEN`. Job routing (#7499, #7559) selects the
+> registered role credential when the gate is `migrating` or `enforced`
+> and fails closed if that secret is missing; this ADR's single-bot
+> identity remains the leftover/`rollback` path while the gate is unset,
+> leftover `disabled`, or explicit `rollback`.
+>
+> **Update (#7782):** The leftover/`rollback` single-bot-identity path
+> described above no longer applies to runtime credential selection.
+> Runtime job routing now requires the registered role credential in
+> every gate mode, including leftover unset/`disabled` and explicit
+> `rollback` — there is no shared-token fallback left. See
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+>
+> **Update (#7524 / #7559):** Ordinary `repos install` retires the
+> leftover shared `FULLSEND_FORGE_TOKEN` credential once all roles are
+> ready, and there is no public rollback control. See
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
 
 ### Credential model
 
 A Maintainer-role project access token with `api` scope, created during
 `fullsend admin install`. Maintainer role is required because the poller
 updates CI/CD variables (watermark and label state persistence) via the
-API, which requires Maintainer-level access. Two storage modes are
-supported:
+API, which requires Maintainer-level access. The bot PAT is stored as a
+protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
 
-**Mode 1: OIDC/WIF (recommended).** The bot PAT is stored in GCP Secret
-Manager and retrieved at runtime via GitLab OIDC → GCP WIF. No secrets
-are stored as CI/CD variables. This is the recommended mode when GCP
-infrastructure is available (e.g., projects already using Vertex AI for
-inference).
+> **Update (2026-09, #7502 / #7424 / #7496):** The single bot PAT
+> described here is superseded by the three built-in responsibility
+> identities (Poller, Analyst, Coder) plus optional administrator-
+> registered custom roles. Runtime never authenticates as
+> `FULLSEND_FORGE_TOKEN`. See Status and
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+>
+> **Update (2026-09, #7343 / #7362 / #7381):** Poll-state persistence
+> (watermarks, dispatched/failed-key dedup, label state) moved off
+> CI/CD variables onto two per-mode, HMAC-signed `state.json`
+> documents on dedicated unprotected branches:
+>
+> | Branch | Written by | Fields |
+> |---|---|---|
+> | `fullsend-poll-state-slash` | slash poll (`*/5`) | `last_poll_at_fast`, `dispatched_keys_fast`, `failed_keys_fast`, `hmac` |
+> | `fullsend-poll-state-events` | event poll (`2,17,32,47`) | `last_poll_at_full`, `dispatched_keys_full`, `failed_keys_full`, `label_state`, `hmac` |
+>
+> Two branches keep concurrent slash+events runs from clobbering each
+> other (each mode has its own `resource_group`, but the two modes can
+> overlap) and let force-re-root pruning drop only that mode's prior
+> commit. Two files on one branch would lose the sibling file on every
+> force-re-root.
+>
+> **Force-re-root pruning.** Every save is a single
+> `ForceCommitFileToBranch` (`POST /projects/:id/repository/commits`
+> with `force: true` and `start_sha` = the repository's root commit).
+> The branch is always root + 1 commit; prior state commits become
+> unreachable. The commit message is suffixed `[skip ci]`. Force +
+> start point also creates the branch on first write.
+>
+> **Update (#7768 / [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)):** Install-time seeding still force-re-roots as
+> described above. Runtime persist is now conflict-detecting instead:
+> the write is parented at the loaded tip without `force`, and a 409
+> retries a merge of this writer's deltas rather than last-writer-wins
+> overwrite. See ADR 0125 for the current runtime persist design and
+> the residual risk this introduces for unbounded state-branch history.
+>
+> **HMAC.** Each document is HMAC-SHA256-signed with
+> `FULLSEND_DISPATCH_SECRET` (already provisioned for dispatch
+> signing). The MAC covers a per-branch, per-project domain prefix
+> (`fullsend-poll-state-slash/1\n` or `fullsend-poll-state-events/1\n`,
+> then `{owner/repo}\n`) plus the canonical JSON with the `hmac` field
+> cleared, so a signed file cannot be substituted across branches or
+> projects.
+>
+> **Fail-closed vs self-heal.** Secret unset → refuse to load or write
+> (fail closed). Present but missing/invalid signature, or unreadable
+> JSON → discard the branch (`DeleteRef`) and fail that cycle; the
+> next cycle recreates a fresh signed baseline. Missing branch or
+> `state.json` is *not* tampering: load a fresh baseline (watermark
+> defaults to ~1 hour ago) and the next save recreates the branch.
+> Losing a state branch therefore causes a one-time re-scan and
+> at-least-once re-dispatch of recent items, not a stall.
+>
+> **Lifecycle.** `repos install` / `repos converge` create both
+> branches with an initial signed document (seeded from legacy
+> CI/CD-variable state when present). The poller self-heals a deleted
+> branch within one cycle. `repos uninstall` deletes both branches.
+>
+> Phase 3c (#7381) dropped the created bot PAT from Maintainer (40)
+> to Developer (30); Developer can force-write and delete an
+> unprotected branch. The historical Maintainer-role description
+> above is superseded for the CI/CD-variable rationale only. It is
+> not superseded for the #5556 "New permission requirement" above:
+> `internal/poll/dispatch.go` still calls `CreatePipeline` on the
+> protected default branch, which requires merge or push access.
+> Under GitLab's default "Protected" branch preset (Developers and
+> Maintainers can merge), Developer (30) still satisfies that
+> requirement, but a repo whose branch protection restricts both merge
+> and push to Maintainers will get a 403 on pipeline creation and
+> dispatch will silently stop working. This change does not verify or
+> grant that access; operators using a stricter branch-protection
+> configuration must grant Developers merge (or push) access to the
+> default branch, or keep the bot PAT at Maintainer (40), for dispatch
+> to keep working.
+>
+> **Update (#7665):** `repos install` now grants the poller
+> project-access-token user merge access (not push) on the protected
+> default branch when Developer-class merge/push is absent, and fails
+> closed if that grant is not possible. `repos status` reports
+> `protected-ref-pipeline` drift if the access is later removed.
+>
+> **Update (#7667):** a failed `CreatePipeline` (including that 403) now
+> fails the poll cycle after persisting retry state. The permission gap
+> is unchanged; the poll job no longer reports success when no agent
+> pipeline was created.
 
-**Mode 2: Protected CI/CD variable (fallback).** The bot PAT is stored
-as a protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`). No GCP
-infrastructure required. This is the default mode for environments
-without GCP access, including self-hosted GitLab instances with no cloud
-dependency.
-
-The install flow selects the mode automatically: if `--gcp-project` is
-provided, OIDC/WIF is configured; otherwise, the CI/CD variable path is
-used. A `FULLSEND_CREDENTIAL_MODE` protected variable (`wif` or
-`variable`) tells pipeline templates which retrieval path to execute.
-
-Key properties shared by both modes:
+Key properties:
 
 - **Single credential type.** One bot PAT per project handles all REST and
   GraphQL operations. No webhook secrets, trigger tokens, or mint service.
@@ -193,26 +472,21 @@ Key properties shared by both modes:
   providing attributable identity equivalent to GitHub Apps.
 - **GraphQL support.** Unlike `CI_JOB_TOKEN`, the bot PAT authenticates
   GraphQL — required for GitLab's Work Items API.
-
-OIDC/WIF mode additionally provides:
-
-- **`CI_DEBUG_TRACE` defense-in-depth.** GitLab logs all CI/CD variables
-  at job initialization, *before* any script runs. In variable mode, a
-  Maintainer enabling `CI_DEBUG_TRACE` exposes the PAT in job logs before
-  the script-level guard can abort. In WIF mode, WIF configuration
-  metadata (pool IDs, project numbers, service account emails) is logged
-  but the PAT itself is not — it is retrieved later by `gcloud`, after the
-  guard has already run. The metadata exposure is an accepted tradeoff:
-  it reveals infrastructure topology but not credentials. This is the
-  primary security difference between the two modes.
-- **Cryptographic access control.** WIF attribute conditions restrict
-  token retrieval to the enrolled project on protected branches
-  (`assertion.project_id` + `assertion.ref_protected == "true"`).
-- **Separation of administrative domains.** WIF configuration lives in
-  GCP IAM, outside the GitLab Maintainer's control. A GitLab Maintainer
-  cannot modify WIF attribute conditions without GCP IAM access.
-- **No token mint.** Standard GCP WIF replaces the custom mint Cloud
-  Function used for GitHub.
+- **`CI_DEBUG_TRACE` guard.** The scaffold script aborts when debug trace
+  is enabled, preventing PAT exposure in job logs.
+- **Inference credential support.** Vertex AI inference credentials
+  (`FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`,
+  `FULLSEND_GCP_REGION`) are configured via OIDC/WIF when inference is
+  enabled, so that agent jobs can authenticate to Vertex AI.
+- **OIDC issuer reachability requirement.** Inference WIF requires the
+  GitLab instance's OIDC discovery endpoints to be publicly reachable
+  by GCP's Security Token Service (STS). During the WIF token exchange,
+  GCP's STS resolves the GitLab instance hostname to validate the JWT
+  issuer. Internal or private GitLab instances (e.g., those accessible
+  only via VPN or corporate DNS) will fail with
+  `Error code invalid_grant: Error connecting to the given credential's issuer`.
+  Inference is not available for GitLab instances that are not
+  resolvable in public DNS.
 
 ### Cron poller (`gitlab-poll` input driver)
 
@@ -221,8 +495,7 @@ container image, invoked by a scheduled pipeline on the protected default
 branch. It reads a timestamp watermark, queries the GitLab API for events
 since the last poll, emits a `NormalizedEvent` per detected change, passes
 events to the dispatch core for authorization and harness CEL evaluation, and
-advances the watermark. See the [companion implementation plan](../plans/gitlab-cron-polling-implementation.md)
-for detailed pseudocode and numbered steps.
+advances the watermark.
 
 Change detection for labels uses client-side state diffing — the input driver
 tracks previously-seen labels per issue and emits events only for newly-added
@@ -245,6 +518,55 @@ This is an accepted tradeoff — the alternative (sharing a
 processed-note-IDs set or cross-reading watermarks between modes)
 adds state coupling that complicates the independent-schedule design.
 
+> **Update (2026-09, #7343):** The two watermarks named above are now
+> `last_poll_at_fast` / `last_poll_at_full` fields in the HMAC-signed
+> `state.json` on `fullsend-poll-state-slash` and
+> `fullsend-poll-state-events` respectively, not CI/CD variables. See
+> "Credential model".
+
+> **Update (2026-08, #5959):** ~~The dual-schedule architecture above was replaced
+> by a single `*/5 * * * *` schedule with automatic full-poll promotion. The
+> poller now decides at runtime whether to run a fast poll or full poll based on
+> elapsed time since the last full poll (`FULLSEND_LAST_POLL_AT_FULL`). This
+> eliminates the tier distinction (Premium vs Free), the separate fast/full
+> schedules, and the `FULLSEND_POLL_MODE` variable. The fast-poll watermark
+> (`FULLSEND_LAST_POLL_AT_FAST`) is still used for slash-command-only cycles.
+> Free tier in-CI polling is no longer supported by this schedule (Free tier's
+> minimum interval is 60 minutes); Free tier users should use off-system polling
+> (`fullsend poll` on a VM or Kubernetes CronJob) as documented in "GitLab tier
+> considerations" below. Superseded sections: "Multi-frequency polling" above,
+> the "5 minutes on Premium/Ultimate, 60 minutes on Free tier" reference in the
+> cron-poller introduction, "Multi-frequency polling" and fast-poll MR note
+> limitation under "Slash command latency", the Free tier 60-minute interval
+> references in "GitLab tier considerations", and the "5 minutes on Premium, 60
+> minutes on Free" latency in "Consequences".~~ Superseded by #6077 below.
+>
+> **Update (2026-08, #6077):** The single auto-promoting schedule from #5959
+> was reverted to two independent schedules with explicit mode selection. The
+> auto-promote logic coupled slash-command latency to full-poll duration and
+> used a single `resource_group`, causing GitLab to cancel the in-progress
+> poll when the next schedule fired. The new architecture:
+> - **Slash poll:** `*/5 * * * *` with `FULLSEND_POLL_MODE=slash` — processes
+>   only `/fs-*` slash commands, fast and lightweight.
+> - **Event poll:** `2,17,32,47 * * * *` with `FULLSEND_POLL_MODE=events` —
+>   full event discovery (labels, MR merges, non-command notes).
+> - Each schedule uses a per-mode resource group
+>   (`fullsend-poll-slash` / `fullsend-poll-events`) so they never cancel
+>   each other. Resource group process modes differ by purpose:
+>   `newest_first` for slash (latest command wins, stale polls are
+>   preempted) and `oldest_first` for events (long-running discovery
+>   completes before the next cycle starts).
+> - The `--mode` CLI flag (also `FULLSEND_POLL_MODE` env var) selects the
+>   mode explicitly; empty uses the events discovery path but does not
+>   filter `/fs-*` notes (backward compatibility with pre-dual-schedule
+>   installations where a single schedule handled all event types).
+> - The `shouldFullPoll` auto-promote logic and `FullPollInterval` are removed.
+> - Superseded sections: "MR note limitation (fast-poll)" (slash commands
+>   on MRs are now handled by the dedicated slash poll schedule, not gated
+>   behind full-poll cycles), and the "Multi-frequency polling" reference
+>   under "Slash command latency" (replaced by the independent schedule
+>   architecture above).
+
 ### Event routing
 
 The design goal is **functional event-type parity with GitHub** — users see the
@@ -261,9 +583,11 @@ configuration.
 | Issue label `ready-to-code` added | Cron poll (label state diff) | code |
 | Issue label `ready-for-review` added | Cron poll (label state diff) | review |
 | Issue note starting with `/fs-{triage,code,review,fix,retro,prioritize}` | Cron poll (note body prefix) | corresponding stage |
-| Issue note (non-command) on issue with `needs-info` label | Cron poll (label check); Reporter+ or issue author | triage |
-| MR opened/updated/reopened | Native CI (`merge_request_event`) | review |
+| ~~Issue note (non-command) on issue with `needs-info` label~~ | ~~Cron poll (label check); Reporter+ or issue author~~ | ~~triage~~ Removed in [#6740](https://github.com/fullsend-ai/fullsend/issues/6740) — use `/fs-triage` instead |
+| ~~MR opened/updated/reopened~~ | ~~Native CI (`merge_request_event`)~~ | ~~review~~ Moved to cron poll in [#7293](https://github.com/fullsend-ai/fullsend/issues/7293) — protected CI/CD variables are not exposed on unprotected MR refs |
+| MR opened | Cron poll (MR `created_at` > watermark) | review |
 | MR merged | Cron poll (MR `merged_at` > watermark) | retro |
+| MR closed (unmerged) | Cron poll (MR `closed_at` > watermark, `merged_at` empty) | retro |
 | MR note with `<!-- fullsend:changes-requested -->` | Cron poll (note body marker) | fix (same-project MRs only) |
 
 Bot-authored comments are skipped to prevent re-triggering loops (exception:
@@ -275,9 +599,9 @@ Slash commands (`/fs-*`) are the only latency-sensitive operation. Mitigations:
 
 - **Labels as primary triggers.** Applying `ready-for-review` or
   `ready-to-code` labels is discoverable and visible. Labels on issues are
-  detected via cron-poll (5–60 minute latency); labels on MRs can also be
-  detected via native CI `merge_request_event` when applied alongside an
-  MR update.
+  detected via cron-poll (5–60 minute latency). Labels on MRs are also
+  detected via cron-poll; native CI `merge_request_event` label
+  detection was removed in #7322.
 - **Multi-frequency polling** keeps slash command latency to 5 minutes on
   Premium/Ultimate.
 - **Manual pipeline trigger** via the GitLab UI as a power-user escape hatch.
@@ -353,42 +677,47 @@ injection > insider > drift > supply chain):
 - **Protected CI/CD variables.** All fullsend CI/CD variables are marked
   protected — accessible only to pipelines on protected branches.
 - **`CI_DEBUG_TRACE` guard.** Install-time validation and runtime abort if
-  debug tracing is detected. In **variable mode**, this guard is the sole
-  defense against PAT exposure via debug tracing — GitLab logs CI/CD
-  variables at job init, before any script runs. In **WIF mode**, the guard
-  is defense-in-depth — even if bypassed, the PAT is not in a CI/CD
-  variable and is retrieved after the guard runs. **Known limitation:**
-  install-time validation checks project-level and group-level variables but
-  cannot query instance-level CI/CD variables (requires admin API access).
-  On self-hosted GitLab instances where instance admins are outside the
-  trusted team, WIF mode is recommended.
+  debug tracing is detected. This guard is the sole defense against PAT
+  exposure via debug tracing — GitLab logs CI/CD variables at job init,
+  before any script runs. **Known limitation:** install-time validation
+  checks project-level and group-level variables but cannot query
+  instance-level CI/CD variables (requires admin API access).
 - **Event data sanitization.** Attacker-controlled content is base64-encoded
   before passing to child pipelines.
 - **Fork MR protection.** Fix/code stages are skipped when
   `source_project_id != target_project_id`.
 - **Slash command authorization.** Only users with Developer-level (30+)
   project access can trigger agent stages via `/fs-*` commands.
-  Exception: non-command comments on issues with the `needs-info` label
+  ~~Exception: non-command comments on issues with the `needs-info` label
   trigger triage with a reduced authorization gate — the commenter must
   have at least Reporter-level (20+) project access or be the issue
-  author. This mirrors the GitHub path where ADR 0054 requires
-  `author_association != NONE` or issue authorship for non-command
-  triage triggers, preventing unauthenticated cost exposure on public
-  projects.
+  author.~~ The needs-info re-triage exception was removed in
+  [#6740](https://github.com/fullsend-ai/fullsend/issues/6740) — use
+  `/fs-triage` to re-trigger triage after providing requested
+  information.
 
-**Security comparison of credential modes:**
+**Security properties of the credential model:**
 
-| Threat vector | WIF mode | Variable mode |
-|---|---|---|
-| `CI_DEBUG_TRACE` by Maintainer | PAT not exposed (defense-in-depth) | PAT exposed at job init before script guard runs (guard limits further damage but cannot prevent initial exposure) |
-| Maintainer marks branch as protected | WIF grants token (same risk) | Variable exposed (same risk) |
-| GitLab database compromise | PAT not in GitLab (in Secret Manager) | PAT stored in GitLab |
-| Admin domain separation | WIF config requires GCP IAM | All within GitLab RBAC |
-| Audit trail | GCP Data Access logs | GitLab audit logs (Premium+) |
+| Threat vector | Mitigation |
+|---|---|
+| `CI_DEBUG_TRACE` by Maintainer | PAT exposed at job init before script guard runs; guard limits further damage but cannot prevent initial exposure |
+| Maintainer marks branch as protected | Token exposed (protected variable accessible) |
+| GitLab database compromise | PAT stored in GitLab as protected CI/CD variable |
+| Audit trail | GitLab audit logs (Premium+) |
 
-WIF mode is recommended for projects where the Maintainer pool extends
-beyond trusted team members, or where compliance requires external
-secret storage.
+> **Update (2026-09, #7343):** The table above describes the original
+> CI/CD-variable / Maintainer model. Poll state is now an HMAC-signed
+> `state.json` on Developer-writable branches, so the relevant threat
+> rows are:
+>
+> | Threat vector | Mitigation |
+> |---|---|
+> | Developer forges poll state | HMAC-SHA256 (`FULLSEND_DISPATCH_SECRET`) with per-branch and per-project domain separation. Secret unset → refuse load/write. Bad/absent signature → discard the branch and fail that cycle. |
+> | Missing poll-state branch | Not tampering: fresh baseline (watermark ~1h ago); next save recreates the branch. One-time re-scan / at-least-once re-dispatch, not a stall. |
+> | Unbounded history on state branches | Force-re-root every save on the repository's root commit (`force: true` + `start_sha`); branch stays at base + 1 commit. |
+> | ↳ **Update (#7768 / [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md))** | Install-time seed still force-re-roots as above. Runtime persist is now CAS and no longer force-re-roots every save, so old HMAC-signed `state.json` commits stay reachable. See ADR 0125 for the current mitigation status and the accepted residual risk this introduces (old-signed-document replay by a Developer with push access). |
+> | Concurrent poller + webhook writers | Conflict-detecting persist ([ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)): 409 / non-fast-forward reloads and unions dispatched keys; exhaustion fails closed. |
+> | `CI_DEBUG_TRACE` / protected-branch exposure of the bot PAT | Unchanged: `FULLSEND_FORGE_TOKEN` and `FULLSEND_DISPATCH_SECRET` remain protected CI/CD variables. |
 
 ### Forge abstraction
 
@@ -397,9 +726,22 @@ secret storage.
 
 - `IsProtectedBranch` — maps to GitHub branch protection API and GitLab
   protected branches API
-- `CreatePipelineSchedule` / `DeletePipelineSchedule` — GitLab-native; GitHub
+- `CreatePipelineSchedule` / `DeletePipelineSchedule` / `UpdatePipelineSchedule` — GitLab-native; GitHub
   returns `ErrNotSupported`
 - `UpdateCIVariable` — for poll watermark management
+  > **Update (2026-09, #7343):** Poll watermarks are no longer CI/CD
+  > variables. Persistence uses `GetFileContentAtRef` /
+  > `ForceCommitFileToBranch` / `DeleteRef` on the two poll-state
+  > branches. Credential and secret writes (`FULLSEND_FORGE_TOKEN`,
+  > `FULLSEND_DISPATCH_SECRET`) use `CreateRepoSecret`, not
+  > `UpdateCIVariable`. `UpdateCIVariable` has no production callers;
+  > it remains on `forge.Client` only for non-credential CI/CD-variable
+  > operations, should any be added.
+  >
+  > **Update (#7768 / [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)):** Runtime persist is compare-and-swap
+  > (`CommitFileToBranch` parented at the loaded tip). `ForceCommitFileToBranch`
+  > remains the install-time seed primitive. Concurrent poller and webhook
+  > writers retry-merge dispatched keys on 409 and fail closed on exhaustion.
 
 A new `ErrNotSupported` sentinel (complementing the existing forge
 sentinel errors) allows forge
@@ -419,9 +761,9 @@ methods rather than adding forge-conditional logic.
 
 - **No external infrastructure for event dispatch.** No Cloud Function, no
   webhook bridge. Self-hosted GitLab requires only outbound HTTPS.
-- **Single credential per project.** One bot PAT, stored in either GCP
-  Secret Manager (WIF mode) or as a protected CI/CD variable (variable
-  mode). No webhook secrets, trigger tokens, or mint service changes.
+- **Single credential per project.** One bot PAT, stored as a protected
+  CI/CD variable. No webhook secrets, trigger tokens, or mint service
+  changes.
 - **Stronger event authenticity.** Events read directly from the GitLab API,
   not from potentially spoofed webhook payloads.
 - **No event loss.** Polling reads from the source of truth. Webhooks can fail
@@ -431,9 +773,9 @@ methods rather than adding forge-conditional logic.
 - **MR review latency is unaffected.** Native `merge_request_event` provides
   sub-second triggering for the highest-frequency operation.
 - **Tier-adaptive.** Works on all GitLab tiers with graceful degradation.
-- **No GCP requirement.** Variable mode allows deployment on self-hosted
-  GitLab with no cloud dependency. WIF mode reuses GCP infrastructure
-  already provisioned for Vertex AI inference.
+- **GCP required only for inference.** The agent runtime works without
+  GCP, but `repos install` requires inference credentials (WIF provider
+  and GCP project) for all new installations.
 
 **What becomes harder or changes:**
 
@@ -467,13 +809,41 @@ methods rather than adding forge-conditional logic.
 3. **Watermark tampering.** A Maintainer could skip or replay events by
    modifying the watermark variables. Mitigated by protected variable status
    and event deduplication.
+   > **Update (2026-09, #7343):** Poll state now lives on unprotected,
+   > Developer-writable `state.json` branches (see "Credential model"
+   > above) rather than protected CI/CD variables, so tampering is
+   > mitigated by an HMAC-SHA256 signature (`FULLSEND_DISPATCH_SECRET`,
+   > per-branch and per-project domain separation) instead: a Developer
+   > without the secret cannot forge state. Fail-closed: secret unset
+   > refuses load/write; a missing or invalid signature discards the
+   > branch and fails that cycle. A missing branch or file is not
+   > tampering — the poller starts from a fresh baseline and the next
+   > save recreates the branch. The signature does not bind freshness, so
+   > a Developer *with* push access can still replay an old, validly-signed
+   > document rather than forge a new one — see the "Unbounded history on
+   > state branches" row above for that accepted residual risk.
 4. **Schedule modification.** A Maintainer could retarget the schedule to a
-   non-protected branch. In WIF mode, mitigated by WIF attribute conditions
-   rejecting credential retrieval. In variable mode, mitigated by protected
-   variable status (not exposed on non-protected branches).
+   non-protected branch. Mitigated by protected variable status (bot PAT
+   not exposed on non-protected branches).
 5. **Missed events from API quirks.** The Notes API lacks `created_after`; the
    Events API `after` parameter is date-only. Mitigated by 30-second watermark
    overlap and dual-frequency polling as reconciliation.
+6. **Stale root-file workflow rules surviving convergence (#7322).** The root
+   `.gitlab-ci.yml` is user-owned and historically was only migrated on
+   fresh install or full uninstall, not on `repos upgrade`/`repos install`
+   convergence. An obsolete rule (e.g. `merge_request_event`, removed in
+   #7322) could otherwise survive indefinitely on already-enrolled repos,
+   producing an empty/config-error pipeline on every matching event.
+   Mitigated by a converge-time migration step that strips only the
+   specific obsolete rule(s), leaving current fullsend rules and user
+   configuration untouched. The migration only fires when fullsend can
+   prove it owns the `workflow:` block (the fullsend-generated
+   `workflow.name`, set on fresh installs). Repos enrolled by merging
+   fullsend rules into a pre-existing `workflow:` block carry no such
+   marker, so `merge_request_event` cannot be safely distinguished from
+   a user's own MR gate there and is left in place — those repos need
+   manual removal (same as the uninstall path). This deliberately errs
+   toward preserving user configuration over full auto-migration.
 
 **Comparison with GitHub:**
 
@@ -485,9 +855,14 @@ methods rather than adding forge-conditional logic.
 | External infrastructure | Mint Cloud Function | None for event dispatch |
 | Credential types | App key + installation token | Single bot PAT |
 
-Detailed implementation guidance — including poller pseudocode, forge interface
-changes, CI/CD template scaffolding, and install flow — is in the companion
-document: [Implementation plan: GitLab cron-polling](../plans/gitlab-cron-polling-implementation.md).
+> **Update (2026-09, #7343):** The GitLab primary credential is still
+> a single bot PAT stored as a protected CI/CD variable; it is now
+> created at Developer (30). Poller *state* is not a CI/CD variable
+> — it lives on the HMAC-signed poll-state branches described under
+> "Credential model".
+
+Implementation covers poller pseudocode, forge interface changes, CI/CD
+template scaffolding, and install flow.
 
 ## References
 
@@ -496,5 +871,5 @@ document: [Implementation plan: GitLab cron-polling](../plans/gitlab-cron-pollin
 - [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md) — authorization on all dispatch paths (slash command ACL)
 - [ADR 0061](0061-harness-cel-dispatch.md) — harness CEL triggers, dispatch drivers, and NormalizedEvent schema
 - [ADR 0063](0063-polling-based-work-discovery.md) — polling-based work discovery via dispatch drivers (`fullsend poll`, input/output driver architecture)
+- [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md) — hybrid GitLab dispatch (webhook fast-path + this ADR's poller as backstop)
 - [NormalizedEvent v1](../normative/normalized-event/v1/)
-- [Implementation plan: GitLab cron-polling](../plans/gitlab-cron-polling-implementation.md)

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 )
 
@@ -16,7 +17,8 @@ import (
 // *poll.Issue while forge.Client.GetIssue returns *forge.Issue. Go does
 // not allow two methods with the same name and different return types on
 // a single struct, so PollClient shadows GetIssue with the poll-specific
-// version and inherits the remaining methods (UpdateCIVariable,
+// version and inherits the remaining methods (ForceCommitFileToBranch,
+// CommitFileToBranch, GetBranchRef, GetFileContentAtRef, DeleteRef,
 // GetAuthenticatedUser) from the embedded LiveClient.
 type PollClient struct {
 	*LiveClient
@@ -351,6 +353,27 @@ func (pc *PollClient) GetMergeRequest(ctx context.Context, owner, repo string, m
 		return nil, fmt.Errorf("decode merge request !%d: %w", mrIID, err)
 	}
 	return &mr, nil
+}
+
+// CreatePipeline creates a new pipeline on the given ref with the given
+// variables. Returns the pipeline ID and web URL.
+func (pc *PollClient) CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error) {
+	p, err := pc.LiveClient.CreatePipeline(ctx, owner, repo, ref, variables)
+	if err != nil {
+		return 0, "", err
+	}
+	return p.ID, p.WebURL, nil
+}
+
+// CreatePipelineWithInputs creates a new pipeline on the given ref using
+// typed GitLab CI/CD pipeline inputs instead of user-defined pipeline
+// variables. Returns the pipeline ID and web URL.
+func (pc *PollClient) CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	p, err := pc.LiveClient.CreatePipelineWithInputs(ctx, owner, repo, ref, inputs)
+	if err != nil {
+		return 0, "", err
+	}
+	return p.ID, p.WebURL, nil
 }
 
 // GetAuthenticatedUserID returns the numeric user ID of the

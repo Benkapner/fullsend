@@ -266,7 +266,7 @@ allowed_remote_resources:
 	require.NoError(t, err)
 	require.NoError(t, h2.ResolveRelativeTo(dir))
 
-	lockResult, err := resolveFromLock(h2, entry, dir, printer)
+	lockResult, err := resolveFromLock(h2, entry, dir, nil, printer)
 	require.NoError(t, err)
 
 	// Verify the round-trip: agent resolved as file, skill resolved as directory.
@@ -290,7 +290,7 @@ allowed_remote_resources:
 	assert.Equal(t, "directory", skillDep.Type)
 	assert.Equal(t, treeHash, skillDep.SHA256)
 	assert.True(t, skillDep.CacheHit)
-	assert.True(t, strings.HasSuffix(h2.Skills[0], "/tree"), "skill path should end with /tree, got %s", h2.Skills[0])
+	assert.Equal(t, "test", filepath.Base(h2.Skills[0].Source), "skill path basename should be the skill directory name")
 }
 
 func TestRunLock_NoURLReferences(t *testing.T) {
@@ -574,7 +574,7 @@ func TestResolveFromLock_Success(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -601,7 +601,7 @@ func TestResolveFromLock_MissingCache(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, t.TempDir(), printer)
+	_, err := resolveFromLock(h, entry, t.TempDir(), nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in cache")
 }
@@ -625,17 +625,17 @@ func TestResolveFromLock_SkillSlots(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Skills:                 []string{"https://example.com/skills/a#sha256=" + hashA, "https://example.com/skills/b#sha256=" + hashB},
+		Skills:                 []harness.SkillEntry{{Source: "https://example.com/skills/a#sha256=" + hashA}, {Source: "https://example.com/skills/b#sha256=" + hashB}},
 		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 2)
 
-	assert.True(t, strings.HasSuffix(h.Skills[0], "/content"))
-	assert.True(t, strings.HasSuffix(h.Skills[1], "/content"))
+	assert.True(t, strings.HasSuffix(h.Skills[0].Source, "/content"))
+	assert.True(t, strings.HasSuffix(h.Skills[1].Source, "/content"))
 }
 
 func TestResolveFromLock_TransitiveDeps(t *testing.T) {
@@ -653,18 +653,18 @@ func TestResolveFromLock_TransitiveDeps(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Skills:                 []string{},
+		Skills:                 []harness.SkillEntry{},
 		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
 	// Transitive deps are appended as new skill entries.
 	require.Len(t, h.Skills, 1)
-	assert.True(t, strings.HasSuffix(h.Skills[0], "/content"))
+	assert.True(t, strings.HasSuffix(h.Skills[0].Source, "/content"))
 }
 
 func TestResolveFromLock_DiamondDependency(t *testing.T) {
@@ -685,21 +685,120 @@ func TestResolveFromLock_DiamondDependency(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent: "agents/code.md",
-		Skills: []string{
-			"https://example.com/skills/shared.md#sha256=" + sharedHash,
+		Skills: []harness.SkillEntry{
+			{Source: "https://example.com/skills/shared.md#sha256=" + sharedHash},
 		},
 		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
 	// The direct URL reference should be filtered out.
 	// Only the transitive dep (appended) should remain.
 	require.Len(t, h.Skills, 1)
-	assert.True(t, strings.HasSuffix(h.Skills[0], "/content"))
+	assert.True(t, strings.HasSuffix(h.Skills[0].Source, "/content"))
+}
+
+func TestResolveFromLock_OverrideSlots(t *testing.T) {
+	overrideContent := []byte("custom security agent")
+	overrideHash := fetch.ComputeSHA256(overrideContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/overrides/security.md", overrideContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "skills[0].overrides[sub-agents/security.md]",
+				URL:    "https://example.com/overrides/security.md",
+				SHA256: overrideHash,
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Skills:                 []harness.SkillEntry{{Source: "skills/pr-review"}},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	require.NotNil(t, h.Skills[0].Overrides)
+	require.Contains(t, h.Skills[0].Overrides, "sub-agents/security.md")
+	assert.True(t, strings.HasSuffix(*h.Skills[0].Overrides["sub-agents/security.md"], "/content"))
+}
+
+func TestResolveFromLock_OverrideSlotsPreservesExisting(t *testing.T) {
+	overrideA := []byte("override A")
+	hashA := fetch.ComputeSHA256(overrideA)
+	overrideB := []byte("override B")
+	hashB := fetch.ComputeSHA256(overrideB)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/overrides/a.md", overrideA))
+	require.NoError(t, fetch.CachePut(root, "https://example.com/overrides/b.md", overrideB))
+
+	existing := "local/existing.md"
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{Field: "skills[0].overrides[sub-agents/a.md]", URL: "https://example.com/overrides/a.md", SHA256: hashA},
+			{Field: "skills[0].overrides[sub-agents/b.md]", URL: "https://example.com/overrides/b.md", SHA256: hashB},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent: "agents/code.md",
+		Skills: []harness.SkillEntry{{
+			Source: "skills/pr-review",
+			Overrides: map[string]*string{
+				"sub-agents/local.md": &existing,
+			},
+		}},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 2)
+
+	require.Len(t, h.Skills[0].Overrides, 3)
+	assert.Equal(t, "local/existing.md", *h.Skills[0].Overrides["sub-agents/local.md"])
+	assert.True(t, strings.HasSuffix(*h.Skills[0].Overrides["sub-agents/a.md"], "/content"))
+	assert.True(t, strings.HasSuffix(*h.Skills[0].Overrides["sub-agents/b.md"], "/content"))
+}
+
+func TestResolveFromLock_OverrideDoesNotCorruptSource(t *testing.T) {
+	overrideContent := []byte("override content")
+	overrideHash := fetch.ComputeSHA256(overrideContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/overrides/x.md", overrideContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{Field: "skills[0].overrides[sub-agents/x.md]", URL: "https://example.com/overrides/x.md", SHA256: overrideHash},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Skills:                 []harness.SkillEntry{{Source: "skills/pr-review"}},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+
+	assert.Equal(t, "skills/pr-review", h.Skills[0].Source)
 }
 
 func TestResolveFromLock_DirectoryType(t *testing.T) {
@@ -732,19 +831,70 @@ func TestResolveFromLock_DirectoryType(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Skills:                 []string{"https://github.com/org/repo/tree/main/skills/test#sha256=" + treeHash},
+		Skills:                 []harness.SkillEntry{{Source: "https://github.com/org/repo/tree/main/skills/test#sha256=" + treeHash}},
 		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
 	assert.Equal(t, "directory", lockResult.Deps[0].Type)
 	assert.Equal(t, treeHash, lockResult.Deps[0].SHA256)
 	assert.True(t, lockResult.Deps[0].CacheHit)
-	assert.True(t, strings.HasSuffix(h.Skills[0], "/tree"))
+	assert.Equal(t, "test", filepath.Base(h.Skills[0].Source), "skill basename must be the real skill name, not 'tree'")
+}
+
+func TestResolveFromLock_DirectoryTypeScript(t *testing.T) {
+	scriptContent := []byte("#!/bin/bash\necho running")
+	helperContent := []byte("#!/bin/bash\necho helper")
+	files := map[string][]byte{
+		"pre-code.sh": scriptContent,
+		"helper.sh":   helperContent,
+	}
+	treeHash := fetch.ComputeTreeHash(files)
+
+	root := t.TempDir()
+	_, err := fetch.CachePutDir(root, "https://raw.githubusercontent.com/org/repo/main/scripts", files)
+	require.NoError(t, err)
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "pre_script",
+				URL:    "https://raw.githubusercontent.com/org/repo/main/scripts/pre-code.sh",
+				SHA256: treeHash,
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "pre-code.sh", SHA256: fetch.ComputeSHA256(scriptContent)},
+					{Path: "helper.sh", SHA256: fetch.ComputeSHA256(helperContent)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	assert.Equal(t, "directory", lockResult.Deps[0].Type)
+	assert.Equal(t, treeHash, lockResult.Deps[0].SHA256)
+	assert.True(t, lockResult.Deps[0].CacheHit)
+
+	// The harness field must point to the specific script file, not the tree root.
+	assert.True(t, strings.HasSuffix(h.PreScript, "/pre-code.sh"),
+		"expected PreScript to end with /pre-code.sh, got %s", h.PreScript)
+
+	// The script file must be executable.
+	info, err := os.Stat(h.PreScript)
+	require.NoError(t, err)
+	assert.True(t, info.Mode()&0o111 != 0, "script should be executable")
 }
 
 func TestResolveFromLock_EmptyTypeDefaultsToFile(t *testing.T) {
@@ -767,12 +917,12 @@ func TestResolveFromLock_EmptyTypeDefaultsToFile(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Skills:                 []string{"https://example.com/skills/a#sha256=" + hash},
+		Skills:                 []harness.SkillEntry{{Source: "https://example.com/skills/a#sha256=" + hash}},
 		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 	assert.Equal(t, "file", lockResult.Deps[0].Type, "empty Type should default to file for backward compatibility")
@@ -793,12 +943,12 @@ func TestResolveFromLock_TransitivePolicySkipped(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Skills:                 []string{},
+		Skills:                 []harness.SkillEntry{},
 		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -831,7 +981,7 @@ func TestResolveFromLock_NoPartialMutation(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, printer)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 
 	// Harness should be unchanged — no partial mutations.
@@ -900,12 +1050,12 @@ func TestResolveFromLock_BaseFieldNoOp(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
-		Skills:                 []string{"https://example.com/skills/a#sha256=" + skillHash},
+		Skills:                 []harness.SkillEntry{{Source: "https://example.com/skills/a#sha256=" + skillHash}},
 		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 
 	// All three deps should be returned (base, agent, skill).
@@ -917,7 +1067,7 @@ func TestResolveFromLock_BaseFieldNoOp(t *testing.T) {
 	// Skills should have exactly one entry (the resolved skill), not two.
 	// The base dep must NOT be appended to skills.
 	require.Len(t, h.Skills, 1, "base dep must not be appended to skills")
-	assert.True(t, strings.HasSuffix(h.Skills[0], "/content"), "skill should be resolved to cache path")
+	assert.True(t, strings.HasSuffix(h.Skills[0].Source, "/content"), "skill should be resolved to cache path")
 
 	// Verify the base dep has the correct field and is a cache hit.
 	var baseDep *resolve.Dependency
@@ -930,6 +1080,55 @@ func TestResolveFromLock_BaseFieldNoOp(t *testing.T) {
 	require.NotNil(t, baseDep, "should have a base dependency in returned deps")
 	assert.Equal(t, "https://example.com/base.yaml", baseDep.URL)
 	assert.True(t, baseDep.CacheHit)
+}
+
+func TestResolveFromLock_AgentSourceNoOp(t *testing.T) {
+	// A lock entry with an "agent_source" field dependency should not corrupt
+	// skills or other harness fields. The agent_source dep is informational —
+	// the harness is already loaded from the resolved path.
+	//
+	// The agent_source URL deliberately uses a different domain
+	// (org-registry.example.com) that is NOT in the harness's own
+	// AllowedRemoteResources. Agent source URLs are validated against the
+	// org-level allowlist during lock creation, so resolveFromLock must
+	// skip the harness-level allowlist check for agent_source entries.
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	harnessSource := []byte("agent: agents/code.md\nrole: test\n")
+	harnessSourceHash := fetch.ComputeSHA256(harnessSource)
+	skillContent := []byte("# Skill A")
+	skillHash := fetch.ComputeSHA256(skillContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/agents/code.md", agentContent))
+	require.NoError(t, fetch.CachePut(root, "https://org-registry.example.com/harness/code.yaml", harnessSource))
+	require.NoError(t, fetch.CachePut(root, "https://example.com/skills/a", skillContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{Field: "agent_source", URL: "https://org-registry.example.com/harness/code.yaml", SHA256: harnessSourceHash},
+			{Field: "agent", URL: "https://example.com/agents/code.md", SHA256: agentHash},
+			{Field: "skills[0]", URL: "https://example.com/skills/a", SHA256: skillHash},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
+		Skills:                 []harness.SkillEntry{{Source: "https://example.com/skills/a#sha256=" + skillHash}},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+
+	// All three deps should be returned.
+	require.Len(t, lockResult.Deps, 3)
+
+	// Skills should have exactly one entry — the agent_source dep must NOT
+	// be appended to skills.
+	require.Len(t, h.Skills, 1, "agent_source dep must not be appended to skills")
+	assert.True(t, strings.HasSuffix(h.Skills[0].Source, "/content"), "skill should be resolved to cache path")
 }
 
 func TestResolveFromLock_ValidationLoopSchema(t *testing.T) {
@@ -959,7 +1158,7 @@ func TestResolveFromLock_ValidationLoopSchema(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 2)
 
@@ -1147,7 +1346,7 @@ func TestRunLock_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "badcfg", dir, "", false, resolveFlags{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "parsing config.yaml")
 }
 
 func TestRunLock_NoOrgConfigNoURLRefs(t *testing.T) {
@@ -1213,7 +1412,7 @@ func TestRunLock_OrgAllowlistSyncedAfterReAttempt(t *testing.T) {
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "urlrefs", dir, "", false, resolveFlags{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "parsing config.yaml")
 }
 
 func TestRunLock_URLBaseAndURLRefsNoOrgConfig(t *testing.T) {
@@ -1303,7 +1502,7 @@ func TestResolveFromLock_ProfileReconstruction(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 	require.Len(t, lockResult.Profiles, 1)
@@ -1364,7 +1563,7 @@ func TestResolveFromLock_ProfileSymlinkError(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err = resolveFromLock(h, entry, root, printer)
+	_, err = resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "naming cached profile")
 }
@@ -1395,7 +1594,7 @@ func TestResolveFromLock_ProfileEmptyID(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, printer)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "has no id")
 }
@@ -1424,7 +1623,7 @@ func TestResolveFromLock_ProviderReconstruction(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Providers, 1)
 	assert.Equal(t, "my-provider", lockResult.Providers[0].Def.Name)
@@ -1456,7 +1655,7 @@ func TestResolveFromLock_ProviderMissingName(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, printer)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "has no name")
 }
@@ -1485,7 +1684,7 @@ func TestResolveFromLock_ProviderMissingType(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, printer)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "has no type")
 }
@@ -1514,7 +1713,7 @@ func TestResolveFromLock_ProviderLiteralCredentialWarning(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 	assert.NotEmpty(t, lockResult.Deps[0].Warning)
@@ -1546,10 +1745,45 @@ func TestResolveFromLock_RejectsDisallowedURL(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, printer)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no longer in allowed_remote_resources")
 	assert.Contains(t, err.Error(), "example.com")
+}
+
+func TestResolveFromLock_OrgAllowlistFallback(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/agents/code.md", agentContent))
+
+	entry := &lock.HarnessLock{
+		Source: "harness/code.yaml",
+		SHA256: "abc",
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "agent",
+				URL:    "https://example.com/agents/code.md",
+				SHA256: agentHash,
+			},
+		},
+	}
+
+	// Harness-level allowlist does NOT cover example.com, but the org-level
+	// allowlist does. The fallback should allow the URL.
+	h := &harness.Harness{
+		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
+		AllowedRemoteResources: []string{"https://other-domain.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, []string{"https://example.com/"}, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+	assert.Equal(t, "agent", lockResult.Deps[0].Field)
+	assert.Equal(t, agentHash, lockResult.Deps[0].SHA256)
+	assert.True(t, lockResult.Deps[0].CacheHit)
 }
 
 func TestResolveFromLock_EmptyAllowlistDeniesURLs(t *testing.T) {
@@ -1577,9 +1811,748 @@ func TestResolveFromLock_EmptyAllowlistDeniesURLs(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, printer)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no longer in allowed_remote_resources")
+}
+
+func TestResolveFromLock_PluginMalformedFieldError(t *testing.T) {
+	// A lock file with a malformed plugins[N] field (e.g. from a hand-edited
+	// or merge-conflicted lock.yaml) should return an explicit error, not
+	// silently drop the plugin.
+	manifestJSON := []byte(`{"name": "gopls-lsp"}`)
+	pluginFiles := map[string][]byte{"plugin.json": manifestJSON}
+	treeHash := fetch.ComputeTreeHash(pluginFiles)
+
+	root := t.TempDir()
+	_, err := fetch.CachePutDir(root, "https://github.com/org/repo/tree/main/plugins/gopls-lsp", pluginFiles)
+	require.NoError(t, err)
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "plugins[bad]", // malformed index
+				URL:    "https://github.com/org/repo/tree/main/plugins/gopls-lsp",
+				SHA256: treeHash,
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "plugin.json", SHA256: fetch.ComputeSHA256(manifestJSON)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Plugins:                []harness.PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + treeHash}},
+		AllowedRemoteResources: []string{"https://github.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err = resolveFromLock(h, entry, root, nil, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot parse plugin index")
+}
+
+func TestResolveFromLock_PluginOutOfRangeError(t *testing.T) {
+	// A lock file with an out-of-range plugins[N] index should return an
+	// explicit error, not silently drop the plugin.
+	manifestJSON := []byte(`{"name": "gopls-lsp"}`)
+	pluginFiles := map[string][]byte{"plugin.json": manifestJSON}
+	treeHash := fetch.ComputeTreeHash(pluginFiles)
+
+	root := t.TempDir()
+	_, err := fetch.CachePutDir(root, "https://github.com/org/repo/tree/main/plugins/gopls-lsp", pluginFiles)
+	require.NoError(t, err)
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "plugins[5]", // out of range (only 1 plugin in harness)
+				URL:    "https://github.com/org/repo/tree/main/plugins/gopls-lsp",
+				SHA256: treeHash,
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "plugin.json", SHA256: fetch.ComputeSHA256(manifestJSON)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Plugins:                []harness.PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + treeHash}},
+		AllowedRemoteResources: []string{"https://github.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err = resolveFromLock(h, entry, root, nil, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "out of range")
+}
+
+func TestResolveFromLock_PluginExecutablePermissions(t *testing.T) {
+	// Plugin files resolved from the lock path should have executable
+	// permissions (0755), not the cache default of 0600.
+	initSh := []byte("#!/bin/bash\necho init")
+	manifestJSON := []byte(`{"name": "exec-plugin"}`)
+	pluginFiles := map[string][]byte{
+		"plugin.json":     manifestJSON,
+		"scripts/init.sh": initSh,
+	}
+	treeHash := fetch.ComputeTreeHash(pluginFiles)
+
+	root := t.TempDir()
+	_, err := fetch.CachePutDir(root, "https://github.com/org/repo/tree/main/plugins/exec-plugin", pluginFiles)
+	require.NoError(t, err)
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "plugins[0]",
+				URL:    "https://github.com/org/repo/tree/main/plugins/exec-plugin",
+				SHA256: treeHash,
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "plugin.json", SHA256: fetch.ComputeSHA256(manifestJSON)},
+					{Path: "scripts/init.sh", SHA256: fetch.ComputeSHA256(initSh)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Plugins:                []harness.PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/exec-plugin#sha256=" + treeHash}},
+		AllowedRemoteResources: []string{"https://github.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	// Verify plugin files have executable permissions.
+	scriptPath := filepath.Join(h.Plugins[0].Path, "scripts", "init.sh")
+	info, statErr := os.Stat(scriptPath)
+	require.NoError(t, statErr)
+	assert.True(t, info.Mode()&0o100 != 0,
+		"plugin script should have executable permission, got %s", info.Mode())
+}
+
+func TestResolveFromLock_PluginSlots(t *testing.T) {
+	manifestJSON := []byte(`{"name": "gopls-lsp"}`)
+	initSh := []byte("#!/bin/bash\necho init")
+	pluginFiles := map[string][]byte{
+		"plugin.json":     manifestJSON,
+		"scripts/init.sh": initSh,
+	}
+	treeHash := fetch.ComputeTreeHash(pluginFiles)
+
+	root := t.TempDir()
+	_, err := fetch.CachePutDir(root, "https://github.com/org/repo/tree/main/plugins/gopls-lsp", pluginFiles)
+	require.NoError(t, err)
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "plugins[0]",
+				URL:    "https://github.com/org/repo/tree/main/plugins/gopls-lsp",
+				SHA256: treeHash,
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "plugin.json", SHA256: fetch.ComputeSHA256(manifestJSON)},
+					{Path: "scripts/init.sh", SHA256: fetch.ComputeSHA256(initSh)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Plugins:                []harness.PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + treeHash}},
+		AllowedRemoteResources: []string{"https://github.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	assert.Equal(t, "directory", lockResult.Deps[0].Type)
+	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0].Path), "plugin basename must be the real plugin name, not 'tree'")
+	assert.False(t, harness.IsURL(h.Plugins[0].Path))
+}
+
+func TestResolveFromLock_PluginSharedURLWithSkill(t *testing.T) {
+	// When a plugin and skill share the same URL, the lock file deduplicates
+	// by URL and records only skills[0]. The plugin should still be resolved
+	// using the shared dep's local path, not silently dropped.
+	manifestJSON := []byte(`{"name": "shared-dir"}`)
+	pluginFiles := map[string][]byte{"plugin.json": manifestJSON}
+	treeHash := fetch.ComputeTreeHash(pluginFiles)
+	sharedURL := "https://github.com/org/repo/tree/main/shared-dir"
+
+	root := t.TempDir()
+	_, err := fetch.CachePutDir(root, sharedURL, pluginFiles)
+	require.NoError(t, err)
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "skills[0]",
+				URL:    sharedURL,
+				SHA256: treeHash,
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "plugin.json", SHA256: fetch.ComputeSHA256(manifestJSON)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Skills:                 []harness.SkillEntry{{Source: sharedURL + "#sha256=" + treeHash}},
+		Plugins:                []harness.PluginSpec{{Path: sharedURL + "#sha256=" + treeHash}},
+		AllowedRemoteResources: []string{"https://github.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	assert.Len(t, h.Skills, 1, "skill should survive lock replay")
+	assert.Len(t, h.Plugins, 1, "plugin should survive lock replay when sharing URL with skill")
+	assert.False(t, harness.IsURL(h.Plugins[0].Path), "plugin should be resolved to a local path")
+	assert.Equal(t, "shared-dir", filepath.Base(h.Plugins[0].Path))
+}
+
+func TestResolveFromLock_PluginRawContentURL(t *testing.T) {
+	// Legacy base-composed plugin locks use raw.githubusercontent.com URLs
+	// ending in /plugin.json. resolveFromLock must parse these via
+	// ParseRawContentURL (not ParseForgeURL, which rejects non-github.com
+	// hosts) to extract the plugin directory name.
+	manifestJSON := []byte(`{"name": "gopls-lsp"}`)
+	pluginFiles := map[string][]byte{
+		"plugin.json": manifestJSON,
+	}
+	treeHash := fetch.ComputeTreeHash(pluginFiles)
+
+	root := t.TempDir()
+	pluginFileURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/plugins/gopls-lsp/plugin.json"
+	_, err := fetch.CachePutDir(root, pluginFileURL, pluginFiles)
+	require.NoError(t, err)
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "plugins[0]",
+				URL:    pluginFileURL,
+				SHA256: treeHash,
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "plugin.json", SHA256: fetch.ComputeSHA256(manifestJSON)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Plugins:                []harness.PluginSpec{{Path: "plugins/gopls-lsp"}},
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0].Path),
+		"plugin basename must be derived from the URL directory, not the marker file")
+	assert.False(t, harness.IsURL(h.Plugins[0].Path))
+	assert.FileExists(t, filepath.Join(h.Plugins[0].Path, "plugin.json"))
+}
+
+func TestResolveFromLock_SkillRawContentURL(t *testing.T) {
+	// Base-composed skills use raw.githubusercontent.com URLs ending in
+	// /SKILL.md (see fetchBaseSkill). resolveFromLock must strip the marker
+	// file to derive the skill directory name — otherwise every skill is
+	// materialized under a directory literally named "SKILL.md", which
+	// becomes the sandbox upload basename and collides across skills. Two
+	// skills reproduce the collision the fix exists to prevent.
+	putSkill := func(t *testing.T, root, slug string) lock.DependencyEntry {
+		t.Helper()
+		skillMD := []byte("---\nname: " + slug + "\n---\n")
+		skillFiles := map[string][]byte{"SKILL.md": skillMD}
+		skillFileURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/skills/" + slug + "/SKILL.md"
+		_, err := fetch.CachePutDir(root, skillFileURL, skillFiles)
+		require.NoError(t, err)
+		return lock.DependencyEntry{
+			URL:    skillFileURL,
+			SHA256: fetch.ComputeTreeHash(skillFiles),
+			Type:   "directory",
+			Files: []lock.FileEntry{
+				{Path: "SKILL.md", SHA256: fetch.ComputeSHA256(skillMD)},
+			},
+		}
+	}
+
+	root := t.TempDir()
+	depA := putSkill(t, root, "pr-review")
+	depA.Field = "skills[0]"
+	depB := putSkill(t, root, "code-review")
+	depB.Field = "skills[1]"
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{depA, depB},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Skills:                 []harness.SkillEntry{{Source: "skills/pr-review"}, {Source: "skills/code-review"}},
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 2)
+	require.Len(t, h.Skills, 2)
+
+	assert.Equal(t, "pr-review", filepath.Base(h.Skills[0].Source),
+		"skill basename must be derived from the URL directory, not the SKILL.md marker file")
+	assert.Equal(t, "code-review", filepath.Base(h.Skills[1].Source),
+		"skills must keep distinct basenames — identical ones collide on sandbox upload")
+	for _, s := range h.Skills {
+		assert.False(t, harness.IsURL(s.Source))
+		assert.FileExists(t, filepath.Join(s.Source, "SKILL.md"))
+	}
+}
+
+func TestResolveFromLock_ForgeScopedSkillNoMutation(t *testing.T) {
+	// Forge-scoped base skills are locked under forge.<platform>.skills[N]
+	// (see resolveBaseResources). Their paths were already merged into
+	// h.Skills by ResolveForge during LoadWithBase, so resolveFromLock must
+	// verify the cache entry but leave h.Skills alone — appending would
+	// duplicate the skill under the cache's internal tree name.
+	skillMD := []byte("---\nname: pr-review\n---\n")
+	skillFiles := map[string][]byte{"SKILL.md": skillMD}
+	treeHash := fetch.ComputeTreeHash(skillFiles)
+
+	root := t.TempDir()
+	skillFileURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/skills/pr-review/SKILL.md"
+	_, err := fetch.CachePutDir(root, skillFileURL, skillFiles)
+	require.NoError(t, err)
+	treePath, _, err := fetch.CacheGetDir(root, treeHash)
+	require.NoError(t, err)
+	mergedPath, err := fetch.CacheNamedSymlink(treePath, "pr-review")
+	require.NoError(t, err)
+	require.True(t, filepath.IsAbs(mergedPath),
+		"merged path must live in the cache, not the test working directory")
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "forge.github.skills[0]",
+				URL:    skillFileURL,
+				SHA256: treeHash,
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "SKILL.md", SHA256: fetch.ComputeSHA256(skillMD)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Skills:                 []harness.SkillEntry{{Source: mergedPath}},
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	require.Len(t, h.Skills, 1, "forge-scoped skill lock entries must not append to h.Skills")
+	assert.Equal(t, mergedPath, h.Skills[0].Source)
+}
+
+func TestResolveFromLock_OverlayScopedSkillNoMutation(t *testing.T) {
+	// Overlay-scoped skills are locked under overlays[N].skills[M]
+	// (see resolveBaseResources). Their paths were already merged into
+	// h.Skills by ResolveForge during LoadWithBase, so resolveFromLock must
+	// verify the cache entry but leave h.Skills alone — appending would
+	// duplicate the skill under the cache's internal tree name.
+	skillMD := []byte("---\nname: pr-review\n---\n")
+	skillFiles := map[string][]byte{"SKILL.md": skillMD}
+	treeHash := fetch.ComputeTreeHash(skillFiles)
+
+	root := t.TempDir()
+	skillFileURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/skills/pr-review/SKILL.md"
+	_, err := fetch.CachePutDir(root, skillFileURL, skillFiles)
+	require.NoError(t, err)
+	treePath, _, err := fetch.CacheGetDir(root, treeHash)
+	require.NoError(t, err)
+	mergedPath, err := fetch.CacheNamedSymlink(treePath, "pr-review")
+	require.NoError(t, err)
+	require.True(t, filepath.IsAbs(mergedPath),
+		"merged path must live in the cache, not the test working directory")
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "overlays[0].skills[0]",
+				URL:    skillFileURL,
+				SHA256: treeHash,
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "SKILL.md", SHA256: fetch.ComputeSHA256(skillMD)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Skills:                 []harness.SkillEntry{{Source: mergedPath}},
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	require.Len(t, h.Skills, 1, "overlay-scoped skill lock entries must not append to h.Skills")
+	assert.Equal(t, mergedPath, h.Skills[0].Source)
+}
+
+func TestResolveFromLock_OverlayScriptNoMutation(t *testing.T) {
+	// Overlay scripts (pre_script, post_script, validation_loop.script) are
+	// resolved during LoadWithBase and already set in the harness, so
+	// resolveFromLock must verify the cache entry but not mutate the harness.
+	script := []byte("#!/bin/bash\necho overlay\n")
+	scriptHash := fetch.ComputeSHA256(script)
+
+	root := t.TempDir()
+	scriptURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/overlays/pre.sh"
+	require.NoError(t, fetch.CachePut(root, scriptURL, script))
+
+	cachePath, err := fetch.CachePath(root, scriptHash)
+	require.NoError(t, err)
+	cachePath = filepath.Join(cachePath, "content")
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "overlays[0].pre_script",
+				URL:    scriptURL,
+				SHA256: scriptHash,
+				Type:   "file",
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		PreScript:              cachePath,
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	// PreScript should remain unchanged — overlay scripts are already resolved
+	assert.Equal(t, cachePath, h.PreScript)
+	// Should not be appended to Skills
+	assert.Len(t, h.Skills, 0)
+}
+
+func TestResolveFromLock_OverlayProviderParsed(t *testing.T) {
+	// Overlay providers must be parsed and added to ResolvedProvider list,
+	// not incorrectly appended as skills.
+	providerYAML := []byte("name: test\ntype: openai\n")
+	providerHash := fetch.ComputeSHA256(providerYAML)
+
+	root := t.TempDir()
+	providerURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/overlays/provider.yaml"
+	require.NoError(t, fetch.CachePut(root, providerURL, providerYAML))
+
+	cachePath, err := fetch.CachePath(root, providerHash)
+	require.NoError(t, err)
+	cachePath = filepath.Join(cachePath, "content")
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "overlays[0].providers[0]",
+				URL:    providerURL,
+				SHA256: providerHash,
+				Type:   "file",
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Providers:              []string{providerURL},
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	// Should be in ResolvedProvider list
+	require.Len(t, lockResult.Providers, 1)
+	assert.Equal(t, "test", lockResult.Providers[0].Def.Name)
+	assert.Equal(t, "openai", lockResult.Providers[0].Def.Type)
+	assert.Equal(t, cachePath, lockResult.Providers[0].LocalPath)
+
+	// Should not be appended to Skills
+	assert.Len(t, h.Skills, 0)
+}
+
+func TestResolveFromLock_OverlayProfileParsed(t *testing.T) {
+	// Overlay profiles must be parsed and added to ResolvedProfile list,
+	// not incorrectly appended as skills.
+	profileYAML := []byte("id: test-profile\nshell: bash\n")
+	profileHash := fetch.ComputeSHA256(profileYAML)
+
+	root := t.TempDir()
+	profileURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/overlays/profile.yaml"
+	require.NoError(t, fetch.CachePut(root, profileURL, profileYAML))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "overlays[0].openshell.profiles[0]",
+				URL:    profileURL,
+				SHA256: profileHash,
+				Type:   "file",
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent: "agents/code.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{profileURL},
+		},
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	// Should be in ResolvedProfile list
+	require.Len(t, lockResult.Profiles, 1)
+	assert.Equal(t, "test-profile", lockResult.Profiles[0].ID)
+	assert.True(t, lockResult.Profiles[0].FromURL)
+
+	// Should not be appended to Skills
+	assert.Len(t, h.Skills, 0)
+}
+
+func TestResolveFromLock_SkillRepoRootURLRejected(t *testing.T) {
+	// A skills[N] lock entry whose URL is a forge repo root has no directory
+	// segment to name the skill after; resolveFromLock must surface the
+	// lockTreeDirName error instead of materializing a misnamed skill.
+	skillMD := []byte("---\nname: x\n---\n")
+	skillFiles := map[string][]byte{"SKILL.md": skillMD}
+
+	root := t.TempDir()
+	repoRootURL := "https://github.com/fullsend-ai/agents/tree/main"
+	_, err := fetch.CachePutDir(root, repoRootURL, skillFiles)
+	require.NoError(t, err)
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "skills[0]",
+				URL:    repoRootURL,
+				SHA256: fetch.ComputeTreeHash(skillFiles),
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "SKILL.md", SHA256: fetch.ComputeSHA256(skillMD)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Skills:                 []harness.SkillEntry{{Source: "skills/x"}},
+		AllowedRemoteResources: []string{"https://github.com/fullsend-ai/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err = resolveFromLock(h, entry, root, nil, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "skills[0]: URL must point to a directory inside the repo, not the repo root")
+}
+
+func TestResolveFromLock_PluginInvalidBasenameRejected(t *testing.T) {
+	// A plugins[N] lock entry whose derived directory name fails
+	// ValidPluginBasename must be rejected — CacheNamedSymlink would
+	// otherwise silently substitute a reserved internal name.
+	manifest := []byte(`{"name": "bad"}`)
+	pluginFiles := map[string][]byte{"plugin.json": manifest}
+
+	root := t.TempDir()
+	pluginFileURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/plugins/bad.name/plugin.json"
+	_, err := fetch.CachePutDir(root, pluginFileURL, pluginFiles)
+	require.NoError(t, err)
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "plugins[0]",
+				URL:    pluginFileURL,
+				SHA256: fetch.ComputeTreeHash(pluginFiles),
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "plugin.json", SHA256: fetch.ComputeSHA256(manifest)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Plugins:                []harness.PluginSpec{{Path: "plugins/bad.name"}},
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err = resolveFromLock(h, entry, root, nil, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "contains invalid characters")
+}
+
+func TestLockTreeDirName(t *testing.T) {
+	tests := []struct {
+		name    string
+		field   string
+		url     string
+		want    string
+		wantErr string
+	}{
+		{
+			name:  "forge tree URL uses deepest path segment",
+			field: "skills[0]",
+			url:   "https://github.com/org/repo/tree/main/skills/pr-review",
+			want:  "pr-review",
+		},
+		{
+			name:    "forge repo root rejected",
+			field:   "skills[0]",
+			url:     "https://github.com/org/repo/tree/main",
+			wantErr: "must point to a directory inside the repo",
+		},
+		{
+			name:  "raw SKILL.md marker stripped",
+			field: "skills[0]",
+			url:   "https://raw.githubusercontent.com/org/repo/abc123/skills/pr-review/SKILL.md",
+			want:  "pr-review",
+		},
+		{
+			name:  "raw plugin.json marker stripped",
+			field: "plugins[0]",
+			url:   "https://raw.githubusercontent.com/org/repo/abc123/plugins/gopls-lsp/plugin.json",
+			want:  "gopls-lsp",
+		},
+		{
+			name:  "raw plugin directory URL uses directory basename",
+			field: "plugins[0]",
+			url:   "https://raw.githubusercontent.com/org/repo/abc123/plugins/gopls-lsp/",
+			want:  "gopls-lsp",
+		},
+		{
+			name:    "raw marker at ref root rejected",
+			field:   "skills[0]",
+			url:     "https://raw.githubusercontent.com/org/repo/abc123/SKILL.md",
+			wantErr: "must point to a marker file inside a directory",
+		},
+		{
+			name:  "raw non-marker URL keeps last segment",
+			field: "skills[0]",
+			url:   "https://raw.githubusercontent.com/org/repo/abc123/skills/pr-review",
+			want:  "pr-review",
+		},
+		{
+			name:  "unparseable URL falls back to last segment",
+			field: "skills[0]",
+			url:   "https://example.com/skills/my-skill",
+			want:  "my-skill",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := lockTreeDirName(tt.field, tt.url)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestResolveFromLock_LocalPathsSurviveStrip(t *testing.T) {
+	// When a harness has URL resources (with lock deps) AND local-path
+	// profiles/providers (without lock deps), the lock strip must keep the
+	// local-path entries so the second ResolveHarness pass can process them.
+	skillContent := []byte("id: my-skill\nname: My Skill\n")
+	skillHash := fetch.ComputeSHA256(skillContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/skills/my.yaml", skillContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "skills[0]",
+				URL:    "https://example.com/skills/my.yaml",
+				SHA256: skillHash,
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:  "agents/code.md",
+		Skills: []harness.SkillEntry{{Source: "https://example.com/skills/my.yaml#sha256=" + skillHash}},
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{"/workspace/.fullsend/profiles/claude-code.yaml"},
+		},
+		Providers:              []string{"local-bare-name", "/workspace/.fullsend/providers/custom.yaml"},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
+	require.NoError(t, err)
+
+	// Local-path profile must survive the strip.
+	require.Len(t, h.OpenShell.Profiles, 1)
+	assert.Equal(t, "/workspace/.fullsend/profiles/claude-code.yaml", h.OpenShell.Profiles[0])
+
+	// Bare name AND local-path provider must survive; URL was stripped.
+	require.Len(t, h.Providers, 2)
+	assert.Equal(t, "local-bare-name", h.Providers[0])
+	assert.Equal(t, "/workspace/.fullsend/providers/custom.yaml", h.Providers[1])
 }
 
 func TestResolveFromLock_ProfileAndProviderReconstruction(t *testing.T) {
@@ -1618,7 +2591,7 @@ func TestResolveFromLock_ProfileAndProviderReconstruction(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Profiles, 1)
 	assert.Equal(t, "anthropic", lockResult.Profiles[0].ID)

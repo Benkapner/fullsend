@@ -1,22 +1,23 @@
 # Building custom agents from scratch
 
-> **Deprecated:** This guide uses the `customized/` directory overlay, which is
-> deprecated per [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
-> For new custom agents, register them in `config.yaml` with a local `source:`
-> path instead. Run `fullsend agent migrate-customizations --dry-run` to
-> preview migrating existing customizations.
+> **Note:** For new custom agents, run
+> [`fullsend agent new <name>`](../../cli/agent.md#agent-new) — it generates a
+> complete, valid, registered agent and is the recommended starting point. See
+> [Bring Your Own Agent](bring-your-own-agent.md) for the full workflow. The
+> patterns below are retained for understanding an existing hand-written agent.
 
 This guide walks through creating a custom from-scratch agent on a per-repo
 fullsend installation.
 
 Before building from scratch, consider whether extending a default agent would
-meet your needs. You can use `base` inheritance to start from a default agent's
-harness and override only what differs — see
+meet your needs. Start with the
+[escalation ladder](../../agents/topics/escalation-ladder.md) to exhaust
+lighter options first, and see
 [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
 for the distinction and when each approach makes sense.
 
 For the config-driven approach to building or configuring agents, see
-[Bring Your Own Agent](bring-your-own-agent.md). For configuring existing agents (overriding harnesses, skills, or policies), see [Customizing agents](customizing-agents.md).
+[Bring Your Own Agent](bring-your-own-agent.md). For configuring existing agents (overriding harnesses, skills, or policies), see [Configuring agent behavior](customizing-agents.md).
 
 ## Prerequisites
 
@@ -27,7 +28,7 @@ For the config-driven approach to building or configuring agents, see
 A custom agent is composed of six parts:
 
 ```
-.fullsend/customized/
+.fullsend/
   agents/          # Agent prompt (Markdown with YAML frontmatter)
   harness/         # Execution config (sandbox image, host files, env vars)
   policies/        # Network and filesystem sandbox policies
@@ -36,13 +37,13 @@ A custom agent is composed of six parts:
   skills/          # Knowledge documents mounted into the sandbox
 ```
 
-At build time, the workflow layers these customized files on top of the upstream fullsend defaults. Your files override the defaults — anything you don't customize uses the standard fullsend configuration. See [Customizing agents — Layered Configuration Resolution](customizing-agents.md#layered-configuration-resolution) for details on how the layering works.
+Register agents in `config.yaml` with a local `source:` path. For agents that extend a default, use `base:` composition to inherit from the upstream harness and override only what differs. See [Bring Your Own Agent](bring-your-own-agent.md) for the config-driven approach and [Harness Field Reference](../../reference/harness-reference.md) for the complete harness YAML reference.
 
 The key security invariant: agents run inside an untrusted [sandbox](../../glossary.md#sandbox) with no credentials. Pre-scripts fetch data *before* the sandbox starts; post-scripts act on agent output *after* the sandbox exits. Agents never have direct write access to external systems. See the [security threat model](../../problems/security-threat-model.md) for the full trust model.
 
 ## Step 1: Write the agent prompt
 
-Create `.fullsend/customized/agents/my-agent.md`:
+Create `.fullsend/agents/my-agent.md`:
 
 ````markdown
 ---
@@ -68,7 +69,16 @@ Environment variables set by the pre-script:
 
 - `MY_INPUT_FILE` — path to input data JSON
 - `TARGET_REPO_DIR` — path to target repository checkout
+
+Environment variables set by the runner, present in every agent's shell:
+
 - `FULLSEND_OUTPUT_DIR` — where to write your result
+- `FULLSEND_TIMEOUT_MINUTES` — the harness's `timeout_minutes`, your whole budget
+- `FULLSEND_ITERATION_DEADLINE` — Unix time (seconds) at which this iteration is killed;
+  write your result before it (see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline))
+- `TRACEPARENT` — W3C trace context of this iteration's agent span, so runtime telemetry
+  can join the Fullsend trace; empty when telemetry produced no valid span context
+  (see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline))
 
 ## Process
 
@@ -113,9 +123,9 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 | Field | Purpose |
 |-------|---------|
 | `name` | Must match the filename (without `.md`) |
-| `tools` | Bash commands the agent can run. Restrict to what's needed. |
+| `tools` | The tools the agent may use, in Claude Code's names (`Read`, `Grep`, `Glob`, `LS`, `Bash(gh,jq)`, ...). Restrict to what's needed. On pi the names are translated, and two of them surprise people — see [What to write in `tools:`](../../runtimes/pi.md#what-to-write-in-tools) |
 | `model` | LLM model (`opus`, `sonnet`, etc.) |
-| `skills` | [Skill](../../glossary.md#skill) directories to mount (relative to `customized/skills/`) |
+| `skills` | [Skill](../../glossary.md#skill) directories to mount (relative to `skills/`) |
 | `disallowedTools` | Bash patterns the agent is forbidden from running |
 
 ### Design principles
@@ -128,18 +138,21 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 
 ## Step 2: Define the harness
 
-Create `.fullsend/customized/harness/my-agent.yaml`:
+Create `.fullsend/harness/my-agent.yaml`:
 
 ```yaml
-agent: customized/agents/my-agent.md
+agent: agents/my-agent.md
 model: opus
+effort: high                        # optional: low, medium, high, xhigh, max (claude runtime only)
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
-policy: customized/policies/my-agent.yaml
-role: my-agent
+policy: policies/my-agent.yaml
+role: triage                        # a role the mint serves — not the agent's name (see Custom Agent Identity)
 
 providers:
   - vertex-ai          # Required: model access (Anthropic API + GCP)
   - github             # GitHub API + Git transport
+  # Built-in names resolve to the definition and profile in the fullsend
+  # binary; no openshell.profiles entry is needed. See Step 3.
 
 host_files:
   # GCP credentials for Vertex AI (required for model access)
@@ -157,34 +170,38 @@ host_files:
     optional: true
 
 skills:
-  - customized/skills/my-skill
+  - skills/my-skill
 
-pre_script: customized/scripts/pre-my-agent.sh
+pre_script: scripts/pre-my-agent.sh
 
 validation_loop:
   script: scripts/validate-output-schema.sh
-  schema: customized/schemas/my-agent-result.schema.json
+  schema: schemas/my-agent-result.schema.json
   max_iterations: 2
 
-post_script: customized/scripts/post-my-agent.sh
+post_script: scripts/post-my-agent.sh
+
+# Optional: give the sandbox a read-only token (default is write everywhere).
+# privilege_levels:
+#   runtime: read
 
 env:
   runner:
     MY_VAR: "${MY_VAR}"
     ISSUE_KEY: "${ISSUE_KEY}"
     GH_TOKEN: "${GH_TOKEN}"  # auto-minted in CI when --mint-url is provided
-    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/customized/schemas/my-agent-result.schema.json
+    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/my-agent-result.schema.json
 
 timeout_minutes: 20
 
-# Optional: enable runtime skill fetching (ADR-0038 Phase 4)
+# Optional: enable runtime skill fetching
 # allowed_remote_resources:
 #   - https://github.com/org/skills/
 # allow_runtime_fetch: true
 # max_runtime_fetches: 10
 ```
 
-See [Customizing agents — Harness YAML Structure](customizing-agents.md#harness-yaml-structure) for the full field reference (including optional `security`, `providers`, `plugins`, and runtime fetch blocks).
+See [Harness Field Reference](../../reference/harness-reference.md) for the full field reference (including optional `security`, `providers`, `plugins`, and runtime fetch blocks).
 
 The key pattern to understand is how data flows into the sandbox through `host_files`:
 
@@ -198,7 +215,7 @@ The agent never has direct access to credentials. The pre-script uses credential
 
 The sandbox policy controls filesystem, process, and landlock restrictions. Network access is handled separately through provider profiles (see below).
 
-Create `.fullsend/customized/policies/my-agent.yaml`:
+Create `.fullsend/policies/my-agent.yaml`:
 
 ```yaml
 version: 1
@@ -213,7 +230,7 @@ process:
   run_as_group: sandbox
 ```
 
-Most custom agents can reuse the scaffold's `policies/base.yaml` instead of creating their own. Override only when your agent has specific filesystem or process requirements.
+Most custom agents can reuse the `policies/base.yaml` that [`fullsend agent new`](../../cli/agent.md#agent-new) writes — the same policy the fleet agents run under — and only write their own when they need different filesystem or process rules. Either way, commit the policy: CI does not supply one.
 
 ### Network access via providers (recommended)
 
@@ -226,16 +243,34 @@ providers:
   - package-registries  # npm, PyPI, Go modules (optional)
 ```
 
-Each provider has a profile that defines its endpoints and binaries. When the sandbox starts, the gateway composes these profiles into the effective network policy automatically. This keeps endpoint definitions in one place and avoids copy-pasting network blocks across agents.
+`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`,
+`package-registries`, `atlassian-cloud` and `openai` are the names fullsend
+ships: each resolves against the provider definition and profile built into
+the `fullsend` binary, with no `openshell.profiles` entry to add.
+These names are reserved for the built-in copies. If a harness still uses its
+own copy under one (a `providers/<name>.yaml` file, a path or URL entry, or an
+`openshell.profiles` entry with the `fullsend-<name>` id), `fullsend run` uses
+that copy and prints a warning; a later release rejects it. To customise one,
+copy it under your own name, as below.
 
-The scaffold ships with profiles for common services. To see what's available:
+For a service not in that list, define your own provider under its own name
+and list its profile under `openshell.profiles` explicitly — the gateway
+only composes the profiles named there (or inherited via `base:`
+composition) into the effective network policy, not every file that happens
+to exist under `profiles/`:
 
-```bash
-ls .fullsend/providers/     # provider definitions (name + type)
-ls .fullsend/profiles/      # profile YAMLs (endpoints + binaries)
+```yaml
+providers:
+  - my-service
+
+openshell:
+  profiles:
+    - profiles/my-service.yaml
 ```
 
-For services not covered by existing profiles, you can either create a custom profile or use inline `network_policies` in your policy YAML (both approaches work — composition is additive).
+> **Note:** A profile YAML file in `profiles/` is **not** imported automatically by its presence alone. Only profiles listed in the harness under `openshell.profiles` (or resolved via base composition) are imported. To use a custom profile, add it to your harness's `openshell.profiles` list (e.g., `profiles/my-custom-profile.yaml`).
+
+For services not covered by a builtin or custom profile, you can either create a custom profile or use inline `network_policies` in your policy YAML (both approaches work — composition is additive).
 
 ### Network access via inline policies (alternative)
 
@@ -259,7 +294,7 @@ Inline rules and provider-composed rules coexist — composition is additive. If
 
 ### Policy design principles
 
-- **Vertex AI is always required** — the agent needs it to talk to the LLM. Use the `vertex-ai` provider.
+- **The agent needs network access to whichever LLM provider it runs inference through.** Use the `vertex-ai` provider for the default Claude/Vertex setup. An agent running on the `pi` or `codex` runtime with an OpenAI model uses the `openai` provider instead — see [Get an OpenAI key](running-agents-locally.md#get-an-openai-key-gpt-on-pi-or-codex). Such an agent's GCP credentials mount (the `${GOOGLE_APPLICATION_CREDENTIALS}` entry under `host_files:` in Step 2) must be `optional: true` or removed; with `GOOGLE_APPLICATION_CREDENTIALS` unset, a required mount stops the run with `GOOGLE_APPLICATION_CREDENTIALS is empty; mark the mount optional or provide a credential file`. A `pi` agent on an OpenAI model whose sub-agents run on Vertex needs both providers and the mount. Keeping that mount required is the simplest choice: an unset `GOOGLE_APPLICATION_CREDENTIALS` then stops the run before the sandbox starts. With an optional mount, a configured Vertex sub-agent stops the run before the pre-script, and one chosen at dispatch is refused ([pi › Vertex sub-agents under an OpenAI parent](../../runtimes/pi.md#vertex-sub-agents-under-an-openai-parent)).
 - **Add network access only for what the agent needs.** If the agent doesn't need web search, don't allow it.
 - **Use `binaries` to restrict which programs can access each endpoint.** This prevents the agent from using unexpected tools to exfiltrate data.
 - **Prefer providers for shared services.** Use inline policies only for agent-specific endpoints.
@@ -267,7 +302,7 @@ Inline rules and provider-composed rules coexist — composition is additive. If
 
 ## Step 4: Define the output schema
 
-Create `.fullsend/customized/schemas/my-agent-result.schema.json`:
+Create `.fullsend/schemas/my-agent-result.schema.json`:
 
 ```json
 {
@@ -294,7 +329,7 @@ The schema is enforced by `validation_loop` in the harness. If the agent's outpu
 
 ### Pre-script (data fetching)
 
-`.fullsend/customized/scripts/pre-my-agent.sh`:
+`.fullsend/scripts/pre-my-agent.sh`:
 
 ```bash
 #!/usr/bin/env bash
@@ -303,7 +338,7 @@ set -euo pipefail
 WORKSPACE="/tmp/workspace"
 mkdir -p "$WORKSPACE"
 
-elif [[ "${ISSUE_SOURCE}" == "github" ]]; then
+if [[ "${ISSUE_SOURCE}" == "github" ]]; then
   gh issue view "$ISSUE_KEY" --repo "$REPO_FULL_NAME" \
     --json number,title,body,labels,comments \
     > "$WORKSPACE/my-input.json"
@@ -314,18 +349,75 @@ echo "Pre-script complete."
 
 The pre-script has full credentials on the trusted runner. It fetches data from external systems and writes it to files that the harness copies into the sandbox. Credentials never enter the sandbox.
 
+#### Skipping the run from the pre-script
+
+A pre-script can tell `fullsend run` not to start the agent at all — useful when
+an open PR already addresses the issue, or when the work is otherwise
+redundant. `fullsend run` exports `FULLSEND_PRESCRIPT_OUTPUT` (a file path); the
+script appends `skipped=true` to it and the run reports a ⏭️ skipped status and
+exits 0 **before the sandbox is created**.
+
+```bash
+if [[ -n "${FULLSEND_PRESCRIPT_OUTPUT:-}" ]]; then
+  {
+    echo "skipped=true"
+    echo "reason=PR #${EXISTING_PR} already addresses this issue"
+  } >> "${FULLSEND_PRESCRIPT_OUTPUT}"
+  exit 0
+fi
+```
+
+Always guard on the variable being set — older `fullsend` versions do not export
+it, and appending to an empty path would fail the script. Malformed content is a
+hard error rather than a silent proceed, so a mistyped skip cannot turn into a
+duplicate agent run. See the [pre-script output v1 contract](../../normative/prescript-output/v1/README.md)
+for the full grammar, error semantics, and CI relay behavior.
+
+**Exit code 78 — neutral skip.** For simple cases, a pre-script can skip the
+run by exiting with code 78 instead of writing to the output file. The last
+non-empty line of stdout becomes the skip reason:
+
+```bash
+# Scheduled agent: check if there's work to do
+PENDING=$(gh api ... --jq 'length')
+if [[ "${PENDING}" -eq 0 ]]; then
+  echo "No issues need scoring"
+  exit 78
+fi
+```
+
+Exit 78 and the output-file protocol can be combined — the output file is
+still parsed for `reason` and other outputs when exit 78 is used, but a parse
+error does not block the skip. See the
+[normative spec](../../normative/prescript-output/v1/README.md#exit-code-78--neutral-skip)
+for full details.
+
+**Hard failures.** A non-zero exit other than 78 fails the run. Print a GitHub
+Actions error annotation so the message appears in the PR status comment
+instead of a bare `exit status 1`:
+
+```bash
+echo "::error::Fix iteration ${ITERATION} exceeds bot cap of ${CAP}. Escalating to human."
+exit 1
+```
+
+Without an annotation, the last non-empty stderr line (then stdout) is used.
+See the [normative spec](../../normative/prescript-output/v1/README.md#hard-failure-diagnostics)
+for the full preference order and sanitization rules.
+
 ### Post-script (action execution)
 
-`.fullsend/customized/scripts/post-my-agent.sh`:
+`.fullsend/scripts/post-my-agent.sh`:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
 # Prefer the validated iteration directory set by the harness
-# (FULLSEND_VALIDATED_ITERATION_DIR) — without it, scanning for the last
-# iteration can pick up output that failed validation. Fall back to
-# scanning for the last iteration for harnesses with no validation_loop.
+# (FULLSEND_VALIDATED_ITERATION_DIR, always an absolute path) — without
+# it, scanning for the last iteration can pick up output that failed
+# validation. Fall back to scanning for the last iteration for
+# harnesses with no validation_loop.
 if [[ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]]; then
   RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
 else
@@ -361,7 +453,11 @@ case "${STATUS}" in
     echo "Agent needs more information"
     ;;
   *)
-    echo "ERROR: Unknown or missing status '${STATUS}'"
+    # STATUS is model output: flatten CR/LF and cap it before logging, and
+    # use printf, which never expands backslash escapes, so a crafted value
+    # cannot start a new log line (a "::" workflow command).
+    shown="${STATUS//[$'\r\n']/ }"
+    printf '%s\n' "ERROR: Unknown or missing status '${shown:0:40}'"
     exit 1
     ;;
 esac
@@ -384,11 +480,30 @@ The post-script runs on the trusted runner with full credentials, but reads outp
 
 ## Step 6: Create skills (optional)
 
-[Skills](../../glossary.md#skill) are Markdown documents mounted into the sandbox that provide domain knowledge the agent can reference. See [Customizing agents — Adding a Custom Skill](customizing-agents.md#adding-a-custom-skill) for how to create one.
+[Skills](../../glossary.md#skill) are Markdown documents mounted into the sandbox that provide domain knowledge the agent can reference. See [Configuring Agent Behavior — Adding a skill](customizing-agents.md#adding-a-skill) for how to create one.
 
-Place your skill at `.fullsend/customized/skills/my-skill/SKILL.md`, then reference it in both the agent frontmatter (`skills: [my-skill]`) and the harness (`skills: [customized/skills/my-skill]`).
+Place your skill at `.fullsend/skills/my-skill/SKILL.md`, then reference it in both the agent frontmatter (`skills: [my-skill]`) and the harness (`skills: [skills/my-skill]`).
 
-## Step 7: Create the GitHub Actions workflow
+## Step 7: Run it in CI
+
+In a repository scaffolded with
+[`fullsend github setup`](../getting-started/configuring-github.md), you do not
+write a workflow. The dispatch workflow that setup installs runs every agent
+registered in `config.yaml` whose harness `trigger:` matches an event — see
+[Bring Your Own Agent](bring-your-own-agent.md). Dispatch needs a harness that has
+a `trigger:` ([CEL Triggers Reference](cel-triggers-reference.md)) and reads
+the inputs dispatch provides, such as `GITHUB_ISSUE_URL`. The examples in this
+guide do neither: the Step 2 harness and Step 5 scripts read `ISSUE_KEY` and
+`ISSUE_SOURCE`, which only the standalone workflow below sets. For a
+dispatched agent, start from `fullsend agent new`, whose harness and
+post-script already read what dispatch provides, then commit `.fullsend/` and
+fire the trigger.
+
+### A standalone workflow (only outside dispatch)
+
+The examples in this guide run from a workflow of your own like the one
+below. Write one only for an agent that dispatch does not run: one started by `workflow_dispatch`, or one
+in a repository that `fullsend github setup` did not scaffold.
 
 Create `.github/workflows/my-agent.yml`:
 
@@ -398,6 +513,7 @@ name: fullsend-my-agent
 permissions:
   contents: read
   id-token: write
+  issues: write
 
 on:
   workflow_dispatch:
@@ -411,10 +527,6 @@ on:
         required: true
         type: string
         default: 'github'
-
-permissions:
-  contents: read
-  issues: write
 
 concurrency:
   group: my-agent-${{ inputs.issue_key || 'unknown' }}
@@ -436,45 +548,29 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: fullsend-ai/fullsend
-          ref: v0
+          ref: main
           path: .defaults
           sparse-checkout: |
             internal/scaffold/fullsend-repo/
 
-      - name: Prepare workspace (upstream defaults + repo overrides)
+      - name: Prepare workspace (upstream defaults)
         run: |
           set -euo pipefail
           SRC=".defaults/internal/scaffold/fullsend-repo"
-          LAYERED_DIRS="agents skills schemas harness policies scripts env"
+          # Layer the scaffold's shared scripts. The providers configured in
+          # Step 2 resolve from the fullsend binary, and the policy (Step 3)
+          # is committed with the harness, so neither is layered here.
+          LAYERED_DIRS="scripts"
           for dir in ${LAYERED_DIRS}; do
             if [[ -d "${SRC}/${dir}" ]]; then
               mkdir -p ".fullsend/${dir}"
               cp -r "${SRC}/${dir}/." ".fullsend/${dir}/"
             fi
           done
-          for dir in ${LAYERED_DIRS}; do
-            if [[ -d ".fullsend/customized/${dir}" ]]; then
-              find ".fullsend/customized/${dir}" -type f ! -name '.gitkeep' -print0 \
-                | while IFS= read -r -d '' f; do
-                    rel="${f#".fullsend/customized/"}"
-                    mkdir -p ".fullsend/$(dirname "${rel}")"
-                    cp "${f}" ".fullsend/${rel}"
-                  done
-            fi
-          done
           rm -rf .defaults
 
-      - name: Authenticate to GCP via WIF
-        uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-          project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-
-      - name: Prepare sandbox credentials
-        run: bash .fullsend/scripts/prepare-sandbox-credentials.sh
-
       - name: Install fullsend CLI
-        uses: fullsend-ai/fullsend@v0
+        uses: fullsend-ai/fullsend@main
         with:
           agent: __install_only__
 
@@ -484,8 +580,10 @@ jobs:
           ISSUE_KEY: ${{ inputs.issue_key }}
           ISSUE_SOURCE: ${{ inputs.issue_source || 'github' }}
           REPO_FULL_NAME: ${{ github.repository }}
+          FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
+          CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}  # value drift is detected and repaired by convergence
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/output"
@@ -502,11 +600,18 @@ jobs:
           path: ${{ github.workspace }}/output
 ```
 
+This example reflects the currently deployed cancellation policy. Under
+[ADR 0106](../../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md),
+the platform will change subject-scoped agent workflows to
+`cancel-in-progress: false` once preserve-and-coalesce scheduling is
+implemented. Until that migration lands, keep the setting aligned with the
+reusable workflow that invokes the agent.
+
 ### Critical workflow steps
 
 1. **Checkout target repo** — `fullsend run` requires `--target-repo` pointing to a separate checkout of the repository the agent will work on. Without this, fullsend may overwrite output files.
 
-2. **Prepare workspace (upstream defaults + repo overrides)** — the fullsend CLI expects files in `.fullsend/harness/`, `.fullsend/agents/`, etc. (not `.fullsend/customized/`). The layering step copies upstream defaults first, then overlays your customizations on top.
+2. **Prepare workspace (upstream defaults)** — the fullsend CLI expects files in `.fullsend/harness/`, `.fullsend/agents/`, etc. The preparation step copies upstream default scripts into the workspace.
 
 3. **Authenticate to GCP via WIF** — provides short-lived credentials for Vertex AI. Uses Workload Identity Federation (no service account keys).
 
@@ -561,14 +666,17 @@ for more information.
 
 ## Step 8: Trigger the agent
 
-The workflow above uses `workflow_dispatch`, which means you trigger it manually:
+A dispatched agent runs when its `trigger:` matches — for a `/fs-my-agent`
+command trigger, comment that on an issue or pull request.
+
+The standalone workflow above uses `workflow_dispatch`, which means you trigger it manually:
 
 - **From the GitHub UI:** Actions → fullsend-my-agent → Run workflow → fill in `issue_key` and `issue_source`.
 - **From the CLI:** `gh workflow run my-agent.yml -f issue_key=123 -f issue_source=github`
 
 ### Slash-command dispatch (optional)
 
-If you want slash-command triggers (e.g., `/my-command` on a GitHub issue), create a dispatch workflow. This requires adding `actions: write` and `issues: write` permissions:
+This is for the standalone workflow only: a registered agent's `/fs-<name>` command is already handled by the dispatch workflow `fullsend github setup` installs. If you want slash-command triggers (e.g., `/my-command` on a GitHub issue) for a standalone workflow, create a dispatch workflow. This requires adding `actions: write` and `issues: write` permissions:
 
 ```yaml
 name: my-agent-dispatch
@@ -609,9 +717,9 @@ jobs:
 | Symptom | Likely cause |
 |---------|-------------|
 | Agent crashes immediately (0s runtime) | Sandbox can't authenticate to Vertex AI. Verify `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, and that `prepare-sandbox-credentials.sh` ran after the WIF auth step. |
-| "Harness file not found" | The fullsend CLI looks for `.fullsend/harness/my-agent.yaml`, not `customized/`. Verify the "Prepare workspace" step is layering files correctly. |
+| "Harness file not found" | The fullsend CLI looks for `.fullsend/harness/my-agent.yaml`. Verify the file exists and the agent is registered in `config.yaml`. |
 | Agent can't find input files | Ensure pre-script output paths match `host_files` entries in the harness. |
-| Network policy blocks requests | Check `openshell-sandbox.log` in artifacts for `BLOCKED` entries. Add the endpoint to the policy. |
+| Network policy blocks requests | Check `openshell-sandbox.log` in artifacts for `DENIED` entries. Add the endpoint to the policy. |
 | Schema validation fails twice | Check the agent transcript in artifacts to see what it produced vs. what the schema expected. |
 
 ## File checklist
@@ -619,7 +727,8 @@ jobs:
 When creating a new agent, you need these files:
 
 ```
-.fullsend/customized/
+.fullsend/
+  config.yaml                            # Agent registration
   agents/my-agent.md                     # Agent prompt
   harness/my-agent.yaml                  # Execution config
   policies/my-agent.yaml                 # Sandbox policy
@@ -629,15 +738,14 @@ When creating a new agent, you need these files:
   skills/my-skill/SKILL.md               # Domain knowledge (optional)
 
 .github/workflows/
-  my-agent.yml                           # GitHub Actions workflow
-  my-agent-dispatch.yml                  # Slash command trigger (optional)
+  my-agent.yml                           # Standalone workflow (only outside dispatch)
+  my-agent-dispatch.yml                  # Slash command trigger for it (optional)
 ```
 
 ## Reference
 
-- [Customizing agents](customizing-agents.md) — override existing agent harnesses, skills, and policies
+- [Configuring agent behavior](customizing-agents.md) — configure existing agent harnesses, skills, and policies
 - [Bugfix workflow](bugfix-workflow.md) — how the built-in agents work together end to end
 - [Getting Started](../getting-started/README.md) — prerequisite: admin setup guide
 - [Architecture overview](../../architecture.md) — component vocabulary and execution stack
 - [Security threat model](../../problems/security-threat-model.md) — how fullsend thinks about security
-- [ADR 0035: Layered Content Resolution](../../ADRs/0035-layered-content-resolution.md) — how customized files override upstream defaults

@@ -5,15 +5,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
-
-	"github.com/fullsend-ai/fullsend/internal/harness"
 )
 
 func TestFileModeMatchesFilesystem(t *testing.T) {
@@ -58,38 +56,12 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		".github/workflows/fix.yml",
 		".github/workflows/repo-maintenance.yml",
 		".github/scripts/setup-agent-env.sh",
-		"agents/triage.md",
-		"agents/code.md",
-		"env/gcp-vertex.env",
-		"env/code-agent.env",
-		"harness/triage.yaml",
-		"harness/code.yaml",
-		"policies/base.yaml",
-		"plugins/gopls-lsp/plugin.json",
-		"schemas/triage-result.schema.json",
-		"scripts/post-triage.sh",
-		"scripts/pre-triage.sh",
-		"scripts/scan-secrets",
-		"scripts/pre-code.sh",
-		"scripts/pre-review.sh",
-		"scripts/post-code.sh",
 		"scripts/reconcile-repos.sh",
-		"scripts/validate-output-schema.sh",
 		"scripts/fullsend-check-output",
 		"scripts/validate-source-repo.sh",
-		"skills/autonomy-readiness/SKILL.md",
-		"skills/code-implementation/SKILL.md",
-		"skills/issue-labels/SKILL.md",
+		"scripts/prepare-sandbox-credentials.sh",
 		"templates/shim-workflow-call.yaml",
-		"agents/prioritize.md",
-		"harness/prioritize.yaml",
-		"schemas/prioritize-result.schema.json",
-		"scripts/setup-prioritize.sh",
-		"scripts/pre-prioritize.sh",
-		"scripts/post-prioritize.sh",
-		"scripts/post-prioritize-test.sh",
 		".github/workflows/prioritize.yml",
-		".github/workflows/prioritize-scheduler.yml",
 	}
 
 	for _, path := range expected {
@@ -139,6 +111,49 @@ func TestShimWorkflowCallTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, "FULLSEND_DISPATCH_TOKEN")
 	assert.NotContains(t, s, "FULLSEND_DISPATCH_URL")
 	assert.NotContains(t, s, "curl")
+
+	// Permissions assertions (YAML-parsed, not string-contains) — #5785
+	var wc struct {
+		Permissions map[string]string `yaml:"permissions"`
+		Jobs        struct {
+			Dispatch struct {
+				Permissions map[string]string `yaml:"permissions"`
+			} `yaml:"dispatch"`
+			StopFix struct {
+				Permissions map[string]string `yaml:"permissions"`
+			} `yaml:"stop-fix"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &wc))
+
+	// Workflow-level: least-privilege default must be empty permissions
+	require.NotNil(t, wc.Permissions,
+		"workflow-level permissions must be present (permissions: {})")
+	assert.Empty(t, wc.Permissions,
+		"workflow-level permissions must be empty (least-privilege default)")
+
+	// Dispatch job: intentionally narrower than per-repo mode
+	assert.Equal(t, map[string]string{
+		"actions":       "write",
+		"id-token":      "write",
+		"contents":      "read",
+		"pull-requests": "read",
+	}, wc.Jobs.Dispatch.Permissions, "dispatch job permissions")
+
+	// Negative assertions: workflow-call dispatch must NOT have write
+	// access to contents or pull-requests (intentionally narrower than
+	// per-repo mode).
+	assert.NotEqual(t, "write", wc.Jobs.Dispatch.Permissions["contents"],
+		"workflow-call dispatch must not have contents: write")
+	assert.NotEqual(t, "write", wc.Jobs.Dispatch.Permissions["pull-requests"],
+		"workflow-call dispatch must not have pull-requests: write")
+
+	// Stop-fix job permissions
+	assert.Equal(t, map[string]string{
+		"contents":      "read",
+		"issues":        "write",
+		"pull-requests": "write",
+	}, wc.Jobs.StopFix.Permissions, "stop-fix job permissions")
 }
 
 func TestShimPerRepoTemplateContent(t *testing.T) {
@@ -150,10 +165,50 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "stop-fix:")
 	assert.Contains(t, s, "__REUSABLE_DISPATCH__")
 	assert.Contains(t, s, "install_mode: per-repo")
+	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	// Per-role concurrency lives in reusable-dispatch.yml, not a monolithic shim group (#2452).
 	assert.NotContains(t, s, "fullsend-dispatch-${{")
 	assert.NotRegexp(t, `(?m)^\s+concurrency:`, s)
 	assert.Contains(t, s, "per-role cancel-in-progress groups live in reusable-dispatch.yml")
+
+	// Permissions assertions (YAML-parsed, not string-contains) — #5785
+	var pr struct {
+		Permissions map[string]string `yaml:"permissions"`
+		Jobs        struct {
+			Dispatch struct {
+				Permissions map[string]string `yaml:"permissions"`
+			} `yaml:"dispatch"`
+			StopFix struct {
+				Permissions map[string]string `yaml:"permissions"`
+			} `yaml:"stop-fix"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &pr))
+
+	// Workflow-level: least-privilege default must be empty permissions
+	require.NotNil(t, pr.Permissions,
+		"workflow-level permissions must be present (permissions: {})")
+	assert.Empty(t, pr.Permissions,
+		"workflow-level permissions must be empty (least-privilege default)")
+
+	// Dispatch job: per-repo mode needs broader permissions than
+	// workflow-call because the agent runs in this repo's context.
+	assert.Equal(t, map[string]string{
+		"actions":       "write",
+		"id-token":      "write",
+		"contents":      "write",
+		"issues":        "write",
+		"packages":      "read",
+		"pull-requests": "write",
+	}, pr.Jobs.Dispatch.Permissions, "dispatch job permissions")
+
+	// Stop-fix job permissions
+	assert.Equal(t, map[string]string{
+		"contents":      "read",
+		"issues":        "write",
+		"pull-requests": "write",
+	}, pr.Jobs.StopFix.Permissions, "stop-fix job permissions")
 }
 
 // TestShimStopFixAuthorization verifies the stop-fix job authorizes the
@@ -406,8 +461,7 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "pull_request_target")
 	assert.Contains(t, s, "pull_request_review")
 	assert.Contains(t, s, "changes_requested")
-	assert.Contains(t, s, "needs-info")
-	assert.Contains(t, s, `! has_label "feature"`)
+	assert.NotContains(t, s, "needs-info")
 	assert.Contains(t, s, "opened|synchronize|ready_for_review")
 	// /code must only run on issues, not PRs
 	assert.Contains(t, s, "ISSUE_HAS_PR")
@@ -421,9 +475,8 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, `is_authorized triage`)
 	assert.Regexp(t, `is_authorized; then\s*\n\s+STAGE="code"`, s)
 	assert.Regexp(t, `is_authorized; then\s*\n\s+STAGE="fix"`, s)
-	assert.Contains(t, s, `COMMENT_AUTHOR_ASSOC`)
-	// Auto-triage requires assoc != NONE or issue author
-	assert.Contains(t, s, "is_issue_author")
+	assert.NotContains(t, s, `COMMENT_AUTHOR_ASSOC`)
+	assert.NotContains(t, s, "is_issue_author")
 	// Bot filtering
 	assert.Contains(t, s, `COMMENT_USER_TYPE`)
 	assert.Contains(t, s, `!= "Bot"`)
@@ -478,7 +531,53 @@ func TestWalkFullsendRepo(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
-	assert.True(t, len(paths) >= 15, "expected at least 15 installed files, got %d", len(paths))
+	assert.True(t, len(paths) >= 10, "expected at least 10 installed files, got %d", len(paths))
+}
+
+// vestigialLayeredDirs are layeredDirs entries the embed has shipped nothing
+// under since #5552 moved agent content to fullsend-ai/agents. Nothing may
+// rely on CI layering them (#6689, #6834). Drop an entry once it ships content.
+var vestigialLayeredDirs = map[string]bool{
+	"agents/":  true,
+	"skills/":  true,
+	"schemas/": true,
+	"harness/": true,
+	"plugins/": true,
+	"env/":     true,
+}
+
+// TestLayeredDirsShipContent: every non-vestigial layered directory has
+// embedded files, so workspace preparation's [[ -d ]] guard never skips one a
+// consumer relies on, and no vestigial entry hides a directory that ships.
+func TestLayeredDirsShipContent(t *testing.T) {
+	counts := make(map[string]int, len(layeredDirs))
+	require.NoError(t, WalkLayeredContent(func(path string, _ []byte) error {
+		for _, dir := range layeredDirs {
+			if strings.HasPrefix(path, dir) {
+				counts[dir]++
+			}
+		}
+		return nil
+	}))
+
+	for _, dir := range layeredDirs {
+		if vestigialLayeredDirs[dir] {
+			assert.Zero(t, counts[dir],
+				"%s ships %d embedded file(s) but is listed as vestigial; remove it from vestigialLayeredDirs", dir, counts[dir])
+			continue
+		}
+		assert.NotZero(t, counts[dir],
+			"%s is layered but the embed has no files under it, so CI never layers it (#6834); ship content or drop the entry", dir)
+	}
+	for dir := range vestigialLayeredDirs {
+		assert.Contains(t, layeredDirs, dir, "vestigialLayeredDirs entry %s is not in layeredDirs", dir)
+	}
+
+	// An empty policies/ entry is #6834; a file behind it would be a second
+	// fleet policy with no drift guard (#7268).
+	assert.NotContains(t, layeredDirs, "policies/")
+	_, err := FullsendRepoFile("policies/base.yaml")
+	assert.Error(t, err, "scaffold must not ship policies/base.yaml; see #7268")
 }
 
 func TestLayeredDirsNotInstalled(t *testing.T) {
@@ -488,7 +587,6 @@ func TestLayeredDirsNotInstalled(t *testing.T) {
 		"schemas/",
 		"harness/",
 		"plugins/",
-		"policies/",
 		"profiles/",
 		"providers/",
 		"scripts/",
@@ -507,29 +605,13 @@ func TestLayeredDirsNotInstalled(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestCustomizedDirsInstalled(t *testing.T) {
-	expected := map[string]bool{
-		"customized/agents/.gitkeep":    false,
-		"customized/skills/.gitkeep":    false,
-		"customized/schemas/.gitkeep":   false,
-		"customized/harness/.gitkeep":   false,
-		"customized/plugins/.gitkeep":   false,
-		"customized/policies/.gitkeep":  false,
-		"customized/profiles/.gitkeep":  false,
-		"customized/providers/.gitkeep": false,
-		"customized/scripts/.gitkeep":   false,
-		"customized/env/.gitkeep":       false,
-	}
+func TestNoCustomizedDirsInstalled(t *testing.T) {
 	err := WalkFullsendRepo(func(path string, _ []byte) error {
-		if _, ok := expected[path]; ok {
-			expected[path] = true
-		}
+		assert.False(t, strings.HasPrefix(path, "customized/"),
+			"WalkFullsendRepo should not include deprecated customized/ paths, got: %s", path)
 		return nil
 	})
 	require.NoError(t, err)
-	for path, found := range expected {
-		assert.True(t, found, "WalkFullsendRepo should include %s", path)
-	}
 }
 
 func TestWalkFullsendRepoAllIncludesEverything(t *testing.T) {
@@ -573,6 +655,7 @@ func TestTriageWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-triage-")
 	assert.Contains(t, s, "cancel-in-progress: true")
@@ -582,23 +665,6 @@ func TestTriageWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "id-token: write")
 	assert.Contains(t, s, "issues: write")
 	assert.Contains(t, s, "contents: read")
-}
-
-func TestCodeAgentContent(t *testing.T) {
-	content, err := FullsendRepoFile("agents/code.md")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "code")
-	assert.Contains(t, s, "disallowedTools")
-	assert.Contains(t, s, "code-implementation")
-}
-
-func TestCodeImplementationSkillAPIContractGuidance(t *testing.T) {
-	content, err := FullsendRepoFile("skills/code-implementation/SKILL.md")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "Verify API contracts per code path")
-	assert.Contains(t, s, "or changes a parameter sent to an external API")
 }
 
 func TestCodeWorkflowContent(t *testing.T) {
@@ -613,6 +679,7 @@ func TestCodeWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.NotContains(t, s, "GCP_WIF_SA_EMAIL")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-code-")
@@ -639,6 +706,7 @@ func TestReviewWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-review-")
 	assert.Contains(t, s, "cancel-in-progress: true")
@@ -664,6 +732,7 @@ func TestFixWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-fix-")
 	assert.Contains(t, s, "cancel-in-progress: true")
@@ -689,6 +758,7 @@ func TestRetroWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-retro-")
 	assert.Contains(t, s, "cancel-in-progress: true")
@@ -724,200 +794,16 @@ func TestValidateSourceRepoContent(t *testing.T) {
 	assert.Contains(t, s, "yq command not found")
 }
 
-func TestCodeHarnessContent(t *testing.T) {
-	content, err := FullsendRepoFile("harness/code.yaml")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "agents/code.md")
-	assert.Contains(t, s, "pre_script")
-	assert.Contains(t, s, "post_script")
-	assert.Contains(t, s, "runner_env")
-	assert.Contains(t, s, "PUSH_TOKEN")
-}
-
-func TestScanSecretsContent(t *testing.T) {
-	content, err := FullsendRepoFile("scripts/scan-secrets")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "gitleaks")
-	assert.Contains(t, s, "scan-secrets")
-}
-
-func TestScanSecretsImageMatchesScaffold(t *testing.T) {
-	imageContent, err := os.ReadFile("../../images/code/scan-secrets")
-	require.NoError(t, err)
-	scaffoldContent, err := FullsendRepoFile("scripts/scan-secrets")
-	require.NoError(t, err)
-	assert.Equal(t, string(imageContent), string(scaffoldContent),
-		"images/code/scan-secrets must stay in sync with scaffold scripts/scan-secrets")
-}
-
 func TestSetupAgentEnvContent(t *testing.T) {
 	content, err := FullsendRepoFile(".github/scripts/setup-agent-env.sh")
 	require.NoError(t, err)
 	s := string(content)
 	assert.Contains(t, s, "AGENT_PREFIX")
 	assert.Contains(t, s, "GITHUB_ENV")
-}
-
-func TestTriageAgentPromptContent(t *testing.T) {
-	content, err := FullsendRepoFile("agents/triage.md")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "agent-result.json")
-	assert.Contains(t, s, "clarity_scores")
-	assert.Contains(t, s, "Anti-premature-resolution")
-}
-
-func TestTriageSchemaContent(t *testing.T) {
-	content, err := FullsendRepoFile("schemas/triage-result.schema.json")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "$schema")
-	assert.Contains(t, s, "insufficient")
-	assert.Contains(t, s, "duplicate")
-	assert.Contains(t, s, "sufficient")
-}
-
-func TestHarnessesLoadAndValidate(t *testing.T) {
-	// Extract the full scaffold to a temp dir so harness.Load can resolve
-	// relative paths and validate that referenced files exist. This catches
-	// harness validation errors (e.g., missing fields, invalid combinations)
-	// the same way the runner would at startup.
-	dir := t.TempDir()
-	err := WalkFullsendRepoAll(func(path string, content []byte) error {
-		dest := filepath.Join(dir, path)
-		if mkErr := os.MkdirAll(filepath.Dir(dest), 0o755); mkErr != nil {
-			return mkErr
-		}
-		return os.WriteFile(dest, content, 0o644)
-	})
-	require.NoError(t, err, "extracting scaffold")
-
-	// Find all harness YAML files.
-	entries, err := os.ReadDir(filepath.Join(dir, "harness"))
-	require.NoError(t, err)
-
-	var loaded int
-	for _, e := range entries {
-		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".yaml") && !strings.HasSuffix(e.Name(), ".yml")) {
-			continue
-		}
-		t.Run(e.Name(), func(t *testing.T) {
-			harnessPath := filepath.Join(dir, "harness", e.Name())
-
-			t.Run("Load", func(t *testing.T) {
-				h, loadErr := harness.Load(harnessPath)
-				require.NoError(t, loadErr, "Load should succeed")
-
-				// Top-level pre/post scripts serve as defaults even
-				// without forge resolution (local dev without --forge).
-				assert.NotEmpty(t, h.PreScript, "PreScript should be set at top level as default")
-				assert.NotEmpty(t, h.PostScript, "PostScript should be set at top level as default")
-				assert.NotNil(t, h.Forge, "Forge map should be present")
-				assert.Contains(t, h.Forge, "github", "Forge should have a github key")
-
-				resolveErr := h.ResolveRelativeTo(dir)
-				require.NoError(t, resolveErr, "ResolveRelativeTo should succeed")
-
-				existErr := h.ValidateFilesExist()
-				require.NoError(t, existErr, "ValidateFilesExist should succeed")
-			})
-
-			t.Run("LoadWithOpts_github", func(t *testing.T) {
-				h, loadErr := harness.LoadWithOpts(harnessPath, harness.LoadOpts{ForgePlatform: "github"})
-				require.NoError(t, loadErr, "LoadWithOpts should succeed")
-
-				assert.Nil(t, h.Forge, "Forge should be nil after resolution")
-				assert.NotEmpty(t, h.PreScript, "PreScript should be set after forge resolution")
-				assert.NotEmpty(t, h.PostScript, "PostScript should be set after forge resolution")
-				hasRunnerEnv := len(h.RunnerEnv) > 0 || (h.Env != nil && len(h.Env.Runner) > 0)
-				assert.True(t, hasRunnerEnv, "RunnerEnv or Env.Runner should be non-empty after merge")
-
-				resolveErr := h.ResolveRelativeTo(dir)
-				require.NoError(t, resolveErr, "ResolveRelativeTo should succeed")
-
-				existErr := h.ValidateFilesExist()
-				require.NoError(t, existErr, "ValidateFilesExist should succeed")
-			})
-		})
-		loaded++
-	}
-	assert.True(t, loaded >= 2, "expected at least 2 harnesses, got %d", loaded)
-}
-
-func TestHarnessForgeRunnerEnvMerge(t *testing.T) {
-	dir := t.TempDir()
-	err := WalkFullsendRepoAll(func(path string, content []byte) error {
-		dest := filepath.Join(dir, path)
-		if mkErr := os.MkdirAll(filepath.Dir(dest), 0o755); mkErr != nil {
-			return mkErr
-		}
-		return os.WriteFile(dest, content, 0o644)
-	})
-	require.NoError(t, err, "extracting scaffold")
-
-	tests := []struct {
-		file            string
-		topLevelKeys    []string
-		forgeGithubKeys []string
-	}{
-		{
-			file:            "triage.yaml",
-			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA"},
-			forgeGithubKeys: []string{"GITHUB_ISSUE_URL", "GH_TOKEN"},
-		},
-		{
-			file:            "code.yaml",
-			topLevelKeys:    []string{"CODE_ALLOWED_TARGET_BRANCHES", "FULLSEND_OUTPUT_SCHEMA", "FULLSEND_OUTPUT_FILE"},
-			forgeGithubKeys: []string{"PUSH_TOKEN", "PUSH_TOKEN_SOURCE", "REPO_FULL_NAME", "ISSUE_NUMBER", "REPO_DIR"},
-		},
-		{
-			file:            "review.yaml",
-			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA"},
-			forgeGithubKeys: []string{"REVIEW_TOKEN", "REPO_FULL_NAME", "PR_NUMBER", "GITHUB_PR_URL"},
-		},
-		{
-			file:            "fix.yaml",
-			topLevelKeys:    []string{"TARGET_BRANCH", "TRIGGER_SOURCE", "HUMAN_INSTRUCTION", "FIX_ITERATION", "REVIEW_BODY_FILE", "PRE_AGENT_HEAD", "FULLSEND_OUTPUT_SCHEMA", "FULLSEND_OUTPUT_FILE"},
-			forgeGithubKeys: []string{"PUSH_TOKEN", "PUSH_TOKEN_SOURCE", "REPO_FULL_NAME", "PR_NUMBER", "REPO_DIR"},
-		},
-		{
-			file:            "retro.yaml",
-			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA"},
-			forgeGithubKeys: []string{"ORIGINATING_URL", "REPO_FULL_NAME", "GH_TOKEN"},
-		},
-		{
-			file:            "prioritize.yaml",
-			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA"},
-			forgeGithubKeys: []string{"GITHUB_ISSUE_URL", "GH_TOKEN", "ORG", "PROJECT_NUMBER"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.file, func(t *testing.T) {
-			harnessPath := filepath.Join(dir, "harness", tt.file)
-			h, loadErr := harness.LoadWithOpts(harnessPath, harness.LoadOpts{ForgePlatform: "github"})
-			require.NoError(t, loadErr)
-
-			// Build a combined env map from both legacy RunnerEnv and new Env.Runner.
-			combined := make(map[string]string)
-			for k, v := range h.RunnerEnv {
-				combined[k] = v
-			}
-			if h.Env != nil {
-				for k, v := range h.Env.Runner {
-					combined[k] = v
-				}
-			}
-
-			for _, key := range tt.topLevelKeys {
-				assert.Contains(t, combined, key, "merged env should contain top-level key %s", key)
-			}
-			for _, key := range tt.forgeGithubKeys {
-				assert.Contains(t, combined, key, "merged env should contain forge.github key %s", key)
-			}
-		})
+	// Per-run override passthrough from repository variables (#6526).
+	assert.Contains(t, s, "FULLSEND_REPO_VARS")
+	for _, key := range []string{"FULLSEND_RUNTIME", "FULLSEND_MODEL", "FULLSEND_EFFORT", "FULLSEND_FALLBACK_MODELS", "FULLSEND_PI_PROVIDER", "FULLSEND_PI_MODEL", "FULLSEND_CODEX_MODEL"} {
+		assert.Contains(t, s, key)
 	}
 }
 
@@ -933,7 +819,8 @@ func TestRepoMaintenanceWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "fullsend-ai/fullsend/.github/actions/mint-token@__FULLSEND_AI_REF__")
 	assert.Contains(t, s, "Checkout upstream scripts")
 	assert.Contains(t, s, "Prepare scripts")
-	assert.Contains(t, s, "customized/scripts")
+	assert.NotContains(t, s, "customized/scripts",
+		"customized/ overlay removed per ADR-0064")
 	assert.Contains(t, s, "role: fullsend")
 	assert.Contains(t, s, "id-token: write")
 	assert.NotContains(t, s, "create-github-app-token")
@@ -966,6 +853,130 @@ func TestReconcileReposContent(t *testing.T) {
 		"reconcile-repos.sh should not parse dispatch mode")
 	assert.Contains(t, s, "private repos cannot be enrolled",
 		"reconcile-repos.sh should skip private repos to prevent log exposure")
+
+	// The "Getting started" slash-command catalog (#2165) must appear in both the
+	// enrollment and update PR bodies. The update path is the first touchpoint for
+	// already-enrolled repos, which is the scenario the original incident hit.
+	assert.Contains(t, s, "## Getting started",
+		"reconcile-repos.sh PR bodies should include the Getting started section")
+	assert.Contains(t, s, `GETTING_STARTED_SECTION`,
+		"Getting started block should be shared so it appears in both enroll and update PRs")
+	assert.Contains(t, s, `ENROLL_PR_BODY=`)
+	assert.Contains(t, s, `UPDATE_PR_BODY=`)
+	// Both PR bodies interpolate the shared block.
+	assert.Equal(t, 2, strings.Count(s, `${GETTING_STARTED_SECTION}`),
+		"shared Getting started block should be appended to both the enroll and update PR bodies")
+}
+
+// commandsNotInOnboardingCatalog lists slash commands that dispatch.yml routes
+// on but that are deliberately omitted from the user-facing onboarding catalog,
+// so the omission is a recorded decision rather than a regex accident. Anything
+// routed by dispatch.yml and not listed here must appear in the catalog.
+var commandsNotInOnboardingCatalog = map[string]bool{}
+
+// extractGettingStartedSection returns the body of the GETTING_STARTED_SECTION
+// shell assignment in reconcile-repos.sh — the exact block rendered into the
+// onboarding PR bodies. Assertions scope to this block rather than the whole
+// script so a command name appearing in an unrelated comment or code path cannot
+// satisfy the catalog guard.
+func extractGettingStartedSection(t *testing.T, scriptStr string) string {
+	t.Helper()
+	const marker = `GETTING_STARTED_SECTION="`
+	start := strings.Index(scriptStr, marker)
+	require.GreaterOrEqual(t, start, 0,
+		"expected GETTING_STARTED_SECTION assignment in reconcile-repos.sh")
+	rest := scriptStr[start+len(marker):]
+	// The block contains no embedded double quotes, so the next quote closes it.
+	end := strings.Index(rest, `"`)
+	require.GreaterOrEqual(t, end, 0,
+		"GETTING_STARTED_SECTION assignment should be closed with a double quote")
+	return rest[:end]
+}
+
+// dispatchCaseArmRE matches a case-arm label line in dispatch.yml's
+// `case "${COMMAND}"` switch, e.g. "                /fs-triage)".
+// Scoping route extraction to these lines keeps a command mentioned in a
+// comment, URL, or unrelated shell statement from being counted as routed.
+var dispatchCaseArmRE = regexp.MustCompile(`(?m)^[ \t]*(/fs-[a-z0-9-]+(?:\|/fs-[a-z0-9-]+)*)\)`)
+
+// slashCommandRE matches a single /fs-* command token.
+var slashCommandRE = regexp.MustCompile(`/fs-[a-z0-9-]+`)
+
+// catalogBulletRE matches a rendered onboarding-catalog bullet, e.g.
+// "- `/fs-triage`". The optional leading backslash accommodates the shell
+// assignment (backticks are escaped as \` there); the per-repo Go catalog uses
+// bare backticks. Anchoring to the "- " bullet keeps a command mentioned in a
+// docs URL or prose from counting as documented.
+var catalogBulletRE = regexp.MustCompile("(?m)^- \\\\?`(/fs-[a-z0-9-]+)\\\\?`")
+
+// routedDispatchCommands returns the set of slash commands dispatch.yml routes
+// on, scoped to case-arm labels (see dispatchCaseArmRE).
+func routedDispatchCommands(dispatchStr string) map[string]bool {
+	cmds := map[string]bool{}
+	for _, arm := range dispatchCaseArmRE.FindAllStringSubmatch(dispatchStr, -1) {
+		for _, cmd := range slashCommandRE.FindAllString(arm[1], -1) {
+			cmds[cmd] = true
+		}
+	}
+	return cmds
+}
+
+// catalogCommands returns the set of slash commands documented as bullets in an
+// onboarding catalog block (see catalogBulletRE).
+func catalogCommands(catalog string) map[string]bool {
+	cmds := map[string]bool{}
+	for _, m := range catalogBulletRE.FindAllStringSubmatch(catalog, -1) {
+		cmds[m[1]] = true
+	}
+	return cmds
+}
+
+// TestReconcileReposSlashCommandCatalog guards against the onboarding PR body's
+// slash-command catalog drifting from dispatch.yml's routing, in both directions:
+//   - forward: every command dispatch.yml routes on (except deliberately-omitted
+//     aliases in commandsNotInOnboardingCatalog) must appear in the catalog, so a
+//     command added/renamed in dispatch.yml without updating the catalog fails CI.
+//   - reverse: every command documented in the catalog must actually be routed by
+//     dispatch.yml, so a command removed from dispatch.yml but left in the
+//     user-facing catalog also fails CI.
+//
+// Routed commands are extracted only from dispatch.yml's case-arm labels, and
+// documented commands only from rendered catalog bullets, so comments, URLs, or
+// prose on either side cannot spoof a match. Membership is compared as exact
+// tokens (via sets) rather than substring containment so a hyphenated command
+// (e.g. /fs-fix-stop) cannot satisfy the guard against an unrelated prefix
+// (/fs-fix). The omission allow-list is applied to the forward check only: a
+// command written into the catalog and later dropped from dispatch must fail even
+// if it is allow-listed.
+func TestReconcileReposSlashCommandCatalog(t *testing.T) {
+	dispatch, err := FullsendRepoFile(".github/workflows/dispatch.yml")
+	require.NoError(t, err)
+	script, err := FullsendRepoFile("scripts/reconcile-repos.sh")
+	require.NoError(t, err)
+
+	catalog := extractGettingStartedSection(t, string(script))
+
+	dispatchCmds := routedDispatchCommands(string(dispatch))
+	require.NotEmpty(t, dispatchCmds, "expected dispatch.yml to route on /fs-* commands")
+
+	catalogCmds := catalogCommands(catalog)
+	require.NotEmpty(t, catalogCmds, "expected the onboarding catalog to document /fs-* commands")
+
+	// Forward: dispatch.yml commands must be documented (unless deliberately omitted).
+	for cmd := range dispatchCmds {
+		if commandsNotInOnboardingCatalog[cmd] {
+			continue
+		}
+		assert.True(t, catalogCmds[cmd],
+			"dispatch.yml routes on %s but the onboarding catalog does not document it "+
+				"(add it to GETTING_STARTED_SECTION, or to commandsNotInOnboardingCatalog if intentional)", cmd)
+	}
+
+	// Reverse: every documented command must be routed by dispatch.yml.
+	for cmd := range catalogCmds {
+		assert.True(t, dispatchCmds[cmd],
+			"onboarding catalog documents %s but dispatch.yml does not route on it", cmd)
+	}
 }
 
 func TestPrioritizeWorkflowContent(t *testing.T) {
@@ -984,6 +995,7 @@ func TestPrioritizeWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-prioritize-")
 	assert.Contains(t, s, "cancel-in-progress: true")
@@ -994,124 +1006,26 @@ func TestPrioritizeWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "contents: read")
 }
 
-func TestPrioritizeSchedulerWorkflowContent(t *testing.T) {
-	content, err := FullsendRepoFile(".github/workflows/prioritize-scheduler.yml")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "# schedule:", "cron trigger should be commented out by default (#778)")
-	assert.Contains(t, s, "#   - cron:", "cron trigger should be commented out by default (#778)")
-	assert.Contains(t, s, "workflow_dispatch")
-	assert.Contains(t, s, "fullsend-prioritize-scheduler")
-	assert.Contains(t, s, "RICE Score")
-	assert.Contains(t, s, "prioritize.yml")
-	assert.Contains(t, s, "FULLSEND_PROJECT_NUMBER")
-	assert.Contains(t, s, "FULLSEND_PROJECT_NUMBER is not set; skipping prioritize scheduler")
-	guardIndex := strings.Index(s, `if [[ -z "${PROJECT_NUMBER}" ]]; then`)
-	projectViewIndex := strings.Index(s, `gh project view "${PROJECT_NUMBER}"`)
-	require.NotEqual(t, -1, guardIndex)
-	require.NotEqual(t, -1, projectViewIndex)
-	assert.Less(t, guardIndex, projectViewIndex, "PROJECT_NUMBER must be checked before gh project view")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/actions/mint-token@__FULLSEND_AI_REF__")
-	assert.Contains(t, s, "role: fullsend")
-	assert.Contains(t, s, "id-token: write")
-	assert.NotContains(t, s, "create-github-app-token")
-	assert.NotContains(t, s, "FULLSEND_FULLSEND_CLIENT_ID")
-}
-
-func TestPrioritizeSchedulerSkipsWhenProjectNumberUnset(t *testing.T) {
-	content, err := FullsendRepoFile(".github/workflows/prioritize-scheduler.yml")
-	require.NoError(t, err)
-
-	var workflow struct {
-		Jobs map[string]struct {
-			Steps []struct {
-				Name string `yaml:"name"`
-				Run  string `yaml:"run"`
-			} `yaml:"steps"`
-		} `yaml:"jobs"`
-	}
-	require.NoError(t, yaml.Unmarshal(content, &workflow))
-
-	dispatchJob, ok := workflow.Jobs["dispatch"]
-	require.True(t, ok, "dispatch job should exist")
-
-	var runScript string
-	for _, step := range dispatchJob.Steps {
-		if step.Name == "Find issues and dispatch prioritize runs" {
-			runScript = step.Run
-			break
+func TestScaffoldShimsForwardOpenAIAPIKey(t *testing.T) {
+	const gcpForward = "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}"
+	const openAIForward = "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}"
+	var checked int
+	err := WalkFullsendRepoAll(func(path string, content []byte) error {
+		if !strings.HasSuffix(path, ".yml") && !strings.HasSuffix(path, ".yaml") {
+			return nil
 		}
-	}
-	require.NotEmpty(t, runScript, "prioritize scheduler dispatch script should exist")
-
-	tmpDir := t.TempDir()
-	binDir := filepath.Join(tmpDir, "bin")
-	require.NoError(t, os.Mkdir(binDir, 0o755))
-
-	ghLog := filepath.Join(tmpDir, "gh-calls.log")
-	fakeGH := "#!/usr/bin/env bash\n" +
-		"printf 'gh called: %s\\n' \"$*\" >> " + strconv.Quote(ghLog) + "\n" +
-		"exit 99\n"
-	ghPath := filepath.Join(binDir, "gh")
-	require.NoError(t, os.WriteFile(ghPath, []byte(fakeGH), 0o755))
-
-	scriptPath := filepath.Join(tmpDir, "prioritize-scheduler-run.sh")
-	require.NoError(t, os.WriteFile(scriptPath, []byte(runScript), 0o755))
-
-	cmd := exec.Command("bash", scriptPath)
-	cmd.Env = []string{
-		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"PROJECT_NUMBER=",
-		"ORG=test-org",
-		"GH_TOKEN=test-token",
-		"WIP_LIMIT=5",
-		"STALE_THRESHOLD=7d",
-		"GITHUB_REPOSITORY=test-org/.fullsend",
-	}
-
-	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(output))
-	assert.Contains(t, string(output), "FULLSEND_PROJECT_NUMBER is not set; skipping prioritize scheduler")
-	_, statErr := os.Stat(ghLog)
-	assert.True(t, os.IsNotExist(statErr), "gh should not be called when PROJECT_NUMBER is unset")
-}
-
-func TestPrioritizeAgentPromptContent(t *testing.T) {
-	content, err := FullsendRepoFile("agents/prioritize.md")
+		s := string(content)
+		if !strings.Contains(s, gcpForward) {
+			return nil
+		}
+		checked++
+		assert.Contains(t, s, openAIForward,
+			"%s forwards FULLSEND_GCP_PROJECT_ID but not FULLSEND_OPENAI_API_KEY", path)
+		return nil
+	})
 	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "agent-result.json")
-	assert.Contains(t, s, "RICE")
-	assert.Contains(t, s, "Reach")
-	assert.Contains(t, s, "Impact")
-	assert.Contains(t, s, "Confidence")
-	assert.Contains(t, s, "Effort")
-	assert.Contains(t, s, "customer-research skill")
-}
-
-func TestPrioritizeSchemaContent(t *testing.T) {
-	content, err := FullsendRepoFile("schemas/prioritize-result.schema.json")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "$schema")
-	assert.Contains(t, s, "reach")
-	assert.Contains(t, s, "impact")
-	assert.Contains(t, s, "confidence")
-	assert.Contains(t, s, "effort")
-	assert.Contains(t, s, "reasoning")
-}
-
-func TestPrioritizeHarnessContent(t *testing.T) {
-	content, err := FullsendRepoFile("harness/prioritize.yaml")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "agents/prioritize.md")
-	assert.Contains(t, s, "pre_script")
-	assert.Contains(t, s, "post_script")
-	assert.Contains(t, s, "env:")
-	assert.Contains(t, s, "runner:")
-	assert.Contains(t, s, "sandbox:")
-	assert.Contains(t, s, "PROJECT_NUMBER")
+	assert.GreaterOrEqual(t, checked, 7,
+		"expected at least the six agent shims plus the per-repo shim to forward GCP_PROJECT_ID")
 }
 
 func TestAllScaffoldYAMLDocumentStartMarker(t *testing.T) {
@@ -1128,7 +1042,7 @@ func TestAllScaffoldYAMLDocumentStartMarker(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
-	assert.True(t, checked >= 20, "expected at least 20 YAML files, got %d", checked)
+	assert.True(t, checked >= 10, "expected at least 10 YAML files, got %d", checked)
 }
 
 func TestManagedHeader(t *testing.T) {
@@ -1148,12 +1062,10 @@ func TestManagedHeader(t *testing.T) {
 		},
 		// Markdown files are skipped (user-readable docs)
 		{path: "AGENTS.md", expect: ""},
-		// .gitkeep files are skipped
-		{path: "customized/agents/.gitkeep", expect: ""},
 		// JSON files are skipped (no comment syntax)
-		{path: "schemas/triage-result.schema.json", expect: ""},
+		{path: "data/example.json", expect: ""},
 		// Shell scripts get a header
-		{path: "scripts/pre-triage.sh", expect: "# This file is managed by fullsend. Do not edit it directly.\n# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/scripts/pre-triage.sh\n"},
+		{path: "scripts/reconcile-repos.sh", expect: "# This file is managed by fullsend. Do not edit it directly.\n# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/scripts/reconcile-repos.sh\n"},
 	}
 
 	for _, tc := range tests {
@@ -1167,8 +1079,8 @@ func TestManagedHeader(t *testing.T) {
 func TestManagedHeaderPreservesShebang(t *testing.T) {
 	// When content starts with #!, the header should go after the shebang line
 	content := []byte("#!/bin/bash\nset -euo pipefail\n")
-	header := ManagedHeader("scripts/pre-triage.sh")
-	result := PrependManagedHeader("scripts/pre-triage.sh", content)
+	header := ManagedHeader("scripts/reconcile-repos.sh")
+	result := PrependManagedHeader("scripts/reconcile-repos.sh", content)
 
 	assert.True(t, strings.HasPrefix(string(result), "#!/bin/bash\n"))
 	assert.Contains(t, string(result), header)
@@ -1181,7 +1093,114 @@ func TestPrependManagedHeaderNoHeader(t *testing.T) {
 	assert.Equal(t, content, result, "files without headers should be returned unchanged")
 }
 
-func TestValidateTriageDeleted(t *testing.T) {
-	_, err := FullsendRepoFile("scripts/validate-triage.sh")
-	assert.Error(t, err, "validate-triage.sh should have been deleted")
+func TestScaffoldGitHubROProfile_GraphQLEndpoint(t *testing.T) {
+	data, err := FullsendRepoFile("profiles/fullsend-github-ro.yaml")
+	require.NoError(t, err)
+
+	var profile struct {
+		Endpoints []struct {
+			Host        string `yaml:"host"`
+			Port        int    `yaml:"port"`
+			Protocol    string `yaml:"protocol"`
+			Access      string `yaml:"access"`
+			Enforcement string `yaml:"enforcement"`
+			Path        string `yaml:"path"`
+		} `yaml:"endpoints"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &profile))
+
+	// The scaffold copy must include exactly one GraphQL endpoint for
+	// api.github.com so that generated agents can use `gh --json`,
+	// `gh issue view`, etc. without an egress policy denial. Its shape
+	// matches the fullsend-ai/agents copy of this profile. See #7014.
+	var found int
+	for _, ep := range profile.Endpoints {
+		if ep.Host != "api.github.com" || ep.Protocol != "graphql" {
+			continue
+		}
+		found++
+		assert.Equal(t, 443, ep.Port,
+			"GraphQL endpoint port must be 443")
+		assert.Equal(t, "/graphql", ep.Path,
+			"GraphQL endpoint path must be /graphql")
+		assert.Equal(t, "read-only", ep.Access,
+			"GraphQL endpoint access must be read-only")
+		assert.Equal(t, "enforce", ep.Enforcement,
+			"GraphQL endpoint enforcement must be enforce")
+	}
+	assert.Equal(t, 1, found,
+		"scaffold fullsend-github-ro profile must include exactly one GraphQL endpoint for api.github.com")
+}
+
+func TestScaffoldPackageRegistriesProfile_Permissions(t *testing.T) {
+	data, err := FullsendRepoFile("profiles/fullsend-package-registries.yaml")
+	require.NoError(t, err)
+
+	var profile struct {
+		Endpoints []struct {
+			Host              string `yaml:"host"`
+			AllowEncodedSlash bool   `yaml:"allow_encoded_slash"`
+		} `yaml:"endpoints"`
+		Binaries []string `yaml:"binaries"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &profile))
+
+	// The embedded copy is the authoritative definition of this built-in
+	// provider, so it must keep the permissions the fullsend-ai/agents copy
+	// has. Scoped npm package metadata requests use a %2F-encoded slash,
+	// which the proxy rejects unless allow_encoded_slash is set. See #8007.
+	encodedSlash := map[string]bool{}
+	for _, ep := range profile.Endpoints {
+		encodedSlash[ep.Host] = ep.AllowEncodedSlash
+	}
+	npmHosts := map[string]bool{"registry.npmjs.org": true, "registry.yarnpkg.com": true}
+	for host := range npmHosts {
+		require.Contains(t, encodedSlash, host,
+			"scaffold package-registries profile must include endpoint %s", host)
+	}
+	require.Contains(t, encodedSlash, "pypi.org",
+		"scaffold package-registries profile must include endpoint pypi.org")
+	// allow_encoded_slash is scoped to the npm registries only.
+	for host, allowed := range encodedSlash {
+		assert.Equal(t, npmHosts[host], allowed,
+			"endpoint %s: allow_encoded_slash must be set exactly on the npm registries", host)
+	}
+
+	for _, bin := range []string{"**/uv", "**/uvx"} {
+		assert.Contains(t, profile.Binaries, bin,
+			"scaffold package-registries profile must allow binary %s", bin)
+	}
+}
+
+func TestScaffoldGitleaksProfile_Permissions(t *testing.T) {
+	data, err := FullsendRepoFile("profiles/fullsend-gitleaks.yaml")
+	require.NoError(t, err)
+
+	var profile struct {
+		Binaries []string `yaml:"binaries"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &profile))
+
+	// pre-commit uses git to clone the gitleaks hook repository from
+	// github.com; the fullsend-ai/agents copy allowed it. See #8007.
+	assert.Contains(t, profile.Binaries, "**/git",
+		"scaffold gitleaks profile must allow binary **/git")
+}
+
+func TestScaffoldVertexProfile_BinaryAllowlist(t *testing.T) {
+	data, err := FullsendRepoFile("profiles/fullsend-vertex-ai.yaml")
+	require.NoError(t, err)
+
+	var profile struct {
+		Binaries []string `yaml:"binaries"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &profile))
+
+	// Pin the whole list, not just the two entries #6971 added: this copy
+	// must stay in sync with profiles/fullsend-vertex-ai.yaml in
+	// fullsend-ai/agents (the fleet copy), which is what the sandbox
+	// actually enforces. Claude Code 2.1.2xx installs its native binary at
+	// bin/claude.exe even on Linux, so **/claude alone denies it STS access.
+	assert.ElementsMatch(t, []string{"**/claude", "**/claude.exe", "**/node", "**/pi"}, profile.Binaries,
+		"scaffold Vertex profile binaries drifted from the pinned allowlist; keep it in sync with the fullsend-ai/agents copy")
 }

@@ -1,2 +1,11 @@
 # These users have approval access to all resources (wildcard)
 * @fullsend-ai/core
+
+# Submodule paths — no code-owner review required so Renovate
+# digest bumps can auto-merge after CI passes.
+# GitHub CODEOWNERS uses last-match-wins, so these blank-owner
+# entries after the wildcard override @fullsend-ai/core for
+# these paths only.
+.gitmodules
+experiments
+eval/.agent-eval-harness

@@ -38,7 +38,7 @@ on:
       fullsend_version:
         required: false
         type: string
-        default: "latest"
+        default: ""
       install_mode:
         required: false
         type: string
@@ -58,7 +58,11 @@ on:
         required: true
       FULLSEND_GCP_PROJECT_ID:
         required: true
+      FULLSEND_OPENAI_API_KEY:
+        required: false
       OTEL_EXPORTER_OTLP_TRACES_HEADERS:
+        required: false
+      OTEL_EXPORTER_OTLP_HEADERS:
         required: false
 
 concurrency:
@@ -118,7 +122,7 @@ jobs:
             exit 1
           fi
           SRC=".defaults/internal/scaffold/fullsend-repo"
-          LAYERED_DIRS="agents skills schemas harness plugins policies scripts env"
+          LAYERED_DIRS="agents skills schemas harness plugins scripts env"
           DEST=""
           if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
             DEST=".fullsend/"
@@ -127,20 +131,6 @@ jobs:
             if [[ -d "${SRC}/${dir}" ]]; then
               mkdir -p "${DEST}${dir}"
               cp -r "${SRC}/${dir}/." "${DEST}${dir}/"
-            fi
-          done
-          CUSTOM_BASE="customized"
-          if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
-            CUSTOM_BASE=".fullsend/customized"
-          fi
-          for dir in ${LAYERED_DIRS}; do
-            if [[ -d "${CUSTOM_BASE}/${dir}" ]]; then
-              find "${CUSTOM_BASE}/${dir}" -type f ! -name '.gitkeep' -print0 \
-                | while IFS= read -r -d '' f; do
-                    rel="${f#"${CUSTOM_BASE}"/}"
-                    mkdir -p "$(dirname "${DEST}${rel}")"
-                    cp "${f}" "${DEST}${rel}"
-                  done
             fi
           done
           mkdir -p .github/scripts
@@ -263,6 +253,7 @@ jobs:
             if [[ -n "${COMMENT_BODY}" ]]; then
               # Strip the /fs-fix prefix to get the instruction.
               INSTRUCTION="${COMMENT_BODY#/fs-fix}"
+              INSTRUCTION="$(printf '%s\n' "${INSTRUCTION}" | sed 's/^[.,;:!?]*//')"
               INSTRUCTION="${INSTRUCTION#"${INSTRUCTION%%[![:space:]]*}"}"
             fi
             if [[ -z "${INSTRUCTION}" && -n "${INPUT_INSTRUCTION}" ]]; then
@@ -299,29 +290,10 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TRIGGER_SOURCE: ${{ inputs.trigger_source }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
           PR_NUM: ${{ steps.context.outputs.pr_number }}
           SOURCE_REPO: ${{ inputs.source_repo }}
-        run: |
-          if [[ "${TRIGGER_SOURCE}" =~ \[bot\]$ ]]; then
-            PR_INFO=$(gh pr view "${PR_NUM}" --repo "${SOURCE_REPO}" \
-              --json labels,author --jq '{labels: [.labels[].name], author: .author.login}') \
-              || { echo "::error::Failed to fetch PR info for #${PR_NUM}"; exit 1; }
-
-            HAS_NO_FIX=$(echo "${PR_INFO}" | jq -r '.labels | any(. == "fullsend-no-fix")')
-            if [[ "${HAS_NO_FIX}" == "true" ]]; then
-              echo "::warning::PR #${PR_NUM} has 'fullsend-no-fix' label — skipping bot-triggered fix"
-              exit 1
-            fi
-
-            PR_AUTHOR=$(echo "${PR_INFO}" | jq -r '.author')
-            if [[ ! "${PR_AUTHOR}" =~ \[bot\]$ ]]; then
-              HAS_FIX_LABEL=$(echo "${PR_INFO}" | jq -r '.labels | any(. == "fullsend-fix")')
-              if [[ "${HAS_FIX_LABEL}" != "true" ]]; then
-                echo "::warning::Human-authored PR #${PR_NUM} without 'fullsend-fix' label — skipping bot-triggered fix"
-                exit 1
-              fi
-            fi
-          fi
+        run: bash .defaults/.github/scripts/check-fix-eligibility.sh
 
       - name: Checkout target repository at PR HEAD
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -349,11 +321,23 @@ jobs:
           PR_NUM: ${{ steps.context.outputs.pr_number }}
           TRIGGER_SOURCE: ${{ inputs.trigger_source }}
           ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
         run: |
           REVIEW_FILE="${GITHUB_WORKSPACE}/review-body.txt"
           REVIEW_BOT="${ORG_NAME}-review[bot]"
+          SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
+          CUSTOM_REVIEW_BOT=""
+          if [[ -n "${FULLSEND_APP_SET:-}" ]]; then
+            CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+          fi
           gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/reviews" \
-            --jq "[.[] | select(.state == \"CHANGES_REQUESTED\" and .user.login == \"${REVIEW_BOT}\")] | last | .body // \"\"" \
+            | jq -r --arg review_bot "${REVIEW_BOT}" \
+              --arg shared_bot "${SHARED_REVIEW_BOT}" \
+              --arg custom_bot "${CUSTOM_REVIEW_BOT}" \
+              '[.[] | select(.state == "CHANGES_REQUESTED" and
+                (.user.login == $review_bot or .user.login == $shared_bot or
+                 ($custom_bot != "" and .user.login == $custom_bot)))]
+                | last | .body // ""' \
             > "${REVIEW_FILE}" 2>/dev/null || echo "" > "${REVIEW_FILE}"
           BYTE_COUNT="$(wc -c < "${REVIEW_FILE}")"
           echo "Pre-fetched review body: ${BYTE_COUNT} bytes"
@@ -367,16 +351,6 @@ jobs:
             exit 1
           fi
           echo "review_file=${REVIEW_FILE}" >> "${GITHUB_OUTPUT}"
-
-      - name: Validate inputs
-        env:
-          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
-          REPO_FULL_NAME: ${{ inputs.source_repo }}
-          TRIGGER_SOURCE: ${{ inputs.trigger_source }}
-          FIX_ITERATION: ${{ steps.context.outputs.iteration }}
-          HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
-          FULLSEND_DIR: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
-        run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-fix.sh"
 
       - name: Setup GCP and prepare credentials
         uses: ./.defaults/.github/actions/setup-gcp
@@ -396,6 +370,9 @@ jobs:
           FIX_HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
           FIX_FIX_ITERATION: ${{ steps.context.outputs.iteration }}
           FIX_REPO_FULL_NAME: ${{ inputs.source_repo }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, FIX_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run fix agent
@@ -409,14 +386,28 @@ jobs:
           FIX_ITERATION: ${{ steps.context.outputs.iteration }}
           REVIEW_BODY_FILE: ${{ steps.review-body.outputs.review_file }}
           PRE_AGENT_HEAD: ${{ steps.pre-agent.outputs.head }}
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+          OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+          OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
+          OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
+          OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: ${{ vars.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }}
+          # OpenAI Workload Identity Federation for the pi runtime (ADR 0092):
+          # non-secret identifiers the runner exchanges the job's OIDC token
+          # against. Unset = the openai provider is not usable in this repo.
+          FULLSEND_OPENAI_AUDIENCE: ${{ vars.FULLSEND_OPENAI_AUDIENCE }}
+          FULLSEND_OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.FULLSEND_OPENAI_IDENTITY_PROVIDER_ID }}
+          FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
+          # Opt-in static key, used only when the three variables above are unset (ADR 0092).
+          OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
         with:
           agent: fix
-          version: ${{ inputs.fullsend_version }}
+          version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ inputs.source_repo }}
           status-number: ${{ steps.context.outputs.pr_number }}
+          status-comment-id: ${{ fromJSON(inputs.event_payload).comment.id }}
           mint-url: ${{ inputs.mint_url }}

@@ -1,16 +1,16 @@
-# Customizing Agents with AGENTS.md
+# Configuring Agents with AGENTS.md
 
 Fullsend agents operate on your repository using Claude Code inside a sandboxed
 environment. Because agents run with your repo checked out, they automatically
 read its `AGENTS.md` file — the same file human contributors use. No fullsend
 configuration changes needed.
 
-For agent-specific customization using skills, see
+For agent-specific configuration using skills, see
 [Configuring with Skills](customizing-with-skills.md).
 
 ## What to put in AGENTS.md
 
-`AGENTS.md` is the [open standard](https://agentskills.io/) that any agent
+`AGENTS.md` is the [open standard](https://agents.md/) that any agent
 tool can discover. The recommended approach is to keep your `CLAUDE.md`
 lightweight and have it point at `AGENTS.md`:
 
@@ -119,8 +119,8 @@ takes precedence.
 - Override the agent definition's tool restrictions (e.g., the review agent
   cannot write files regardless of what AGENTS.md says)
 - Remove or replace built-in skills — use
-  [`customized/skills/`](customizing-with-skills.md#overriding-built-in-skills)
-  for that (deprecated; use config-driven agent registration instead)
+  [config-driven agent registration](customizing-with-skills.md#overriding-built-in-skills)
+  for that
 - Change the agent's model or execution parameters
 
 ### Injection handling
@@ -148,5 +148,7 @@ prompt injection before the agent starts.
 
 ## See also
 
+- [Customizing Agents](customizing-overview.md) — overview of all customization approaches
+- [Configuring with Skills](customizing-with-skills.md) — agent-specific domain knowledge
 - [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
   — `AGENTS.md` configuration keeps you in "configured default agent" territory

@@ -1,12 +1,14 @@
 // Package poll implements the GitLab cron-polling event dispatch loop.
 // It discovers events from the GitLab API, converts them to
 // NormalizedEvents, routes them through the dispatch core, and
-// triggers child pipelines for matched stages.
+// dispatches agent stages via API-triggered pipelines.
 package poll
 
 import (
 	"context"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // GitLabClient defines the GitLab API surface the poller requires.
@@ -33,11 +35,32 @@ type GitLabClient interface {
 	// ListResourceLabelEvents MUST return events in ascending ID order
 	// (the poller iterates in reverse to find the most recent "add").
 	ListResourceLabelEvents(ctx context.Context, owner, repo string, issueIID int) ([]ResourceLabelEvent, error)
-	GetCIVariable(ctx context.Context, owner, repo, name string) (string, error)
-	// UpdateCIVariable upserts a CI variable: update if it exists,
-	// create if it does not. GitLab CI/CD variable values are capped
-	// at 10,000 characters.
-	UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error
+	// GetFileContentAtRef retrieves a file at a specific ref (branch,
+	// tag, or SHA). Returns forge.ErrNotFound if the file or ref does
+	// not exist. Used to load the HMAC-signed poll-state document.
+	GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
+	// GetBranchRef returns the HEAD commit SHA for the named branch.
+	// Returns forge.ErrNotFound if the branch does not exist. Used to
+	// pin the CAS parent SHA at poll-state load time.
+	GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error)
+	// CommitFileToBranch commits a single file to branch without force.
+	// expectedSHA is the branch tip observed at load time and is sent as
+	// start_sha so a concurrent writer surfaces forge.ErrNonFastForward.
+	// An empty expectedSHA (no branch observed at load time) still commits
+	// with start_sha pinned to the repository root, but leaves force unset
+	// so a concurrent first writer racing branch creation surfaces the same
+	// forge.ErrNonFastForward instead of being silently overwritten.
+	// The commit message is suffixed with [skip ci] when not already present.
+	CommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte, expectedSHA string) error
+	// ForceCommitFileToBranch force-updates branch to a single-file
+	// commit re-rooted on a fixed base SHA. The branch is created if
+	// it does not exist. History is pruned to base + 1 commit.
+	// Used for install-time seeding; runtime persist uses CommitFileToBranch.
+	ForceCommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
+	// DeleteRef deletes a git ref (e.g., "heads/fullsend-poll-state-slash").
+	// Returns forge.ErrNotFound if the ref does not exist. Used to
+	// discard a tampered poll-state branch.
+	DeleteRef(ctx context.Context, owner, repo, refPath string) error
 	GetAuthenticatedUser(ctx context.Context) (string, error)
 	GetAuthenticatedUserID(ctx context.Context) (int, error)
 	// CreateNoteAwardEmoji adds an emoji reaction. noteableType must be
@@ -51,6 +74,21 @@ type GitLabClient interface {
 	// which only returns direct members.
 	GetMemberAccessLevel(ctx context.Context, owner, repo string, userID int) (int, error)
 	GetProjectPath(ctx context.Context, projectID int) (string, error)
+	// CreatePipeline creates a new pipeline on the given ref with the
+	// given variables. Returns the pipeline ID and web URL.
+	CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error)
+	// CreatePipelineWithInputs creates a new pipeline on the given ref
+	// using typed GitLab CI/CD pipeline inputs (spec:inputs) instead of
+	// user-defined pipeline variables. Unlike CreatePipeline, this
+	// remains usable when a project's
+	// ci_pipeline_variables_minimum_override_role is
+	// forge.PipelineVarOverrideNoOneAllowed, because that setting does
+	// not govern pipeline inputs (#7850). dispatch() uses this for a
+	// target repository whose committed wrapper declares the typed
+	// contract (see usesTypedDispatch) and falls back to CreatePipeline
+	// otherwise, since a poller binary upgrade is not synchronized with
+	// that repository's own scaffold migration.
+	CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]forge.PipelineInputValue) (int64, string, error)
 }
 
 // Issue represents a GitLab issue as returned by the API.
@@ -61,6 +99,9 @@ type Issue struct {
 	State     string    `json:"state"`
 	Labels    []string  `json:"labels"`
 	Author    UserRef   `json:"author"`
+	ClosedBy  UserRef   `json:"closed_by"`
+	ClosedAt  time.Time `json:"closed_at"`
+	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -79,7 +120,10 @@ type MergeRequest struct {
 	Author          UserRef   `json:"author"`
 	MergeUser       UserRef   `json:"merge_user"`
 	MergedBy        UserRef   `json:"merged_by"`
+	ClosedBy        UserRef   `json:"closed_by"`
 	MergedAt        time.Time `json:"merged_at"`
+	ClosedAt        time.Time `json:"closed_at"`
+	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
@@ -125,5 +169,6 @@ type ResourceLabelEvent struct {
 	Label  struct {
 		Name string `json:"name"`
 	} `json:"label"`
-	User UserRef `json:"user"`
+	User      UserRef   `json:"user"`
+	CreatedAt time.Time `json:"created_at"`
 }

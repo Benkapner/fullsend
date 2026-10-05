@@ -3,10 +3,15 @@ package mintclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/mintcore/mintconsts"
 )
 
 func init() {
@@ -96,8 +101,8 @@ func TestMintToken_CrossOrgTarget(t *testing.T) {
 		if body.TargetOrg != "halfsend-01" {
 			t.Errorf("target_org = %q, want %q", body.TargetOrg, "halfsend-01")
 		}
-		if len(body.Repos) != 0 {
-			t.Errorf("repos = %v, want omitted for installation-wide e2e token", body.Repos)
+		if len(body.Repos) != 1 || body.Repos[0] != "*" {
+			t.Errorf("repos = %v, want [\"*\"] for installation-wide e2e token", body.Repos)
 		}
 
 		json.NewEncoder(w).Encode(MintResult{
@@ -123,6 +128,7 @@ func TestMintToken_CrossOrgTarget(t *testing.T) {
 	result, err := MintToken(context.Background(), MintRequest{
 		MintURL:   mintServer.URL,
 		Role:      "e2e",
+		Repos:     []string{"*"},
 		TargetOrg: "halfsend-01",
 	})
 	if err != nil {
@@ -133,41 +139,16 @@ func TestMintToken_CrossOrgTarget(t *testing.T) {
 	}
 }
 
-func TestMintToken_OmittedRepos(t *testing.T) {
-	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt-value"})
-	}))
-	defer oidcServer.Close()
-
-	var gotBody mintRequestBody
-	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&gotBody)
-		json.NewEncoder(w).Encode(MintResult{Token: "tok", ExpiresAt: "2026-01-01T00:00:00Z"})
-	}))
-	defer mintServer.Close()
-
-	origEnv := envLookup
-	envLookup = func(key string) string {
-		switch key {
-		case "ACTIONS_ID_TOKEN_REQUEST_URL":
-			return oidcServer.URL + "?dummy=1"
-		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
-			return "test-request-token"
-		default:
-			return ""
-		}
-	}
-	defer func() { envLookup = origEnv }()
-
+func TestMintToken_OmittedRepos_Rejected(t *testing.T) {
 	_, err := MintToken(context.Background(), MintRequest{
-		MintURL: mintServer.URL,
+		MintURL: "https://mint.example.com",
 		Role:    "triage",
 	})
-	if err != nil {
-		t.Fatalf("MintToken() error = %v", err)
+	if err == nil {
+		t.Fatal("MintToken() expected error for omitted repos, got nil")
 	}
-	if len(gotBody.Repos) != 0 {
-		t.Errorf("repos = %v, want omitted", gotBody.Repos)
+	if !strings.Contains(err.Error(), "repos is required") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -220,6 +201,7 @@ func TestMintToken_ValidationErrors(t *testing.T) {
 		{"empty mint URL", MintRequest{Role: "triage", Repos: []string{"r"}}, "mint URL is required"},
 		{"non-HTTPS mint URL", MintRequest{MintURL: "http://example.com", Role: "triage", Repos: []string{"r"}}, "mint URL must use HTTPS"},
 		{"empty role", MintRequest{MintURL: "https://mint.example.com", Repos: []string{"r"}}, "role is required"},
+		{"empty repos", MintRequest{MintURL: "https://mint.example.com", Role: "triage"}, "repos is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -621,6 +603,90 @@ func TestMintToken_DoesNotRetryOn4xx(t *testing.T) {
 	}
 }
 
+func TestMintToken_LevelPassedToMint(t *testing.T) {
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt-value"})
+	}))
+	defer oidcServer.Close()
+
+	var gotLevel string
+	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body mintRequestBody
+		json.NewDecoder(r.Body).Decode(&body)
+		gotLevel = body.Level
+		json.NewEncoder(w).Encode(MintResult{Token: "tok", ExpiresAt: "2026-01-01T00:00:00Z"})
+	}))
+	defer mintServer.Close()
+
+	origEnv := envLookup
+	envLookup = func(key string) string {
+		switch key {
+		case "ACTIONS_ID_TOKEN_REQUEST_URL":
+			return oidcServer.URL + "?dummy=1"
+		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+			return "test-request-token"
+		default:
+			return ""
+		}
+	}
+	defer func() { envLookup = origEnv }()
+
+	_, err := MintToken(context.Background(), MintRequest{
+		MintURL: mintServer.URL,
+		Role:    "coder",
+		Level:   "write",
+		Repos:   []string{"my-repo"},
+	})
+	if err != nil {
+		t.Fatalf("MintToken() error = %v", err)
+	}
+	if gotLevel != "write" {
+		t.Errorf("level = %q, want %q", gotLevel, "write")
+	}
+}
+
+func TestMintToken_LevelOmitted(t *testing.T) {
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt-value"})
+	}))
+	defer oidcServer.Close()
+
+	var gotLevel string
+	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body mintRequestBody
+		json.NewDecoder(r.Body).Decode(&body)
+		gotLevel = body.Level
+		json.NewEncoder(w).Encode(MintResult{Token: "tok", ExpiresAt: "2026-01-01T00:00:00Z"})
+	}))
+	defer mintServer.Close()
+
+	origEnv := envLookup
+	envLookup = func(key string) string {
+		switch key {
+		case "ACTIONS_ID_TOKEN_REQUEST_URL":
+			return oidcServer.URL + "?dummy=1"
+		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+			return "test-request-token"
+		default:
+			return ""
+		}
+	}
+	defer func() { envLookup = origEnv }()
+
+	_, err := MintToken(context.Background(), MintRequest{
+		MintURL: mintServer.URL,
+		Role:    "coder",
+		Repos:   []string{"my-repo"},
+	})
+	if err != nil {
+		t.Fatalf("MintToken() error = %v", err)
+	}
+	// Level should be empty when not specified (server defaults to "write" — temporary compatibility default).
+	if gotLevel != "" {
+		t.Errorf("level = %q, want empty (omitted)", gotLevel)
+	}
+}
+
 func TestMintToken_LocalhostHTTPAllowed(t *testing.T) {
 	origEnv := envLookup
 	envLookup = func(key string) string { return "" }
@@ -637,4 +703,452 @@ func TestMintToken_LocalhostHTTPAllowed(t *testing.T) {
 	if strings.Contains(err.Error(), "HTTPS") {
 		t.Errorf("localhost HTTP should be allowed, got: %v", err)
 	}
+}
+
+// TestMintToken_SurvivesTransientFailuresWithinMaxMintDuration proves a
+// caller bounding MintToken with a context.WithTimeout(ctx, MaxMintDuration)
+// deadline (as the post-script remint does, #7231) survives several
+// transient 5xx responses across both the OIDC exchange and the mint call,
+// rather than the deadline cutting retries short mid-backoff. retryBaseDelay
+// is shortened (from the package-wide 0 set by init, to a small positive
+// value here) so the exponential backoff between attempts actually runs,
+// instead of the test passing vacuously with instantaneous retries.
+func TestMintToken_SurvivesTransientFailuresWithinMaxMintDuration(t *testing.T) {
+	origDelay := retryBaseDelay
+	retryBaseDelay = 10 * time.Millisecond
+	defer func() { retryBaseDelay = origDelay }()
+
+	var oidcAttempts int
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		oidcAttempts++
+		if oidcAttempts < 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "jwt"})
+	}))
+	defer oidcServer.Close()
+
+	var mintAttempts int
+	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mintAttempts++
+		if mintAttempts < 3 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(MintResult{Token: "ghu_after_retries", ExpiresAt: "2026-01-01T00:00:00Z"})
+	}))
+	defer mintServer.Close()
+
+	origEnv := envLookup
+	envLookup = func(key string) string {
+		switch key {
+		case "ACTIONS_ID_TOKEN_REQUEST_URL":
+			return oidcServer.URL + "?d=1"
+		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+			return "tok"
+		default:
+			return ""
+		}
+	}
+	defer func() { envLookup = origEnv }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), MaxMintDuration)
+	defer cancel()
+
+	start := time.Now()
+	result, err := MintToken(ctx, MintRequest{
+		MintURL: mintServer.URL,
+		Role:    "triage",
+		Repos:   []string{"r"},
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("MintToken() error = %v, want success after transient failures within MaxMintDuration", err)
+	}
+	if result.Token != "ghu_after_retries" {
+		t.Errorf("token = %q, want %q", result.Token, "ghu_after_retries")
+	}
+	if oidcAttempts != 2 {
+		t.Errorf("oidcAttempts = %d, want 2 (one transient 5xx then success)", oidcAttempts)
+	}
+	if mintAttempts != 3 {
+		t.Errorf("mintAttempts = %d, want 3 (two transient 5xx then success)", mintAttempts)
+	}
+	if elapsed >= MaxMintDuration {
+		t.Errorf("MintToken took %s, want comfortably under MaxMintDuration (%s)", elapsed, MaxMintDuration)
+	}
+}
+
+func TestDefaultAudienceMatchesMintconsts(t *testing.T) {
+	t.Parallel()
+	if defaultAudience != mintconsts.OIDCAudience {
+		t.Fatalf("defaultAudience = %q, want mintconsts.OIDCAudience %q", defaultAudience, mintconsts.OIDCAudience)
+	}
+}
+
+func TestQueryStatus_OIDCPath(t *testing.T) {
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt"})
+	}))
+	defer oidcServer.Close()
+
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if r.URL.Path != "/v1/status" {
+			t.Errorf("path = %q, want /v1/status", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer oidc-jwt" {
+			t.Errorf("auth = %q, want %q", got, "Bearer oidc-jwt")
+		}
+		json.NewEncoder(w).Encode(StatusResult{
+			Org:     "acme",
+			Roles:   []string{"coder", "triage"},
+			Version: "1.0.0",
+		})
+	}))
+	defer statusServer.Close()
+
+	origEnv := envLookup
+	envLookup = func(key string) string {
+		switch key {
+		case "ACTIONS_ID_TOKEN_REQUEST_URL":
+			return oidcServer.URL + "?d=1"
+		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+			return "tok"
+		default:
+			return ""
+		}
+	}
+	defer func() { envLookup = origEnv }()
+
+	result, method, err := QueryStatus(context.Background(), StatusRequest{
+		MintURL: statusServer.URL,
+	}, nil)
+	if err != nil {
+		t.Fatalf("QueryStatus() error = %v", err)
+	}
+	if method != StatusAuthOIDC {
+		t.Errorf("method = %q, want %q", method, StatusAuthOIDC)
+	}
+	if result.Org != "acme" {
+		t.Errorf("org = %q, want %q", result.Org, "acme")
+	}
+	if len(result.Roles) != 2 {
+		t.Errorf("roles = %v, want 2 roles", result.Roles)
+	}
+	if result.Version != "1.0.0" {
+		t.Errorf("version = %q, want %q", result.Version, "1.0.0")
+	}
+}
+
+func TestQueryStatus_GitHubTokenPath(t *testing.T) {
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer ghp-test" {
+			t.Errorf("auth = %q, want %q", got, "Bearer ghp-test")
+		}
+		json.NewEncoder(w).Encode(StatusResult{
+			AllowedOrgs: []string{"acme", "bigcorp"},
+			Roles:       []string{"coder"},
+		})
+	}))
+	defer statusServer.Close()
+
+	// No OIDC env vars → falls through to GitHub token.
+	origEnv := envLookup
+	envLookup = func(key string) string { return "" }
+	defer func() { envLookup = origEnv }()
+
+	result, method, err := QueryStatus(context.Background(), StatusRequest{
+		MintURL: statusServer.URL,
+	}, func() (string, error) { return "ghp-test", nil })
+	if err != nil {
+		t.Fatalf("QueryStatus() error = %v", err)
+	}
+	if method != StatusAuthGitHub {
+		t.Errorf("method = %q, want %q", method, StatusAuthGitHub)
+	}
+	if len(result.AllowedOrgs) != 2 {
+		t.Errorf("allowed_orgs = %v, want 2", result.AllowedOrgs)
+	}
+}
+
+func TestQueryStatus_OIDCFallsBackToGitHub(t *testing.T) {
+	var calls int
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		auth := r.Header.Get("Authorization")
+		if auth == "Bearer oidc-jwt" {
+			// OIDC token rejected by server.
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{"error": "auth failed"})
+			return
+		}
+		if auth == "Bearer ghp-fallback" {
+			json.NewEncoder(w).Encode(StatusResult{
+				AllowedOrgs: []string{"acme"},
+				Roles:       []string{"triage"},
+			})
+			return
+		}
+		t.Errorf("unexpected auth header: %q", auth)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer statusServer.Close()
+
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt"})
+	}))
+	defer oidcServer.Close()
+
+	origEnv := envLookup
+	envLookup = func(key string) string {
+		switch key {
+		case "ACTIONS_ID_TOKEN_REQUEST_URL":
+			return oidcServer.URL + "?d=1"
+		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+			return "tok"
+		default:
+			return ""
+		}
+	}
+	defer func() { envLookup = origEnv }()
+
+	result, method, err := QueryStatus(context.Background(), StatusRequest{
+		MintURL: statusServer.URL,
+	}, func() (string, error) { return "ghp-fallback", nil })
+	if err != nil {
+		t.Fatalf("QueryStatus() error = %v", err)
+	}
+	if method != StatusAuthGitHub {
+		t.Errorf("method = %q, want %q", method, StatusAuthGitHub)
+	}
+	if len(result.AllowedOrgs) != 1 || result.AllowedOrgs[0] != "acme" {
+		t.Errorf("allowed_orgs = %v, want [acme]", result.AllowedOrgs)
+	}
+	if calls != 2 {
+		t.Errorf("calls = %d, want 2 (one OIDC, one GitHub)", calls)
+	}
+}
+
+func TestQueryStatus_OIDCContextCanceledSkipsGitHubFallback(t *testing.T) {
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected call to status endpoint")
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer statusServer.Close()
+
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected call to OIDC endpoint")
+	}))
+	defer oidcServer.Close()
+
+	origEnv := envLookup
+	envLookup = func(key string) string {
+		switch key {
+		case "ACTIONS_ID_TOKEN_REQUEST_URL":
+			return oidcServer.URL + "?d=1"
+		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+			return "tok"
+		default:
+			return ""
+		}
+	}
+	defer func() { envLookup = origEnv }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	fallbackCalled := false
+	_, _, err := QueryStatus(ctx, StatusRequest{
+		MintURL: statusServer.URL,
+	}, func() (string, error) {
+		fallbackCalled = true
+		return "ghp-test", nil
+	})
+	if err == nil {
+		t.Fatal("expected error when context is canceled during OIDC fetch")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want to wrap context.Canceled", err)
+	}
+	if fallbackCalled {
+		t.Error("resolveGitHubToken should not be called when OIDC fetch is canceled")
+	}
+}
+
+func TestQueryStatus_AllMethodsFail(t *testing.T) {
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "auth failed"})
+	}))
+	defer statusServer.Close()
+
+	// No OIDC env vars, and GitHub token also rejected.
+	origEnv := envLookup
+	envLookup = func(key string) string { return "" }
+	defer func() { envLookup = origEnv }()
+
+	_, _, err := QueryStatus(context.Background(), StatusRequest{
+		MintURL: statusServer.URL,
+	}, func() (string, error) { return "ghp-bad", nil })
+	if err == nil {
+		t.Fatal("expected error when all auth methods fail")
+	}
+	if !strings.Contains(err.Error(), "authentication failed") {
+		t.Errorf("error = %q, want to contain 'authentication failed'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "OIDC") {
+		t.Errorf("error = %q, want to list OIDC attempt", err.Error())
+	}
+	if !strings.Contains(err.Error(), "GitHub token") {
+		t.Errorf("error = %q, want to list GitHub token attempt", err.Error())
+	}
+}
+
+func TestQueryStatus_ResolveGitHubTokenErrors(t *testing.T) {
+	// No OIDC env vars, and resolveGitHubToken itself returns an error
+	// (as opposed to succeeding with an empty or rejected token).
+	origEnv := envLookup
+	envLookup = func(key string) string { return "" }
+	defer func() { envLookup = origEnv }()
+
+	_, _, err := QueryStatus(context.Background(), StatusRequest{
+		MintURL: "https://mint.example.com",
+	}, func() (string, error) { return "", fmt.Errorf("gh auth token: not logged in") })
+	if err == nil {
+		t.Fatal("expected error when resolveGitHubToken fails")
+	}
+	if !strings.Contains(err.Error(), "authentication failed") {
+		t.Errorf("error = %q, want to contain 'authentication failed'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "not logged in") {
+		t.Errorf("error = %q, want to list the resolveGitHubToken error", err.Error())
+	}
+}
+
+func TestQueryStatus_NoResolveFunc(t *testing.T) {
+	// No OIDC and no resolveGitHubToken func.
+	origEnv := envLookup
+	envLookup = func(key string) string { return "" }
+	defer func() { envLookup = origEnv }()
+
+	_, _, err := QueryStatus(context.Background(), StatusRequest{
+		MintURL: "https://mint.example.com",
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "authentication failed") {
+		t.Errorf("error = %q, want to contain 'authentication failed'", err.Error())
+	}
+}
+
+func TestQueryStatus_ValidationErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		req  StatusRequest
+		want string
+	}{
+		{"empty mint URL", StatusRequest{}, "mint URL is required"},
+		{"non-HTTPS mint URL", StatusRequest{MintURL: "http://example.com"}, "mint URL must use HTTPS"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := QueryStatus(context.Background(), tt.req, nil)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if got := err.Error(); got != tt.want {
+				t.Errorf("error = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestQueryStatus_Non401ErrorIsTerminal(t *testing.T) {
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
+	}))
+	defer statusServer.Close()
+
+	origEnv := envLookup
+	envLookup = func(key string) string { return "" }
+	defer func() { envLookup = origEnv }()
+
+	ghCalled := false
+	_, _, err := QueryStatus(context.Background(), StatusRequest{
+		MintURL: statusServer.URL,
+	}, func() (string, error) {
+		ghCalled = true
+		return "ghp-test", nil
+	})
+	if err == nil {
+		t.Fatal("expected error on 403")
+	}
+	// 403 from GitHub token should be terminal (not fall through).
+	if !strings.Contains(err.Error(), "HTTP 403") {
+		t.Errorf("error = %q, want to contain HTTP 403", err.Error())
+	}
+	// Since there are no OIDC env vars, GitHub token is the first (and only)
+	// attempt. The 403 should terminate without trying anything else.
+	if !ghCalled {
+		t.Error("expected GitHub token resolver to be called")
+	}
+}
+
+func TestHasOIDCEnv(t *testing.T) {
+	origEnv := envLookup
+	defer func() { envLookup = origEnv }()
+
+	t.Run("both set", func(t *testing.T) {
+		envLookup = func(key string) string {
+			switch key {
+			case "ACTIONS_ID_TOKEN_REQUEST_URL":
+				return "http://oidc"
+			case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+				return "tok"
+			default:
+				return ""
+			}
+		}
+		if !hasOIDCEnv() {
+			t.Error("hasOIDCEnv() = false, want true")
+		}
+	})
+
+	t.Run("URL missing", func(t *testing.T) {
+		envLookup = func(key string) string {
+			if key == "ACTIONS_ID_TOKEN_REQUEST_TOKEN" {
+				return "tok"
+			}
+			return ""
+		}
+		if hasOIDCEnv() {
+			t.Error("hasOIDCEnv() = true, want false")
+		}
+	})
+
+	t.Run("token missing", func(t *testing.T) {
+		envLookup = func(key string) string {
+			if key == "ACTIONS_ID_TOKEN_REQUEST_URL" {
+				return "http://oidc"
+			}
+			return ""
+		}
+		if hasOIDCEnv() {
+			t.Error("hasOIDCEnv() = true, want false")
+		}
+	})
+
+	t.Run("neither set", func(t *testing.T) {
+		envLookup = func(key string) string { return "" }
+		if hasOIDCEnv() {
+			t.Error("hasOIDCEnv() = true, want false")
+		}
+	})
 }

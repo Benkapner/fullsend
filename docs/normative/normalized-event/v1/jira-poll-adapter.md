@@ -65,8 +65,8 @@ the first line after the command (same rules as
 | Field | Source |
 |-------|--------|
 | `actor.id` | Jira `accountId` (preferred) or `name` when accountId unavailable |
-| `actor.kind` | `bot` when Jira account type is `app` or display name matches automation pattern; else `human` |
-| `actor.role` | Effective permission on the **target repo** when the actor maps to a forge user with repo access; otherwise map Jira project role to closest ADR 0054 role (`write` for Developers, `read` for Reporter, `admin` for Administrators). When membership cannot be resolved, use `external`. |
+| `actor.kind` | `bot` when Jira account type is `app`, display name matches automation pattern, or the actor is the authenticated poller account (from `/myself`); else `human` |
+| `actor.role` | Derived from the actor's Jira project role: `admin` for Administrators, `write` for Developers, `read` for other named project roles, `external` when the actor does not hold any project role. Cross-system identity resolution (Jira user → GitHub user → repo permission) is not performed; the Jira project is the authorization boundary for Jira-sourced events. |
 | `actor.is_entity_author` | `true` when actor is the issue reporter |
 
 Authorization is enforced by `fullsend dispatch` per
@@ -90,12 +90,16 @@ When `source.system` is `jira`, projection supplements the GitHub-shaped
 | `FULLSEND_WORK_ITEM_URL` | `entity.url` |
 | `FULLSEND_WORK_ITEM_SOURCE` | `jira` |
 | `FULLSEND_WORK_ITEM_KEY` | `entity.key` |
+| `ISSUE_NUMBER` | Omit or empty — a Jira key is not a GitHub issue number |
 | `event_payload.comment` | `transition.comment` when present |
 | `GITHUB_ISSUE_URL` | Omit or empty — not a GitHub issue |
 | `status-number` | `entity.id` (numeric Jira id) |
 
-Harnesses and pre-scripts that require forge URLs MUST use `FULLSEND_WORK_ITEM_*`
-for Jira-sourced runs.
+Harnesses and pre-scripts that require forge-agnostic work item URLs SHOULD use
+`FULLSEND_WORK_ITEM_*` rather than forge-specific variables like
+`GITHUB_ISSUE_URL`. The dispatch workflow sets `FULLSEND_WORK_ITEM_URL` and
+`FULLSEND_WORK_ITEM_KEY` from the normalized entity for Jira events. For
+forge-native events, the generic key and `ISSUE_NUMBER` carry the same value.
 
 ## Example
 

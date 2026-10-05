@@ -5,11 +5,12 @@ sidebar_position: 3
 # Configuring GitHub For Fullsend
 
 The goal of this document is that you configure Fullsend for your GitHub repository.
+GitLab repositories use a different command (`fullsend repos install --forge gitlab`).
+See [Configuring GitLab](configuring-gitlab.md) for that flow.
 
 ## Prerequisites
 
-* Your org or repo is enrolled in a fullsend token mint service (see [Getting Started](README.md) step 1).
-* You have your WIF provider URL from [Getting Inference](getting-inference.md).
+* For Vertex agents, you have your WIF provider URL from [Getting Inference](getting-inference.md). OpenAI-only setup does not need it.
 * Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
 * Download the latest [gh](https://cli.github.com/) CLI and authenticate with it.
 
@@ -69,7 +70,12 @@ Where `<org>/<repo>` refers to the GitHub organization and repository you want t
 for, `<gcp-project>` is your GCP project name, and `<wif-provider-url>` is the WIF Provider URL
 created at [Getting Inference](getting-inference.md).
 
-The command creates files, secrets and variables in your repository.
+The command creates files, secrets and variables in your repository. If you
+will use only OpenAI agents, omit both `--inference-project` and
+`--inference-wif-provider`. Setup then writes no GCP inference secrets;
+a later Vertex run requires both credentials.
+Configure each enabled agent's runtime and model for OpenAI before it runs.
+For OpenAI credentials, see [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
 
 ### Enabling a subset of agents
 
@@ -90,6 +96,32 @@ corresponding GitHub Apps for each agent you enable (see the table above).
 For the full list of setup flags, see the
 [CLI reference](../../cli/github.md#flags).
 
+### Using a vendor preset
+
+If your platform operator provides a curated preset configuration, you can
+install it directly instead of relying on per-flag generation:
+
+```bash
+fullsend github setup <org>/<repo> \
+  --inference-project "<gcp-project>" \
+  --inference-wif-provider "<wif-provider-url>" \
+  --config "<path-or-url>" \
+  --config-hash "<sha256-hex>"
+```
+
+When `--config` is provided, the preset content is committed unchanged as
+`.fullsend/config.base.yaml`. Explicit persistent setup flags (`--runtime`,
+`--agents`, `--mint-url`, `--inference-*`) are written to the
+`.fullsend/config.yaml` overlay and override the same values from the
+preset. Omitted flags inherit from the preset, then from compiled-in
+defaults. The `--config-hash` flag is optional but recommended for remote
+URLs — it verifies the SHA-256 digest of the fetched content before
+committing. `--config` is only valid for per-repo mode.
+
+This is where the agent runtime is selected: on a terminal, `fullsend github setup` asks once (press Enter to keep `claude`, the stable default); `--runtime` sets it explicitly. `pi` and `codex` are experimental and meant for opt-in pilots — see [Choose a Runtime](choosing-a-runtime.md) for what the runtimes are and how to change the selection after setup.
+
+To apply the same preset across many repositories, declare `defaults.config_base` (and optionally `defaults.config_base.sha256`) in `repos.yaml` and run `fullsend repos install`. See [Repo Management — Configuration presets](repo-management.md#configuration-presets).
+
 ## Testing Fullsend
 
 After installing open a new issue or comment `/fs-triage` in an open issue. Then visit the
@@ -98,8 +130,8 @@ Actions tab to see the Fullsend workflow in action. In some minutes the
 
 ## Next steps
 
-* Read [Organization installation mode](org-mode.md) to learn how to share GCP project with other repositories
-within your GitHub organization.
+* Read [Repo Management](repo-management.md) to learn how to install and manage Fullsend across
+many repositories, including sharing configuration presets between them.
 * Read the [Agents](../../agents/README.md) section to learn about the default agents Fullsend
 ships with.
 * Explore other sections of this documentation for more information.

@@ -157,14 +157,15 @@ func (c *LiveClient) AddIssueLabels(ctx context.Context, owner, repo string, num
 	return nil
 }
 
-// ListIssueComments returns all notes on an issue, sorted ascending.
-// GitLab calls issue comments "notes".
+// ListIssueComments returns all notes on an issue or merge request, sorted
+// ascending. GitLab calls comments "notes". The target type (issue vs MR) is
+// controlled by WithNoteTarget.
 func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]forge.IssueComment, error) {
 	var result []forge.IssueComment
 
 	proj := projectPath(owner, repo)
 	for page := 1; page <= 100; page++ {
-		path := fmt.Sprintf("/projects/%s/issues/%d/notes?sort=asc&per_page=100&page=%d", proj, number, page)
+		path := fmt.Sprintf("/projects/%s/%s/%d/notes?sort=asc&per_page=100&page=%d", proj, c.noteTarget, number, page)
 
 		resp, err := c.get(ctx, path)
 		if err != nil {
@@ -184,8 +185,8 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 		}
 
 		for _, r := range raw {
-			htmlURL := fmt.Sprintf("%s/-/issues/%d#note_%d",
-				c.projectWebURL(owner, repo), number, r.ID)
+			htmlURL := fmt.Sprintf("%s/-/%s/%d#note_%d",
+				c.projectWebURL(owner, repo), c.noteTarget, number, r.ID)
 			result = append(result, forge.IssueComment{
 				ID:        r.ID,
 				HTMLURL:   htmlURL,
@@ -203,9 +204,9 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 	return result, nil
 }
 
-// CreateIssueComment creates a new note on an issue.
+// CreateIssueComment creates a new note on an issue or merge request.
 func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
-	path := fmt.Sprintf("/projects/%s/issues/%d/notes", projectPath(owner, repo), number)
+	path := fmt.Sprintf("/projects/%s/%s/%d/notes", projectPath(owner, repo), c.noteTarget, number)
 
 	resp, err := c.post(ctx, path, map[string]string{"body": body})
 	if err != nil {
@@ -224,8 +225,8 @@ func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string,
 		return nil, fmt.Errorf("decode issue comment: %w", err)
 	}
 
-	htmlURL := fmt.Sprintf("%s/-/issues/%d#note_%d",
-		c.projectWebURL(owner, repo), number, result.ID)
+	htmlURL := fmt.Sprintf("%s/-/%s/%d#note_%d",
+		c.projectWebURL(owner, repo), c.noteTarget, number, result.ID)
 
 	return &forge.IssueComment{
 		ID:        result.ID,
@@ -234,6 +235,113 @@ func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string,
 		Author:    result.Author.Username,
 		CreatedAt: result.CreatedAt,
 	}, nil
+}
+
+// fetchNoteDirect fetches a single note by its parent noteable's IID and
+// the note's own ID, addressing the Notes API path directly rather than
+// scanning for the parent. parentType must be "issues" or "merge_requests".
+func (c *LiveClient) fetchNoteDirect(ctx context.Context, owner, repo, parentType string, parentIID, noteID int) (*forge.IssueComment, error) {
+	proj := projectPath(owner, repo)
+	notePath := fmt.Sprintf("/projects/%s/%s/%d/notes/%d", proj, parentType, parentIID, noteID)
+	resp, err := c.get(ctx, notePath)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		ID        int    `json:"id"`
+		Body      string `json:"body"`
+		CreatedAt string `json:"created_at"`
+		Author    struct {
+			Username string `json:"username"`
+		} `json:"author"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode note %d: %w", noteID, err)
+	}
+	htmlURL := fmt.Sprintf("%s/-/%s/%d#note_%d",
+		c.projectWebURL(owner, repo), parentType, parentIID, result.ID)
+	return &forge.IssueComment{
+		ID:        result.ID,
+		HTMLURL:   htmlURL,
+		Body:      result.Body,
+		Author:    result.Author.Username,
+		CreatedAt: result.CreatedAt,
+	}, nil
+}
+
+// GetNoteOnParent fetches a note directly by its parent noteable's IID
+// and the note's own ID (forge.GitLabExtensions). Unlike GetIssueComment,
+// this never scans: the caller already knows the parent, so GitLab's
+// Notes API can be addressed directly. parentType must be "issues" or
+// "merge_requests".
+func (c *LiveClient) GetNoteOnParent(ctx context.Context, owner, repo, parentType string, parentIID, noteID int) (*forge.IssueComment, error) {
+	if parentType != "issues" && parentType != "merge_requests" {
+		return nil, fmt.Errorf("get note %d: invalid parent type %q", noteID, parentType)
+	}
+	return c.fetchNoteDirect(ctx, owner, repo, parentType, parentIID, noteID)
+}
+
+// GetIssueComment fetches a single note by its numeric ID. See
+// UpdateIssueComment for why this requires scanning: GitLab's Notes API
+// requires the noteable IID in the URL, but forge.Client only provides a
+// bare commentID. Returns forge.ErrNotFound (wrapped) if the note cannot
+// be located within the same open+500/closed(+merged) scan bound
+// documented on updateOrDeleteNote.
+func (c *LiveClient) GetIssueComment(ctx context.Context, owner, repo string, commentID int) (*forge.IssueComment, error) {
+	proj := projectPath(owner, repo)
+
+	nonOpenStates := []string{"closed"}
+	if c.noteTarget == "merge_requests" {
+		nonOpenStates = []string{"closed", "merged"}
+	}
+
+	tryFetchNote := func(noteableIID int) (*forge.IssueComment, error) {
+		return c.fetchNoteDirect(ctx, owner, repo, c.noteTarget, noteableIID, commentID)
+	}
+
+	scanState := func(state string, maxPages int) (*forge.IssueComment, error) {
+		for page := 1; page <= maxPages; page++ {
+			path := fmt.Sprintf("/projects/%s/%s?state=%s&per_page=100&page=%d&order_by=updated_at&sort=desc", proj, c.noteTarget, state, page)
+			resp, err := c.get(ctx, path)
+			if err != nil {
+				return nil, fmt.Errorf("list %s %s to find note %d: %w", state, c.noteTarget, commentID, err)
+			}
+			var noteables []struct {
+				IID int `json:"iid"`
+			}
+			if err := decodeJSON(resp, &noteables); err != nil {
+				return nil, fmt.Errorf("decode %s %s: %w", state, c.noteTarget, err)
+			}
+			for _, n := range noteables {
+				comment, err := tryFetchNote(n.IID)
+				if err == nil {
+					return comment, nil
+				}
+				if !forge.IsNotFound(err) {
+					return nil, err
+				}
+			}
+			if len(noteables) < 100 {
+				break
+			}
+		}
+		return nil, nil
+	}
+
+	if comment, err := scanState("opened", 10); err != nil || comment != nil {
+		return comment, err
+	}
+	for _, state := range nonOpenStates {
+		if comment, err := scanState(state, 5); err != nil || comment != nil {
+			return comment, err
+		}
+	}
+
+	targetLabel := "issue"
+	if c.noteTarget == "merge_requests" {
+		targetLabel = "merge request"
+	}
+	return nil, fmt.Errorf("get note %d: could not find %s containing this note: %w", commentID, targetLabel, forge.ErrNotFound)
 }
 
 // UpdateIssueComment updates the body of an existing note on an issue.
@@ -246,41 +354,61 @@ func (c *LiveClient) UpdateIssueComment(ctx context.Context, owner, repo string,
 	return c.updateOrDeleteNote(ctx, owner, repo, commentID, &body)
 }
 
+// UpdateNoteOnParent updates a note's body directly by its parent
+// noteable's IID and the note's own ID (forge.GitLabExtensions). Unlike
+// UpdateIssueComment, this never scans: the caller already knows the
+// parent, so GitLab's Notes API can be addressed directly. parentType
+// must be "issues" or "merge_requests".
+func (c *LiveClient) UpdateNoteOnParent(ctx context.Context, owner, repo, parentType string, parentIID, noteID int, body string) error {
+	if parentType != "issues" && parentType != "merge_requests" {
+		return fmt.Errorf("update note %d: invalid parent type %q", noteID, parentType)
+	}
+	return c.tryNoteOperation(ctx, projectPath(owner, repo), parentType, parentIID, noteID, &body)
+}
+
 // DeleteIssueComment deletes a note on an issue.
 // See UpdateIssueComment for the note-lookup strategy.
 func (c *LiveClient) DeleteIssueComment(ctx context.Context, owner, repo string, commentID int) error {
 	return c.updateOrDeleteNote(ctx, owner, repo, commentID, nil)
 }
 
-// updateOrDeleteNote finds the issue containing the given note and either
-// updates its body (when body is non-nil) or deletes it. It scans recent
-// issues ordered by update time to locate the note efficiently.
+// updateOrDeleteNote finds the issue or merge request containing the given
+// note and either updates its body (when body is non-nil) or deletes it. It
+// scans recent noteables ordered by update time to locate the note
+// efficiently. The noteable type (issue vs MR) is determined by c.noteTarget.
 //
-// Known limitation: GitLab's Notes API requires the issue IID to address a
-// note, but the forge.Client interface only passes a bare commentID. This
-// method must scan up to 1500 issues (10 pages open + 5 pages closed) to
-// locate the parent issue. On projects with more issues, the note may not
-// be found even though it exists.
+// Known limitation: GitLab's Notes API requires the noteable IID to address
+// a note, but the forge.Client interface only passes a bare commentID. This
+// method scans up to 1000 open + 500 closed noteables (issues), or 1000
+// open + 500 closed + 500 merged (MRs), to locate the parent. On projects
+// with more items, the note may not be found even though it exists.
 func (c *LiveClient) updateOrDeleteNote(ctx context.Context, owner, repo string, noteID int, body *string) error {
 	proj := projectPath(owner, repo)
 
-	// Scan open issues first (most common case).
+	// For issues the non-open states are just "closed". For MRs, GitLab
+	// distinguishes "closed" (rejected/abandoned) from "merged", so both
+	// must be scanned.
+	nonOpenStates := []string{"closed"}
+	if c.noteTarget == "merge_requests" {
+		nonOpenStates = []string{"closed", "merged"}
+	}
+
 	for page := 1; page <= 10; page++ {
-		path := fmt.Sprintf("/projects/%s/issues?state=opened&per_page=100&page=%d&order_by=updated_at&sort=desc", proj, page)
+		path := fmt.Sprintf("/projects/%s/%s?state=opened&per_page=100&page=%d&order_by=updated_at&sort=desc", proj, c.noteTarget, page)
 		resp, err := c.get(ctx, path)
 		if err != nil {
-			return fmt.Errorf("list issues to find note %d: %w", noteID, err)
+			return fmt.Errorf("list %s to find note %d: %w", c.noteTarget, noteID, err)
 		}
 
-		var issues []struct {
+		var noteables []struct {
 			IID int `json:"iid"`
 		}
-		if err := decodeJSON(resp, &issues); err != nil {
-			return fmt.Errorf("decode issues: %w", err)
+		if err := decodeJSON(resp, &noteables); err != nil {
+			return fmt.Errorf("decode %s: %w", c.noteTarget, err)
 		}
 
-		for _, issue := range issues {
-			err := c.tryNoteOperation(ctx, proj, issue.IID, noteID, body)
+		for _, n := range noteables {
+			err := c.tryNoteOperation(ctx, proj, c.noteTarget, n.IID, noteID, body)
 			if err == nil {
 				return nil
 			}
@@ -289,38 +417,39 @@ func (c *LiveClient) updateOrDeleteNote(ctx context.Context, owner, repo string,
 			}
 		}
 
-		if len(issues) < 100 {
+		if len(noteables) < 100 {
 			break
 		}
 	}
 
-	// Try closed issues (the issue may have been closed after the comment was created).
-	for page := 1; page <= 5; page++ {
-		path := fmt.Sprintf("/projects/%s/issues?state=closed&per_page=100&page=%d&order_by=updated_at&sort=desc", proj, page)
-		resp, err := c.get(ctx, path)
-		if err != nil {
-			return fmt.Errorf("list closed issues to find note %d: %w", noteID, err)
-		}
-
-		var issues []struct {
-			IID int `json:"iid"`
-		}
-		if err := decodeJSON(resp, &issues); err != nil {
-			return fmt.Errorf("decode closed issues: %w", err)
-		}
-
-		for _, issue := range issues {
-			err := c.tryNoteOperation(ctx, proj, issue.IID, noteID, body)
-			if err == nil {
-				return nil
+	for _, state := range nonOpenStates {
+		for page := 1; page <= 5; page++ {
+			path := fmt.Sprintf("/projects/%s/%s?state=%s&per_page=100&page=%d&order_by=updated_at&sort=desc", proj, c.noteTarget, state, page)
+			resp, err := c.get(ctx, path)
+			if err != nil {
+				return fmt.Errorf("list %s %s to find note %d: %w", state, c.noteTarget, noteID, err)
 			}
-			if !forge.IsNotFound(err) {
-				return err
-			}
-		}
 
-		if len(issues) < 100 {
-			break
+			var noteables []struct {
+				IID int `json:"iid"`
+			}
+			if err := decodeJSON(resp, &noteables); err != nil {
+				return fmt.Errorf("decode %s %s: %w", state, c.noteTarget, err)
+			}
+
+			for _, n := range noteables {
+				err := c.tryNoteOperation(ctx, proj, c.noteTarget, n.IID, noteID, body)
+				if err == nil {
+					return nil
+				}
+				if !forge.IsNotFound(err) {
+					return err
+				}
+			}
+
+			if len(noteables) < 100 {
+				break
+			}
 		}
 	}
 
@@ -328,14 +457,21 @@ func (c *LiveClient) updateOrDeleteNote(ctx context.Context, owner, repo string,
 	if body == nil {
 		op = "delete"
 	}
-	return fmt.Errorf("%s note %d: could not find issue containing this note", op, noteID)
+	targetLabel := "issue"
+	if c.noteTarget == "merge_requests" {
+		targetLabel = "merge request"
+	}
+	return fmt.Errorf("%s note %d: could not find %s containing this note", op, noteID, targetLabel)
 }
 
-// tryNoteOperation attempts to update or delete a note on the given issue.
+// tryNoteOperation attempts to update or delete a note on the given noteable.
 // Returns nil on success, or an error wrapping forge.ErrNotFound if the
-// note doesn't exist on this issue.
-func (c *LiveClient) tryNoteOperation(ctx context.Context, proj string, issueIID, noteID int, body *string) error {
-	notePath := fmt.Sprintf("/projects/%s/issues/%d/notes/%d", proj, issueIID, noteID)
+// note doesn't exist on this noteable. parentType is the noteable type
+// segment of the URL ("issues" or "merge_requests"); callers scanning
+// under c.noteTarget pass that value, while UpdateNoteOnParent passes an
+// explicit, caller-supplied type.
+func (c *LiveClient) tryNoteOperation(ctx context.Context, proj, parentType string, noteableIID, noteID int, body *string) error {
+	notePath := fmt.Sprintf("/projects/%s/%s/%d/notes/%d", proj, parentType, noteableIID, noteID)
 
 	if body == nil {
 		return c.delete_(ctx, notePath)
@@ -352,6 +488,33 @@ func (c *LiveClient) tryNoteOperation(ctx context.Context, proj string, issueIID
 // MinimizeComment is not supported on GitLab -- there is no equivalent
 // concept of hiding/minimizing individual comments.
 func (c *LiveClient) MinimizeComment(_ context.Context, _, _ string) error {
+	return forge.ErrNotSupported
+}
+
+// ListIssueReactions is not yet implemented for GitLab. See AddIssueReaction.
+func (c *LiveClient) ListIssueReactions(_ context.Context, _, _ string, _ int) ([]forge.Reaction, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// AddIssueReaction is not yet implemented for GitLab. GitLab has an
+// equivalent "award emoji" API, but no caller currently exercises this
+// path on GitLab, so it is left unimplemented rather than guessed at.
+func (c *LiveClient) AddIssueReaction(_ context.Context, _, _ string, _ int, _ string) (int64, error) {
+	return 0, forge.ErrNotSupported
+}
+
+// DeleteIssueReaction is not yet implemented for GitLab. See AddIssueReaction.
+func (c *LiveClient) DeleteIssueReaction(_ context.Context, _, _ string, _ int, _ int64) error {
+	return forge.ErrNotSupported
+}
+
+// AddIssueCommentReaction is not yet implemented for GitLab. See AddIssueReaction.
+func (c *LiveClient) AddIssueCommentReaction(_ context.Context, _, _ string, _ int, _ string) (int64, error) {
+	return 0, forge.ErrNotSupported
+}
+
+// DeleteIssueCommentReaction is not yet implemented for GitLab. See AddIssueReaction.
+func (c *LiveClient) DeleteIssueCommentReaction(_ context.Context, _, _ string, _ int, _ int64) error {
 	return forge.ErrNotSupported
 }
 

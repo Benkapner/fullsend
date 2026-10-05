@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/mintcore/mintconsts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -57,15 +58,14 @@ func newTestSTSServer(t *testing.T) *httptest.Server {
 
 func newTestSTSVerifier(t *testing.T, stsURL string) *STSVerifier {
 	t.Helper()
-	return NewSTSVerifier(STSVerifierConfig{
+	v, err := NewSTSVerifier(STSVerifierConfig{
 		STSURL:             stsURL,
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
 		DefaultWIFProvider: "fullsend-provider",
-		AllowedOrgs:        []string{"myorg"},
-		AllowedWorkflows:   []string{"*"},
-		OIDCAudience:       "fullsend-mint",
 	})
+	require.NoError(t, err)
+	return v
 }
 
 func TestSTSVerifier_ValidToken(t *testing.T) {
@@ -122,35 +122,8 @@ func TestSTSVerifier_ExpiredToken(t *testing.T) {
 	assert.ErrorContains(t, err, "token expired")
 }
 
-func TestSTSVerifier_BadOrg(t *testing.T) {
-	sts := newTestSTSServer(t)
-	v := newTestSTSVerifier(t, sts.URL)
-
-	c := validClaims()
-	c["repository_owner"] = "evilorg"
-	token := makeUnsignedJWT(t, c)
-	_, err := v.Verify(t.Context(), token)
-	assert.ErrorContains(t, err, "not in allowed orgs")
-}
-
-func TestSTSVerifier_BadWorkflowRef(t *testing.T) {
-	sts := newTestSTSServer(t)
-	v := NewSTSVerifier(STSVerifierConfig{
-		STSURL:             sts.URL,
-		GCPProjectNum:      "123456",
-		WIFPoolName:        "fullsend-pool",
-		DefaultWIFProvider: "fullsend-provider",
-		AllowedOrgs:        []string{"myorg"},
-		AllowedWorkflows:   []string{"dispatch.yml"},
-		OIDCAudience:       "fullsend-mint",
-	})
-
-	c := validClaims()
-	c["job_workflow_ref"] = "myorg/.fullsend/.github/workflows/evil.yml@refs/heads/main"
-	token := makeUnsignedJWT(t, c)
-	_, err := v.Verify(t.Context(), token)
-	assert.ErrorContains(t, err, "not in allowed list")
-}
+// NOTE: BadOrg, BadWorkflowRef tests moved to handler level —
+// authorization is now the handler's responsibility.
 
 func TestSTSVerifier_STSFailure(t *testing.T) {
 	failSTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -176,11 +149,25 @@ func TestSTSVerifier_STSEmptyToken(t *testing.T) {
 	assert.ErrorContains(t, err, "STS returned empty access token")
 }
 
+// NOTE: PerRepoBypassesOrgCheck, NonPerRepoStillRequiresOrg tests moved to
+// handler level — authorization is now the handler's responsibility.
+
+func TestNewSTSVerifier_AudienceIsConst(t *testing.T) {
+	v, err := NewSTSVerifier(STSVerifierConfig{
+		GCPProjectNum:      "123456",
+		WIFPoolName:        "pool",
+		DefaultWIFProvider: "provider",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, mintconsts.OIDCAudience, v.oidcAudience)
+}
+
 func TestSTSVerifier_ResolveWIFProvider(t *testing.T) {
-	v := NewSTSVerifier(STSVerifierConfig{
+	v, err := NewSTSVerifier(STSVerifierConfig{
 		DefaultWIFProvider: "default-provider",
 		PerRepoWIFRepos:    map[string]bool{"myorg/special-repo": true},
 	})
+	require.NoError(t, err)
 
 	assert.Equal(t, "default-provider", v.resolveWIFProvider("myorg/.fullsend"))
 	assert.Equal(t, "default-provider", v.resolveWIFProvider("myorg/regular-repo"))

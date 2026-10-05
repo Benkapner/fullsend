@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -317,6 +318,95 @@ func TestCacheGetDir_IntegrityVerification(t *testing.T) {
 	assert.Contains(t, err.Error(), "cache integrity check failed")
 	assert.Empty(t, treeDir)
 	assert.Nil(t, entry)
+}
+
+func TestCacheGetDir_IgnoresAtomicWriteTempFiles(t *testing.T) {
+	root := t.TempDir()
+	files := map[string][]byte{
+		"SKILL.md":          []byte("# Skill"),
+		"scripts/helper.sh": []byte("#!/bin/bash\necho helper"),
+	}
+
+	treeHash, err := CachePutDir(root, "https://example.com/skill", files)
+	require.NoError(t, err)
+
+	// Plant leftover atomicWrite temp files, as a concurrent (or crashed)
+	// writer materializing the same entry would: one at the tree root and one
+	// in a subdirectory.
+	dir, err := CachePath(root, treeHash)
+	require.NoError(t, err)
+	for _, stale := range []string{
+		filepath.Join(dir, "tree", "SKILL.md.tmp.1337760552"),
+		filepath.Join(dir, "tree", "scripts", "helper.sh.tmp.42"),
+	} {
+		require.NoError(t, os.WriteFile(stale, []byte("partial write"), 0o600))
+	}
+
+	treeDir, entry, err := CacheGetDir(root, treeHash)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+	assert.Equal(t, treeHash, entry.SHA256)
+	assert.NotEmpty(t, treeDir)
+}
+
+func TestSkipVanished(t *testing.T) {
+	assert.NoError(t, skipVanished(fs.ErrNotExist))
+	assert.NoError(t, skipVanished(fmt.Errorf("lstat foo.tmp.42: %w", fs.ErrNotExist)))
+	sentinel := errors.New("permission denied")
+	assert.ErrorIs(t, skipVanished(sentinel), sentinel)
+}
+
+func TestCacheGetDir_NonVanishedWalkErrorPropagates(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("chmod-based access denial does not apply to root")
+	}
+	root := t.TempDir()
+	files := map[string][]byte{
+		"SKILL.md":          []byte("# Skill"),
+		"scripts/helper.sh": []byte("#!/bin/bash\necho helper"),
+	}
+
+	treeHash, err := CachePutDir(root, "https://example.com/skill", files)
+	require.NoError(t, err)
+
+	dir, err := CachePath(root, treeHash)
+	require.NoError(t, err)
+
+	// An unreadable subdirectory produces a non-ErrNotExist walk error,
+	// which must propagate rather than be tolerated.
+	locked := filepath.Join(dir, "tree", "scripts")
+	require.NoError(t, os.Chmod(locked, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	_, _, err = CacheGetDir(root, treeHash)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "walking cache tree")
+}
+
+func TestCacheGetDir_UnreadableFileErrorPropagates(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("chmod-based access denial does not apply to root")
+	}
+	root := t.TempDir()
+	files := map[string][]byte{
+		"SKILL.md": []byte("# Skill"),
+	}
+
+	treeHash, err := CachePutDir(root, "https://example.com/skill", files)
+	require.NoError(t, err)
+
+	dir, err := CachePath(root, treeHash)
+	require.NoError(t, err)
+
+	// An unreadable file fails os.ReadFile with a non-ErrNotExist error,
+	// which must propagate rather than be tolerated.
+	locked := filepath.Join(dir, "tree", "SKILL.md")
+	require.NoError(t, os.Chmod(locked, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o600) })
+
+	_, _, err = CacheGetDir(root, treeHash)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "walking cache tree")
 }
 
 func TestCachePutDir_NestedDirectories(t *testing.T) {

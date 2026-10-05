@@ -26,7 +26,14 @@ and the manual `.env` file convention.*
 
 *Extended by [ADR 0070](0070-portable-provider-profile-resolution.md), which
 adds `openshell.profiles` and URL-based `providers` fields to the harness schema
-for portable provider and profile resolution.*
+for portable provider and profile resolution. Superseded by
+[ADR 0075](0075-local-path-profiles-providers.md), which extends resolution to
+local filesystem paths.*
+
+*See also [ADR 0081](0081-reserve-workflow-env-for-infra-plumbing.md), which
+narrows the CI workflow `env:` injection path described in "Template
+instantiation" below to infrastructure plumbing and CI-runtime-only values;
+static agent behavior defaults go through harness composition instead.*
 
 ## Context
 
@@ -81,8 +88,10 @@ parts:
 13. **Security scanning** — layered prompt injection defenses enforced by
     default and built into the `fullsend` CLI. Host-side scanners run before
     sandbox creation (context injection detection, SSRF validation, unicode
-    normalization, secret redaction, ML-based LLM Guard). Sandbox-side
-    pre/post-tool hooks are installed into the Claude configuration during
+    normalization, secret redaction, ML-based LLM Guard — as of #6522 the
+    ML scanner ships only in the runner image, not in release binaries).
+    Sandbox-side pre/post-tool hooks are installed into the Claude
+    configuration during
     bootstrap (Tirith terminal security, SSRF pre-tool checks, secret
     redaction post-tool). Omitting the `security` block enables all scanners
     with fail-closed semantics. Individual scanners can be toggled off
@@ -129,6 +138,10 @@ definition and executes a deterministic sequence:
 │     (push, PR creation, label transitions)                │
 └───────────────────────────────────────────────────────────┘
 ```
+
+> Step 9c no longer applies to an iteration the runner killed at
+> `timeout_minutes`: the loop stops and the run ends with a distinct timeout
+> error ([ADR 0105](0105-timed-out-iteration-ends-the-run.md)).
 
 The runner is deterministic code, not an LLM. The agent is the LLM session.
 Each harness invocation provisions one sandbox for one agent — consistent with
@@ -424,7 +437,7 @@ security:
     context_injection: true
     ssrf_validator: true
     secret_redactor: true
-    llm_guard:
+    llm_guard:                       # validated but never read; see #6522
       enabled: true
       threshold: 0.92
       match_type: sentence           # "sentence" or "full"
@@ -435,7 +448,7 @@ security:
     secret_redact_posttool: true
 
 # Remote resource access (ADR-0038). URL-prefix allowlist for skills, agents,
-# and policies fetched from HTTPS endpoints with SHA256 integrity verification.
+# plugins, and policies fetched from HTTPS endpoints with SHA256 integrity verification.
 allowed_remote_resources:
   - https://example.com/skills/
   - https://example.com/policies/
@@ -734,7 +747,8 @@ in [#234](https://github.com/fullsend-ai/fullsend/issues/234).
 - **Security scanning is per-harness, enforced by default, with no global kill
   switch.** Layered prompt injection defenses — host-side scanners (unicode
   normalization, context injection detection, SSRF validation, secret
-  redaction, ML-based LLM Guard) and sandbox-side hooks (Tirith terminal
+  redaction, ML-based LLM Guard — as of #6522 the ML scanner ships only in
+  the runner image, not in release binaries) and sandbox-side hooks (Tirith terminal
   security, SSRF pre-tool, secret redaction post-tool) — are built into the
   `fullsend` CLI and enabled with fail-closed semantics by default. Individual
   scanners can be toggled off per-harness for development, but there is no
@@ -762,7 +776,9 @@ intentionally deferred to keep scope manageable:
   files may need a `version` field for schema evolution (e.g. when fields are
   renamed or restructured). The team agreed this is important but not
   blocking — failed validation can surface schema drift without a version
-  field.
+  field. Decided in [ADR 0127](0127-harness-schema-versioning-and-field-types.md):
+  a planned `schema_version` field (absent = `1`) with field-level semantic
+  types. Type-violation checks in `Harness.Lint()` are not yet implemented.
 - **Protected vs. freely overridable fields
   ([#236](https://github.com/fullsend-ai/fullsend/issues/236)).** At each
   inheritance layer (fullsend defaults → org `.fullsend` → per-repo), which

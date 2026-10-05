@@ -5,27 +5,36 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Compile-time interface checks.
 var _ Client = (*FakeClient)(nil)
 var _ GitHubExtensions = (*FakeClient)(nil)
+var _ GitLabExtensions = (*FakeClient)(nil)
 
 // NewFakeClient returns a FakeClient with all maps initialised.
 func NewFakeClient() *FakeClient {
 	return &FakeClient{
-		FileContents:      make(map[string][]byte),
-		WorkflowRuns:      make(map[string]*WorkflowRun),
-		Secrets:           make(map[string]bool),
-		VariablesExist:    make(map[string]bool),
-		VariableValues:    make(map[string]string),
-		Errors:            make(map[string]error),
-		DirContents:       make(map[string][]DirectoryEntry),
-		FileContentsRef:   make(map[string][]byte),
-		BranchRefs:        make(map[string]string),
-		Refs:              make(map[string]string),
-		ProtectedBranches: make(map[string]bool),
-		PipelineSchedules: make(map[string][]PipelineSchedule),
+		FileContents:             make(map[string][]byte),
+		WorkflowRuns:             make(map[string]*WorkflowRun),
+		Secrets:                  make(map[string]bool),
+		SecretProtections:        make(map[string]SecretProtection),
+		VariablesExist:           make(map[string]bool),
+		VariableValues:           make(map[string]string),
+		Errors:                   make(map[string]error),
+		DirContents:              make(map[string][]DirectoryEntry),
+		FileContentsRef:          make(map[string][]byte),
+		BranchRefs:               make(map[string]string),
+		ExistingBranches:         make(map[string]bool),
+		Refs:                     make(map[string]string),
+		ProtectedBranches:        make(map[string]bool),
+		ProtectedBranchRules:     make(map[string]*ProtectedBranchRule),
+		PipelineSchedules:        make(map[string][]PipelineSchedule),
+		ForceReachableCommits:    make(map[string]int),
+		PipelineTriggerTokens:    make(map[string][]PipelineTriggerToken),
+		ProjectHooks:             make(map[string][]ProjectHook),
+		PipelineVarOverrideRoles: make(map[string]string),
 	}
 }
 
@@ -58,11 +67,39 @@ type VariableRecord struct {
 	Protected                bool
 }
 
+// PipelineCallRecord records a CreatePipeline invocation.
+type PipelineCallRecord struct {
+	Owner, Repo, Ref string
+	Variables        map[string]string
+}
+
+// PipelineInputsCallRecord records a CreatePipelineWithInputs invocation.
+type PipelineInputsCallRecord struct {
+	Owner, Repo, Ref string
+	Inputs           map[string]PipelineInputValue
+}
+
+// ProtectedBranchMergeGrantRecord records a GrantProtectedBranchMergeUser call.
+type ProtectedBranchMergeGrantRecord struct {
+	Owner, Repo, Branch string
+	UserID              int
+}
+
 // UpdatedCommentRecord records an issue comment update call.
 type UpdatedCommentRecord struct {
 	Owner, Repo string
 	CommentID   int
 	Body        string
+}
+
+// NoteOnParentRecord records a GetNoteOnParent/UpdateNoteOnParent call,
+// letting tests assert that a caller addressed a note directly by its
+// parent's type and IID instead of going through the ID-only scan that
+// GetIssueComment/UpdateIssueComment use.
+type NoteOnParentRecord struct {
+	Owner, Repo, ParentType string
+	ParentIID, NoteID       int
+	Body                    string // empty for GetNoteOnParent calls
 }
 
 // CreatedIssueRecord records an issue creation call.
@@ -77,6 +114,21 @@ type CreatedIssueRecord struct {
 type MinimizedCommentRecord struct {
 	NodeID string
 	Reason string
+}
+
+// ReactionRecord records an AddIssueReaction call.
+type ReactionRecord struct {
+	ID          int64
+	Owner, Repo string
+	Number      int
+	Content     string
+}
+
+// CommentReactionRecord records an AddIssueCommentReaction call.
+type CommentReactionRecord struct {
+	Owner, Repo string
+	CommentID   int
+	Content     string
 }
 
 // ReviewRecord records a pull request review creation call.
@@ -96,6 +148,11 @@ type DismissedReviewRecord struct {
 	Message     string
 }
 
+// BranchSHARecord records a CreateBranchFromSHA call.
+type BranchSHARecord struct {
+	Owner, Repo, Branch, SHA string
+}
+
 // CommitFilesRecord records a CommitFiles call.
 type CommitFilesRecord struct {
 	Owner, Repo, Message string
@@ -108,6 +165,19 @@ type CommitFilesToBranchRecord struct {
 	Files                        []TreeFile
 }
 
+// ForceCommitFileToBranchRecord records a ForceCommitFileToBranch call.
+type ForceCommitFileToBranchRecord struct {
+	Owner, Repo, Branch, Path, Message string
+	Content                            []byte
+	StartSHA                           string
+	Force                              bool
+}
+
+// ForceCommitFixedBaseSHA is the synthetic parent SHA of every FakeClient
+// force-re-root commit. The GitLab implementation uses the repository's
+// root commit; tests assert the fake always re-roots on this same base.
+const ForceCommitFixedBaseSHA = "0000000000000000000000000000000000000001"
+
 // FakeClient is a thread-safe test double for forge.Client.
 // Pre-populate its fields to control return values, and inspect
 // recorder slices after the test to verify which calls were made.
@@ -119,6 +189,7 @@ type FakeClient struct {
 	OrgRepos                  map[string][]Repository  // per-org repos; when set, ListOrgRepos uses this instead of Repos
 	FileContents              map[string][]byte        // key: "owner/repo/path"
 	WorkflowRuns              map[string]*WorkflowRun  // key: "owner/repo/workflow"
+	WorkflowRunsList          map[string][]WorkflowRun // key: "owner/repo/workflow" → multiple runs (takes precedence over WorkflowRuns)
 	RecentWorkflowRuns        map[string][]WorkflowRun // key: "owner/repo"
 	WorkflowRunArtifacts      map[int][]WorkflowArtifact
 	WorkflowArtifactContents  map[int][]byte
@@ -129,6 +200,7 @@ type FakeClient struct {
 	OrgPlan                   string                          // plan name returned by GetOrgPlan (default: "free")
 	Installations             []Installation
 	Secrets                   map[string]bool             // key: "owner/repo/name"
+	SecretProtections         map[string]SecretProtection // key: "owner/repo/name"; overrides the default fully-protected report for existing secrets
 	PullRequests              map[string][]ChangeProposal // key: "owner/repo"
 	TokenScopes               []string                    // scopes returned by GetTokenScopes
 	InstallationToken         bool                        // IsInstallationToken return value
@@ -155,6 +227,10 @@ type FakeClient struct {
 
 	// CollaboratorPermissions maps "owner/repo/username" → role_name for GetCollaboratorPermission.
 	CollaboratorPermissions map[string]string
+	// AddedCollaborators records AddCollaborator calls as "owner/repo/username" → permission.
+	AddedCollaborators map[string]string
+	// OrgMemberships maps "org/username" → membership for GetOrgMembership.
+	OrgMemberships map[string]OrgMembership
 
 	// Org-level secret state
 	OrgSecrets       map[string]bool    // key: "org/name"
@@ -168,14 +244,43 @@ type FakeClient struct {
 	// Protected branches for IsProtectedBranch.
 	ProtectedBranches map[string]bool // key: "owner/repo/branch"
 
-	// Pipeline schedules for List/Create/DeletePipelineSchedule.
+	// ProtectedBranchRules stores push/merge access for GetProtectedBranch.
+	// Key: "owner/repo/branch". When a key is present, the branch is
+	// protected even if ProtectedBranches is false.
+	ProtectedBranchRules map[string]*ProtectedBranchRule
+
+	// GrantedProtectedBranchMergeUsers records GrantProtectedBranchMergeUser calls.
+	GrantedProtectedBranchMergeUsers []ProtectedBranchMergeGrantRecord
+
+	// Pipeline schedules for List/Create/Delete/UpdatePipelineSchedule.
 	PipelineSchedules map[string][]PipelineSchedule // key: "owner/repo"
+
+	// PipelineTriggerTokens stores trigger tokens keyed by "owner/repo".
+	PipelineTriggerTokens map[string][]PipelineTriggerToken
+
+	// ProjectHooks stores project webhooks keyed by "owner/repo".
+	ProjectHooks map[string][]ProjectHook
+
+	// PipelineVarOverrideRoles stores the GitLab
+	// ci_pipeline_variables_minimum_override_role setting per project.
+	// Key: "owner/repo". Missing keys round-trip as empty string.
+	PipelineVarOverrideRoles map[string]string
 
 	// Directory listings for ListDirectoryContents.
 	DirContents map[string][]DirectoryEntry // key: "owner/repo/path@ref"
 
 	// File contents at specific refs for GetFileContentAtRef.
 	FileContentsRef map[string][]byte // key: "owner/repo/path@ref"
+
+	// ForceReachableCommits maps "owner/repo/branch" to the number of
+	// commits reachable on that branch after force-re-root writes.
+	// Always 1 after a successful ForceCommitFileToBranch.
+	ForceReachableCommits map[string]int
+
+	// ExistingBranches, when set, makes CreateBranch and CreateBranchFromSHA
+	// return ErrAlreadyExists for those keys ("owner/repo/branch").
+	// DeleteBranch removes the matching key so a subsequent create succeeds.
+	ExistingBranches map[string]bool
 
 	// Branch refs for GetBranchRef.
 	BranchRefs map[string]string // key: "owner/repo/branch" → commit SHA
@@ -193,6 +298,10 @@ type FakeClient struct {
 	// DeleteFilesErrors injects per-repo errors for DeleteFiles.
 	// Key is "owner/repo", checked before the generic Errors map.
 	DeleteFilesErrors map[string]error
+
+	// GetFileContentErrors injects per-path errors for GetFileContent.
+	// Key is "owner/repo/path", checked before the generic Errors map.
+	GetFileContentErrors map[string]error
 
 	// Issue comments for ListIssueComments / UpdateIssueComment.
 	IssueComments map[string][]IssueComment // key: "owner/repo/number"
@@ -215,6 +324,11 @@ type FakeClient struct {
 	// for that call.
 	CreateReviewErrSeq []error
 
+	// CreatePipelineScheduleErrSeq is an error queue for CreatePipelineSchedule.
+	// Each call shifts the first element; when empty, falls through to
+	// Errors["CreatePipelineSchedule"]. A nil entry means no error for that call.
+	CreatePipelineScheduleErrSeq []error
+
 	// Pull request head SHA for GetPullRequestHeadSHA.
 	PullRequestHeadSHA string
 
@@ -224,50 +338,82 @@ type FakeClient struct {
 	// Pull request files for ListPullRequestFiles.
 	PRFiles map[string][]string // key: "owner/repo/number"
 
+	// Pull request commit SHAs (oldest first) for ListPullRequestCommits.
+	PRCommits map[string][]string // key: "owner/repo/number"
+
 	// Pull request file diffs for ListPullRequestFileDiffs.
 	PRFileDiffs map[string][]PullRequestFileDiff // key: "owner/repo/number"
 
 	// Pull request reviews for ListPullRequestReviews.
 	PRReviews map[string][]PullRequestReview // key: "owner/repo/number"
 
+	// WorkflowRunJobs for ListWorkflowRunJobs.
+	WorkflowRunJobs map[int][]WorkflowJob // key: runID
+
 	// Annotations for GetWorkflowRunAnnotations.
 	Annotations []Annotation
 
 	// Call recorders
-	CreatedRepos           []Repository
-	CreatedFiles           []FileRecord
-	CreatedBranches        []string // "owner/repo/branch"
-	DeletedRefs            []string // "owner/repo/refPath"
-	CreatedProposals       []ChangeProposal
-	DeletedRepos           []string // "owner/repo"
-	DeletedFiles           []FileRecord
-	CreatedSecrets         []SecretRecord
-	DeletedSecrets         []SecretRecord
-	Variables              []VariableRecord
-	DeletedVariables       []VariableRecord
-	DeletedOrgSecrets      []string // "org/name"
-	CreatedOrgSecrets      []OrgSecretRecord
-	CreatedOrgVariables    []OrgVariableRecord
-	DeletedOrgVariables    []string // "org/name"
-	CreatedIssues          []CreatedIssueRecord
-	UpdatedComments        []UpdatedCommentRecord
-	MinimizedComments      []MinimizedCommentRecord
-	CreatedReviews         []ReviewRecord
-	DismissedReviews       []DismissedReviewRecord
-	CommittedFiles         []CommitFilesRecord
-	CommittedFilesToBranch []CommitFilesToBranchRecord
-	CreatedForks           []string // "owner/repo"
-	ClosedProposals        []int    // PR numbers
-	DeletedComments        []int    // comment IDs
-	CreatedSchedules       []PipelineSchedule
-	DeletedScheduleIDs     []int64
-	UpdatedVariables       []VariableRecord
-	CreatedProtectedVars   []VariableRecord
+	CreatedRepos            []Repository
+	CreatedFiles            []FileRecord
+	CreatedBranches         []string // "owner/repo/branch"
+	CreatedBranchSHAs       []BranchSHARecord
+	DeletedBranches         []string // "owner/repo/branch"
+	DeletedRefs             []string // "owner/repo/refPath"
+	CreatedProposals        []ChangeProposal
+	DeletedRepos            []string // "owner/repo"
+	DeletedFiles            []FileRecord
+	CreatedSecrets          []SecretRecord
+	DeletedSecrets          []SecretRecord
+	Variables               []VariableRecord
+	DeletedVariables        []VariableRecord
+	DeletedOrgSecrets       []string // "org/name"
+	CreatedOrgSecrets       []OrgSecretRecord
+	CreatedOrgVariables     []OrgVariableRecord
+	DeletedOrgVariables     []string // "org/name"
+	CreatedIssues           []CreatedIssueRecord
+	UpdatedComments         []UpdatedCommentRecord
+	GetNoteOnParentCalls    []NoteOnParentRecord
+	UpdateNoteOnParentCalls []NoteOnParentRecord
+	MinimizedComments       []MinimizedCommentRecord
+	AddedReactions          []ReactionRecord
+	DeletedReactions        []int64
+	AddedCommentReactions   []CommentReactionRecord
+	DeletedCommentReactions []int64
+	CreatedReviews          []ReviewRecord
+	DismissedReviews        []DismissedReviewRecord
+	CommittedFiles          []CommitFilesRecord
+	CommittedFilesToBranch  []CommitFilesToBranchRecord
+	ForceCommittedFiles     []ForceCommitFileToBranchRecord
+	CreatedForks            []string // "owner/repo"
+	ClosedProposals         []int    // PR numbers
+	DeletedComments         []int    // comment IDs
+	CreatedPipelines        []Pipeline
+	PipelineCalls           []PipelineCallRecord
+	PipelineInputsCalls     []PipelineInputsCallRecord
+	CreatedSchedules        []PipelineSchedule
+	DeletedScheduleIDs      []int64
+	UpdatedScheduleIDs      []int64
+	UpdatedVariables        []VariableRecord
+	CreatedProtectedVars    []VariableRecord
+	CreatedTriggerTokens    []PipelineTriggerToken
+	RevokedTriggerTokenIDs  []int64
+	CreatedProjectHooks     []ProjectHook
+	UpdatedProjectHooks     []ProjectHook
+	DeletedProjectHookIDs   []int64
+
+	// CommitAncestry maps "owner/repo/base/head" to a comparison status
+	// string ("ahead", "behind", "identical", "diverged") for CompareCommits.
+	CommitAncestry map[string]string
 
 	// internal counters
 	proposalCounter int
 	commentCounter  int
 	issueCounter    int
+	reactionCounter int64
+	forceCommitSeq  int
+	triggerTokenSeq int64
+	projectHookSeq  int64
 }
 
 // err checks for an injected error for the given method name.
@@ -316,13 +462,13 @@ func (f *FakeClient) CreateRepo(_ context.Context, org, name, description string
 	// Check for duplicates in pre-populated repos.
 	for _, r := range f.Repos {
 		if r.FullName == fullName {
-			return nil, fmt.Errorf("repository already exists: %s", fullName)
+			return nil, fmt.Errorf("%w: %s", ErrAlreadyExists, fullName)
 		}
 	}
 	// Check for duplicates in previously created repos.
 	for _, r := range f.CreatedRepos {
 		if r.FullName == fullName {
-			return nil, fmt.Errorf("repository already exists: %s", fullName)
+			return nil, fmt.Errorf("%w: %s", ErrAlreadyExists, fullName)
 		}
 	}
 
@@ -357,6 +503,30 @@ func (f *FakeClient) GetRepo(_ context.Context, owner, repo string) (*Repository
 		}
 	}
 	return nil, fmt.Errorf("%w: %s/%s", ErrNotFound, owner, repo)
+}
+
+func (f *FakeClient) UpdateRepoVisibility(_ context.Context, owner, repo string, private bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("UpdateRepoVisibility"); e != nil {
+		return e
+	}
+
+	fullName := owner + "/" + repo
+	for i := range f.Repos {
+		if f.Repos[i].FullName == fullName {
+			f.Repos[i].Private = private
+			return nil
+		}
+	}
+	for i := range f.CreatedRepos {
+		if f.CreatedRepos[i].FullName == fullName {
+			f.CreatedRepos[i].Private = private
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s/%s", ErrNotFound, owner, repo)
 }
 
 func (f *FakeClient) DeleteRepo(_ context.Context, owner, repo string) error {
@@ -425,10 +595,25 @@ func (f *FakeClient) CreateFork(_ context.Context, owner, repo string) (string, 
 
 	f.CreatedForks = append(f.CreatedForks, owner+"/"+repo)
 
-	if f.ForkOwner != "" {
-		return f.ForkOwner, repo, nil
+	forkOwner := f.ForkOwner
+	if forkOwner == "" {
+		forkOwner = f.AuthenticatedUser
 	}
-	return f.AuthenticatedUser, repo, nil
+	if forkOwner == "" {
+		forkOwner = "fake-fork-owner"
+	}
+
+	// Auto-populate the fork in Repos so GetRepo (and therefore
+	// waitForFork) finds it immediately instead of hanging for the
+	// full timeout.
+	f.Repos = append(f.Repos, Repository{
+		FullName:      forkOwner + "/" + repo,
+		Name:          repo,
+		DefaultBranch: "main",
+		Fork:          true,
+	})
+
+	return forkOwner, repo, nil
 }
 
 func (f *FakeClient) CreateForkInOrg(_ context.Context, owner, repo, org, forkName string) (string, error) {
@@ -513,11 +698,15 @@ func (f *FakeClient) GetFileContent(_ context.Context, owner, repo, path string)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	key := owner + "/" + repo + "/" + path
+	if f.GetFileContentErrors != nil {
+		if e, ok := f.GetFileContentErrors[key]; ok {
+			return nil, e
+		}
+	}
 	if e := f.err("GetFileContent"); e != nil {
 		return nil, e
 	}
-
-	key := owner + "/" + repo + "/" + path
 	data, ok := f.FileContents[key]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
@@ -676,6 +865,72 @@ func (f *FakeClient) CommitFilesToBranch(_ context.Context, owner, repo, branch,
 	return changed, nil
 }
 
+func (f *FakeClient) ForceCommitFileToBranch(_ context.Context, owner, repo, branch, path, message string, content []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ForceCommitFileToBranch"); e != nil {
+		return e
+	}
+	if branch == "" || path == "" {
+		return fmt.Errorf("force commit: branch and path are required")
+	}
+
+	if !strings.Contains(message, "[skip ci]") {
+		message = strings.TrimSpace(message)
+		if message == "" {
+			message = "[skip ci]"
+		} else {
+			message += " [skip ci]"
+		}
+	}
+
+	copied := make([]byte, len(content))
+	copy(copied, content)
+
+	f.ForceCommittedFiles = append(f.ForceCommittedFiles, ForceCommitFileToBranchRecord{
+		Owner:    owner,
+		Repo:     repo,
+		Branch:   branch,
+		Path:     path,
+		Message:  message,
+		Content:  copied,
+		StartSHA: ForceCommitFixedBaseSHA,
+		Force:    true,
+	})
+
+	if f.FileContentsRef == nil {
+		f.FileContentsRef = make(map[string][]byte)
+	}
+	// Force-re-root replaces the branch tree with base + this one file.
+	prefix := owner + "/" + repo + "/"
+	suffix := "@" + branch
+	for k := range f.FileContentsRef {
+		if strings.HasPrefix(k, prefix) && strings.HasSuffix(k, suffix) {
+			delete(f.FileContentsRef, k)
+		}
+	}
+	f.FileContentsRef[fmt.Sprintf("%s/%s/%s@%s", owner, repo, path, branch)] = copied
+
+	f.forceCommitSeq++
+	tipSHA := fmt.Sprintf("force-%d", f.forceCommitSeq)
+	if f.BranchRefs == nil {
+		f.BranchRefs = make(map[string]string)
+	}
+	if f.Refs == nil {
+		f.Refs = make(map[string]string)
+	}
+	f.BranchRefs[owner+"/"+repo+"/"+branch] = tipSHA
+	f.Refs[owner+"/"+repo+"/heads/"+branch] = tipSHA
+
+	if f.ForceReachableCommits == nil {
+		f.ForceReachableCommits = make(map[string]int)
+	}
+	f.ForceReachableCommits[owner+"/"+repo+"/"+branch] = 1
+
+	return nil
+}
+
 func (f *FakeClient) applyFileContents(owner, repo string, files []TreeFile) {
 	if f.FileContents == nil {
 		f.FileContents = make(map[string][]byte)
@@ -742,7 +997,51 @@ func (f *FakeClient) CreateBranch(_ context.Context, owner, repo, branchName str
 		return e
 	}
 
-	f.CreatedBranches = append(f.CreatedBranches, owner+"/"+repo+"/"+branchName)
+	key := owner + "/" + repo + "/" + branchName
+	if f.ExistingBranches[key] {
+		return fmt.Errorf("%w: branch %s", ErrAlreadyExists, branchName)
+	}
+
+	f.CreatedBranches = append(f.CreatedBranches, key)
+	return nil
+}
+
+func (f *FakeClient) CreateBranchFromSHA(_ context.Context, owner, repo, branchName, sha string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.CreateBranchErrors != nil {
+		if e, ok := f.CreateBranchErrors[owner+"/"+repo]; ok {
+			return e
+		}
+	}
+	if e := f.err("CreateBranchFromSHA"); e != nil {
+		return e
+	}
+
+	key := owner + "/" + repo + "/" + branchName
+	if f.ExistingBranches[key] {
+		return fmt.Errorf("%w: branch %s", ErrAlreadyExists, branchName)
+	}
+
+	f.CreatedBranches = append(f.CreatedBranches, key)
+	f.CreatedBranchSHAs = append(f.CreatedBranchSHAs, BranchSHARecord{
+		Owner: owner, Repo: repo, Branch: branchName, SHA: sha,
+	})
+	return nil
+}
+
+func (f *FakeClient) DeleteBranch(_ context.Context, owner, repo, branchName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeleteBranch"); e != nil {
+		return e
+	}
+
+	key := owner + "/" + repo + "/" + branchName
+	f.DeletedBranches = append(f.DeletedBranches, key)
+	delete(f.ExistingBranches, key)
 	return nil
 }
 
@@ -983,6 +1282,24 @@ func (f *FakeClient) RepoSecretExists(_ context.Context, owner, repo, name strin
 		return false, nil
 	}
 	return f.Secrets[owner+"/"+repo+"/"+name], nil
+}
+
+func (f *FakeClient) GetRepoSecretProtection(_ context.Context, owner, repo, name string) (SecretProtection, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetRepoSecretProtection"); e != nil {
+		return SecretProtection{}, e
+	}
+
+	key := owner + "/" + repo + "/" + name
+	if p, ok := f.SecretProtections[key]; ok {
+		return p, nil
+	}
+	if !f.Secrets[key] {
+		return SecretProtection{}, nil
+	}
+	return SecretProtection{Exists: true, Masked: true, Protected: true}, nil
 }
 
 func (f *FakeClient) CreateOrUpdateRepoVariable(_ context.Context, owner, repo, name, value string) error {
@@ -1300,6 +1617,69 @@ func (f *FakeClient) CreateIssueComment(_ context.Context, owner, repo string, n
 	return &comment, nil
 }
 
+func (f *FakeClient) GetIssueComment(_ context.Context, _, _ string, commentID int) (*IssueComment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("GetIssueComment"); e != nil {
+		return nil, e
+	}
+	for _, comments := range f.IssueComments {
+		for _, c := range comments {
+			if c.ID == commentID {
+				found := c
+				return &found, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("%w: comment %d", ErrNotFound, commentID)
+}
+
+// GetNoteOnParent implements GitLabExtensions. Unlike the real GitLab
+// client, FakeClient has no notion of noteTarget-vs-parentType mismatch;
+// it records the call (so tests can assert the direct-addressing path
+// was taken) and otherwise looks the note up the same way GetIssueComment
+// does.
+func (f *FakeClient) GetNoteOnParent(_ context.Context, owner, repo, parentType string, parentIID, noteID int) (*IssueComment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.GetNoteOnParentCalls = append(f.GetNoteOnParentCalls, NoteOnParentRecord{
+		Owner: owner, Repo: repo, ParentType: parentType, ParentIID: parentIID, NoteID: noteID,
+	})
+	if e := f.err("GetNoteOnParent"); e != nil {
+		return nil, e
+	}
+	for _, comments := range f.IssueComments {
+		for _, c := range comments {
+			if c.ID == noteID {
+				found := c
+				return &found, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("%w: comment %d", ErrNotFound, noteID)
+}
+
+// UpdateNoteOnParent implements GitLabExtensions. See GetNoteOnParent.
+func (f *FakeClient) UpdateNoteOnParent(_ context.Context, owner, repo, parentType string, parentIID, noteID int, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.UpdateNoteOnParentCalls = append(f.UpdateNoteOnParentCalls, NoteOnParentRecord{
+		Owner: owner, Repo: repo, ParentType: parentType, ParentIID: parentIID, NoteID: noteID, Body: body,
+	})
+	if e := f.err("UpdateNoteOnParent"); e != nil {
+		return e
+	}
+	for key, comments := range f.IssueComments {
+		for i, c := range comments {
+			if c.ID == noteID {
+				f.IssueComments[key][i].Body = body
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%w: comment %d", ErrNotFound, noteID)
+}
+
 func (f *FakeClient) UpdateIssueComment(_ context.Context, owner, repo string, commentID int, body string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1320,7 +1700,7 @@ func (f *FakeClient) UpdateIssueComment(_ context.Context, owner, repo string, c
 			}
 		}
 	}
-	return nil
+	return fmt.Errorf("%w: comment %d", ErrNotFound, commentID)
 }
 
 func (f *FakeClient) DeleteIssueComment(_ context.Context, _, _ string, commentID int) error {
@@ -1352,6 +1732,81 @@ func (f *FakeClient) MinimizeComment(_ context.Context, nodeID, reason string) e
 		Reason: reason,
 	})
 	return nil
+}
+
+func (f *FakeClient) AddIssueReaction(_ context.Context, owner, repo string, number int, content string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("AddIssueReaction"); e != nil {
+		return 0, e
+	}
+	f.reactionCounter++
+	f.AddedReactions = append(f.AddedReactions, ReactionRecord{
+		ID:      f.reactionCounter,
+		Owner:   owner,
+		Repo:    repo,
+		Number:  number,
+		Content: content,
+	})
+	return f.reactionCounter, nil
+}
+
+func (f *FakeClient) DeleteIssueReaction(_ context.Context, _, _ string, _ int, reactionID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("DeleteIssueReaction"); e != nil {
+		return e
+	}
+	f.DeletedReactions = append(f.DeletedReactions, reactionID)
+	return nil
+}
+
+func (f *FakeClient) AddIssueCommentReaction(_ context.Context, owner, repo string, commentID int, content string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("AddIssueCommentReaction"); e != nil {
+		return 0, e
+	}
+	f.reactionCounter++
+	f.AddedCommentReactions = append(f.AddedCommentReactions, CommentReactionRecord{
+		Owner:     owner,
+		Repo:      repo,
+		CommentID: commentID,
+		Content:   content,
+	})
+	return f.reactionCounter, nil
+}
+
+func (f *FakeClient) DeleteIssueCommentReaction(_ context.Context, _, _ string, _ int, reactionID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("DeleteIssueCommentReaction"); e != nil {
+		return e
+	}
+	f.DeletedCommentReactions = append(f.DeletedCommentReactions, reactionID)
+	return nil
+}
+
+func (f *FakeClient) ListIssueReactions(_ context.Context, owner, repo string, number int) ([]Reaction, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListIssueReactions"); e != nil {
+		return nil, e
+	}
+	deleted := make(map[int64]bool, len(f.DeletedReactions))
+	for _, id := range f.DeletedReactions {
+		deleted[id] = true
+	}
+	var reactions []Reaction
+	for _, r := range f.AddedReactions {
+		if r.Owner == owner && r.Repo == repo && r.Number == number && !deleted[r.ID] {
+			reactions = append(reactions, Reaction{
+				Content: r.Content,
+				User:    f.AuthenticatedUser,
+			})
+		}
+	}
+	return reactions, nil
 }
 
 func (f *FakeClient) GetPullRequestInfo(_ context.Context, owner, repo string, number int) (*PullRequestInfo, error) {
@@ -1391,6 +1846,16 @@ func (f *FakeClient) ListPullRequestFiles(_ context.Context, owner, repo string,
 		}
 	}
 	return nil, nil
+}
+
+func (f *FakeClient) ListPullRequestCommits(_ context.Context, owner, repo string, number int) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListPullRequestCommits"); e != nil {
+		return nil, e
+	}
+	key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+	return f.PRCommits[key], nil
 }
 
 func (f *FakeClient) ListPullRequestFileDiffs(_ context.Context, owner, repo string, number int) ([]PullRequestFileDiff, error) {
@@ -1505,10 +1970,56 @@ func (f *FakeClient) ListWorkflowRuns(_ context.Context, owner, repo, workflowFi
 		return nil, e
 	}
 	key := owner + "/" + repo + "/" + workflowFile
+	if f.WorkflowRunsList != nil {
+		if runs, ok := f.WorkflowRunsList[key]; ok {
+			return append([]WorkflowRun(nil), runs...), nil
+		}
+	}
 	if run, ok := f.WorkflowRuns[key]; ok {
 		return []WorkflowRun{*run}, nil
 	}
 	return nil, nil
+}
+
+// ListWorkflowRunsSince returns the same configured runs as ListWorkflowRuns,
+// filtered to those created at or after since. Unlike the live GitHub
+// client's ListWorkflowRuns (capped at per_page=10), FakeClient never
+// truncates its configured list, so this filters rather than paginates —
+// tests configure WorkflowRunsList directly with as many runs as a scenario
+// needs, including more than a single live-API page, to exercise
+// since-bounded selection (#7996 review).
+func (f *FakeClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time) ([]WorkflowRun, error) {
+	f.mu.Lock()
+	e := f.err("ListWorkflowRunsSince")
+	f.mu.Unlock()
+	if e != nil {
+		return nil, e
+	}
+	runs, err := f.ListWorkflowRuns(ctx, owner, repo, workflowFile)
+	if err != nil {
+		return nil, err
+	}
+	var matched []WorkflowRun
+	for _, run := range runs {
+		runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+		if parseErr != nil || runTime.Before(since) {
+			continue
+		}
+		matched = append(matched, run)
+	}
+	return matched, nil
+}
+
+func (f *FakeClient) ListWorkflowRunJobs(_ context.Context, _, _ string, runID int) ([]WorkflowJob, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListWorkflowRunJobs"); e != nil {
+		return nil, e
+	}
+	if f.WorkflowRunJobs == nil {
+		return nil, nil
+	}
+	return append([]WorkflowJob(nil), f.WorkflowRunJobs[runID]...), nil
 }
 
 func (f *FakeClient) ListWorkflowRunArtifacts(_ context.Context, _, _ string, runID int) ([]WorkflowArtifact, error) {
@@ -1627,6 +2138,38 @@ func (f *FakeClient) GetCollaboratorPermission(_ context.Context, owner, repo, u
 		}
 	}
 	return "", ErrNotFound
+}
+
+func (f *FakeClient) AddCollaborator(_ context.Context, owner, repo, username, permission string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("AddCollaborator"); e != nil {
+		return e
+	}
+
+	if f.AddedCollaborators == nil {
+		f.AddedCollaborators = make(map[string]string)
+	}
+	f.AddedCollaborators[owner+"/"+repo+"/"+username] = permission
+	return nil
+}
+
+func (f *FakeClient) GetOrgMembership(_ context.Context, org, username string) (OrgMembership, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetOrgMembership"); e != nil {
+		return OrgMembership{}, e
+	}
+
+	key := org + "/" + username
+	if f.OrgMemberships != nil {
+		if m, ok := f.OrgMemberships[key]; ok {
+			return m, nil
+		}
+	}
+	return OrgMembership{}, ErrNotFound
 }
 
 func (f *FakeClient) CreateOrgSecret(_ context.Context, org, name, value string, selectedRepoIDs []int64) error {
@@ -1846,14 +2389,161 @@ func (f *FakeClient) IsProtectedBranch(_ context.Context, owner, repo, branch st
 	}
 
 	key := owner + "/" + repo + "/" + branch
+	if _, ok := f.ProtectedBranchRules[key]; ok {
+		return true, nil
+	}
 	return f.ProtectedBranches[key], nil
 }
 
-func (f *FakeClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref, description, cron string, _ map[string]string) (int64, error) {
+func cloneProtectedBranchRule(rule *ProtectedBranchRule) *ProtectedBranchRule {
+	if rule == nil {
+		return nil
+	}
+	out := *rule
+	if rule.PushAccessLevels != nil {
+		out.PushAccessLevels = append([]ProtectedBranchAccess(nil), rule.PushAccessLevels...)
+	}
+	if rule.MergeAccessLevels != nil {
+		out.MergeAccessLevels = append([]ProtectedBranchAccess(nil), rule.MergeAccessLevels...)
+	}
+	return &out
+}
+
+func (f *FakeClient) GetProtectedBranch(_ context.Context, owner, repo, branch string) (*ProtectedBranchRule, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if e := f.err("CreatePipelineSchedule"); e != nil {
+	if e := f.err("GetProtectedBranch"); e != nil {
+		return nil, e
+	}
+
+	key := owner + "/" + repo + "/" + branch
+	if rule, ok := f.ProtectedBranchRules[key]; ok {
+		return cloneProtectedBranchRule(rule), nil
+	}
+	if f.ProtectedBranches[key] {
+		// Bool-only protection matches GitLab's default Protected preset:
+		// Developers can merge, so a Developer-level poller can create pipelines.
+		return &ProtectedBranchRule{
+			Name:              branch,
+			MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: 30}},
+		}, nil
+	}
+	return nil, nil
+}
+
+func (f *FakeClient) GrantProtectedBranchMergeUser(_ context.Context, owner, repo, branch string, userID int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.GrantedProtectedBranchMergeUsers = append(f.GrantedProtectedBranchMergeUsers, ProtectedBranchMergeGrantRecord{
+		Owner: owner, Repo: repo, Branch: branch, UserID: userID,
+	})
+
+	if e := f.err("GrantProtectedBranchMergeUser"); e != nil {
+		return e
+	}
+	if userID <= 0 {
+		return fmt.Errorf("grant protected branch merge: invalid user ID %d", userID)
+	}
+
+	key := owner + "/" + repo + "/" + branch
+	rule := f.ProtectedBranchRules[key]
+	if rule == nil && f.ProtectedBranches[key] {
+		rule = &ProtectedBranchRule{
+			Name:              branch,
+			MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: 30}},
+		}
+	}
+	if rule == nil {
+		return fmt.Errorf("grant protected branch merge: %s is not protected", branch)
+	}
+	for _, l := range rule.MergeAccessLevels {
+		if l.UserID == userID {
+			f.ProtectedBranchRules[key] = rule
+			return nil
+		}
+	}
+	for _, l := range rule.PushAccessLevels {
+		if l.UserID == userID {
+			f.ProtectedBranchRules[key] = rule
+			return nil
+		}
+	}
+	rule.MergeAccessLevels = append(rule.MergeAccessLevels, ProtectedBranchAccess{UserID: userID})
+	f.ProtectedBranchRules[key] = rule
+	return nil
+}
+
+func (f *FakeClient) CreatePipeline(_ context.Context, owner, repo, ref string, variables map[string]string) (*Pipeline, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	vars := make(map[string]string, len(variables))
+	for k, v := range variables {
+		vars[k] = v
+	}
+	f.PipelineCalls = append(f.PipelineCalls, PipelineCallRecord{
+		Owner:     owner,
+		Repo:      repo,
+		Ref:       ref,
+		Variables: vars,
+	})
+
+	if e := f.err("CreatePipeline"); e != nil {
+		return nil, e
+	}
+
+	p := Pipeline{
+		ID:     int64(len(f.CreatedPipelines) + 1),
+		WebURL: fmt.Sprintf("https://gitlab.example.com/-/pipelines/%d", len(f.CreatedPipelines)+1),
+	}
+	f.CreatedPipelines = append(f.CreatedPipelines, p)
+	return &p, nil
+}
+
+// CreatePipelineWithInputs records the call and returns a fake pipeline,
+// mirroring CreatePipeline's behavior but without ever touching the
+// variables-based call record — callers can use PipelineInputsCalls to
+// assert that no user-defined variables were required for a dispatch.
+func (f *FakeClient) CreatePipelineWithInputs(_ context.Context, owner, repo, ref string, inputs map[string]PipelineInputValue) (*Pipeline, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	in := make(map[string]PipelineInputValue, len(inputs))
+	for k, v := range inputs {
+		in[k] = v
+	}
+	f.PipelineInputsCalls = append(f.PipelineInputsCalls, PipelineInputsCallRecord{
+		Owner:  owner,
+		Repo:   repo,
+		Ref:    ref,
+		Inputs: in,
+	})
+
+	if e := f.err("CreatePipelineWithInputs"); e != nil {
+		return nil, e
+	}
+
+	p := Pipeline{
+		ID:     int64(len(f.CreatedPipelines) + 1),
+		WebURL: fmt.Sprintf("https://gitlab.example.com/-/pipelines/%d", len(f.CreatedPipelines)+1),
+	}
+	f.CreatedPipelines = append(f.CreatedPipelines, p)
+	return &p, nil
+}
+
+func (f *FakeClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if len(f.CreatePipelineScheduleErrSeq) > 0 {
+		e := f.CreatePipelineScheduleErrSeq[0]
+		f.CreatePipelineScheduleErrSeq = f.CreatePipelineScheduleErrSeq[1:]
+		if e != nil {
+			return 0, e
+		}
+	} else if e := f.err("CreatePipelineSchedule"); e != nil {
 		return 0, e
 	}
 
@@ -1863,6 +2553,7 @@ func (f *FakeClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref,
 		Ref:         ref,
 		Cron:        cron,
 		Active:      true,
+		Variables:   variables,
 	}
 	f.CreatedSchedules = append(f.CreatedSchedules, s)
 	key := owner + "/" + repo
@@ -1896,6 +2587,61 @@ func (f *FakeClient) DeletePipelineSchedule(_ context.Context, owner, repo strin
 	return nil
 }
 
+func (f *FakeClient) GetPipelineSchedule(_ context.Context, owner, repo string, scheduleID int64) (*PipelineSchedule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.err("GetPipelineSchedule"); err != nil {
+		return nil, err
+	}
+	for _, schedule := range f.PipelineSchedules[owner+"/"+repo] {
+		if schedule.ID == scheduleID {
+			result := schedule
+			result.Variables = make(map[string]string, len(schedule.Variables))
+			for key, value := range schedule.Variables {
+				result.Variables[key] = value
+			}
+			return &result, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (f *FakeClient) DeletePipelineScheduleVariable(_ context.Context, owner, repo string, scheduleID int64, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.err("DeletePipelineScheduleVariable"); err != nil {
+		return err
+	}
+	for _, schedule := range f.PipelineSchedules[owner+"/"+repo] {
+		if schedule.ID == scheduleID {
+			delete(schedule.Variables, key)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (f *FakeClient) UpdatePipelineSchedule(_ context.Context, owner, repo string, scheduleID int64, active bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("UpdatePipelineSchedule"); e != nil {
+		return e
+	}
+
+	key := owner + "/" + repo
+	schedules := f.PipelineSchedules[key]
+	for i := range schedules {
+		if schedules[i].ID == scheduleID {
+			schedules[i].Active = active
+			f.PipelineSchedules[key] = schedules
+			f.UpdatedScheduleIDs = append(f.UpdatedScheduleIDs, scheduleID)
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: pipeline schedule %d", ErrNotFound, scheduleID)
+}
+
 func (f *FakeClient) ListPipelineSchedules(_ context.Context, owner, repo string) ([]PipelineSchedule, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1922,6 +2668,14 @@ func (f *FakeClient) UpdateCIVariable(_ context.Context, owner, repo, name, valu
 		Value:     value,
 		Protected: protected,
 	})
+	if f.VariableValues == nil {
+		f.VariableValues = make(map[string]string)
+	}
+	f.VariableValues[owner+"/"+repo+"/"+name] = value
+	if f.VariablesExist == nil {
+		f.VariablesExist = make(map[string]bool)
+	}
+	f.VariablesExist[owner+"/"+repo+"/"+name] = true
 	return nil
 }
 
@@ -1940,5 +2694,216 @@ func (f *FakeClient) CreateProtectedCIVariable(_ context.Context, owner, repo, n
 		Value:     value,
 		Protected: true,
 	})
+	if f.VariableValues == nil {
+		f.VariableValues = make(map[string]string)
+	}
+	f.VariableValues[owner+"/"+repo+"/"+name] = value
+	if f.VariablesExist == nil {
+		f.VariablesExist = make(map[string]bool)
+	}
+	f.VariablesExist[owner+"/"+repo+"/"+name] = true
+	return nil
+}
+
+func (f *FakeClient) GetPipelineVariablesMinimumOverrideRole(_ context.Context, owner, repo string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetPipelineVariablesMinimumOverrideRole"); e != nil {
+		return "", e
+	}
+	return f.PipelineVarOverrideRoles[owner+"/"+repo], nil
+}
+
+func (f *FakeClient) SetPipelineVariablesMinimumOverrideRole(_ context.Context, owner, repo, role string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("SetPipelineVariablesMinimumOverrideRole"); e != nil {
+		return e
+	}
+	if err := ValidatePipelineVarOverrideRole(role); err != nil {
+		return err
+	}
+	if f.PipelineVarOverrideRoles == nil {
+		f.PipelineVarOverrideRoles = make(map[string]string)
+	}
+	f.PipelineVarOverrideRoles[owner+"/"+repo] = role
+	return nil
+}
+
+func (f *FakeClient) CompareCommits(_ context.Context, owner, repo, base, head string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CompareCommits"); e != nil {
+		return "", e
+	}
+
+	if f.CommitAncestry != nil {
+		key := owner + "/" + repo + "/" + base + "/" + head
+		if status, ok := f.CommitAncestry[key]; ok {
+			return status, nil
+		}
+	}
+	return "", fmt.Errorf("%w: no comparison data for %s/%s %s...%s", ErrNotFound, owner, repo, base, head)
+}
+
+func (f *FakeClient) CreatePipelineTriggerToken(_ context.Context, owner, repo, description string) (*PipelineTriggerToken, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreatePipelineTriggerToken"); e != nil {
+		return nil, e
+	}
+
+	f.triggerTokenSeq++
+	tok := PipelineTriggerToken{
+		ID:          f.triggerTokenSeq,
+		Description: description,
+		Token:       fmt.Sprintf("glptt-fake-%d", f.triggerTokenSeq),
+	}
+	f.CreatedTriggerTokens = append(f.CreatedTriggerTokens, tok)
+	key := owner + "/" + repo
+	if f.PipelineTriggerTokens == nil {
+		f.PipelineTriggerTokens = make(map[string][]PipelineTriggerToken)
+	}
+	stored := tok
+	stored.Token = "" // GitLab omits the secret after creation.
+	f.PipelineTriggerTokens[key] = append(f.PipelineTriggerTokens[key], stored)
+	return &tok, nil
+}
+
+func (f *FakeClient) ListPipelineTriggerTokens(_ context.Context, owner, repo string) ([]PipelineTriggerToken, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListPipelineTriggerTokens"); e != nil {
+		return nil, e
+	}
+	if f.PipelineTriggerTokens == nil {
+		return nil, nil
+	}
+	src := f.PipelineTriggerTokens[owner+"/"+repo]
+	out := make([]PipelineTriggerToken, len(src))
+	copy(out, src)
+	return out, nil
+}
+
+func (f *FakeClient) RevokePipelineTriggerToken(_ context.Context, owner, repo string, tokenID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("RevokePipelineTriggerToken"); e != nil {
+		return e
+	}
+
+	f.RevokedTriggerTokenIDs = append(f.RevokedTriggerTokenIDs, tokenID)
+	key := owner + "/" + repo
+	tokens := f.PipelineTriggerTokens[key]
+	filtered := tokens[:0]
+	found := false
+	for _, tok := range tokens {
+		if tok.ID == tokenID {
+			found = true
+			continue
+		}
+		filtered = append(filtered, tok)
+	}
+	if !found {
+		return fmt.Errorf("%w: pipeline trigger token %d", ErrNotFound, tokenID)
+	}
+	f.PipelineTriggerTokens[key] = filtered
+	return nil
+}
+
+func (f *FakeClient) CreateProjectHook(_ context.Context, owner, repo string, hook ProjectHook) (*ProjectHook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreateProjectHook"); e != nil {
+		return nil, e
+	}
+
+	f.projectHookSeq++
+	created := hook
+	created.ID = f.projectHookSeq
+	f.CreatedProjectHooks = append(f.CreatedProjectHooks, created)
+	key := owner + "/" + repo
+	if f.ProjectHooks == nil {
+		f.ProjectHooks = make(map[string][]ProjectHook)
+	}
+	stored := created
+	stored.Token = "" // GitLab never returns the webhook secret.
+	f.ProjectHooks[key] = append(f.ProjectHooks[key], stored)
+	return &stored, nil
+}
+
+func (f *FakeClient) ListProjectHooks(_ context.Context, owner, repo string) ([]ProjectHook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListProjectHooks"); e != nil {
+		return nil, e
+	}
+	if f.ProjectHooks == nil {
+		return nil, nil
+	}
+	src := f.ProjectHooks[owner+"/"+repo]
+	out := make([]ProjectHook, len(src))
+	copy(out, src)
+	return out, nil
+}
+
+func (f *FakeClient) UpdateProjectHook(_ context.Context, owner, repo string, hookID int64, hook ProjectHook) (*ProjectHook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("UpdateProjectHook"); e != nil {
+		return nil, e
+	}
+
+	key := owner + "/" + repo
+	hooks := f.ProjectHooks[key]
+	for i, existing := range hooks {
+		if existing.ID != hookID {
+			continue
+		}
+		updated := hook
+		updated.ID = hookID
+		f.UpdatedProjectHooks = append(f.UpdatedProjectHooks, updated)
+		stored := updated
+		stored.Token = "" // GitLab never returns the webhook secret.
+		hooks[i] = stored
+		f.ProjectHooks[key] = hooks
+		return &stored, nil
+	}
+	return nil, fmt.Errorf("%w: project hook %d", ErrNotFound, hookID)
+}
+
+func (f *FakeClient) DeleteProjectHook(_ context.Context, owner, repo string, hookID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeleteProjectHook"); e != nil {
+		return e
+	}
+
+	f.DeletedProjectHookIDs = append(f.DeletedProjectHookIDs, hookID)
+	key := owner + "/" + repo
+	hooks := f.ProjectHooks[key]
+	filtered := hooks[:0]
+	found := false
+	for _, h := range hooks {
+		if h.ID == hookID {
+			found = true
+			continue
+		}
+		filtered = append(filtered, h)
+	}
+	if !found {
+		return fmt.Errorf("%w: project hook %d", ErrNotFound, hookID)
+	}
+	f.ProjectHooks[key] = filtered
 	return nil
 }

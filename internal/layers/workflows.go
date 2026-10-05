@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -64,9 +65,13 @@ func (l *WorkflowsLayer) WithDirect(direct bool) *WorkflowsLayer {
 // WithSignOff configures a Signed-off-by trailer to append to commit
 // messages. This is used for human-driven CLI operations where DCO
 // sign-off is required. Pass an empty string to disable.
+// If the identity is empty after sanitization, the trailer is silently
+// omitted (callers in best-effort paths already guard for this).
 func (l *WorkflowsLayer) WithSignOff(name, email string) *WorkflowsLayer {
 	if name != "" && email != "" {
-		l.signOffTrailer = fmt.Sprintf("Signed-off-by: %s <%s>", name, email)
+		if trailer, err := forge.FormatSignOffTrailer(name, email); err == nil {
+			l.signOffTrailer = trailer
+		}
 	}
 	return l
 }
@@ -116,7 +121,7 @@ func (l *WorkflowsLayer) Install(ctx context.Context) error {
 	// Vendored marker paths must stay aligned with reusable workflow hashFiles
 	// checks (see .github workflows and scaffold.VendoredMarkerPath).
 	if l.vendored && l.vendorCollect != nil {
-		vendorFiles, count, err := l.vendorCollect(ctx, l.ui, l.org, forge.ConfigRepoName)
+		vendorFiles, count, err := l.vendorCollect(ctx, l.client, l.ui, l.org, forge.ConfigRepoName)
 		if err != nil {
 			return fmt.Errorf("collecting vendored assets: %w", err)
 		}
@@ -145,13 +150,16 @@ func (l *WorkflowsLayer) Install(ctx context.Context) error {
 		l.ui.StepStart(fmt.Sprintf("Creating scaffold PR for %s/%s (target: %s)",
 			l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch))
 	}
-	prTitle := "chore: add fullsend scaffold files"
-	prBody := fmt.Sprintf("This PR adds the fullsend scaffold files to the %s config repo.\n\n"+
-		"Merge this PR to activate fullsend workflows.", forge.ConfigRepoName)
+	meta := repos.ScaffoldPRMetadata{
+		CommitMsg: commitMsg,
+		PRTitle:   "chore: add fullsend scaffold files",
+		PRBody: fmt.Sprintf("This PR adds the fullsend scaffold files to the %s config repo.\n\n"+
+			"Merge this PR to activate fullsend workflows.", forge.ConfigRepoName),
+	}
 
 	committed, err := CommitScaffoldFiles(ctx, l.client, l.ui,
 		l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch,
-		commitMsg, prTitle, prBody, files, l.direct, nil)
+		meta, files, l.direct, nil)
 	if err != nil {
 		return err
 	}

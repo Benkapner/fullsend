@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 )
 
@@ -133,6 +134,7 @@ func TestListMergeRequestsUpdatedSince(t *testing.T) {
 				"merge_user":        map[string]any{"id": 6, "username": "merger"},
 				"merged_by":         map[string]any{"id": 6, "username": "merger"},
 				"merged_at":         "2024-06-01T14:00:00Z",
+				"created_at":        "2024-06-01T10:00:00Z",
 				"updated_at":        "2024-06-01T14:00:00Z",
 			},
 		})
@@ -149,6 +151,40 @@ func TestListMergeRequestsUpdatedSince(t *testing.T) {
 	assert.Equal(t, "merger", mrs[0].MergeUser.Username)
 	assert.Equal(t, "feature", mrs[0].SourceBranch)
 	assert.Equal(t, "main", mrs[0].TargetBranch)
+	assert.Equal(t, time.Date(2024, 6, 1, 10, 0, 0, 0, time.UTC), mrs[0].CreatedAt)
+}
+
+func TestListMergeRequestsUpdatedSince_ClosedFields(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{
+				"iid":               11,
+				"title":             "Abandoned",
+				"state":             "closed",
+				"source_project_id": 100,
+				"target_project_id": 100,
+				"author":            map[string]any{"id": 5, "username": "dev"},
+				"closed_by":         map[string]any{"id": 7, "username": "closer"},
+				"closed_at":         "2024-06-01T15:00:00Z",
+				"created_at":        "2024-06-01T10:00:00Z",
+				"updated_at":        "2024-06-01T15:00:00Z",
+			},
+		})
+	})
+
+	since := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	mrs, err := pc.ListMergeRequestsUpdatedSince(ctx, "myorg", "myrepo", since)
+	require.NoError(t, err)
+	require.Len(t, mrs, 1)
+	assert.Equal(t, 11, mrs[0].IID)
+	assert.Equal(t, "closed", mrs[0].State)
+	assert.Equal(t, "closer", mrs[0].ClosedBy.Username)
+	assert.Equal(t, 7, mrs[0].ClosedBy.ID)
+	assert.Equal(t, time.Date(2024, 6, 1, 15, 0, 0, 0, time.UTC), mrs[0].ClosedAt)
+	assert.True(t, mrs[0].MergedAt.IsZero())
 }
 
 // ---------------------------------------------------------------------------
@@ -899,6 +935,94 @@ func TestPollClient_GetAuthenticatedUser(t *testing.T) {
 	username, err := pc.GetAuthenticatedUser(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "pollbot", username)
+}
+
+func TestPollClient_CreatePipeline(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "main", body["ref"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"id":      42,
+			"web_url": "https://gitlab.com/myorg/myrepo/-/pipelines/42",
+		})
+	})
+
+	id, webURL, err := pc.CreatePipeline(ctx, "myorg", "myrepo", "main", map[string]string{
+		"STAGE":      "triage",
+		"EVENT_TYPE": "issue_comment",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(42), id)
+	assert.Equal(t, "https://gitlab.com/myorg/myrepo/-/pipelines/42", webURL)
+}
+
+func TestPollClient_CreatePipeline_Error(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
+	})
+
+	_, _, err := pc.CreatePipeline(ctx, "myorg", "myrepo", "main", nil)
+	require.Error(t, err)
+}
+
+func TestPollClient_CreatePipelineWithInputs(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	handlerCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "main", body["ref"])
+		// Unlike CreatePipeline, this must never send a "variables" key —
+		// that's the user-defined-pipeline-variable transport GitLab's
+		// ci_pipeline_variables_minimum_override_role gates and #7850
+		// moves dispatch away from.
+		_, hasVariables := body["variables"]
+		assert.False(t, hasVariables, "CreatePipelineWithInputs must not send a variables field")
+		inputs, _ := body["inputs"].(map[string]any)
+		assert.Equal(t, "triage", inputs["stage"])
+		assert.Equal(t, true, inputs["is_fork"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"id":      43,
+			"web_url": "https://gitlab.com/myorg/myrepo/-/pipelines/43",
+		})
+	})
+
+	id, webURL, err := pc.CreatePipelineWithInputs(ctx, "myorg", "myrepo", "main", map[string]forge.PipelineInputValue{
+		"stage":   forge.StringInput("triage"),
+		"is_fork": forge.BoolInput(true),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(43), id)
+	assert.Equal(t, "https://gitlab.com/myorg/myrepo/-/pipelines/43", webURL)
+	assert.True(t, handlerCalled, "pipeline handler must be called")
+}
+
+func TestPollClient_CreatePipelineWithInputs_Error(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	handlerCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		writeJSON(t, w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
+	})
+
+	_, _, err := pc.CreatePipelineWithInputs(ctx, "myorg", "myrepo", "main", nil)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "403")
+	assert.True(t, handlerCalled, "pipeline handler must be called")
 }
 
 func TestPollClient_GetAuthenticatedUserID(t *testing.T) {

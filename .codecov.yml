@@ -12,26 +12,20 @@ coverage:
         threshold: 1%
     patch:
       default:
+        # Target 80%. threshold 5% => codecov/patch PASSES at >= 75%.
+        # PR comments still mark X below the 80% target even when green.
         target: 80%
         threshold: 5%
 
 ignore:
   - "**/*_test.go"
   - "**/testdata/**"
-  - "e2e/behaviour/suite_test.go"
-  - "e2e/behaviour/features/**"
-  - "e2e/behaviour/fixtures/**"
-  # Integration-only; covered by behaviour/e2e CI jobs (not unit coverage upload).
-  - "pkg/behaviourtest/steps/dispatch.go"
-  - "pkg/behaviourtest/steps/dispatch_count.go"
-  - "pkg/behaviourtest/steps/dummy_agent.go"
-  - "pkg/behaviourtest/steps/fork.go"
-  - "pkg/behaviourtest/steps/registry.go"
-  - "pkg/behaviourtest/steps/triage.go"
-  - "pkg/behaviourtest/suite/init.go"
-  - "pkg/behaviourtest/drivers/install/perrepo_github.go"
-  - "pkg/e2etest/cleanup.go"
-  - "pkg/e2etest/build.go"
+  # Behaviour-test harness and scenarios: integration-only, exercised by the
+  # behaviour/e2e CI jobs against real repos (not by the unit coverage upload).
+  - "e2e/behaviour/**"
+  - "pkg/behaviourtest/**"
+  - "internal/e2etest/cleanup.go"
+  - "internal/e2etest/build.go"
   - "docs/**"
   - "hack/**"
   - "experiments/**"

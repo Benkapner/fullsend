@@ -43,7 +43,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: fullsend-ai/fullsend
-          ref: v0
+          ref: __FULLSEND_AI_REF__
           path: .defaults
           sparse-checkout: |
             internal/scaffold/fullsend-repo/scripts/
@@ -54,14 +54,6 @@ jobs:
           set -euo pipefail
           mkdir -p scripts
           cp -r ".defaults/internal/scaffold/fullsend-repo/scripts/." scripts/
-          if [[ -d "customized/scripts" ]]; then
-            find "customized/scripts" -type f ! -name '.gitkeep' -print0 \
-              | while IFS= read -r -d '' f; do
-                  rel="${f#customized/}"
-                  mkdir -p "$(dirname "${rel}")"
-                  cp "${f}" "${rel}"
-                done
-          fi
           rm -rf .defaults
 
       - name: Mint fullsend token

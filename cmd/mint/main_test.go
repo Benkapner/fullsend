@@ -185,7 +185,6 @@ func TestSortedKeys(t *testing.T) {
 func TestRun_MissingEnvVars(t *testing.T) {
 	t.Setenv("ALLOWED_ORGS", "")
 	t.Setenv("ROLE_APP_IDS", "")
-	t.Setenv("OIDC_AUDIENCE", "")
 	t.Setenv("PEM_DIR", "")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -198,12 +197,46 @@ func TestRun_MissingEnvVars(t *testing.T) {
 	if !strings.Contains(err.Error(), "required environment variables not set") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	// ALLOWED_ORGS is no longer required — it should not appear in the missing list.
+	if strings.Contains(err.Error(), "ALLOWED_ORGS") {
+		t.Fatalf("ALLOWED_ORGS should not be required, but error mentions it: %v", err)
+	}
+}
+
+func TestRun_StartsWithoutAllowedOrgs(t *testing.T) {
+	pemDir := setupTestPEMDir(t)
+
+	t.Setenv("ALLOWED_ORGS", "")
+	t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
+	t.Setenv("PEM_DIR", pemDir)
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("PORT", "0")
+	t.Setenv("FALLBACK_MINT_URL", "")
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/my-repo")
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("mint should start without ALLOWED_ORGS: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run() did not return after context cancellation")
+	}
 }
 
 func TestRun_InvalidPEMDir(t *testing.T) {
 	t.Setenv("ALLOWED_ORGS", "test-org")
 	t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
-	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 	t.Setenv("PEM_DIR", "/nonexistent/path")
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 
@@ -221,7 +254,6 @@ func TestRun_SuccessfulStartAndShutdown(t *testing.T) {
 
 	t.Setenv("ALLOWED_ORGS", "test-org")
 	t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
-	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 	t.Setenv("PEM_DIR", pemDir)
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("PORT", "0")
@@ -253,7 +285,6 @@ func TestRun_CustomPort(t *testing.T) {
 
 	t.Setenv("ALLOWED_ORGS", "test-org")
 	t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
-	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 	t.Setenv("PEM_DIR", pemDir)
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("PORT", "19876")
@@ -284,7 +315,6 @@ func TestRun_WithFallback(t *testing.T) {
 
 	t.Setenv("ALLOWED_ORGS", "test-org")
 	t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
-	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 	t.Setenv("PEM_DIR", pemDir)
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("PORT", "0")
@@ -316,7 +346,6 @@ func TestBuildHandler(t *testing.T) {
 	t.Run("without fallback", func(t *testing.T) {
 		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
-		t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 		t.Setenv("FALLBACK_MINT_URL", "")
@@ -333,7 +362,6 @@ func TestBuildHandler(t *testing.T) {
 	t.Run("with fallback", func(t *testing.T) {
 		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
-		t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 		t.Setenv("FALLBACK_MINT_URL", "https://upstream.example.com")
@@ -350,7 +378,6 @@ func TestBuildHandler(t *testing.T) {
 	t.Run("with per-repo WIF repos", func(t *testing.T) {
 		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
-		t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 		t.Setenv("FALLBACK_MINT_URL", "")
@@ -368,7 +395,6 @@ func TestBuildHandler(t *testing.T) {
 	t.Run("invalid PEM dir", func(t *testing.T) {
 		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
-		t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 		t.Setenv("PEM_DIR", "/nonexistent/path")
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 
@@ -382,7 +408,6 @@ func TestBuildHandler(t *testing.T) {
 		t.Cleanup(func() { _ = mintcore.RegisterCustomRolePermissions(nil) })
 		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200","scanner":"300"}`)
-		t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 		t.Setenv("FALLBACK_MINT_URL", "")
@@ -401,7 +426,6 @@ func TestBuildHandler(t *testing.T) {
 		t.Cleanup(func() { _ = mintcore.RegisterCustomRolePermissions(nil) })
 		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
-		t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 		t.Setenv("CUSTOM_ROLE_PERMISSIONS", `{"triage":{"contents":"write"}}`)
@@ -418,7 +442,6 @@ func TestBuildHandler(t *testing.T) {
 	t.Run("http fallback URL rejected", func(t *testing.T) {
 		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
-		t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 		t.Setenv("FALLBACK_MINT_URL", "http://insecure.example.com")
@@ -435,7 +458,6 @@ func TestBuildHandler(t *testing.T) {
 	t.Run("empty host fallback URL rejected", func(t *testing.T) {
 		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
-		t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 		t.Setenv("FALLBACK_MINT_URL", "https://")
@@ -446,21 +468,16 @@ func TestBuildHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("custom role with invalid permission level", func(t *testing.T) {
+	t.Run("custom role with admin permission level accepted", func(t *testing.T) {
 		t.Cleanup(func() { _ = mintcore.RegisterCustomRolePermissions(nil) })
 		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
-		t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 		t.Setenv("CUSTOM_ROLE_PERMISSIONS", `{"scanner":{"contents":"admin"}}`)
 
-		_, err := buildHandler()
-		if err == nil {
-			t.Fatal("expected error for invalid permission level")
-		}
-		if !strings.Contains(err.Error(), "invalid level") {
-			t.Fatalf("unexpected error: %v", err)
+		if _, err := buildHandler(); err != nil {
+			t.Fatalf("admin should be an accepted permission level: %v", err)
 		}
 	})
 
@@ -468,7 +485,6 @@ func TestBuildHandler(t *testing.T) {
 		t.Cleanup(func() { _ = mintcore.RegisterCustomRolePermissions(nil) })
 		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
-		t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 		t.Setenv("CUSTOM_ROLE_PERMISSIONS", `{"Invalid-Name":{"contents":"read"}}`)
@@ -485,7 +501,6 @@ func TestBuildHandler(t *testing.T) {
 	t.Run("invalid ROLE_APP_IDS with fallback", func(t *testing.T) {
 		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `not-json`)
-		t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 		t.Setenv("FALLBACK_MINT_URL", "https://upstream.example.com")
@@ -503,7 +518,6 @@ func TestBuildHandler(t *testing.T) {
 		t.Cleanup(func() { _ = mintcore.RegisterCustomRolePermissions(nil) })
 		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
-		t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 		t.Setenv("CUSTOM_ROLE_PERMISSIONS", `not-json`)
@@ -523,16 +537,14 @@ func TestStandaloneWiring(t *testing.T) {
 
 	t.Setenv("ROLE_APP_IDS", `{"coder":"100","triage":"200","review":"300","fullsend":"500"}`)
 	t.Setenv("ALLOWED_ORGS", "test-org")
-	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 
-	verifier := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL:            "https://token.actions.githubusercontent.com",
-		Audience:             "fullsend-mint",
-		HTTPClient:           &http.Client{Timeout: 5 * time.Second},
-		AllowedOrgs:          []string{"test-org"},
-		AllowedWorkflowFiles: []string{"*"},
+	verifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
+		IssuerURL: "https://token.actions.githubusercontent.com",
 	})
+	if err != nil {
+		t.Fatalf("NewJWKSVerifier: %v", err)
+	}
 
 	pemAccessor, err := mintcore.NewFilesystemPEMAccessor(pemDir)
 	if err != nil {

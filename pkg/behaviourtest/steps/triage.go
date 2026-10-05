@@ -7,6 +7,7 @@ import (
 
 	"github.com/cucumber/godog"
 
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -36,26 +37,28 @@ func registerTriageSteps(sc *godog.ScenarioContext) {
 }
 
 func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
-	// When a leased repo name is available (from the pool) and an ensurer
-	// is configured, lazily create and install the leased repo. This
-	// removes the requirement for pre-existing repos in the pool org.
-	if w.LeasedRepoName != "" && w.Ensurer != nil {
-		st, err := w.Ensurer.EnsureRepo(ctx, w.Org, w.LeasedRepoName)
-		if err != nil {
-			return fmt.Errorf("ensuring leased repo %s/%s: %w", w.Org, w.LeasedRepoName, err)
-		}
-		w.Install = st
-		w.RepoOwner = w.Org
-		w.RepoName = w.LeasedRepoName
-		w.RepoFull = w.Org + "/" + w.LeasedRepoName
+	// Guard double-allocation: if AllocateRepo was already called for
+	// this scenario (e.g. duplicate "Given the enrolled test repository"
+	// step), skip rather than leaking a second slot.
+	if w.LeasedRepoName != "" {
 		return nil
 	}
 
-	// Fallback: use the suite-level install state (backward compat).
+	if w.Driver == nil {
+		return fmt.Errorf("no install driver configured; use a Factory to construct a Driver for the suite")
+	}
+
+	repoName, err := w.Driver.AllocateRepo(ctx)
+	if err != nil {
+		return fmt.Errorf("allocating repo: %w", err)
+	}
+
+	w.LeasedRepoName = repoName
 	w.RepoOwner = w.Org
-	w.RepoName = w.Install.TestRepo()
-	w.RepoFull = w.Org + "/" + w.RepoName
-	return nil
+	w.RepoName = repoName
+	w.RepoFull = w.Org + "/" + repoName
+
+	return ValidateSlotClean(w)
 }
 
 func givenEnrolledRepository(w *world.World, fullName string) error {
@@ -65,9 +68,6 @@ func givenEnrolledRepository(w *world.World, fullName string) error {
 	}
 	if owner != w.Org {
 		return fmt.Errorf("repository owner %q does not match test org %q", owner, w.Org)
-	}
-	if repo != w.Install.TestRepo() {
-		return fmt.Errorf("repository %q is not the enrolled test repo %q", repo, w.Install.TestRepo())
 	}
 	w.RepoFull = fullName
 	w.RepoOwner = owner
@@ -88,9 +88,7 @@ func givenIssue(w *world.World) error {
 
 func createIssue(w *world.World, title, body string) error {
 	if w.RepoOwner == "" || w.RepoName == "" {
-		w.RepoOwner = w.Org
-		w.RepoName = w.Install.TestRepo()
-		w.RepoFull = w.Org + "/" + w.RepoName
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before creating issues")
 	}
 	trigger := time.Now()
 	issue, err := w.SCM.CreateIssue(context.Background(), w.RepoOwner, w.RepoName, title, body)
@@ -119,8 +117,8 @@ const issueOpenDrainSkewBuffer = 30 * time.Second
 // and GitHub), it retries once with a relaxed trigger timestamp.
 func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
 	ctx := context.Background()
-	repo := w.Install.TriageWorkflowRepo()
-	file := w.Install.TriageWorkflowFile()
+	repo := w.RepoName
+	file := install.PerRepoTriageWorkflow
 
 	_, err := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, trigger, issueOpenEvent)
 	if err == nil {
@@ -143,7 +141,14 @@ func whenIssueLabeled(w *world.World, label string) error {
 	if w.IssueNumber == 0 {
 		return fmt.Errorf("no issue created")
 	}
-	w.ScenarioStart = time.Now()
+	// Truncate to second precision: forge-reported workflow/pipeline
+	// CreatedAt timestamps have second precision, but time.Now() carries
+	// a fractional component. A run created in the same wall-clock second
+	// as this trigger can therefore have a CreatedAt that parses earlier
+	// than an untruncated boundary and be rejected by every creation-time
+	// filter derived from it (CountHarnessDispatches, WaitForHarnessAgentRound)
+	// on every retry, not just the first (#7957 review).
+	w.ScenarioStart = time.Now().Truncate(time.Second)
 	w.TriageTriggerEvent = issueOpenEvent
 	return w.SCM.AddIssueLabels(context.Background(), w.RepoOwner, w.RepoName, w.IssueNumber, label)
 }

@@ -8,12 +8,12 @@ import (
 
 // Driver abstracts SCM operations for behaviour tests.
 //
-// Concurrency: the github.Driver implementation is an immutable wrapper
-// around forge.Client (which is itself safe for concurrent use) and
-// holds no unsynchronized mutable fields. Sharing a single Driver
-// across goroutines via World.Clone is safe by design for
-// GODOG_CONCURRENCY>1. TestConcurrentAccess in package
-// github exercises the real driver under -race with a FakeClient.
+// Concurrency: the github.Driver and gitlab.Driver implementations are
+// immutable wrappers around forge.Client (which is itself safe for
+// concurrent use) and hold no unsynchronized mutable fields. Sharing a
+// single Driver across goroutines via World.Clone is safe by design for
+// GODOG_CONCURRENCY>1. TestConcurrentAccess in packages github and
+// gitlab exercises the real driver under -race with a FakeClient.
 //
 // If a future implementation adds mutable state (caches, counters,
 // buffers), it must synchronize access or be deep-copied per scenario
@@ -24,6 +24,10 @@ type Driver interface {
 	AddComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error)
 	GetIssue(ctx context.Context, owner, repo string, number int) (*forge.Issue, error)
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
+	// GetFileContentAtRef retrieves the content of a file at a specific
+	// ref (commit SHA, branch, or tag), rather than GetFileContent's
+	// implicit default-branch/HEAD read.
+	GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
 	CommitFile(ctx context.Context, owner, repo, path, message string, content []byte) error
 	CreateBranch(ctx context.Context, owner, repo, branch string) error
 	// DeleteBranch deletes a branch from a repository. Returns
@@ -33,7 +37,29 @@ type Driver interface {
 	CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*forge.ChangeProposal, error)
 	SubmitPullRequestReview(ctx context.Context, owner, repo string, number int, event string) error
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
+	// ListOpenChangeProposals returns the repository's open pull
+	// requests, including each proposal's head branch.
+	ListOpenChangeProposals(ctx context.Context, owner, repo string) ([]forge.ChangeProposal, error)
+	// ListComments returns the comments on an issue or pull request.
+	ListComments(ctx context.Context, owner, repo string, number int) ([]forge.IssueComment, error)
+	// ListIssueReactions returns the emoji reactions on an issue or
+	// pull request. Used by reaction notification assertions.
+	ListIssueReactions(ctx context.Context, owner, repo string, number int) ([]forge.Reaction, error)
 
+	// CreateRepo creates a new repository in the given org. It is
+	// idempotent — if a repo with the given name already exists,
+	// it returns without error.
+	CreateRepo(ctx context.Context, org, name, description string) error
+	// EnsureRepoPublic verifies that a repository is public and
+	// attempts to update its visibility if the org forced it private.
+	// Returns an error if the repo cannot be made public.
+	EnsureRepoPublic(ctx context.Context, owner, repo string) error
+	// GetDefaultBranch returns the name of a repository's default branch.
+	GetDefaultBranch(ctx context.Context, owner, repo string) (string, error)
+	// GetBranchRef returns the HEAD commit SHA for the named branch.
+	// Returns an error if the branch ref does not exist (e.g. the
+	// fork's Git data has not been replicated yet).
+	GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error)
 	// DeleteRepo deletes a repository. Returns forge.ErrNotFound
 	// if the repository does not exist.
 	DeleteRepo(ctx context.Context, owner, repo string) error
@@ -54,4 +80,14 @@ type Driver interface {
 	// The forkRepo parameter is required to disambiguate same-owner forks
 	// (where forkOwner == baseOwner) from branches on the base repo.
 	CreateForkChangeProposal(ctx context.Context, baseOwner, baseRepo, title, body, forkOwner, forkRepo, head, base string) (*forge.ChangeProposal, error)
+
+	// ListPullRequestReviews returns the formal reviews submitted on a
+	// change proposal (pull request / merge request).
+	ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]forge.PullRequestReview, error)
+
+	// ListPullRequestCommits returns the commit SHAs on a change
+	// proposal, oldest first. The result is the proposal's current commit
+	// list, so a force-push or rebase of the head branch can replace it;
+	// it makes no promise about the commits the proposal was opened with.
+	ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error)
 }

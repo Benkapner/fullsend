@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -549,7 +550,7 @@ func TestLockOneAgent_NonexistentHarness(t *testing.T) {
 	printer := ui.New(os.Stdout)
 	_, err := lockOneAgent(context.Background(), "nonexistent", dir, "", false, nil, resolveFlags{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "harness file not found: tried nonexistent.yaml and nonexistent.yml")
+	assert.Contains(t, err.Error(), "harness file not found")
 }
 
 func TestLockOneAgent_StatError(t *testing.T) {
@@ -840,4 +841,229 @@ allowed_remote_resources:
 	lf2, err := lock.Load(filepath.Join(dir, "lock.yaml"))
 	require.NoError(t, err)
 	assert.Nil(t, lf2.Lookup("code"), "removed harness should have been pruned from lock file")
+}
+
+func TestResolveHarnessForLock_PrefersLocalPath(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
+		0o644,
+	))
+
+	printer := ui.New(os.Stdout)
+	path, deps, err := resolveHarnessForLock(
+		context.Background(), dir, "code", nil, resolveFlags{}, fetch.FetchPolicy{}, printer)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "harness", "code.yaml"), path)
+	assert.Nil(t, deps, "no agent source deps for local harness")
+}
+
+func TestResolveHarnessForLock_FallsBackToConfigLocalPath(t *testing.T) {
+	dir := t.TempDir()
+	// No harness/ directory — agent comes from config with a local path.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "custom"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "custom", "myagent.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
+		0o644,
+	))
+
+	orgConfig := "agents:\n  - source: custom/myagent.yaml\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+	orgCfg := tryLoadOrgConfig(filepath.Join(dir, "config.yaml"), ui.New(os.Stdout))
+	require.NotNil(t, orgCfg)
+
+	printer := ui.New(os.Stdout)
+	path, deps, err := resolveHarnessForLock(
+		context.Background(), dir, "myagent", orgCfg, resolveFlags{}, fetch.FetchPolicy{}, printer)
+	require.NoError(t, err)
+	assert.Contains(t, path, "myagent.yaml")
+	assert.Nil(t, deps, "no agent source deps for local config path")
+}
+
+func TestResolveHarnessForLock_FallsBackToConfigURL(t *testing.T) {
+	harnessContent := []byte("agent: agents/code.md\nrole: test\n")
+	harnessHash := fetch.ComputeSHA256(harnessContent)
+
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/harness/code.yaml": harnessContent,
+	})
+
+	dir := t.TempDir()
+	// No local harness/ directory — agent comes from config URL.
+
+	harnessURL := fmt.Sprintf("%s/harness/code.yaml#sha256=%s", srv.URL, harnessHash)
+	orgConfig := fmt.Sprintf("agents:\n  - name: code\n    source: \"%s\"\nallowed_remote_resources:\n  - \"%s/\"\n", harnessURL, srv.URL)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+	orgCfg := tryLoadOrgConfig(filepath.Join(dir, "config.yaml"), ui.New(os.Stdout))
+	require.NotNil(t, orgCfg)
+
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+
+	printer := ui.New(os.Stdout)
+	path, deps, err := resolveHarnessForLock(
+		context.Background(), dir, "code", orgCfg, resolveFlags{}, policy, printer)
+	require.NoError(t, err)
+	assert.NotEmpty(t, path)
+	require.Len(t, deps, 1, "URL-sourced agent should have one agent_source dep")
+	assert.Equal(t, "agent_source", deps[0].Field)
+}
+
+func TestResolveHarnessForLock_NoConfigNoLocal(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	printer := ui.New(os.Stdout)
+	_, _, err := resolveHarnessForLock(
+		context.Background(), dir, "missing", nil, resolveFlags{}, fetch.FetchPolicy{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no config.yaml for fallback")
+}
+
+func TestResolveHarnessForLock_AgentNotInConfig(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	orgConfig := "agents:\n  - source: harness/other.yaml\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+	orgCfg := tryLoadOrgConfig(filepath.Join(dir, "config.yaml"), ui.New(os.Stdout))
+	require.NotNil(t, orgCfg)
+
+	printer := ui.New(os.Stdout)
+	_, _, err := resolveHarnessForLock(
+		context.Background(), dir, "missing", orgCfg, resolveFlags{}, fetch.FetchPolicy{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found in local harness directory or config")
+}
+
+func TestResolveHarnessForLock_DisabledAgent(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	orgConfig := "agents:\n  - name: code\n    source: harness/code.yaml\n    enabled: false\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+	orgCfg := tryLoadOrgConfig(filepath.Join(dir, "config.yaml"), ui.New(os.Stdout))
+	require.NotNil(t, orgCfg)
+
+	printer := ui.New(os.Stdout)
+	_, _, err := resolveHarnessForLock(
+		context.Background(), dir, "code", orgCfg, resolveFlags{}, fetch.FetchPolicy{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "explicitly disabled")
+}
+
+func TestLockOneAgent_ConfigFallback(t *testing.T) {
+	// Agent only exists in config (no local harness file).
+	// lockOneAgent should resolve it from config and lock its deps.
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+
+	// Create the server first, then build harness content referencing its URL.
+	srv, policy := newLockTestServer(t, nil)
+	harnessYAML := fmt.Sprintf("agent: \"%s/agents/code.md#sha256=%s\"\nrole: test\nallowed_remote_resources:\n  - \"%s/\"\n", srv.URL, agentHash, srv.URL)
+	harnessHash := fetch.ComputeSHA256([]byte(harnessYAML))
+
+	// Replace the server handler to serve both the harness and agent.
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agents/code.md":
+			w.Write(agentContent)
+		case "/harness/code.yaml":
+			w.Write([]byte(harnessYAML))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	dir := t.TempDir()
+	// No local harness/ directory — agent comes from config URL.
+	harnessURL := fmt.Sprintf("%s/harness/code.yaml#sha256=%s", srv.URL, harnessHash)
+	orgConfig := fmt.Sprintf("agents:\n  - name: code\n    source: \"%s\"\nallowed_remote_resources:\n  - \"%s/\"\n", harnessURL, srv.URL)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+
+	printer := ui.New(os.Stdout)
+	result, err := lockOneAgent(context.Background(), "code", dir, "", false, nil, resolveFlags{}, printer)
+	require.NoError(t, err)
+	require.NotNil(t, result, "config-resolved agent should have dependencies to lock")
+	assert.NotEmpty(t, result.deps, "should have at least one dependency")
+
+	// Source should use the agent name, not the cache-internal basename.
+	assert.Equal(t, filepath.Join("harness", "code.yaml"), result.harnessLock.Source,
+		"URL-resolved agent should have a readable Source, not a cache-internal path")
+
+	// The agent_source dep should exist in the lock deps.
+	var hasAgentSource bool
+	for _, dep := range result.harnessLock.Dependencies {
+		if dep.Field == "agent_source" {
+			hasAgentSource = true
+			break
+		}
+	}
+	assert.True(t, hasAgentSource, "URL-resolved agent should have an agent_source dependency entry")
+}
+
+func TestLockAll_IncludesConfigAgents(t *testing.T) {
+	// Local harness directory has "local" agent.
+	// Config has "configonly" agent (local path).
+	// --all should discover both.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "custom"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "local.yaml"),
+		[]byte("agent: agents/local.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "custom", "configonly.yaml"),
+		[]byte("agent: agents/configonly.md\nrole: test\n"),
+		0o644,
+	))
+
+	orgConfig := "agents:\n  - source: custom/configonly.yaml\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	err := runLockAll(context.Background(), dir, "", false, resolveFlags{}, printer)
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "configonly", "should process config-only agent")
+	assert.Contains(t, output, "local", "should process local agent")
+}
+
+func TestLockAll_NoLocalHarnessesButHasConfigAgents(t *testing.T) {
+	// No harness/ directory at all, but config has agents.
+	// --all should still discover and process config agents.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "custom"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "custom", "remote.yaml"),
+		[]byte("agent: agents/remote.md\nrole: test\n"),
+		0o644,
+	))
+
+	orgConfig := "agents:\n  - source: custom/remote.yaml\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	err := runLockAll(context.Background(), dir, "", false, resolveFlags{}, printer)
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "remote", "should discover config-only agent when no local harness dir exists")
 }

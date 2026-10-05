@@ -5,6 +5,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
@@ -219,6 +222,23 @@ func TestCreateFork_ExistingForkOfDifferentSource(t *testing.T) {
 	}
 }
 
+func TestCreateRepo_IdempotentAlreadyExists(t *testing.T) {
+	fc := forge.NewFakeClient()
+	d := New(fc)
+
+	// First create succeeds.
+	err := d.CreateRepo(context.Background(), "org", "my-repo", "desc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Second create of the same repo should succeed (idempotent).
+	err = d.CreateRepo(context.Background(), "org", "my-repo", "desc")
+	if err != nil {
+		t.Fatalf("idempotent CreateRepo should not error: %v", err)
+	}
+}
+
 func TestCreateFork_ExistingForkOfSameSource(t *testing.T) {
 	fc := forge.NewFakeClient()
 	// Pre-populate with a fork of the same source repo (idempotent case).
@@ -241,4 +261,422 @@ func TestCreateFork_ExistingForkOfSameSource(t *testing.T) {
 	if len(fc.CreatedForks) != 0 {
 		t.Errorf("expected no new fork creation for idempotent case, got %v", fc.CreatedForks)
 	}
+}
+
+// --- Tests for PR-added methods ---
+
+func TestGetDefaultBranch(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "repo", FullName: "org/repo", DefaultBranch: "develop"},
+	}
+	d := New(fc)
+
+	branch, err := d.GetDefaultBranch(context.Background(), "org", "repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if branch != "develop" {
+		t.Errorf("expected branch %q, got %q", "develop", branch)
+	}
+}
+
+func TestGetDefaultBranch_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["GetRepo"] = errors.New("repo not found")
+	d := New(fc)
+
+	_, err := d.GetDefaultBranch(context.Background(), "org", "repo")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, errors.New("")) && err.Error() == "" {
+		t.Fatalf("expected wrapped error, got %v", err)
+	}
+}
+
+func TestGetBranchRef(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.BranchRefs = map[string]string{
+		"org/repo/main": "deadbeef",
+	}
+	d := New(fc)
+
+	sha, err := d.GetBranchRef(context.Background(), "org", "repo", "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sha != "deadbeef" {
+		t.Errorf("expected SHA %q, got %q", "deadbeef", sha)
+	}
+}
+
+func TestGetBranchRef_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["GetBranchRef"] = errors.New("ref not found")
+	d := New(fc)
+
+	_, err := d.GetBranchRef(context.Background(), "org", "repo", "main")
+	if err == nil || err.Error() != "ref not found" {
+		t.Fatalf("expected ref not found error, got %v", err)
+	}
+}
+
+func TestEnsureRepoPublic_AlreadyPublic(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "repo", FullName: "org/repo", Private: false},
+	}
+	d := New(fc)
+
+	err := d.EnsureRepoPublic(context.Background(), "org", "repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureRepoPublic_MakesPublic(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "repo", FullName: "org/repo", Private: true},
+	}
+	d := New(fc)
+
+	err := d.EnsureRepoPublic(context.Background(), "org", "repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// After UpdateRepoVisibility + re-check, repo should be public.
+	repo, _ := fc.GetRepo(context.Background(), "org", "repo")
+	if repo.Private {
+		t.Error("repo should be public after EnsureRepoPublic")
+	}
+}
+
+func TestEnsureRepoPublic_GetRepoError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["GetRepo"] = errors.New("api error")
+	d := New(fc)
+
+	err := d.EnsureRepoPublic(context.Background(), "org", "repo")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestEnsureRepoPublic_UpdateVisibilityError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "repo", FullName: "org/repo", Private: true},
+	}
+	fc.Errors["UpdateRepoVisibility"] = errors.New("org policy prevents public repos")
+	d := New(fc)
+
+	err := d.EnsureRepoPublic(context.Background(), "org", "repo")
+	if err == nil {
+		t.Fatal("expected error when visibility update fails")
+	}
+}
+
+func TestEnsureRepoPublic_ReVerifyError(t *testing.T) {
+	// UpdateRepoVisibility succeeds, but the re-verification GetRepo fails.
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "repo", FullName: "org/repo", Private: true},
+	}
+	d := &Driver{Client: &reVerifyFailClient{FakeClient: fc}}
+
+	err := d.EnsureRepoPublic(context.Background(), "org", "repo")
+	if err == nil {
+		t.Fatal("expected error when re-verification GetRepo fails")
+	}
+}
+
+// reVerifyFailClient wraps FakeClient. UpdateRepoVisibility succeeds
+// but the second GetRepo call returns an error.
+type reVerifyFailClient struct {
+	*forge.FakeClient
+	getRepoCount int
+}
+
+func (c *reVerifyFailClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Repository, error) {
+	c.getRepoCount++
+	if c.getRepoCount >= 2 {
+		return nil, errors.New("re-verify API error")
+	}
+	return c.FakeClient.GetRepo(ctx, owner, repo)
+}
+
+func TestEnsureRepoPublic_StillPrivateAfterUpdate(t *testing.T) {
+	// Simulate a repo that stays private even after UpdateRepoVisibility
+	// (e.g., org policy override). We use a custom approach: set
+	// UpdateRepoVisibility to not actually change the repo's private flag
+	// by using error injection only on the re-verification GetRepo.
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "repo", FullName: "org/repo", Private: true},
+	}
+	d := &Driver{Client: &stillPrivateClient{FakeClient: fc}}
+
+	err := d.EnsureRepoPublic(context.Background(), "org", "repo")
+	if err == nil {
+		t.Fatal("expected error when repo remains private after update")
+	}
+}
+
+// stillPrivateClient wraps FakeClient but makes UpdateRepoVisibility
+// a no-op so the repo stays private after the call.
+type stillPrivateClient struct {
+	*forge.FakeClient
+}
+
+func (c *stillPrivateClient) UpdateRepoVisibility(_ context.Context, _, _ string, _ bool) error {
+	// Intentionally don't change repo visibility to simulate org policy.
+	return nil
+}
+
+func TestParseRepo_Success(t *testing.T) {
+	owner, repo, err := ParseRepo("acme/widget")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if owner != "acme" || repo != "widget" {
+		t.Errorf("expected acme/widget, got %s/%s", owner, repo)
+	}
+}
+
+func TestParseRepo_Invalid(t *testing.T) {
+	_, _, err := ParseRepo("invalid")
+	if err == nil {
+		t.Fatal("expected error for invalid repo name")
+	}
+}
+
+func TestAddIssueLabels(t *testing.T) {
+	fc := forge.NewFakeClient()
+	issue, err := fc.CreateIssue(context.Background(), "org", "repo", "test", "body")
+	if err != nil {
+		t.Fatalf("unexpected error creating issue: %v", err)
+	}
+	d := New(fc)
+
+	err = d.AddIssueLabels(context.Background(), "org", "repo", issue.Number, "bug", "priority")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCloseIssue(t *testing.T) {
+	fc := forge.NewFakeClient()
+	issue, err := fc.CreateIssue(context.Background(), "org", "repo", "test", "body")
+	if err != nil {
+		t.Fatalf("unexpected error creating issue: %v", err)
+	}
+	d := New(fc)
+
+	err = d.CloseIssue(context.Background(), "org", "repo", issue.Number)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCommitFileToBranch(t *testing.T) {
+	fc := forge.NewFakeClient()
+	d := New(fc)
+
+	err := d.CommitFileToBranch(context.Background(), "owner", "repo", "feature", "file.txt", "add file", []byte("content"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fc.CreatedFiles) != 1 {
+		t.Fatalf("expected 1 file creation, got %d", len(fc.CreatedFiles))
+	}
+	if fc.CreatedFiles[0].Branch != "feature" {
+		t.Errorf("expected branch %q, got %q", "feature", fc.CreatedFiles[0].Branch)
+	}
+}
+
+func TestCommitFileToBranch_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["CreateOrUpdateFileOnBranch"] = errors.New("commit error")
+	d := New(fc)
+
+	err := d.CommitFileToBranch(context.Background(), "owner", "repo", "branch", "file.txt", "msg", []byte("data"))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestCreateChangeProposal(t *testing.T) {
+	fc := forge.NewFakeClient()
+	d := New(fc)
+
+	cp, err := d.CreateChangeProposal(context.Background(), "owner", "repo", "title", "body", "head", "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cp.Title != "title" {
+		t.Errorf("expected title %q, got %q", "title", cp.Title)
+	}
+}
+
+func TestCreateChangeProposal_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["CreateChangeProposal"] = errors.New("pr create failed")
+	d := New(fc)
+
+	_, err := d.CreateChangeProposal(context.Background(), "owner", "repo", "title", "body", "head", "main")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestSubmitPullRequestReview(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = "abc123"
+	d := New(fc)
+
+	err := d.SubmitPullRequestReview(context.Background(), "owner", "repo", 1, "APPROVE")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fc.CreatedReviews) != 1 {
+		t.Fatalf("expected 1 review, got %d", len(fc.CreatedReviews))
+	}
+}
+
+func TestSubmitPullRequestReview_GetSHAError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["GetPullRequestHeadSHA"] = errors.New("sha lookup failed")
+	d := New(fc)
+
+	err := d.SubmitPullRequestReview(context.Background(), "owner", "repo", 1, "APPROVE")
+	if err == nil {
+		t.Fatal("expected error when GetPullRequestHeadSHA fails")
+	}
+}
+
+func TestSubmitPullRequestReview_CreateReviewError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = "abc123"
+	fc.Errors["CreatePullRequestReview"] = errors.New("review failed")
+	d := New(fc)
+
+	err := d.SubmitPullRequestReview(context.Background(), "owner", "repo", 1, "APPROVE")
+	if err == nil {
+		t.Fatal("expected error when CreatePullRequestReview fails")
+	}
+}
+
+func TestListPullRequestReviews(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = "abc123"
+	d := New(fc)
+
+	require.NoError(t, d.SubmitPullRequestReview(context.Background(), "owner", "repo", 1, "APPROVE"))
+
+	reviews, err := d.ListPullRequestReviews(context.Background(), "owner", "repo", 1)
+	require.NoError(t, err)
+	require.Len(t, reviews, 1)
+	assert.Equal(t, "APPROVE", reviews[0].State)
+}
+
+func TestListPullRequestCommits(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PRCommits = map[string][]string{"owner/repo/1": {"first", "second"}}
+	d := New(fc)
+
+	shas, err := d.ListPullRequestCommits(context.Background(), "owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"first", "second"}, shas)
+}
+
+func TestListPullRequestCommits_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["ListPullRequestCommits"] = errors.New("list failed")
+	d := New(fc)
+
+	_, err := d.ListPullRequestCommits(context.Background(), "owner", "repo", 1)
+	assert.ErrorContains(t, err, "list failed")
+}
+
+func TestListPullRequestReviews_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["ListPullRequestReviews"] = errors.New("list failed")
+	d := New(fc)
+
+	_, err := d.ListPullRequestReviews(context.Background(), "owner", "repo", 1)
+	assert.ErrorContains(t, err, "list failed")
+}
+
+// laggingRepoClient returns ErrNotFound for the first fails GetRepo
+// calls, then delegates: GitHub's read-after-create lag (#7861).
+type laggingRepoClient struct {
+	forge.Client
+	fails int
+	err   error
+	calls int
+}
+
+func (c *laggingRepoClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Repository, error) {
+	c.calls++
+	if c.calls <= c.fails {
+		if c.err != nil {
+			return nil, c.err
+		}
+		return nil, forge.ErrNotFound
+	}
+	return c.Client.GetRepo(ctx, owner, repo)
+}
+
+func noRepoVisibleDelay(t *testing.T) {
+	t.Helper()
+	orig := repoVisibleDelay
+	repoVisibleDelay = 0
+	t.Cleanup(func() { repoVisibleDelay = orig })
+}
+
+func newPublicRepoFake() *forge.FakeClient {
+	fc := forge.NewFakeClient()
+	fc.Repos = append(fc.Repos, forge.Repository{Name: "host", FullName: "org/host", Private: false})
+	return fc
+}
+
+func TestEnsureRepoPublic_RetriesNotFoundAfterCreate(t *testing.T) {
+	noRepoVisibleDelay(t)
+	c := &laggingRepoClient{Client: newPublicRepoFake(), fails: 2}
+
+	require.NoError(t, New(c).EnsureRepoPublic(context.Background(), "org", "host"))
+	assert.Equal(t, 3, c.calls)
+}
+
+func TestEnsureRepoPublic_NotFoundExhaustsBudget(t *testing.T) {
+	noRepoVisibleDelay(t)
+	c := &laggingRepoClient{Client: newPublicRepoFake(), fails: 100}
+
+	err := New(c).EnsureRepoPublic(context.Background(), "org", "host")
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+	assert.Contains(t, err.Error(), "still not found 5 attempts after creation")
+	assert.Equal(t, repoVisibleAttempts, c.calls)
+}
+
+func TestEnsureRepoPublic_OtherErrorNotRetried(t *testing.T) {
+	noRepoVisibleDelay(t)
+	c := &laggingRepoClient{Client: newPublicRepoFake(), fails: 100, err: errors.New("forbidden")}
+
+	err := New(c).EnsureRepoPublic(context.Background(), "org", "host")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forbidden")
+	assert.Equal(t, 1, c.calls)
+}
+
+func TestEnsureRepoPublic_ContextCancelledWhileWaiting(t *testing.T) {
+	c := &laggingRepoClient{Client: newPublicRepoFake(), fails: 100}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := New(c).EnsureRepoPublic(ctx, "org", "host")
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, c.calls)
 }

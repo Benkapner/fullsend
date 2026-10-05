@@ -78,8 +78,10 @@ env:
   environment, same as `runner_env` and `expand: true` host_files today.
 
 The `env:` field can appear at the top level and inside `forge.<platform>`
-blocks, replacing `runner_env` at both levels
-([ADR 0045](0045-forge-portable-harness-schema.md)).
+blocks (or `overlays:` entries), replacing `runner_env` at both levels
+([ADR 0045](0045-forge-portable-harness-schema.md)). `forge:` is deprecated
+in favor of CEL-guarded `overlays:` — see
+[ADR 0088](0088-cel-guarded-overlays.md).
 
 Go struct:
 
@@ -180,6 +182,9 @@ for harnesses that still reference it.
   `runner_env` deprecation.
 - ADR 0049's env var naming convention applies unchanged — the delivery
   mechanism changes but the `{AGENT}_{SETTING_NAME}` convention does not.
+  See also [ADR 0080](0080-config-yaml-vs-agent-env-var-scope.md), which
+  clarifies when a knob should use the `{AGENT}_` env var pattern versus
+  being a `config.yaml` field.
 - Modular `.env` files via `host_files` remain the right choice for
   per-tool env groups shared across multiple harnesses.
 - This change extends the harness schema; runners older than Phase 1 will

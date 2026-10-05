@@ -75,11 +75,18 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 		r.printer.ToolProgress(msg)
 	case TokensEvent:
 		r.endBlock()
-		total := e.InputTokens + e.OutputTokens + e.CacheRead + e.CacheWrite
-		r.printer.StepInfo(fmt.Sprintf(
-			"TOKENS in=%d out=%d cache_r=%d cache_w=%d total=%d",
-			e.InputTokens, e.OutputTokens, e.CacheRead, e.CacheWrite, total,
-		))
+		total := e.InputTokens + e.OutputTokens + e.ReasoningTokens + e.CacheRead + e.CacheWrite
+		if e.ReasoningTokens > 0 {
+			r.printer.StepInfo(fmt.Sprintf(
+				"TOKENS in=%d out=%d reasoning=%d cache_r=%d cache_w=%d total=%d",
+				e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.CacheRead, e.CacheWrite, total,
+			))
+		} else {
+			r.printer.StepInfo(fmt.Sprintf(
+				"TOKENS in=%d out=%d cache_r=%d cache_w=%d total=%d",
+				e.InputTokens, e.OutputTokens, e.CacheRead, e.CacheWrite, total,
+			))
+		}
 	case ResultEvent:
 		r.endBlock()
 		subtype := sanitizeOutput(e.Subtype)
@@ -96,11 +103,19 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 		r.printer.Header(label)
 		r.printer.KeyValue("Turns", fmt.Sprintf("%d", e.NumTurns))
 		r.printer.KeyValue("Cost", fmt.Sprintf("$%.4f", e.TotalCostUSD))
-		r.printer.KeyValue("Tokens", fmt.Sprintf(
-			"in=%d out=%d cache_create=%d cache_read=%d",
-			e.InputTokens, e.OutputTokens,
-			e.CacheCreationInputTokens, e.CacheReadInputTokens,
-		))
+		if e.ReasoningTokens > 0 {
+			r.printer.KeyValue("Tokens", fmt.Sprintf(
+				"in=%d out=%d reasoning=%d cache_create=%d cache_read=%d",
+				e.InputTokens, e.OutputTokens, e.ReasoningTokens,
+				e.CacheCreationInputTokens, e.CacheReadInputTokens,
+			))
+		} else {
+			r.printer.KeyValue("Tokens", fmt.Sprintf(
+				"in=%d out=%d cache_create=%d cache_read=%d",
+				e.InputTokens, e.OutputTokens,
+				e.CacheCreationInputTokens, e.CacheReadInputTokens,
+			))
+		}
 		if e.IsError && e.ErrorMessage != "" {
 			r.printer.StepFail(sanitizeOutput(e.ErrorMessage))
 		}

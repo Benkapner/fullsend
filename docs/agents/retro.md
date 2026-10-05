@@ -1,3 +1,7 @@
+---
+description: How the fullsend retro agent runs retrospectives on agent workflows and proposes improvements as structured GitHub issues.
+---
+
 # Retro Agent
 
 ![Retro agent icon](icons/retro.png)
@@ -47,8 +51,8 @@ The retro agent also runs automatically when a PR is closed (merged or not).
 
 ## Configuration and extension
 
-See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
-[Customizing with Skills](../guides/user/customizing-with-skills.md).
+See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
+[Configuring with Skills](../guides/user/customizing-with-skills.md).
 
 ### Variables
 
@@ -56,4 +60,4 @@ None.
 
 ## Source
 
-[`internal/scaffold/fullsend-repo/harness/retro.yaml`](../../internal/scaffold/fullsend-repo/harness/retro.yaml)
+[`fullsend-ai/agents` — `harness/retro.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/retro.yaml)

@@ -176,7 +176,7 @@ func TestWorkflowsLayer_Install_TriageWorkflowContent(t *testing.T) {
 func TestWorkflowsLayer_Install_CombinedVendorCommit(t *testing.T) {
 	client := forge.NewFakeClient()
 	ensureFakeConfigRepo(client)
-	collectFn := func(_ context.Context, _ *ui.Printer, owner, repo string) ([]forge.TreeFile, int, error) {
+	collectFn := func(_ context.Context, _ forge.Client, _ *ui.Printer, owner, repo string) ([]forge.TreeFile, int, error) {
 		assert.Equal(t, "test-org", owner)
 		assert.Equal(t, forge.ConfigRepoName, repo)
 		return []forge.TreeFile{
@@ -264,7 +264,7 @@ func TestWorkflowsLayer_Install_PinnedSHA(t *testing.T) {
 	assert.Contains(t, triageContent, "@abc123def456abc123def456abc123def456abcd")
 	assert.Contains(t, triageContent, "# v0.19.0")
 	assert.NotContains(t, triageContent, "fullsend_ai_ref:")
-	assert.NotContains(t, triageContent, "@v0")
+	assert.NotContains(t, triageContent, "@main")
 }
 
 func TestWorkflowsLayer_Install_ManagedHeaders(t *testing.T) {
@@ -314,7 +314,7 @@ func TestWorkflowsLayer_Install_ProtectedBranch_ExistingBranch(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Repos = []forge.Repository{{FullName: "test-org/.fullsend", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
-	client.Errors["CreateBranch"] = fmt.Errorf("branch: %w", forge.ErrAlreadyExists)
+	client.ExistingBranches["test-org/.fullsend/fullsend/scaffold-install"] = true
 	layer, _ := newWorkflowsLayer(t, client, false)
 
 	err := layer.Install(context.Background())
@@ -452,7 +452,6 @@ func TestWorkflowsLayer_Install_ExecutableModes(t *testing.T) {
 	}
 
 	assert.Equal(t, "100644", modes[".github/workflows/triage.yml"])
-	assert.Equal(t, "100644", modes["customized/agents/.gitkeep"])
 	assert.Equal(t, "100644", modes["AGENTS.md"])
 }
 
@@ -621,6 +620,6 @@ func TestManagedVendoredContentPathsFromEmbed(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, paths, ".github/workflows/reusable-triage.yml")
-	assert.Contains(t, paths, ".defaults/internal/scaffold/fullsend-repo/agents/triage.md")
+	assert.Contains(t, paths, ".defaults/internal/scaffold/fullsend-repo/scripts/fullsend-check-output")
 	assert.Contains(t, paths, scaffold.VendoredMarkerPath())
 }

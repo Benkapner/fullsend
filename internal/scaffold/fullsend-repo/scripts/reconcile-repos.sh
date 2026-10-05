@@ -36,15 +36,33 @@ ENROLL_PR_TITLE="chore: connect to fullsend agent pipeline"
 UNENROLL_PR_TITLE="chore: disconnect from fullsend agent pipeline"
 UPDATE_PR_TITLE="chore: update fullsend shim workflow"
 
+# Shared "Getting started" block appended to both enrollment and update PRs.
+# The update path is the first touchpoint for already-enrolled repos (see #2165),
+# so it must document the slash commands too.
+GETTING_STARTED_SECTION="## Getting started
+
+Once this PR is merged, interact with fullsend by commenting one of these slash commands. The supported target (issue and/or pull request) is shown for each:
+
+- \`/fs-triage\` (issue or PR) — Invoke the [triage](https://fullsend.sh/docs/agents/triage) agent to categorize, label, and assess an issue.
+- \`/fs-code\` (issue only) — Invoke the [code](https://fullsend.sh/docs/agents/code) agent to implement a fix for an issue and open a PR.
+- \`/fs-review\` (PR only) — Invoke the [review](https://fullsend.sh/docs/agents/review) agent to review a pull request.
+- \`/fs-fix\` (PR only) — Invoke the [fix](https://fullsend.sh/docs/agents/fix) agent to address review feedback on a pull request.
+- \`/fs-retro\` (issue or PR) — Invoke the [retro](https://fullsend.sh/docs/agents/retro) agent to analyze completed work and propose improvements.
+- \`/fs-prioritize\` (issue or PR) — Invoke the [prioritize](https://fullsend.sh/docs/agents/prioritize) agent to score an issue for project board ranking."
+
 ENROLL_PR_BODY="This PR adds a shim workflow that routes repository events to the fullsend agent dispatch workflow in the \`.fullsend\` config repo.
 
-Once merged, issues, PRs, and comments in this repo will be handled by the fullsend agent pipeline."
+Once merged, issues, PRs, and comments in this repo will be handled by the fullsend agent pipeline.
+
+${GETTING_STARTED_SECTION}"
 UNENROLL_PR_BODY="This PR removes the fullsend shim workflow. The repo has been set to \`enabled: false\` in the fullsend config.
 
 Once merged, this repo will no longer dispatch events to the fullsend agent pipeline."
 UPDATE_PR_BODY="This PR updates the fullsend shim workflow to match the current template in the \`.fullsend\` config repo.
 
-The shim content has drifted from the template — this brings it back in sync."
+The shim content has drifted from the template — this brings it back in sync.
+
+${GETTING_STARTED_SECTION}"
 
 UPDATE_COMMIT_MSG="chore: update fullsend shim workflow
 
@@ -161,6 +179,33 @@ managed_content_b64() {
   fi
 }
 
+# normalize_sha_pins rewrites SHA-pinned GitHub Actions uses: refs of the
+# form `@<40-hex-sha> # <ref>` to `@<ref>`. Renovate and pinact manage pins
+# this way; treating them as equivalent to the named ref prevents
+# reconciliation from stripping a SHA pin back to a mutable branch (a
+# security regression on workflows granting id-token: write). Tolerates an
+# optional closing quote between the SHA and the `#` annotation (e.g.
+# `uses: "owner/repo@<sha>" # main`) so a quoted uses: value normalizes the
+# same way as an unquoted one; no quoted uses: line exists in this repo
+# today, but this keeps the comparison correct if the template ever quotes
+# one.
+# Reads stdin, writes stdout.
+normalize_sha_pins() {
+  sed -E 's/^([[:space:]]*uses:[[:space:]]+[^[:space:]@]+)@([0-9a-fA-F]{40})(["'"'"']?)[[:space:]]+#[[:space:]]+([A-Za-z0-9._-]+)/\1@\4\3/'
+}
+
+# comparable_managed_b64 returns the fullsend-managed portion of a shim with
+# SHA-pinned uses: refs normalized so `@<sha> # <ref>` compares equal to
+# `@<ref>`. Used only for drift comparison — the write path still emits the
+# template as-is when other content has drifted.
+# Args: $1 = base64-encoded file content
+# Prints: base64-encoded normalized managed portion
+comparable_managed_b64() {
+  local managed
+  managed=$(managed_content_b64 "$1")
+  printf '%s' "$managed" | base64 -d | tr -d '\r' | normalize_sha_pins | base64 -w0
+}
+
 COMMIT_SHA="${GITHUB_SHA:-unknown}"
 PER_REPO_GUARD_VAR="FULLSEND_PER_REPO_INSTALL"
 
@@ -215,6 +260,64 @@ validate_repo_name() {
   fi
 }
 
+# delete_branch removes the given branch ref if it exists. A branch that is
+# already gone (404) is an idempotent success; other lookup or deletion errors
+# are reported. Returns 0 on delete/absent, 1 otherwise. The 404 detection uses
+# the same numeric-status idiom as check_per_repo_guard, since the JSON error
+# envelope's .status field is a stable interface (unlike --include header text).
+delete_branch() {
+  local repo="$1"
+  local branch="$2"
+  local ref_get_endpoint="repos/$ORG/$repo/git/ref/heads/$branch"
+  local ref_delete_endpoint="repos/$ORG/$repo/git/refs/heads/$branch"
+  local resp
+
+  # Confirm the branch exists. A 404 means it is already gone — nothing to do.
+  if ! resp=$(gh api "$ref_get_endpoint" 2>/dev/null); then
+    if printf '%s' "$resp" | jq -e '.status == "404"' >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "::warning::Failed to check branch $branch for $repo"
+    return 1
+  fi
+
+  # Delete it. GitHub returns 422 when the branch raced away between the
+  # existence check and this request (for example, via --delete-branch on a PR).
+  # Treat that and a 404 as idempotent success alongside the normal 204.
+  if ! resp=$(gh api "$ref_delete_endpoint" --method DELETE 2>/dev/null); then
+    if printf '%s' "$resp" | jq -e '.status == "404" or .status == "422"' >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "::warning::Failed to delete branch $branch for $repo"
+    return 1
+  fi
+  echo "  Deleted branch $branch for $repo"
+}
+
+# fetch_contents_field prints one field of a contents API entry. gh api
+# prints the JSON error body on stdout when a call fails, so the output is
+# used only on success. A 404 means the file is absent: prints nothing and
+# returns 0. Any other failure warns and returns 1, so the caller counts the
+# repo as failed rather than guessing. Uses the same numeric-status idiom as
+# delete_branch.
+# Args: $1 = repo, $2 = path (may carry ?ref=), $3 = jq filter (e.g. .sha)
+fetch_contents_field() {
+  local repo="$1"
+  local path="$2"
+  local filter="$3"
+  local resp
+
+  if resp=$(gh api "repos/$ORG/$repo/contents/$path" --jq "$filter" 2>/dev/null); then
+    printf '%s' "$resp"
+    return 0
+  fi
+  if printf '%s' "$resp" | jq -e '.status == "404"' >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "::warning::Failed to read $path for $repo" >&2
+  return 1
+}
+
 # close_pr_on_branch closes an open PR on the given branch and deletes the branch.
 close_pr_on_branch() {
   local repo="$1"
@@ -222,14 +325,26 @@ close_pr_on_branch() {
   local reason="$3"
 
   local pr_url
-  pr_url=$(gh pr list --repo "$ORG/$repo" --head "$branch" --json url --jq '.[0].url // empty' 2>/dev/null || true)
-  if [ -n "$pr_url" ]; then
-    gh pr close "$pr_url" --comment "$reason (triggered by commit $COMMIT_SHA)" --delete-branch 2>/dev/null || true
-    echo "  Closed PR on $branch: $pr_url"
-  else
-    # Delete branch even if no PR exists.
-    gh api "repos/$ORG/$repo/git/refs/heads/$branch" --method DELETE --silent 2>/dev/null || true
+  if ! pr_url=$(gh pr list --repo "$ORG/$repo" --head "$branch" --json url --jq '.[0].url // empty' 2>/dev/null); then
+    echo "::warning::Failed to check for an open PR on $branch for $repo; attempting direct branch cleanup"
+    delete_branch "$repo" "$branch"
+    return $?
   fi
+  if [ -n "$pr_url" ]; then
+    if gh pr close "$pr_url" --comment "$reason (triggered by commit $COMMIT_SHA)" --delete-branch 2>/dev/null; then
+      echo "  Closed PR on $branch: $pr_url"
+      return 0
+    fi
+    # PR close failed (already closed, rejected comment, branch protection, or a
+    # transient error). Fall through to an explicit branch delete so a partial
+    # failure does not leave the stale branch behind — deleting the head branch
+    # also closes the PR on GitHub.
+    echo "::warning::Failed to close PR on $branch for $repo; attempting direct branch cleanup"
+  fi
+
+  # Delete an orphaned branch, or one left behind by a failed PR close. A
+  # missing branch is the expected idempotent case.
+  delete_branch "$repo" "$branch"
 }
 
 # load_default_branch fetches the default branch name and current SHA for a
@@ -244,7 +359,21 @@ load_default_branch() {
     return 1
   fi
 
-  DEFAULT_BRANCH_SHA=$(gh api "repos/$ORG/$repo/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha 2>/dev/null || true)
+  local ref_response ref_rc
+  ref_response=$(gh api "repos/$ORG/$repo/git/ref/heads/$DEFAULT_BRANCH" 2>/dev/null) && ref_rc=0 || ref_rc=$?
+  if [ "$ref_rc" -ne 0 ]; then
+    # GitHub returns HTTP 409 with "Git Repository is empty." for repos
+    # that have no commits. Surface an actionable message instead of
+    # the generic "Could not get default branch SHA" error.
+    if printf '%s' "$ref_response" | grep -q "Git Repository is empty"; then
+      echo "::error::$repo has no commits; push at least one commit before enrolling"
+      return 1
+    fi
+    echo "::error::Could not get default branch SHA for $repo"
+    return 1
+  fi
+
+  DEFAULT_BRANCH_SHA=$(printf '%s' "$ref_response" | jq -r '.object.sha // empty')
   if [ -z "$DEFAULT_BRANCH_SHA" ]; then
     echo "::error::Could not get default branch SHA for $repo"
     return 1
@@ -387,7 +516,10 @@ if [ -n "$ENABLED_REPOS" ]; then
     fi
 
     # Clean up any stale removal PR from a previous disable cycle (even for per-repo repos).
-    close_pr_on_branch "$REPO" "$UNENROLL_BRANCH" "Repo re-enabled in config.yaml"
+    if ! close_pr_on_branch "$REPO" "$UNENROLL_BRANCH" "Repo re-enabled in config.yaml"; then
+      FAILED=$((FAILED + 1))
+      continue
+    fi
 
     # Skip repos with per-repo installation — they manage their own WIF and shim.
     if check_per_repo_guard "$REPO" "enrollment"; then
@@ -397,16 +529,26 @@ if [ -n "$ENABLED_REPOS" ]; then
 
     # Check if already enrolled (shim exists on default branch).
     # Fetch content and SHA in one call to avoid race between reads.
-    REMOTE_CONTENT=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --jq .content 2>/dev/null || true)
+    if ! REMOTE_CONTENT=$(fetch_contents_field "$REPO" "$SHIM_PATH" .content); then
+      FAILED=$((FAILED + 1))
+      continue
+    fi
     if [ -n "$REMOTE_CONTENT" ]; then
       # File exists — compare only the managed portion (from sentinel onward)
       # so user-added headers (e.g. license) do not trigger false drift.
+      # SHA-pinned uses: refs of the form `@<sha> # <ref>` are treated as
+      # equivalent to `@<ref>` so Renovate-managed pins of the template's
+      # named ref are not stripped back to a mutable branch.
       EXPECTED_B64=$(shim_content_b64)
       # GitHub returns base64 with newlines; strip them for comparison.
       REMOTE_B64=$(printf '%s' "$REMOTE_CONTENT" | tr -d '\r\n')
-      REMOTE_MANAGED=$(managed_content_b64 "$REMOTE_B64")
-      EXPECTED_MANAGED=$(managed_content_b64 "$EXPECTED_B64")
+      REMOTE_MANAGED=$(comparable_managed_b64 "$REMOTE_B64")
+      EXPECTED_MANAGED=$(comparable_managed_b64 "$EXPECTED_B64")
       if [ "$REMOTE_MANAGED" = "$EXPECTED_MANAGED" ]; then
+        if ! close_pr_on_branch "$REPO" "$ENROLL_BRANCH" "Shim already matches the current template"; then
+          FAILED=$((FAILED + 1))
+          continue
+        fi
         echo "✓ $REPO already enrolled (shim up to date)"
         SKIPPED=$((SKIPPED + 1))
         continue
@@ -510,7 +652,10 @@ if [ -n "$DISABLED_REPOS" ]; then
     fi
 
     # Close any stale enrollment PR.
-    close_pr_on_branch "$REPO" "$ENROLL_BRANCH" "Repo disabled in config.yaml"
+    if ! close_pr_on_branch "$REPO" "$ENROLL_BRANCH" "Repo disabled in config.yaml"; then
+      FAILED=$((FAILED + 1))
+      continue
+    fi
 
     # Skip repos with per-repo installation — unenrollment would break their shim.
     if check_per_repo_guard "$REPO" "unenrollment"; then
@@ -527,7 +672,11 @@ if [ -n "$DISABLED_REPOS" ]; then
     fi
 
     # Check if shim exists on default branch.
-    if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --silent 2>/dev/null; then
+    if ! DEFAULT_FILE_SHA=$(fetch_contents_field "$REPO" "$SHIM_PATH" .sha); then
+      FAILED=$((FAILED + 1))
+      continue
+    fi
+    if [ -z "$DEFAULT_FILE_SHA" ]; then
       echo "✓ $REPO already unenrolled (no shim on default branch)"
       SKIPPED=$((SKIPPED + 1))
       continue
@@ -541,7 +690,10 @@ if [ -n "$DISABLED_REPOS" ]; then
     fi
 
     # Fetch file SHA on the removal branch (required for DELETE).
-    FILE_SHA=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH?ref=$UNENROLL_BRANCH" --jq .sha 2>/dev/null || true)
+    if ! FILE_SHA=$(fetch_contents_field "$REPO" "$SHIM_PATH?ref=$UNENROLL_BRANCH" .sha); then
+      FAILED=$((FAILED + 1))
+      continue
+    fi
     if [ -z "$FILE_SHA" ]; then
       echo "✓ $REPO shim already removed from branch"
       SKIPPED=$((SKIPPED + 1))

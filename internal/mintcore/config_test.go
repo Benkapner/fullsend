@@ -9,17 +9,31 @@ import (
 	"testing"
 )
 
-func TestNewHandlerFromConfig_Basic(t *testing.T) {
-	roleAppIDs := `{"triage":"100","coder":"200"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+// setBindings sets multiple environment variables for a test using
+// t.Setenv. This replaces the former mapGetEnv pattern now that
+// NewHandler reads configuration via the package-internal mintEnv
+// accessor (os.Getenv on native platforms).
+func setBindings(t *testing.T, bindings map[string]string) {
+	t.Helper()
+	for k, v := range bindings {
+		t.Setenv(k, v)
+	}
+}
+
+func TestNewHandler_Config(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"triage":"100","coder":"200"}`,
+		"ALLOWED_ROLES":          "",
+		"ALLOWED_ORGS":           "test-org",
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err != nil {
-		t.Fatalf("NewHandlerFromConfig: %v", err)
+		t.Fatalf("NewHandler: %v", err)
 	}
 	if h == nil {
 		t.Fatal("expected non-nil handler")
 	}
-
-	// Verify roles were parsed (both triage and coder should be allowed).
 	if !h.checkAllowedRole("triage") {
 		t.Fatal("triage should be allowed")
 	}
@@ -28,13 +42,16 @@ func TestNewHandlerFromConfig_Basic(t *testing.T) {
 	}
 }
 
-func TestNewHandlerFromConfig_ExplicitAllowedRoles(t *testing.T) {
-	roleAppIDs := `{"triage":"100","coder":"200","review":"300"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "triage,coder", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+func TestNewHandler_ExplicitAllowedRoles(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"triage":"100","coder":"200","review":"300"}`,
+		"ALLOWED_ROLES":          "triage,coder",
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err != nil {
-		t.Fatalf("NewHandlerFromConfig: %v", err)
+		t.Fatalf("NewHandler: %v", err)
 	}
-
 	if !h.checkAllowedRole("triage") {
 		t.Fatal("triage should be allowed")
 	}
@@ -42,41 +59,57 @@ func TestNewHandlerFromConfig_ExplicitAllowedRoles(t *testing.T) {
 		t.Fatal("coder should be allowed")
 	}
 	if h.checkAllowedRole("review") {
-		t.Fatal("review should not be allowed when not in AllowedRoles")
+		t.Fatal("review should not be allowed when not in ALLOWED_ROLES")
 	}
 }
 
-func TestNewHandlerFromConfig_MissingRoleAppIDs(t *testing.T) {
-	_, err := NewHandlerFromConfig("", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+func TestNewHandler_MissingRoleAppIDs(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           "",
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	_, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err != nil {
-		t.Fatalf("expected no error for empty RoleAppIDs, got: %v", err)
+		t.Fatalf("expected no error for empty ROLE_APP_IDS, got: %v", err)
 	}
 }
 
-func TestNewHandlerFromConfig_InvalidRoleAppIDsJSON(t *testing.T) {
-	_, err := NewHandlerFromConfig("not-json", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+func TestNewHandler_InvalidRoleAppIDsJSON(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           "not-json",
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	_, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
-	if !strings.Contains(err.Error(), "failed to parse RoleAppIDs") {
+	if !strings.Contains(err.Error(), "failed to parse ROLE_APP_IDS") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestNewHandlerFromConfig_InvalidAllowedRoleFormat(t *testing.T) {
-	roleAppIDs := `{"coder":"200"}`
-	_, err := NewHandlerFromConfig(roleAppIDs, "INVALID", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+func TestNewHandler_InvalidAllowedRoleFormat(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"coder":"200"}`,
+		"ALLOWED_ROLES":          "INVALID",
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	_, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err == nil {
 		t.Fatal("expected error for invalid role format")
 	}
-	if !strings.Contains(err.Error(), "AllowedRoles contains invalid entry") {
+	if !strings.Contains(err.Error(), "ALLOWED_ROLES contains invalid entry") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestNewHandlerFromConfig_AllowedRoleNotInPermissions(t *testing.T) {
-	roleAppIDs := `{"nonexistent":"100"}`
-	_, err := NewHandlerFromConfig(roleAppIDs, "nonexistent", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+func TestNewHandler_AllowedRoleNotInPermissions(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"nonexistent":"100"}`,
+		"ALLOWED_ROLES":          "nonexistent",
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	_, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err == nil {
 		t.Fatal("expected error for role not in RolePermissions")
 	}
@@ -85,176 +118,169 @@ func TestNewHandlerFromConfig_AllowedRoleNotInPermissions(t *testing.T) {
 	}
 }
 
-func TestNewHandlerFromConfig_AllowedRoleNotInAppIDs(t *testing.T) {
-	roleAppIDs := `{"coder":"200"}`
-	_, err := NewHandlerFromConfig(roleAppIDs, "triage", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+func TestNewHandler_AllowedRoleNotInAppIDs(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"coder":"200"}`,
+		"ALLOWED_ROLES":          "triage",
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	_, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err == nil {
-		t.Fatal("expected error for role not in RoleAppIDs")
+		t.Fatal("expected error for role not in ROLE_APP_IDS")
 	}
-	if !strings.Contains(err.Error(), "RoleAppIDs has no entry") {
+	if !strings.Contains(err.Error(), "ROLE_APP_IDS has no entry") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestNewHandlerFromConfig_InjectsHTTPClient(t *testing.T) {
-	roleAppIDs := `{"coder":"200"}`
-	client := &http.Client{}
-	h, err := NewHandlerFromConfig(roleAppIDs, "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, client)
+func TestNewHandler_UsesMintHTTP(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"coder":"200"}`,
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	_, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err != nil {
-		t.Fatalf("NewHandlerFromConfig: %v", err)
+		t.Fatalf("NewHandler: %v", err)
 	}
-	if h.httpClient != client {
-		t.Fatal("expected injected HTTP client")
+	// After construction, mintHTTP should be callable without panic.
+	req, _ := http.NewRequest(http.MethodGet, "http://localhost:0/test", nil)
+	_, _ = mintHTTP(req)
+}
+
+func TestNewHandler_SetMintHTTPForTest(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"coder":"200"}`,
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	called := false
+	SetMintHTTPForTest(t, func(r *http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: 200}, nil
+	})
+
+	_, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, "http://localhost/test", nil)
+	_, _ = mintHTTP(req)
+	if !called {
+		t.Fatal("expected mintHTTP to use the test-injected override")
 	}
 }
 
-func TestNewHandlerFromConfig_NoEnvDependency(t *testing.T) {
-	// Verify that NewHandlerFromConfig does not read from os.Getenv
-	// by clearing ROLE_APP_IDS and ALLOWED_ROLES.
-	t.Setenv("ROLE_APP_IDS", "")
-	t.Setenv("ALLOWED_ROLES", "")
+func TestNewHandler_ExplicitAllowedRolesOnly(t *testing.T) {
+	// Verify that NewHandler reads config via mintEnv (t.Setenv).
+	t.Setenv("ROLE_APP_IDS", `{"triage":"100","coder":"200"}`)
+	t.Setenv("ALLOWED_ROLES", "coder")
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 
-	roleAppIDs := `{"triage":"100","coder":"200"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "coder", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err != nil {
-		t.Fatalf("NewHandlerFromConfig: %v", err)
+		t.Fatalf("NewHandler: %v", err)
 	}
 
-	// Verify the handler was configured from explicit params, not env.
 	if !h.checkAllowedRole("coder") {
-		t.Fatal("coder should be allowed from explicit config")
+		t.Fatal("coder should be allowed")
 	}
 	if h.checkAllowedRole("triage") {
-		t.Fatal("triage should not be allowed when AllowedRoles is 'coder'")
+		t.Fatal("triage should not be allowed when ALLOWED_ROLES is 'coder'")
 	}
 }
 
-func TestNewHandlerFromConfig_ServeHTTPWorks(t *testing.T) {
-	roleAppIDs := `{"coder":"200"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+func TestNewHandler_PerRepoWIFRepos(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"coder":"200"}`,
+		"PER_REPO_WIF_REPOS":     "org/repo-a, Org/Repo-B",
+		"ALLOWED_ORGS":           "org",
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err != nil {
-		t.Fatalf("NewHandlerFromConfig: %v", err)
+		t.Fatalf("NewHandler: %v", err)
+	}
+	// Verify perRepoWIFRepos was parsed and lowercased.
+	if !h.perRepoWIFRepos["org/repo-a"] {
+		t.Fatal("expected org/repo-a in perRepoWIFRepos")
+	}
+	if !h.perRepoWIFRepos["org/repo-b"] {
+		t.Fatal("expected org/repo-b (lowercased) in perRepoWIFRepos")
+	}
+	if len(h.perRepoWIFRepos) != 2 {
+		t.Fatalf("expected 2 entries in perRepoWIFRepos, got %d", len(h.perRepoWIFRepos))
 	}
 
-	// Verify the handler serves HTTP requests (health endpoint).
+	// Verify allowedOrgs was set on the handler.
+	if len(h.allowedOrgs) != 1 || h.allowedOrgs[0] != "org" {
+		t.Fatalf("expected allowedOrgs=[org], got %v", h.allowedOrgs)
+	}
+}
+
+func TestNewHandler_WorkflowHostRepos(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"coder":"200"}`,
+		"ALLOWED_ORGS":           "org",
+		"ALLOWED_WORKFLOW_FILES": "*",
+		"WORKFLOW_HOST_REPOS":    "acme/workflows, Acme/Other",
+	})
+	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	if !h.workflowHostRepos["acme/workflows"] {
+		t.Fatal("expected acme/workflows in workflowHostRepos")
+	}
+	if !h.workflowHostRepos["acme/other"] {
+		t.Fatal("expected acme/other (lowercased) in workflowHostRepos")
+	}
+	if len(h.workflowHostRepos) != 2 {
+		t.Fatalf("expected 2 entries in workflowHostRepos, got %d", len(h.workflowHostRepos))
+	}
+}
+
+func TestNewHandler_WorkflowHostReposDefault(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"coder":"200"}`,
+		"ALLOWED_ORGS":           "org",
+		"ALLOWED_WORKFLOW_FILES": "*",
+		"WORKFLOW_HOST_REPOS":    "",
+	})
+	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	// Empty WORKFLOW_HOST_REPOS should default to fullsend-ai/fullsend.
+	if !h.workflowHostRepos["fullsend-ai/fullsend"] {
+		t.Fatal("expected fullsend-ai/fullsend as default in workflowHostRepos")
+	}
+	if len(h.workflowHostRepos) != 1 {
+		t.Fatalf("expected 1 entry in workflowHostRepos, got %d", len(h.workflowHostRepos))
+	}
+}
+
+func TestNewHandler_ServeHTTPWorks(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"coder":"200"}`,
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	h.ServeHTTP(rec, req)
-
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /health: expected 200, got %d", rec.Code)
 	}
 }
 
-func TestParseWorkerConfig_Basic(t *testing.T) {
-	cfg := WorkerConfig{
-		RoleAppIDs:   `{"triage":"100","coder":"200"}`,
-		AllowedOrgs:  "test-org",
-		OIDCAudience: "fullsend-mint",
-	}
-	h, err := ParseWorkerConfig(cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
-	if err != nil {
-		t.Fatalf("ParseWorkerConfig: %v", err)
-	}
-	if h == nil {
-		t.Fatal("expected non-nil handler")
-	}
-}
-
-func TestParseWorkerConfig_MissingRequired(t *testing.T) {
-	tests := []struct {
-		name string
-		cfg  WorkerConfig
-		want string
-	}{
-		{
-			name: "missing RoleAppIDs",
-			cfg: WorkerConfig{
-				AllowedOrgs:  "test-org",
-				OIDCAudience: "fullsend-mint",
-			},
-			want: "RoleAppIDs is required",
-		},
-		{
-			name: "missing OIDCAudience",
-			cfg: WorkerConfig{
-				RoleAppIDs:  `{"coder":"200"}`,
-				AllowedOrgs: "test-org",
-			},
-			want: "OIDCAudience is required",
-		},
-		{
-			name: "missing AllowedOrgs",
-			cfg: WorkerConfig{
-				RoleAppIDs:   `{"coder":"200"}`,
-				OIDCAudience: "fullsend-mint",
-			},
-			want: "AllowedOrgs is required",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := ParseWorkerConfig(tc.cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
-			if err == nil {
-				t.Fatalf("expected error containing %q", tc.want)
-			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("expected error containing %q, got: %v", tc.want, err)
-			}
-		})
-	}
-}
-
-func TestParseWorkerConfig_WithCustomRolePermissions(t *testing.T) {
-	defer RegisterCustomRolePermissions(nil)
-
-	cfg := WorkerConfig{
-		RoleAppIDs:            `{"triage":"100","coder":"200","deployer":"300"}`,
-		AllowedOrgs:           "test-org",
-		OIDCAudience:          "fullsend-mint",
-		CustomRolePermissions: `{"deployer":{"contents":"write","deployments":"write"}}`,
-		AllowedRoles:          "deployer",
-	}
-	h, err := ParseWorkerConfig(cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
-	if err != nil {
-		t.Fatalf("ParseWorkerConfig: %v", err)
-	}
-
-	if !h.checkAllowedRole("deployer") {
-		t.Fatal("deployer should be allowed")
-	}
-}
-
-func TestParseWorkerConfig_InvalidCustomPermissions(t *testing.T) {
-	cfg := WorkerConfig{
-		RoleAppIDs:            `{"coder":"200"}`,
-		AllowedOrgs:           "test-org",
-		OIDCAudience:          "fullsend-mint",
-		CustomRolePermissions: "not-json",
-	}
-	_, err := ParseWorkerConfig(cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
-	if err == nil {
-		t.Fatal("expected error for invalid custom permissions JSON")
-	}
-}
-
-// fakeHTTPDoer implements HTTPDoer for testing.
-type fakeHTTPDoer struct {
-	err error
-}
-
-func (f *fakeHTTPDoer) Do(_ *http.Request) (*http.Response, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	return &http.Response{StatusCode: 200}, nil
-}
-
-func TestNewHandlerFromConfig_FullMintFlow(t *testing.T) {
-	// Test that a handler created from config can process requests
-	// the same way as a handler created from env vars.
-	roleAppIDs := `{"coder":"200"}`
+func TestNewHandler_FullMintFlow(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"coder":"200"}`,
+		"ALLOWED_ORGS":           "test-org",
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
 	verifier := &fakeOIDCVerifier{
 		claims: &Claims{
 			Issuer:          "https://token.actions.githubusercontent.com",
@@ -280,16 +306,16 @@ func TestNewHandlerFromConfig_FullMintFlow(t *testing.T) {
 			fmt.Fprintf(w, `{"id":12345,"account":{"login":"test-org"}}`)
 		case strings.HasPrefix(r.URL.Path, "/app/installations/12345/access_tokens"):
 			w.WriteHeader(http.StatusCreated)
-			fmt.Fprintf(w, `{"token":"ghs_config_test","expires_at":"2026-01-01T00:00:00Z"}`)
+			fmt.Fprintf(w, `{"token":"ghs_mintenv_test","expires_at":"2026-01-01T00:00:00Z"}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer github.Close()
 
-	h, err := NewHandlerFromConfig(roleAppIDs, "", pemAccessor, verifier, github.Client())
+	h, err := NewHandler(pemAccessor, verifier)
 	if err != nil {
-		t.Fatalf("NewHandlerFromConfig: %v", err)
+		t.Fatalf("NewHandler: %v", err)
 	}
 	h.githubBaseURL = github.URL
 
@@ -302,78 +328,140 @@ func TestNewHandlerFromConfig_FullMintFlow(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-
-	// Verify the response contains the expected token.
 	respBody := rec.Body.String()
-	if !strings.Contains(respBody, "ghs_config_test") {
+	if !strings.Contains(respBody, "ghs_mintenv_test") {
 		t.Fatalf("expected response to contain token, got: %s", respBody)
 	}
 }
 
-func TestNewHandlerFromConfig_LegacyAppIDsOnly(t *testing.T) {
-	roleAppIDs := `{"test-org/coder":"200"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+func TestNewHandler_LegacyAppIDsOnly(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"test-org/coder":"200"}`,
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err != nil {
-		t.Fatalf("NewHandlerFromConfig: unexpected error: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-
-	// Health check should report unhealthy for legacy-only keys.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	h.ServeHTTP(rec, req)
-
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 for legacy-only ROLE_APP_IDS, got %d", rec.Code)
 	}
 }
 
-func TestNewHandlerFromConfig_DefaultGithubBaseURL(t *testing.T) {
-	roleAppIDs := `{"coder":"200"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+func TestNewHandler_DefaultGithubBaseURL(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"coder":"200"}`,
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err != nil {
-		t.Fatalf("NewHandlerFromConfig: %v", err)
+		t.Fatalf("NewHandler: %v", err)
 	}
 	if h.githubBaseURL != "https://api.github.com" {
 		t.Fatalf("expected default github base URL, got %s", h.githubBaseURL)
 	}
 }
 
-func TestNewHandlerFromConfig_NilHTTPClient(t *testing.T) {
-	// Passing nil HTTP client should still work (handler stores nil,
-	// which will fail at runtime when making requests, but construction
-	// should succeed).
-	roleAppIDs := `{"coder":"200"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, nil)
+func TestNewHandler_EmptyAllowedOrgs(t *testing.T) {
+	// Verifies that an empty ALLOWED_ORGS with PER_REPO_WIF_REPOS works.
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"coder":"200"}`,
+		"ALLOWED_ORGS":           "",
+		"PER_REPO_WIF_REPOS":     "test-org/my-repo",
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err != nil {
-		t.Fatalf("NewHandlerFromConfig: %v", err)
+		t.Fatalf("NewHandler should succeed with empty ALLOWED_ORGS: %v", err)
 	}
-	if h.httpClient != nil {
-		t.Fatal("expected nil HTTP client")
-	}
-}
-
-func TestParseWorkerConfig_SetsAllowedOrgsOnVerifier(t *testing.T) {
-	// Verifies ParseWorkerConfig sets up the full pipeline including
-	// passing allowed orgs and workflow config.
-	cfg := WorkerConfig{
-		RoleAppIDs:           `{"coder":"200"}`,
-		AllowedOrgs:          "test-org",
-		OIDCAudience:         "fullsend-mint",
-		AllowedWorkflowFiles: "dispatch.yml",
-		PerRepoWIFRepos:      "test-org/my-repo",
-	}
-
-	h, err := ParseWorkerConfig(cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
-	if err != nil {
-		t.Fatalf("ParseWorkerConfig: %v", err)
-	}
-
-	// Verify the handler was created successfully and can serve health checks.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestNewHandler_NilVerifier(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"coder":"200"}`,
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	_, err := NewHandler(&fakePEMAccessor{}, nil)
+	if err == nil {
+		t.Fatal("expected error when verifier is nil")
+	}
+	if !strings.Contains(err.Error(), "oidcVerifier must not be nil") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewHandler_CustomRolePermissions(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":            `{"triage":"100","custom-role":"200"}`,
+		"CUSTOM_ROLE_PERMISSIONS": `{"custom-role":{"contents":"read","metadata":"read"}}`,
+		"ALLOWED_WORKFLOW_FILES":  "*",
+	})
+	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	if !h.checkAllowedRole("custom-role") {
+		t.Fatal("custom-role should be allowed")
+	}
+	if !HasRole("custom-role") {
+		t.Fatal("custom-role should be registered")
+	}
+	// Clean up custom roles to avoid polluting other tests.
+	t.Cleanup(func() { RegisterCustomRolePermissions(nil) })
+}
+
+func TestNewHandler_InvalidCustomRolePermissions(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":            `{"triage":"100"}`,
+		"CUSTOM_ROLE_PERMISSIONS": "not-json",
+		"ALLOWED_WORKFLOW_FILES":  "*",
+	})
+	_, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
+	if err == nil {
+		t.Fatal("expected error for invalid CUSTOM_ROLE_PERMISSIONS JSON")
+	}
+	if !strings.Contains(err.Error(), "CUSTOM_ROLE_PERMISSIONS") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewHandler_RegisterCustomRolePermissionsError(t *testing.T) {
+	// Use a built-in role name in CUSTOM_ROLE_PERMISSIONS to trigger a
+	// collision error from RegisterCustomRolePermissions.
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":            `{"triage":"100"}`,
+		"CUSTOM_ROLE_PERMISSIONS": `{"triage":{"contents":"read"}}`,
+		"ALLOWED_WORKFLOW_FILES":  "*",
+	})
+	_, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
+	if err == nil {
+		t.Fatal("expected error when custom role collides with built-in")
+	}
+	if !strings.Contains(err.Error(), "registering custom role permissions") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewHandler_MintEnv(t *testing.T) {
+	// Verify that NewHandler reads config via mintEnv (os.Getenv on native).
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+
+	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
+	if err != nil {
+		t.Fatalf("NewHandler with mintEnv: %v", err)
+	}
+	if !h.checkAllowedRole("coder") {
+		t.Fatal("coder should be allowed via mintEnv")
 	}
 }
 

@@ -87,8 +87,10 @@ Reusable workflows detect vendored installs before sparse checkout:
 
 When present, upstream sparse checkout is skipped. Infra is referenced from
 `.defaults/` (`uses: ./.defaults/.github/actions/...`, `uses: ./.defaults/`).
-Layered agent content is copied from `.defaults/internal/scaffold/fullsend-repo/`
-onto the workspace root at job start (inline prepare step).
+Layered content is copied from `.defaults/internal/scaffold/fullsend-repo/`
+onto the workspace root at job start (inline prepare step). Agent content
+(harnesses, prompts, scripts) now lives in `fullsend-ai/agents` and is
+resolved at runtime rather than copied from the scaffold.
 
 Thin caller `uses:` paths are rendered at install/sync time (local `./...` when
 `--vendor`, upstream `@v0` when layered).

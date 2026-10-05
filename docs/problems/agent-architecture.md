@@ -145,11 +145,15 @@ The repository's existing infrastructure provides all the coordination needed:
 - **Branch protection rules** define what's required before merge (status checks, approvals)
 - **CODEOWNERS** defines who (human or bot account) must approve changes to which paths
 - **Required status checks** ensure all review sub-agents have posted their findings
-- **GitHub events** (PR opened, comment posted, status check completed) trigger agent actions
+- **Forge events and scheduled entity discovery** identify entities whose
+  harness predicates should be evaluated. Each predicate can inspect the
+  resolved entity and an optional prompting event
+  ([ADR 0098](../ADRs/0098-entity-first-harness-evaluation.md)).
 
 No agent orchestrates other agents. Each agent independently observes the state of the PR and acts according to its role:
 
-1. A PR is opened → review sub-agents are triggered (by webhook/GitHub event)
+1. A PR is opened → its entity is resolved and review sub-agent predicates are
+   evaluated with the GitHub event as context
 2. Each review sub-agent independently evaluates the PR and posts its findings (as status checks or structured comments)
 3. If a review sub-agent requests changes → the code agent sees the comment and responds (treating it as untrusted input, but recognizing blocking authority if the reviewer has approval rights)
 4. The merge decision is a **deterministic function of state**: all required status checks pass, all required CODEOWNERS approvals present, no blocking reviews outstanding
@@ -159,6 +163,8 @@ The "coordination logic" is the repository's branch protection configuration —
 This principle aligns with what Yegge's Gas City project calls "Zero Framework Cognition" (ZFC): the orchestration layer should handle mechanics only, while all judgment is deferred to the LLM via prompts. Gas City enforces this with a testable invariant — "does any line of Go contain a judgment call? If yes, it's a violation" — and extends it with the Bitter Lesson test: anything a smarter model would handle better from the prompt doesn't belong in the framework. (See [landscape.md](../landscape.md#gas-town--gas-city).) Fullsend's repo-as-coordinator model naturally satisfies ZFC: branch protection rules, CODEOWNERS, and status checks are deterministic infrastructure. The judgment happens in the review and implementation agents, mediated through GitHub's existing mechanisms. Note the architectural distinction: Gas City *does* have a controller process (reconciliation, health patrol), but enforces that it contain zero cognition. Fullsend's model goes further by eliminating the controller entirely and using the forge's native mechanisms instead.
 
 [Forge-sdlc/forge](../landscape.md#forge-sdlcforge) is the useful contrast case. It uses an event-driven FastAPI/Redis/LangGraph worker and durable checkpoints to move work forward, which is operationally sensible, but it also centralizes workflow truth and treats Jira labels/comments as approval signals. Fullsend can borrow the event-driven resume mechanics without moving merge authority or intent authorization out of repository-visible controls.
+
+[OpenAI Symphony](../landscape.md#openai-symphony) is the other useful contrast: a long-running central daemon that owns scheduling state, candidate selection, and retry. Where Gas City puts a controller on the path but forbids it from containing judgment, Symphony's orchestrator visibly contains it (priority sort, blocker rules, reconciliation). Fullsend can borrow Symphony's workspace safety invariants and continuation-turn semantics without adopting the daemon.
 
 ### How agents communicate
 
@@ -182,7 +188,7 @@ Without a coordinator, what happens when agents disagree? (e.g., correctness age
 
 - **Security and intent sub-agents have veto power** via required status checks. If they block, the PR doesn't merge. This is configured in branch protection, not in agent logic.
 - **The code agent can iterate** — push new commits to address blocking concerns, which re-triggers the review sub-agents
-- **Persistent disagreement escalates to humans** — if a code agent can't satisfy a blocking reviewer after N iterations, the PR is flagged for human intervention. This is a safeguard against infinite loops, not a normal path. See [flapping-convergence.md](flapping-convergence.md) for detection mechanisms and response strategies when agents fail to converge. The escalation can use [dual-interpretation escalation](code-review.md#dual-interpretation-escalation) to present the human with the approving and blocking agents' readings — while making clear the human can reject both framings or the PR itself — so the human resolves the disagreement quickly rather than re-reviewing the entire PR.
+- **Persistent disagreement escalates to humans** — if a code agent can't satisfy a blocking reviewer after N iterations, the PR is flagged for human intervention. This is a safeguard against infinite loops, not a normal path. See [flapping-convergence.md](flapping-convergence.md) for detection mechanisms and response strategies when agents fail to converge. The escalation can use [dual-interpretation escalation](code-review.md#dual-interpretation-escalation) to present the human with the approving and blocking agents' readings — while making clear the human can reject both framings or the PR itself — so the human resolves the disagreement quickly rather than re-reviewing the entire PR. Which human receives the escalation, and whether the people behind each side of the disagreement ever talk directly, is an organizational question covered in [agentic SDLC adoption and organizational communication](agentic-sdlc-adoption-org-communication.md#agents-as-a-proxy-for-conversations-that-never-happen).
 - **Humans can always override** — a human with approval rights can approve despite agent objections. The system assists; humans retain ultimate authority.
 
 ## Relationship to multi-agent frameworks
@@ -207,10 +213,12 @@ The multi-agent framework space is expanding rapidly, with new entries appearing
 
 **FSM framing (AAMAS 2025).** Researchers demonstrated that all multi-agent architectures — linear, decentralized debate, and orchestrated — are specialized finite state machines. Fullsend's model maps naturally to an FSM where states are PR lifecycle stages, transitions are triggered by GitHub events, and transition guards are branch protection rules. This framing could be useful for formal reasoning about deadlock and liveness properties.
 
+**Observable delegation, still a single coordinator ([Kiro Crew](../landscape.md#kiro-crew)).** Kiro Crew lets a parent conversation delegate to sub-agents that "return their results to the parent conversation," with every step — planning, sub-agent spawning, tool selection, approvals — observable live via the Agent Client Protocol. The observability is worth borrowing: making agent reasoning and tool calls inspectable in real time, rather than only after the fact in a transcript, is a good default regardless of coordination model. But the coordination model itself is the same star topology as MetaGPT and CrewAI — the parent conversation is the coordinator, and it consumes a sub-agent's returned result without the zero-trust composition fullsend's independent review sub-agents apply to each other's findings. It is a session-scoped pattern (one developer's crew, running on their own machine or a remote host they control) rather than a repo-scoped one, so it does not need to answer the question this document is built around: what authorizes a decision when no single human or agent is watching.
+
 ## Open questions
 
 - Should agents be stateless (fresh context per task) or stateful (accumulated knowledge of the codebase)? Stateless is safer (no poisoned state persists) but less efficient.
-- Should there be one instance of each agent type per repo, per org, or shared? Per-repo is simpler but more expensive. Shared agents need careful isolation. (Infrastructure constrains this — see [agent-infrastructure.md](agent-infrastructure.md).)
+- Should there be one instance of each agent type per repo, per org, or shared? Per-repo is simpler but more expensive. Shared agents need careful isolation. If a centrally managed service is offered, its per-tenant repository configuration will use the existing `repos.yaml` v1 format; source of truth, execution topology, and isolation remain open ([ADR 0123](../ADRs/0123-tenant-configuration-from-repos-yaml.md); infrastructure constrains this — see [agent-infrastructure.md](agent-infrastructure.md).)
 - ~~What's the right model for agent identity? Agents need GitHub accounts to post comments and status checks. Separate bot accounts per agent role? A single bot account with role indicated in the comment? GitHub App installations?~~ Decided in [ADR 0007](../ADRs/0007-per-role-github-apps.md): per-role GitHub Apps with manifest-based creation.
 - How do we test the interaction model? Can we simulate adversarial scenarios (injection attempts, unauthorized changes, agent disagreements) in a sandbox repo?
 - How does the two-phase review model work in practice? Does the code agent run all six sub-agents locally, or a subset? Is the pre-PR review a lighter version? (Depends on [agent-infrastructure.md](agent-infrastructure.md) — what compute is available where.)
