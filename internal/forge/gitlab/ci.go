@@ -421,11 +421,6 @@ func (c *LiveClient) DeleteRepoVariable(ctx context.Context, owner, repo, name s
 // Org-level secrets — not supported (GitLab per-repo mode)
 // ---------------------------------------------------------------------------
 
-// CreateOrgSecret is not supported on GitLab (per-repo mode).
-func (c *LiveClient) CreateOrgSecret(_ context.Context, _, _, _ string, _ []int64) error {
-	return forge.ErrNotSupported
-}
-
 // OrgSecretExists is not supported on GitLab (per-repo mode).
 func (c *LiveClient) OrgSecretExists(_ context.Context, _, _ string) (bool, error) {
 	return false, forge.ErrNotSupported
@@ -436,33 +431,13 @@ func (c *LiveClient) DeleteOrgSecret(_ context.Context, _, _ string) error {
 	return forge.ErrNotSupported
 }
 
-// SetOrgSecretRepos is not supported on GitLab (per-repo mode).
-func (c *LiveClient) SetOrgSecretRepos(_ context.Context, _, _ string, _ []int64) error {
-	return forge.ErrNotSupported
-}
-
-// GetOrgSecretRepos is not supported on GitLab (per-repo mode).
-func (c *LiveClient) GetOrgSecretRepos(_ context.Context, _, _ string) ([]int64, error) {
-	return nil, forge.ErrNotSupported
-}
-
 // ---------------------------------------------------------------------------
 // Org-level variables — not supported (GitLab per-repo mode)
 // ---------------------------------------------------------------------------
 
-// CreateOrUpdateOrgVariable is not supported on GitLab (per-repo mode).
-func (c *LiveClient) CreateOrUpdateOrgVariable(_ context.Context, _, _, _ string, _ []int64) error {
-	return forge.ErrNotSupported
-}
-
 // CreateOrUpdateOrgVariableAll is not supported on GitLab (per-repo mode).
 func (c *LiveClient) CreateOrUpdateOrgVariableAll(_ context.Context, _, _, _ string) error {
 	return forge.ErrNotSupported
-}
-
-// OrgVariableExists is not supported on GitLab (per-repo mode).
-func (c *LiveClient) OrgVariableExists(_ context.Context, _, _ string) (bool, error) {
-	return false, forge.ErrNotSupported
 }
 
 // GetOrgVariable is not supported on GitLab (per-repo mode).
@@ -478,16 +453,6 @@ func (c *LiveClient) ListOrgVariables(_ context.Context, _ string) ([]forge.OrgV
 // DeleteOrgVariable is not supported on GitLab (per-repo mode).
 func (c *LiveClient) DeleteOrgVariable(_ context.Context, _, _ string) error {
 	return forge.ErrNotSupported
-}
-
-// SetOrgVariableRepos is not supported on GitLab (per-repo mode).
-func (c *LiveClient) SetOrgVariableRepos(_ context.Context, _, _ string, _ []int64) error {
-	return forge.ErrNotSupported
-}
-
-// GetOrgVariableRepos is not supported on GitLab (per-repo mode).
-func (c *LiveClient) GetOrgVariableRepos(_ context.Context, _, _ string) ([]int64, error) {
-	return nil, forge.ErrNotSupported
 }
 
 // ---------------------------------------------------------------------------

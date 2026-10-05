@@ -2704,11 +2704,6 @@ func TestErrNotSupported_OrgMethods(t *testing.T) {
 	client, _ := setupTest(t)
 	ctx := context.Background()
 
-	t.Run("CreateOrgSecret", func(t *testing.T) {
-		err := client.CreateOrgSecret(ctx, "org", "secret", "val", nil)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
 	t.Run("OrgSecretExists", func(t *testing.T) {
 		_, err := client.OrgSecretExists(ctx, "org", "secret")
 		require.ErrorIs(t, err, forge.ErrNotSupported)
@@ -2719,28 +2714,8 @@ func TestErrNotSupported_OrgMethods(t *testing.T) {
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 
-	t.Run("SetOrgSecretRepos", func(t *testing.T) {
-		err := client.SetOrgSecretRepos(ctx, "org", "secret", nil)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
-	t.Run("GetOrgSecretRepos", func(t *testing.T) {
-		_, err := client.GetOrgSecretRepos(ctx, "org", "secret")
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
-	t.Run("CreateOrUpdateOrgVariable", func(t *testing.T) {
-		err := client.CreateOrUpdateOrgVariable(ctx, "org", "var", "val", nil)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
 	t.Run("CreateOrUpdateOrgVariableAll", func(t *testing.T) {
 		err := client.CreateOrUpdateOrgVariableAll(ctx, "org", "var", "val")
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
-	t.Run("OrgVariableExists", func(t *testing.T) {
-		_, err := client.OrgVariableExists(ctx, "org", "var")
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 
@@ -2756,16 +2731,6 @@ func TestErrNotSupported_OrgMethods(t *testing.T) {
 
 	t.Run("DeleteOrgVariable", func(t *testing.T) {
 		err := client.DeleteOrgVariable(ctx, "org", "var")
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
-	t.Run("SetOrgVariableRepos", func(t *testing.T) {
-		err := client.SetOrgVariableRepos(ctx, "org", "var", nil)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
-	t.Run("GetOrgVariableRepos", func(t *testing.T) {
-		_, err := client.GetOrgVariableRepos(ctx, "org", "var")
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 }
