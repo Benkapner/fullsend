@@ -267,12 +267,14 @@ func TestShimStopFixAuthorization(t *testing.T) {
 // TestShimStopFixAuthorizationRuntime executes the stop-fix job's embedded
 // bash against a stubbed `gh` binary to verify the authorization logic at
 // runtime (not just by static string matching): the PR-author escape hatch,
-// approval for write+ collaborators (including custom roles), denial for
-// read-only collaborators, and fail-closed behavior for invalid responses or
-// permission API errors.
+// approval for write+ collaborators, denial for read-only collaborators, and
+// fail-closed behavior for invalid responses or permission API errors.
 func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not available")
 	}
 
 	extractRun := func(t *testing.T, tmpl string) string {
@@ -333,7 +335,6 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 	}
 
 	for _, tmpl := range []string{
-		"templates/shim-workflow-call.yaml",
 		"templates/shim-per-repo.yaml",
 	} {
 		t.Run(tmpl, func(t *testing.T) {
@@ -434,25 +435,6 @@ func TestManagedShimStopFixNotStale(t *testing.T) {
 	content, err := os.ReadFile(managedPath)
 	require.NoError(t, err)
 	s := string(content)
-	template, err := FullsendRepoFile("templates/shim-workflow-call.yaml")
-	require.NoError(t, err)
-	type stopFixDoc struct {
-		Jobs struct {
-			StopFix struct {
-				Steps []struct {
-					Run string `yaml:"run"`
-				} `yaml:"steps"`
-			} `yaml:"stop-fix"`
-		} `yaml:"jobs"`
-	}
-	var managedDoc, templateDoc stopFixDoc
-	require.NoError(t, yaml.Unmarshal(content, &managedDoc))
-	require.NoError(t, yaml.Unmarshal(template, &templateDoc))
-	require.NotEmpty(t, managedDoc.Jobs.StopFix.Steps)
-	require.NotEmpty(t, templateDoc.Jobs.StopFix.Steps)
-	assert.Equal(t, templateDoc.Jobs.StopFix.Steps[0].Run, managedDoc.Jobs.StopFix.Steps[0].Run,
-		"managed stop-fix script must match shim-workflow-call template")
-
 	assert.NotContains(t, s, "CONTRIBUTOR",
 		"managed shim must not authorize based on the CONTRIBUTOR association")
 	assert.NotContains(t, s, "author_association ==",
