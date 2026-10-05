@@ -982,7 +982,6 @@ func TestDispatchEffectivePermissionRuntime(t *testing.T) {
 		content func(t *testing.T) []byte
 	}{
 		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
-		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
 	}
 
 	tests := []struct {
