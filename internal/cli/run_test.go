@@ -2519,12 +2519,45 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		"OPENAI_API_KEY",
 		// The GitLab CI/CD variable carrying the real key must stay runner-only.
 		"FULLSEND_OPENAI_API_KEY",
+		// The GitLab webhook fast-path credentials must stay runner-only.
+		"FULLSEND_TRIGGER_TOKEN",
+		"FULLSEND_WEBHOOK_SECRET",
 	}
 	for _, key := range expected {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)
 	}
 	assert.Len(t, oidcDenyKeys, len(expected), "oidcDenyKeys must contain exactly %d keys", len(expected))
 	assert.False(t, oidcDenyKeys[workflowTokenEnv], "GH_WORKFLOW_TOKEN must stay expandable by provider credentials (#6649)")
+}
+
+// TestGitLabWebhookCredentials_RunnerOnly checks each webhook fast-path
+// credential independently: neither may reach host-side scripts, validation
+// commands, harness ${VAR} expansion, or sandbox injection, even if GitLab
+// injected the protected variable into the runner process.
+func TestGitLabWebhookCredentials_RunnerOnly(t *testing.T) {
+	for _, key := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret} {
+		t.Run(key, func(t *testing.T) {
+			const value = "webhook-credential-value"
+			t.Setenv(key, value)
+
+			assert.True(t, oidcDenyKeys[key])
+			assert.True(t, harnessExpansionDenied(key))
+			assert.True(t, reservedSandboxKeys[key], "env.sandbox must not inject %s", key)
+
+			for _, e := range childScriptEnv(map[string]string{key: value}, "") {
+				assert.False(t, strings.HasPrefix(e, key+"="), "childScriptEnv must strip %s from host-side scripts", key)
+			}
+			for _, e := range stripOIDCEnv(append(os.Environ(), key+"="+value)) {
+				assert.False(t, strings.HasPrefix(e, key+"="), "the validation environment must strip %s", key)
+			}
+
+			assert.Empty(t, harnessEnvExpand(key))
+			_, ok := harnessEnvLookup(key)
+			assert.False(t, ok, "harness validation must reject a reference to %s", key)
+			assert.NotContains(t, safeExpandEnv("prefix-${"+key+"}-suffix"), value)
+			assert.NotContains(t, shellSafeExpandEnv("prefix-${"+key+"}-suffix"), value)
+		})
+	}
 }
 
 func TestProviderOnlyKeys_WorkflowToken(t *testing.T) {

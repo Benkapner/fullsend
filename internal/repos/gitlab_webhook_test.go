@@ -41,6 +41,18 @@ func (w webhookFake) CreateRepoSecret(ctx context.Context, owner, repo, name, va
 	return nil
 }
 
+// DeleteRepoSecret also drops the mirrored variable value, as live GitLab
+// stops returning a deleted variable.
+func (w webhookFake) DeleteRepoSecret(ctx context.Context, owner, repo, name string) error {
+	if err := w.FakeClient.DeleteRepoSecret(ctx, owner, repo, name); err != nil {
+		return err
+	}
+	key := owner + "/" + repo + "/" + name
+	delete(w.VariableValues, key)
+	delete(w.SecretProtections, key)
+	return nil
+}
+
 // echoFake returns API errors that echo the submitted credentials, as a
 // misbehaving GitLab or proxy could.
 type echoFake struct {

@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -54,7 +55,117 @@ func TestGitLabWebhookFastPath_UnmanagedPrivilegedBearerNotReused(t *testing.T) 
 	for _, tok := range c.triggers() {
 		assert.NotEqual(t, GitLabWebhookTriggerDescription, tok.Description, "no managed trigger survives")
 	}
+	assert.Empty(t, c.variable(forge.SecretTriggerToken), "the unbound privileged bearer is removed from runtime credential storage")
+	assertUnmanagedTriggerPreserved(t, c)
 	assertNoCredentialLeak(t, c, res)
+}
+
+// unboundPrivilegedBearerFake returns a provisioned fast path drifted so the
+// stored FULLSEND_TRIGGER_TOKEN, the webhook URL token, and an unmanaged
+// Maintainer-owned trigger could all be one privileged bearer.
+func unboundPrivilegedBearerFake(t *testing.T) (webhookFake, int64) {
+	t.Helper()
+	c := newWebhookFake()
+	ownedBy(c, webhookDeveloperUserID, forge.GitLabAccessLevelDeveloper)
+	ensureWebhook(t, c, false, false)
+	require.Len(t, c.triggers(), 1)
+	require.Len(t, c.hooks(), 1)
+	managedID := c.triggers()[0].ID
+
+	const unmanagedBearer = "unmanaged-privileged-bearer"
+	key := webhookTestOwner + "/" + webhookTestRepo
+	c.ProjectMemberAccess[webhookMaintainerUserID] = forge.GitLabAccessLevelMaintainer
+	c.PipelineTriggerTokens[key] = append(c.PipelineTriggerTokens[key], forge.PipelineTriggerToken{
+		ID: 777, Description: "ci deploy", OwnerID: webhookMaintainerUserID,
+	})
+	c.VariableValues[key+"/"+forge.SecretTriggerToken] = unmanagedBearer
+	hooks := c.ProjectHooks[key]
+	hooks[0].URL = GitLabWebhookTriggerURL(webhookTestBase, 42, "main", unmanagedBearer)
+	c.ProjectHooks[key] = hooks
+	return c, managedID
+}
+
+// assertUnmanagedTriggerPreserved checks that the unrelated trigger was
+// neither revoked nor removed: it is not Fullsend's to revoke.
+func assertUnmanagedTriggerPreserved(t *testing.T, c webhookFake) {
+	t.Helper()
+	assert.NotContains(t, c.RevokedTriggerTokenIDs, int64(777))
+	var found bool
+	for _, tok := range c.triggers() {
+		if tok.ID == 777 {
+			found = true
+		}
+	}
+	assert.True(t, found, "the unmanaged trigger is preserved")
+}
+
+// Both exported reconciliation entry points, and a readiness deferral, must
+// remove the unbound privileged bearer without provisioning anything.
+func TestGitLabWebhookSafety_UnboundPrivilegedBearerRemoved(t *testing.T) {
+	ctx := context.Background()
+	t.Run("ReconcileGitLabWebhookSafety", func(t *testing.T) {
+		c, managedID := unboundPrivilegedBearerFake(t)
+		res, err := ReconcileGitLabWebhookSafety(ctx, c, webhookTestOwner, webhookTestRepo, false)
+		require.NoError(t, err)
+		assert.Equal(t, "update", res.Action)
+		assert.Empty(t, c.variable(forge.SecretTriggerToken))
+		assert.Empty(t, c.hooks())
+		assert.Contains(t, c.RevokedTriggerTokenIDs, managedID)
+		assertUnmanagedTriggerPreserved(t, c)
+		assert.Len(t, c.CreatedTriggerTokens, 1, "reconciliation never provisions a replacement")
+		assertNoCredentialLeak(t, c, res)
+	})
+	t.Run("ReconcileGitLabWebhookSafety dry run", func(t *testing.T) {
+		c, _ := unboundPrivilegedBearerFake(t)
+		before := c.variable(forge.SecretTriggerToken)
+		res, err := ReconcileGitLabWebhookSafety(ctx, c, webhookTestOwner, webhookTestRepo, true)
+		require.NoError(t, err)
+		assert.Contains(t, strings.Join(res.Details, "\n"), "Would delete the "+forge.SecretTriggerToken+" variable")
+		assert.Equal(t, before, c.variable(forge.SecretTriggerToken), "a dry run changes nothing")
+		assert.Len(t, c.hooks(), 1)
+	})
+	t.Run("EnsureGitLabWebhookFastPath readiness deferral", func(t *testing.T) {
+		c, managedID := unboundPrivilegedBearerFake(t)
+		// The project stops being ready, so provisioning defers before it
+		// reaches the binding probe.
+		delete(c.FileContents, webhookTestOwner+"/"+webhookTestRepo+"/"+fullsendDispatcherTemplatePath)
+		res, err := EnsureGitLabWebhookFastPath(ctx, c, webhookTestBase, webhookTestOwner, webhookTestRepo, false, false)
+		require.NoError(t, err)
+		assert.Equal(t, "deferred", res.Action)
+		assert.Empty(t, c.variable(forge.SecretTriggerToken), "the bearer is removed even though readiness defers")
+		assert.Empty(t, c.hooks())
+		assert.Contains(t, c.RevokedTriggerTokenIDs, managedID)
+		assertUnmanagedTriggerPreserved(t, c)
+		assert.Len(t, c.CreatedTriggerTokens, 1, "no replacement is minted while deferred")
+		assertNoCredentialLeak(t, c, res)
+	})
+	t.Run("variable deletion failure is reported after the webhook is removed", func(t *testing.T) {
+		c, _ := unboundPrivilegedBearerFake(t)
+		c.Errors = map[string]error{"DeleteRepoSecret": errors.New("forbidden")}
+		_, err := ReconcileGitLabWebhookSafety(ctx, c, webhookTestOwner, webhookTestRepo, false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "deleting "+forge.SecretTriggerToken)
+		assert.Empty(t, c.hooks(), "the managed webhook is removed before the variable deletion is attempted")
+	})
+	t.Run("unverifiable trigger list fails closed", func(t *testing.T) {
+		c, _ := unboundPrivilegedBearerFake(t)
+		c.Errors = map[string]error{"ListPipelineTriggerTokens": errors.New("boom")}
+		_, err := ReconcileGitLabWebhookSafety(ctx, c, webhookTestOwner, webhookTestRepo, false)
+		require.Error(t, err)
+		assert.Empty(t, c.variable(forge.SecretTriggerToken), "an unbounded bearer is removed when its privilege cannot be verified")
+		assert.Empty(t, c.hooks())
+	})
+	t.Run("no unmanaged privileged trigger keeps a compliant bearer", func(t *testing.T) {
+		c := newWebhookFake()
+		ownedBy(c, webhookDeveloperUserID, forge.GitLabAccessLevelDeveloper)
+		ensureWebhook(t, c, false, false)
+		before := c.variable(forge.SecretTriggerToken)
+		res, err := ReconcileGitLabWebhookSafety(ctx, c, webhookTestOwner, webhookTestRepo, false)
+		require.NoError(t, err)
+		assert.Equal(t, "none", res.Action)
+		assert.Equal(t, before, c.variable(forge.SecretTriggerToken))
+		assert.Len(t, c.hooks(), 1)
+	})
 }
 
 // A stale duplicate managed hook ahead of the correctly configured one must

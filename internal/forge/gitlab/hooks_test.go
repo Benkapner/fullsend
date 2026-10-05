@@ -211,7 +211,9 @@ func TestRevokePipelineTriggerToken_NotFound(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
 
+	handlerCalled := false
 	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/triggers/999", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 		writeJSON(t, w, http.StatusNotFound, map[string]any{"message": "404 Not Found"})
 	})
 
@@ -219,6 +221,7 @@ func TestRevokePipelineTriggerToken_NotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "revoke pipeline trigger token")
 	assert.ErrorIs(t, err, forge.ErrNotFound)
+	assert.True(t, handlerCalled, "the not-found handler must be invoked, not ServeMux's default 404")
 }
 
 func TestRevokePipelineTriggerToken_Forbidden(t *testing.T) {
@@ -466,7 +469,9 @@ func TestUpdateProjectHook_NotFound(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
 
+	handlerCalled := false
 	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/hooks/999", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 		writeJSON(t, w, http.StatusNotFound, map[string]any{"message": "404 Not Found"})
 	})
 
@@ -474,6 +479,7 @@ func TestUpdateProjectHook_NotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "update project hook")
 	assert.ErrorIs(t, err, forge.ErrNotFound)
+	assert.True(t, handlerCalled, "the not-found handler must be invoked, not ServeMux's default 404")
 }
 
 func TestDeleteProjectHook(t *testing.T) {
@@ -493,7 +499,9 @@ func TestDeleteProjectHook_NotFound(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
 
+	handlerCalled := false
 	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/hooks/999", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 		writeJSON(t, w, http.StatusNotFound, map[string]any{"message": "404 Not Found"})
 	})
 
@@ -501,6 +509,7 @@ func TestDeleteProjectHook_NotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "delete project hook")
 	assert.ErrorIs(t, err, forge.ErrNotFound)
+	assert.True(t, handlerCalled, "the not-found handler must be invoked, not ServeMux's default 404")
 }
 
 func TestDeleteProjectHook_Forbidden(t *testing.T) {

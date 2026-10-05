@@ -886,7 +886,14 @@ Confirm:
   and `FULLSEND_GCP_WIF_PROVIDER` exist and are protected.
   When the webhook fast-path is enabled, `FULLSEND_TRIGGER_TOKEN` and
   `FULLSEND_WEBHOOK_SECRET` are also stored as masked, protected variables
-  and must never appear in logs.
+  and must never appear in logs. The poller, dispatcher, and agent jobs unset
+  both variables before doing any work, and the runner never exposes them to
+  harness scripts or the sandbox. If the stored trigger token's privilege
+  cannot be bounded (an unmanaged pipeline trigger owned at or above
+  Maintainer, or one whose owner cannot be verified, could be that token),
+  `repos install` deletes the `FULLSEND_TRIGGER_TOKEN` variable and the
+  Fullsend-managed webhook and trigger tokens instead of leaving the bearer
+  in storage; unmanaged trigger tokens are never revoked.
   `FULLSEND_FORGE_TOKEN` may remain only as a legacy artifact; no automated
   path retires it, so an administrator must manually remove it (see
   above). Role-aware installs also provision

@@ -3042,6 +3042,15 @@ var oidcDenyKeys = map[string]bool{
 	// script maps it to OPENAI_API_KEY and unsets it; if it is ever still
 	// present it holds the real key and must stay runner-only too.
 	"FULLSEND_OPENAI_API_KEY": true,
+	// The GitLab webhook fast-path credentials `fullsend repos install`
+	// provisions as protected, wildcard-scoped CI/CD variables. The trigger
+	// token is a bearer credential that starts pipelines on the protected
+	// default branch; no run needs either value. The job scripts unset both,
+	// and listing them here is defense in depth so a harness cannot expand
+	// them into sandbox-visible values and host-side scripts never inherit
+	// them.
+	"FULLSEND_TRIGGER_TOKEN":  true,
+	"FULLSEND_WEBHOOK_SECRET": true,
 }
 
 // workflowTokenEnv is the Actions workflow token preserved across minting

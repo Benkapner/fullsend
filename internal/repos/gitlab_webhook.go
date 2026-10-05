@@ -905,12 +905,16 @@ func protectedRuleAdmitsUser(rule forge.ProtectedBranchRule, userID int64, level
 // jobs or logs, so it must not stay valid while readiness checks or
 // replacement provisioning succeed, fail, or defer. Managed triggers are
 // identified by their description alone; the webhook is left for the
-// ordinary repair, which replaces the token. details is non-empty only when
-// something was (or, for dryRun, would be) revoked.
+// ordinary repair, which replaces the token. A protected stored bearer whose
+// privilege cannot be bounded (an unmanaged trigger owned at or above
+// Maintainer, or unverifiable, could be it) is removed instead, together with
+// the managed webhooks (see removeUnboundTriggerCredential). details is
+// non-empty only when something was (or, for dryRun, would be) revoked.
 func revokeUnsafeTriggerCredential(ctx context.Context, client forge.Client, owner, repo string, dryRun bool) (details []string, err error) {
 	red := &credentialRedactor{}
 	var errs []error
 	why := ""
+	removeStored := false
 	vars, varsErr := client.ListRepoVariables(ctx, owner, repo)
 	if varsErr != nil {
 		// The values are not known yet, so the error cannot be redacted.
@@ -925,10 +929,26 @@ func revokeUnsafeTriggerCredential(ctx context.Context, client forge.Client, own
 			why = "its stored credential protection could not be verified"
 		case !secretUsable(prot):
 			why = "its stored " + forge.SecretTriggerToken + " was not a masked, protected, wildcard-scoped environment variable"
+		default:
+			// A properly protected stored bearer is still not bounded to the
+			// Developer runtime ceiling while an unmanaged trigger owned at or
+			// above Maintainer (or unverifiable) could be that bearer.
+			unbound, unboundErr := storedBearerUnbound(ctx, client, owner, repo)
+			if unboundErr != nil {
+				errs = append(errs, safeAPIError("listing pipeline trigger tokens", unboundErr))
+				why = "its stored " + forge.SecretTriggerToken + " privilege could not be verified"
+				removeStored = true
+			} else if unbound {
+				why = "its stored " + forge.SecretTriggerToken + " could belong to an unmanaged pipeline trigger owned at or above Maintainer"
+				removeStored = true
+			}
 		}
 	}
 	if why == "" {
 		return nil, red.redact(errors.Join(errs...))
+	}
+	if removeStored {
+		return removeUnboundTriggerCredential(ctx, client, owner, repo, why, dryRun, red, errs)
 	}
 	triggers, listErr := client.ListPipelineTriggerTokens(ctx, owner, repo)
 	if listErr != nil {
@@ -948,6 +968,49 @@ func revokeUnsafeTriggerCredential(ctx context.Context, client forge.Client, own
 			continue
 		}
 		details = append(details, fmt.Sprintf("Revoked pipeline trigger token (ID %d): %s", t.ID, why))
+	}
+	return details, red.redact(errors.Join(errs...))
+}
+
+// storedBearerUnbound reports whether the stored FULLSEND_TRIGGER_TOKEN's
+// privilege cannot be bounded to the Developer runtime ceiling: GitLab never
+// returns trigger token values on list, so while an unmanaged trigger is owned
+// at or above Maintainer (or has an unidentifiable owner) the stored value
+// could be that trigger's bearer.
+func storedBearerUnbound(ctx context.Context, client forge.Client, owner, repo string) (bool, error) {
+	triggers, err := client.ListPipelineTriggerTokens(ctx, owner, repo)
+	if err != nil {
+		return false, err
+	}
+	var unmanaged []forge.PipelineTriggerToken
+	for _, t := range triggers {
+		if t.Description != GitLabWebhookTriggerDescription {
+			unmanaged = append(unmanaged, t)
+		}
+	}
+	return unmanagedTriggerExceedsCeiling(ctx, client, owner, repo, unmanaged), nil
+}
+
+// removeUnboundTriggerCredential disables the Fullsend-managed fast path when
+// the stored FULLSEND_TRIGGER_TOKEN's privilege cannot be bounded: it deletes
+// the managed webhooks and managed triggers, then the wildcard-scoped
+// credential variable so the bearer is no longer injected into protected jobs.
+// Trigger tokens Fullsend does not manage are left untouched, since the stored
+// value cannot be tied to one and an unowned token is not Fullsend's to revoke.
+// The webhooks go first because ownership of an unnamed legacy hook depends on
+// the stored token. A failed teardown does not keep the variable: the
+// injected bearer is the exposure. errs carries earlier lookup failures.
+func removeUnboundTriggerCredential(ctx context.Context, client forge.Client, owner, repo, why string, dryRun bool, red *credentialRedactor, errs []error) ([]string, error) {
+	details, teardownErr := revokeGitLabWebhookFastPath(ctx, client, owner, repo, dryRun)
+	errs = append(errs, teardownErr)
+	if dryRun {
+		details = append(details, fmt.Sprintf("Would delete the %s variable: %s", forge.SecretTriggerToken, why))
+		return details, red.redact(errors.Join(errs...))
+	}
+	if delErr := client.DeleteRepoSecret(ctx, owner, repo, forge.SecretTriggerToken); delErr != nil && !forge.IsNotFound(delErr) {
+		errs = append(errs, fmt.Errorf("deleting %s: %w", forge.SecretTriggerToken, delErr))
+	} else {
+		details = append(details, fmt.Sprintf("Deleted the %s variable: %s", forge.SecretTriggerToken, why))
 	}
 	return details, red.redact(errors.Join(errs...))
 }
