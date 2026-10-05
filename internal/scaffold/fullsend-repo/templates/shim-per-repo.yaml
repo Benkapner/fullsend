@@ -31,8 +31,12 @@ permissions: {}
 
 jobs:
   dispatch:
+    # #7895: forks inherit this file but not repository variables, so an
+    # unset FULLSEND_MINT_URL skips agent jobs without a runner or a
+    # failed check. Re-onboard sets the variable and the same file runs.
     if: >-
-      (github.event_name != 'pull_request_target' && github.event_name != 'pull_request_review'
+      vars.FULLSEND_MINT_URL != ''
+      && (github.event_name != 'pull_request_target' && github.event_name != 'pull_request_review'
        || github.event.pull_request.head.ref != 'fullsend/scaffold-install')
       && (github.event_name != 'issue_comment'
        || (startsWith(github.event.comment.body, '/fs-')
@@ -66,7 +70,8 @@ jobs:
     # hatch) is made in the step below, so a maintainer whose author_association
     # is not MEMBER (e.g. private org membership) is not filtered out (ADR 0054).
     if: >-
-      github.event_name == 'issue_comment'
+      vars.FULLSEND_MINT_URL != ''
+        && github.event_name == 'issue_comment'
         && github.event.issue.pull_request
         && github.event.comment.user.type != 'Bot'
         && github.event.comment.body == '/fs-fix-stop'

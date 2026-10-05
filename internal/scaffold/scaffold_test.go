@@ -211,6 +211,29 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 	}, pr.Jobs.StopFix.Permissions, "stop-fix job permissions")
 }
 
+// TestShimPerRepoSkipsWhenMintURLUnset verifies forks of enrolled repos
+// do not run agent jobs (#7895). GitHub does not copy repository
+// variables to forks, so FULLSEND_MINT_URL is empty there.
+func TestShimPerRepoSkipsWhenMintURLUnset(t *testing.T) {
+	content, err := FullsendRepoFile("templates/shim-per-repo.yaml")
+	require.NoError(t, err)
+
+	var wf struct {
+		Jobs map[string]struct {
+			If string `yaml:"if"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &wf))
+
+	const gate = "vars.FULLSEND_MINT_URL != ''"
+	for _, job := range []string{"dispatch", "stop-fix"} {
+		cond := wf.Jobs[job].If
+		require.NotEmpty(t, cond, "%s job must have an if condition", job)
+		assert.Contains(t, cond, gate,
+			"%s job must skip when FULLSEND_MINT_URL is unset", job)
+	}
+}
+
 // TestShimStopFixAuthorization verifies the stop-fix job authorizes the
 // /fs-fix-stop command via the collaborator permission API (ADR 0054) rather
 // than author_association. See issue #5421: author_association grants
