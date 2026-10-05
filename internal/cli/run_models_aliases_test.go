@@ -96,3 +96,25 @@ func TestRunAgent_ModelsAliases_UnrelatedAliasUnchanged(t *testing.T) {
 	assert.NotContains(t, buf.String(), "opus →", "no remap for an alias without an entry")
 	assert.NotContains(t, buf.String(), "models.aliases")
 }
+
+// A rejected org-shaped config.yaml that carries an explicit deny-all
+// allowed_remote_resources must fail the run before agent-source
+// resolution: treating it as absent would substitute the default allowlist
+// and permit a first-party harness fetch.
+func TestRunAgent_RejectedConfigFailsBeforeAgentSourceResolution(t *testing.T) {
+	usePreScriptStub(t)
+	dir := newSkipHarnessDir(t, "")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"),
+		[]byte("version: \"1\"\ndefaults:\n  roles: [coder]\nrepos:\n  api:\n    enabled: true\nallowed_remote_resources: []\n"), 0o644))
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50, offline: true}
+	// "unregistered" has no local harness, so resolution would fall back
+	// to the agents repository if the config were treated as absent.
+	err := runAgent(context.Background(), "unregistered", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(&buf), false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading fullsend config")
+	assert.NotContains(t, buf.String(), "agents repo")
+	assert.NotContains(t, buf.String(), "Fetching")
+}

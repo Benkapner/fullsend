@@ -579,8 +579,8 @@ func TestRequireFullsendConfig_PerRepoMalformed(t *testing.T) {
 }
 
 func TestRunAgent_MalformedOrgConfig(t *testing.T) {
-	// A malformed config.yaml means no agents can be resolved from config.
-	// Without disk fallback, agent resolution fails.
+	// A malformed config.yaml fails the run with the config load error
+	// before any agent source resolution.
 	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
@@ -607,13 +607,13 @@ func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
+	assert.Contains(t, err.Error(), "reading fullsend config for remote resource validation")
 }
 
 func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	useFakeOpenshell(t)
-	// A malformed config.yaml means no agents can be resolved from config.
-	// Without disk fallback, agent resolution fails before URL refs are checked.
+	// A malformed config.yaml fails the run with the config load error
+	// before agent resolution and before URL refs are checked.
 	agentHash := fetch.ComputeSHA256([]byte("agent content"))
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
@@ -634,7 +634,7 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
+	assert.Contains(t, err.Error(), "reading fullsend config for remote resource validation")
 }
 
 func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
@@ -996,8 +996,8 @@ func TestRunAgent_URLBaseNoAllowlist(t *testing.T) {
 
 func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 	useFakeOpenshell(t)
-	// Malformed config.yaml means no agents can be resolved from config.
-	// Without disk fallback, agent resolution fails before URL base is checked.
+	// Malformed config.yaml fails the run with the config load error
+	// before agent resolution and before URL base is checked.
 	baseContent := []byte("agent: agents/shared.md\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
@@ -1020,7 +1020,7 @@ func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
+	assert.Contains(t, err.Error(), "reading fullsend config for remote resource validation")
 }
 
 func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {

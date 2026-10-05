@@ -498,6 +498,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// tryLoadOrgConfig but not surfaced as a distinct error here.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
 	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
+	if orgCfg == nil {
+		// A config file that exists but cannot be loaded (malformed,
+		// unreadable, or a rejected per-org format) must not be treated
+		// as absent: that would substitute the default allowlist for an
+		// explicit allowed_remote_resources (including a deny-all) and
+		// allow remote fetching before the load error surfaces.
+		if _, statErr := os.Stat(orgConfigPath); !errors.Is(statErr, os.ErrNotExist) {
+			var loadErr error
+			if orgCfg, loadErr = requireOrgConfig(orgConfigPath, printer); loadErr != nil {
+				return loadErr
+			}
+		}
+	}
 
 	// Detect forge platform after config is loaded so config.forge can be consulted (ADR 0088).
 	forgePlatform, err := detectForgePlatform(forgeFlag, orgCfg)
