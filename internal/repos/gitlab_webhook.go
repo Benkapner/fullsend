@@ -921,6 +921,10 @@ func revokeUnsafeTriggerCredential(ctx context.Context, client forge.Client, own
 		// The values are not known yet, so the error cannot be redacted.
 		errs = append(errs, safeAPIError("listing CI/CD variables", varsErr))
 		why = "its stored credential protection could not be verified"
+		// Whether a stored bearer exists, and how privileged it is, cannot be
+		// established, so the wildcard-scoped variable is removed rather than
+		// left injected into jobs.
+		removeStored = true
 	} else if token := vars[forge.SecretTriggerToken]; token != "" {
 		red.add(token, vars[forge.SecretWebhookSecret])
 		prot, protErr := client.GetRepoSecretProtection(ctx, owner, repo, forge.SecretTriggerToken)
@@ -1084,12 +1088,30 @@ func ReconcileGitLabWebhookSafety(ctx context.Context, client forge.Client, owne
 // live. Cleanup errors are joined with the lookup error.
 func failClosedOnProjectLookup(ctx context.Context, client forge.Client, owner, repo string, dryRun bool, lookupErr error) (GitLabWebhookResult, error) {
 	lookupErr = safeAPIError("reading project", lookupErr)
+	// The stored-bearer cleanup does not depend on the project, so it runs
+	// first: a drifted FULLSEND_TRIGGER_TOKEN must not stay injected into jobs
+	// just because the project could not be read.
+	credDetails, credErr := revokeUnsafeTriggerCredential(ctx, client, owner, repo, dryRun)
 	details, revokeErr := revokeGitLabWebhookFastPath(ctx, client, owner, repo, dryRun)
-	res := GitLabWebhookResult{Action: "deferred", Details: append([]string{"webhook fast-path deferred: the project could not be read, so the trigger safety invariants cannot be verified and the managed credentials are revoked"}, details...)}
-	if len(details) > 0 && !dryRun {
+	// The credential cleanup may already have run the managed teardown; keep
+	// each detail once.
+	seen := make(map[string]bool, len(credDetails))
+	for _, d := range credDetails {
+		seen[d] = true
+	}
+	all := append([]string{"webhook fast-path deferred: the project could not be read, so the trigger safety invariants cannot be verified and the managed credentials are revoked"}, credDetails...)
+	changed := len(credDetails) > 0
+	for _, d := range details {
+		if !seen[d] {
+			all = append(all, d)
+			changed = true
+		}
+	}
+	res := GitLabWebhookResult{Action: "deferred", Details: all}
+	if changed && !dryRun {
 		res.Action = "update"
 	}
-	return res, errors.Join(lookupErr, revokeErr)
+	return res, errors.Join(lookupErr, credErr, revokeErr)
 }
 
 // revokeGitLabWebhookFastPath removes the managed webhook and trigger tokens

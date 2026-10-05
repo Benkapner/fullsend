@@ -317,3 +317,48 @@ func TestGitLabWebhookSafety_DispatcherJobLevelExecution(t *testing.T) {
 		})
 	}
 }
+
+// The stored-bearer cleanup must not depend on the project lookup or on the
+// variable listing succeeding: a drifted unmanaged privileged bearer is
+// removed (or, for a dry run, reported) through both exported reconciliation
+// entry points even when GetRepo or ListRepoVariables fails.
+func TestGitLabWebhookSafety_UnboundPrivilegedBearerRemovedOnDiscoveryFailure(t *testing.T) {
+	ctx := context.Background()
+	for _, failing := range []string{"GetRepo", "ListRepoVariables"} {
+		entries := []struct {
+			name string
+			run  func(c webhookFake, dryRun bool) (GitLabWebhookResult, error)
+		}{
+			{"ReconcileGitLabWebhookSafety", func(c webhookFake, dryRun bool) (GitLabWebhookResult, error) {
+				return ReconcileGitLabWebhookSafety(ctx, c, webhookTestOwner, webhookTestRepo, dryRun)
+			}},
+			{"EnsureGitLabWebhookFastPath", func(c webhookFake, dryRun bool) (GitLabWebhookResult, error) {
+				return EnsureGitLabWebhookFastPath(ctx, c, webhookTestBase, webhookTestOwner, webhookTestRepo, false, dryRun)
+			}},
+		}
+		for _, entry := range entries {
+			t.Run(failing+" failure via "+entry.name, func(t *testing.T) {
+				c, managedID := unboundPrivilegedBearerFake(t)
+				c.Errors = map[string]error{failing: errors.New("boom")}
+				res, err := entry.run(c, false)
+				require.Error(t, err, "the discovery failure is still reported")
+				assert.Empty(t, c.variable(forge.SecretTriggerToken), "the stored bearer is removed")
+				assert.Empty(t, c.hooks(), "the managed webhook is removed")
+				assert.Contains(t, c.RevokedTriggerTokenIDs, managedID)
+				assertUnmanagedTriggerPreserved(t, c)
+				assertNoCredentialLeak(t, c, res)
+			})
+			t.Run(failing+" failure via "+entry.name+" dry run", func(t *testing.T) {
+				c, _ := unboundPrivilegedBearerFake(t)
+				before := c.variable(forge.SecretTriggerToken)
+				c.Errors = map[string]error{failing: errors.New("boom")}
+				res, err := entry.run(c, true)
+				require.Error(t, err)
+				assert.Contains(t, strings.Join(res.Details, "\n"), "Would delete the "+forge.SecretTriggerToken+" variable")
+				assert.Equal(t, before, c.variable(forge.SecretTriggerToken), "a dry run changes nothing")
+				assert.Len(t, c.hooks(), 1)
+				assert.Empty(t, c.RevokedTriggerTokenIDs)
+			})
+		}
+	}
+}
