@@ -135,7 +135,6 @@ func TestRunGitHubSetupWithOpts_ConfigPreset(t *testing.T) {
 	assert.Equal(t, []string{
 		"github", "setup", "org/repo",
 		"--direct",
-		"--skip-app-setup",
 		"--mint-url", "https://mint.test",
 		"--config", "https://example.com/preset.yaml",
 		"--vendor",

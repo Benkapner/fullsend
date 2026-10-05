@@ -77,7 +77,6 @@ func RunGitHubSetupWithOpts(
 	args := []string{
 		"github", "setup", target,
 		"--direct",
-		"--skip-app-setup",
 		"--mint-url", mintURL,
 	}
 	if opts.AppSet != "" {

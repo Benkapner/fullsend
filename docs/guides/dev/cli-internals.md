@@ -236,11 +236,13 @@ GH_TOKEN env var  →  GITHUB_TOKEN env var  →  `gh auth token` CLI
 
 ### Install Mode Detection
 
-The `install` command auto-detects mode from the positional argument:
+The `install` command accepts only an `owner/repo` target. An org-only
+argument is rejected before any forge call, because per-org installation
+has been removed:
 
 ```
-fullsend admin install <org>              → Per-org mode (full infrastructure)
 fullsend admin install <owner>/<repo>     → Per-repo mode (single repo bootstrap)
+fullsend admin install <org>              → error: requires an owner/repo target
 ```
 
 ---
