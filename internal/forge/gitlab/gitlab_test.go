@@ -1683,15 +1683,28 @@ func TestCommitFiles_LocalPath(t *testing.T) {
 	})
 	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-		actions := body["actions"].([]any)
-		require.Len(t, actions, 1)
-		action := actions[0].(map[string]any)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode commit body: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		actions, _ := body["actions"].([]any)
+		if len(actions) != 1 {
+			t.Errorf("expected 1 action, got %d", len(actions))
+			http.Error(w, "unexpected actions", http.StatusBadRequest)
+			return
+		}
+		action, _ := actions[0].(map[string]any)
 		assert.Equal(t, "create", action["action"])
 		assert.Equal(t, "bin/fullsend", action["file_path"])
 		assert.Equal(t, "base64", action["encoding"])
-		decoded, err := base64.StdEncoding.DecodeString(action["content"].(string))
-		require.NoError(t, err)
+		encoded, _ := action["content"].(string)
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			t.Errorf("decode action content: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		assert.Equal(t, content, decoded)
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{"id": "commit-sha"})
@@ -1724,7 +1737,8 @@ func TestCommitFiles_LocalPathIdempotent(t *testing.T) {
 		})
 	})
 	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("commits endpoint should not be called when LocalPath file is unchanged")
+		t.Error("commits endpoint should not be called when LocalPath file is unchanged")
+		http.Error(w, "unexpected commit", http.StatusInternalServerError)
 	})
 
 	committed, err := client.CommitFiles(context.Background(), "owner", "repo", "no-op", []forge.TreeFile{

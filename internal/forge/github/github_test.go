@@ -3289,19 +3289,35 @@ func TestCommitFiles_LocalPathUsesBlobAPI(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
 		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/blobs":
 			var body map[string]string
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode blob body: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			assert.Equal(t, "base64", body["encoding"])
 			decoded, err := base64.StdEncoding.DecodeString(body["content"])
-			require.NoError(t, err)
+			if err != nil {
+				t.Errorf("decode blob content: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			assert.Equal(t, binaryContent, decoded)
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]string{"sha": blobSHAValue})
 		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
 			var body map[string]any
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-			entries := body["tree"].([]any)
-			require.Len(t, entries, 1)
-			entry := entries[0].(map[string]any)
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode tree body: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			entries, _ := body["tree"].([]any)
+			if len(entries) != 1 {
+				t.Errorf("expected 1 tree entry, got %d", len(entries))
+				http.Error(w, "unexpected tree entries", http.StatusBadRequest)
+				return
+			}
+			entry, _ := entries[0].(map[string]any)
 			assert.Equal(t, blobSHAValue, entry["sha"])
 			assert.NotContains(t, entry, "content")
 			w.WriteHeader(http.StatusCreated)
@@ -6310,18 +6326,27 @@ func writeBlobTestFile(t *testing.T, size int) (string, []byte) {
 	return path, content
 }
 
-func assertBlobUpload(t *testing.T, r *http.Request, want []byte) {
+// assertBlobUpload validates a blob upload request. It is called from httptest
+// handler goroutines, so it uses nonfatal assertions and reports whether the
+// upload was valid so the handler can respond with an explicit error.
+func assertBlobUpload(t *testing.T, r *http.Request, want []byte) bool {
 	t.Helper()
 	body, err := io.ReadAll(r.Body)
-	require.NoError(t, err)
-	assert.Equal(t, int64(len(body)), r.ContentLength, "uploaded bytes must match ContentLength")
-	assert.Equal(t, blobJSONLength(int64(len(want))), int64(len(body)))
+	if !assert.NoError(t, err) {
+		return false
+	}
+	ok := assert.Equal(t, int64(len(body)), r.ContentLength, "uploaded bytes must match ContentLength")
+	ok = assert.Equal(t, blobJSONLength(int64(len(want))), int64(len(body))) && ok
 	var parsed map[string]string
-	require.NoError(t, json.Unmarshal(body, &parsed))
-	assert.Equal(t, "base64", parsed["encoding"])
+	if !assert.NoError(t, json.Unmarshal(body, &parsed)) {
+		return false
+	}
+	ok = assert.Equal(t, "base64", parsed["encoding"]) && ok
 	decoded, err := base64.StdEncoding.DecodeString(parsed["content"])
-	require.NoError(t, err)
-	assert.Equal(t, want, decoded)
+	if !assert.NoError(t, err) {
+		return false
+	}
+	return assert.Equal(t, want, decoded) && ok
 }
 
 func TestCreateBlobFromFile_RetryReplaysFullFile(t *testing.T) {
@@ -6335,7 +6360,10 @@ func TestCreateBlobFromFile_RetryReplaysFullFile(t *testing.T) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		assertBlobUpload(t, r, content)
+		if !assertBlobUpload(t, r, content) {
+			http.Error(w, "invalid blob upload", http.StatusBadRequest)
+			return
+		}
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]string{"sha": "blobsha"})
 	}))
@@ -6358,7 +6386,10 @@ func TestCreateBlobFromFile_RedirectReplaysBody(t *testing.T) {
 		case "/redirected/blobs":
 			hits.Add(1)
 			assert.Equal(t, http.MethodPost, r.Method)
-			assertBlobUpload(t, r, content)
+			if !assertBlobUpload(t, r, content) {
+				http.Error(w, "invalid blob upload", http.StatusBadRequest)
+				return
+			}
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]string{"sha": "blobsha"})
 		default:
