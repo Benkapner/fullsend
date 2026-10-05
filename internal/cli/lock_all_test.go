@@ -1067,3 +1067,59 @@ func TestLockAll_NoLocalHarnessesButHasConfigAgents(t *testing.T) {
 	output := buf.String()
 	assert.Contains(t, output, "remote", "should discover config-only agent when no local harness dir exists")
 }
+
+func TestLockAll_RejectedConfigDoesNotPruneConfigOnlyEntry(t *testing.T) {
+	// An org-shaped (rejected) config.yaml must fail the run instead of being
+	// treated as absent, which would prune the lock entry of an agent that is
+	// registered only through that config.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "local.yaml"),
+		[]byte("agent: agents/local.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("defaults:\n  roles:\n    - coder\nrepos: {}\n"),
+		0o644,
+	))
+
+	lockPath := filepath.Join(dir, "lock.yaml")
+	require.NoError(t, lock.Save(lockPath, &lock.LockFile{
+		Harnesses: map[string]lock.HarnessLock{
+			"configonly": {Source: "custom/configonly.yaml", SHA256: "abc123"},
+		},
+	}))
+	before, err := os.ReadFile(lockPath)
+	require.NoError(t, err)
+
+	printer := ui.New(os.Stdout)
+	err = runLockAll(context.Background(), dir, "", false, resolveFlags{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "per-org configuration format")
+
+	after, err := os.ReadFile(lockPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "lock file must be unchanged when config is rejected")
+}
+
+func TestRunLock_RejectedConfigFails(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "local.yaml"),
+		[]byte("agent: agents/local.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("defaults:\n  roles:\n    - coder\nrepos: {}\n"),
+		0o644,
+	))
+
+	printer := ui.New(os.Stdout)
+	err := runLock(context.Background(), "local", dir, "", false, resolveFlags{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "per-org configuration format")
+}
