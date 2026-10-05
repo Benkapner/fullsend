@@ -39,6 +39,7 @@ Guides for developers working in repositories where fullsend is active.
 - [Adopting fullsend incrementally](user/adoption.md) — Crawl, walk, run, fly: incremental adoption path from first agents to auto-merge
 - [Bugfix workflow](user/bugfix-workflow.md) — End-to-end guide to how fullsend handles a bug report from issue to merge
 - [Issue commands](user/issues-commands.md) — Slash commands and label triggers for interacting with agents
+- [OWNERS file authorization](user/owners-file-authorization.md) — Authorize agent dispatch via Prow-style OWNERS files
 - [Running agents locally](user/running-agents-locally.md) — Run fullsend agents on your machine using released binaries (macOS + Linux)
 
 ### Customizing agents
@@ -72,5 +73,5 @@ Guides for contributors developing and testing fullsend itself.
 - [CLI internals](dev/cli-internals.md) — Command structure, installation pipeline, and sandbox runtime
 - [Behaviour testing](dev/behaviour-testing.md) — Write Gherkin scenarios for end-to-end agent behaviour
 - [Behaviour test drivers](dev/behaviour-drivers.md) — Implement SCM and CI drivers for behaviour tests
-- [Testing workflow changes](dev/testing-workflows.md) — Point a live GitHub org at a branch to test workflow, action, and agent changes before release
+- [Testing workflow changes](dev/testing-workflows.md) — Point a test repository at a branch to test workflow, action, and agent changes before release
 - [Tracing internals](dev/tracing.md) — How the distributed tracing implementation works and how to extend it

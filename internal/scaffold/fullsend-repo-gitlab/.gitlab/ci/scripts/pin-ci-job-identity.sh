@@ -64,9 +64,21 @@
 # CI_SERVER_TLS_CA_FILE), after unsetting SSL_CERT_FILE/GIT_SSL_CAINFO/
 # CURL_CA_BUNDLE/REQUESTS_CA_BUNDLE/NODE_EXTRA_CA_CERTS/SSL_CERT_DIR/
 # SSLKEYLOGFILE (also stripped per-call by fullsend_gate_curl) so a
-# trigger-supplied CA/keylog override cannot stick from job init. Only
-# JOB-TOKEN is sent on the identity-pin
-# calls this script makes below. A caller's `-H "JOB-TOKEN: ..."` or
+# trigger-supplied CA/keylog override cannot stick from job init.
+# JOB-TOKEN is sent on every identity-pin call this script makes below;
+# the project-detail and branch-protection calls additionally retry with
+# the already-provisioned Poller-role PAT (FULLSEND_GITLAB_POLLER_TOKEN,
+# injected into every protected-branch job regardless of which role a
+# given job ultimately selects — see run-poll-job.sh) when the JOB-TOKEN
+# attempt fails. Some GitLab versions (observed: self-hosted EE 19.2.7,
+# #7965) do not mark `GET /projects/:id` job_token_allowed in their own
+# route config, so JOB-TOKEN alone cannot be relied on for that lookup.
+# This fallback does not weaken the pin: CI_JOB_TOKEN is already proven
+# valid by the GET /job call above (that is the sole identity claim —
+# which project/pipeline/ref to trust), so the PAT here only supplies an
+# alternate, equally-authoritative source for data the checks below
+# (pipeline source, protected default branch) still fully enforce. A
+# caller's `-H "JOB-TOKEN: ..."` or
 # `-H "PRIVATE-TOKEN: ..."` argument is rewritten to `-H @tempfile`
 # before exec'ing curl, so the token value itself never appears in
 # curl's argv (/proc/<pid>/cmdline, `ps`, execve audit logs).
@@ -251,9 +263,29 @@ fullsend_pin_ci_job_identity() {
   if ! _fs_project_json=$(fullsend_gate_curl \
     -H "JOB-TOKEN: ${CI_JOB_TOKEN}" \
     "${_fs_api}/projects/${FULLSEND_PINNED_PROJECT_ID}"); then
-    echo "ERROR: cannot read pinned project ${FULLSEND_PINNED_PROJECT_ID} — aborting (fail-closed)" >&2
-    unset _fs_api _fs_trust _fs_project_json FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_REF
-    return 1
+    # Some GitLab versions (observed: self-hosted EE 19.2.7, #7965) 404 on
+    # this call with JOB-TOKEN — GitLab's own lib/api/projects.rb does not
+    # mark GET /projects/:id job_token_allowed, unlike the /job call above
+    # and the /pipelines/:id call below, both of which work with JOB-TOKEN.
+    # Fall back to the already-provisioned Poller-role PAT for this same
+    # read: FULLSEND_PINNED_PROJECT_ID is already pinned from the trusted
+    # GET /job JOB-TOKEN response, so this only supplies an alternate
+    # source for project detail the checks below still fully enforce.
+    _fs_project_json=""
+    _fs_fallback_ok=1
+    if [ -n "${FULLSEND_GITLAB_POLLER_TOKEN:-}" ]; then
+      if _fs_project_json=$(fullsend_gate_curl \
+        -H "PRIVATE-TOKEN: ${FULLSEND_GITLAB_POLLER_TOKEN}" \
+        "${_fs_api}/projects/${FULLSEND_PINNED_PROJECT_ID}"); then
+        _fs_fallback_ok=0
+      fi
+    fi
+    if [ "${_fs_fallback_ok}" -ne 0 ]; then
+      echo "ERROR: cannot read pinned project ${FULLSEND_PINNED_PROJECT_ID} via JOB-TOKEN or the Poller-role PAT fallback — aborting (fail-closed)" >&2
+      unset _fs_api _fs_trust _fs_project_json _fs_fallback_ok FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_REF
+      return 1
+    fi
+    unset _fs_fallback_ok
   fi
   _fs_default_branch=$(printf '%s' "${_fs_project_json}" | jq -r '.default_branch // empty')
   FULLSEND_PINNED_PROJECT_PATH=$(printf '%s' "${_fs_project_json}" | jq -r '.path_with_namespace // empty')
@@ -285,16 +317,30 @@ fullsend_pin_ci_job_identity() {
   # "GET /projects/:id/repository/branches" under the read_repository
   # policy, the same family as this single-branch lookup. Both facts
   # support CI_JOB_TOKEN authenticating this same-project read on current
-  # GitLab; this has not been checked against the oldest self-hosted
-  # GitLab version fullsend supports.
+  # GitLab; however, on self-hosted EE 19.2.7 (#7965) this call 404s with
+  # JOB-TOKEN too — "Project Not Found", the same response as the
+  # project-detail call above, not a branch-specific rejection — so the
+  # same Poller-role PAT fallback applies here.
   _fs_ref_enc=$(printf '%s' "${FULLSEND_PINNED_REF}" | jq -sRr @uri)
   _fs_branch_json=""
   if ! _fs_branch_json=$(fullsend_gate_curl \
     -H "JOB-TOKEN: ${CI_JOB_TOKEN}" \
     "${_fs_api}/projects/${FULLSEND_PINNED_PROJECT_ID}/repository/branches/${_fs_ref_enc}"); then
-    echo "ERROR: cannot read pinned branch '${FULLSEND_PINNED_REF}' — aborting (fail-closed)" >&2
-    unset _fs_api _fs_trust _fs_default_branch _fs_ref_enc _fs_branch_json FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PROJECT_PATH
-    return 1
+    _fs_branch_json=""
+    _fs_fallback_ok=1
+    if [ -n "${FULLSEND_GITLAB_POLLER_TOKEN:-}" ]; then
+      if _fs_branch_json=$(fullsend_gate_curl \
+        -H "PRIVATE-TOKEN: ${FULLSEND_GITLAB_POLLER_TOKEN}" \
+        "${_fs_api}/projects/${FULLSEND_PINNED_PROJECT_ID}/repository/branches/${_fs_ref_enc}"); then
+        _fs_fallback_ok=0
+      fi
+    fi
+    if [ "${_fs_fallback_ok}" -ne 0 ]; then
+      echo "ERROR: cannot read pinned branch '${FULLSEND_PINNED_REF}' via JOB-TOKEN or the Poller-role PAT fallback — aborting (fail-closed)" >&2
+      unset _fs_api _fs_trust _fs_default_branch _fs_ref_enc _fs_branch_json _fs_fallback_ok FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PROJECT_PATH
+      return 1
+    fi
+    unset _fs_fallback_ok
   fi
   _fs_protected=$(printf '%s' "${_fs_branch_json}" | jq -r '.protected // false')
   unset _fs_branch_json _fs_ref_enc
