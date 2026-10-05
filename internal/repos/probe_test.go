@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 func putGitLabAuxiliaryScripts(t testing.TB, fc *forge.FakeClient, owner, repo string) {
 	t.Helper()
-	for _, path := range gitlabAuxiliaryScriptPaths() {
+	for _, path := range append(gitlabAuxiliaryScriptPaths(), gitlabDispatcherPaths()...) {
 		content, err := scaffold.GitLabPerRepoFile(path)
 		if err != nil {
 			t.Fatalf("GitLabPerRepoFile(%s): %v", path, err)
@@ -25,6 +26,7 @@ func TestProbeComponents_FullyInstalled(t *testing.T) {
 	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
 	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = appsetup.DefaultAppSet
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
 
@@ -144,6 +146,7 @@ func TestProbeComponents_NoGCPSecretsIsCurrent(t *testing.T) {
 	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
 	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = appsetup.DefaultAppSet
 	// A repository without Vertex credentials is a valid installation.
 
 	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
@@ -218,7 +221,6 @@ func TestProbeComponents_SecretCheckError(t *testing.T) {
 
 func TestProbeComponents_GitLab_SkipsThinCallers(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.VariableValues["acme/api/"+forge.VarGitLabRoleMigration] = "enforced"
 	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("include:")
 	putGitLabAuxiliaryScripts(t, fc, "acme", "api")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
@@ -246,7 +248,7 @@ func TestProbeComponents_GitLab_SkipsThinCallers(t *testing.T) {
 			t.Error("GitLab should not check thin callers")
 		}
 		if c.Name == "secret:"+forge.SecretForgeToken {
-			t.Error("enforced GitLab role migration must not require the shared credential")
+			t.Error("role-only GitLab authentication must not require the shared credential")
 		}
 	}
 
@@ -464,6 +466,7 @@ func TestProbeComponents_NilExpectedVars_PresenceOnly(t *testing.T) {
 	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
 	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old.example.com"
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = appsetup.DefaultAppSet
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
 
@@ -500,7 +503,8 @@ func TestProbeComponents_InstallAndStatusAgree(t *testing.T) {
 	// Status path: should also detect missing thin caller.
 	fc.VariableValues["acme/api/FULLSEND_PER_REPO_INSTALL"] = "true"
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",

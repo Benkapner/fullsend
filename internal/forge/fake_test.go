@@ -6,10 +6,28 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestFakeClient_ListPullRequestCommits(t *testing.T) {
+	f := NewFakeClient()
+	f.PRCommits = map[string][]string{"o/r/7": {"a", "b"}}
+
+	shas, err := f.ListPullRequestCommits(context.Background(), "o", "r", 7)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "b"}, shas)
+
+	shas, err = f.ListPullRequestCommits(context.Background(), "o", "r", 8)
+	require.NoError(t, err)
+	assert.Empty(t, shas)
+
+	f.Errors["ListPullRequestCommits"] = errors.New("boom")
+	_, err = f.ListPullRequestCommits(context.Background(), "o", "r", 7)
+	require.Error(t, err)
+}
 
 func TestFakeClient_ListOrgRepos(t *testing.T) {
 	ctx := context.Background()
@@ -902,6 +920,10 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		{"DeleteIssueComment", func(fc *FakeClient) error {
 			return fc.DeleteIssueComment(ctx, "o", "r", 1)
 		}},
+		{"GetIssueComment", func(fc *FakeClient) error {
+			_, err := fc.GetIssueComment(ctx, "o", "r", 1)
+			return err
+		}},
 		{"ListDirectoryContents", func(fc *FakeClient) error {
 			_, err := fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
 			return err
@@ -1394,6 +1416,83 @@ func TestFakeClient_ReactionErrorInjection(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestFakeClient_GetIssueComment(t *testing.T) {
+	fc := NewFakeClient()
+	created, err := fc.CreateIssueComment(context.Background(), "org", "repo", 7, "playback-current: 1")
+	require.NoError(t, err)
+
+	got, err := fc.GetIssueComment(context.Background(), "org", "repo", created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, created.ID, got.ID)
+	assert.Equal(t, "playback-current: 1", got.Body)
+}
+
+func TestFakeClient_GetIssueComment_NotFound(t *testing.T) {
+	fc := NewFakeClient()
+	_, err := fc.GetIssueComment(context.Background(), "org", "repo", 404)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFakeClient_GetNoteOnParent(t *testing.T) {
+	fc := NewFakeClient()
+	created, err := fc.CreateIssueComment(context.Background(), "org", "repo", 7, "playback-current: 1")
+	require.NoError(t, err)
+
+	got, err := fc.GetNoteOnParent(context.Background(), "org", "repo", "merge_requests", 7, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, created.ID, got.ID)
+	require.Len(t, fc.GetNoteOnParentCalls, 1)
+	assert.Equal(t, NoteOnParentRecord{
+		Owner: "org", Repo: "repo", ParentType: "merge_requests", ParentIID: 7, NoteID: created.ID,
+	}, fc.GetNoteOnParentCalls[0])
+}
+
+func TestFakeClient_GetNoteOnParent_NotFound(t *testing.T) {
+	fc := NewFakeClient()
+	_, err := fc.GetNoteOnParent(context.Background(), "org", "repo", "issues", 1, 404)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFakeClient_GetNoteOnParent_Error(t *testing.T) {
+	fc := NewFakeClient()
+	fc.Errors = map[string]error{"GetNoteOnParent": errors.New("boom")}
+	_, err := fc.GetNoteOnParent(context.Background(), "org", "repo", "issues", 1, 1)
+	assert.Error(t, err)
+}
+
+func TestFakeClient_UpdateNoteOnParent(t *testing.T) {
+	fc := NewFakeClient()
+	created, err := fc.CreateIssueComment(context.Background(), "org", "repo", 7, "playback-current: 1")
+	require.NoError(t, err)
+
+	err = fc.UpdateNoteOnParent(context.Background(), "org", "repo", "merge_requests", 7, created.ID, "playback-current: 2")
+	require.NoError(t, err)
+	require.Len(t, fc.UpdateNoteOnParentCalls, 1)
+	assert.Equal(t, NoteOnParentRecord{
+		Owner: "org", Repo: "repo", ParentType: "merge_requests", ParentIID: 7, NoteID: created.ID, Body: "playback-current: 2",
+	}, fc.UpdateNoteOnParentCalls[0])
+
+	got, err := fc.GetIssueComment(context.Background(), "org", "repo", created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "playback-current: 2", got.Body)
+}
+
+func TestFakeClient_UpdateNoteOnParent_NotFound(t *testing.T) {
+	fc := NewFakeClient()
+	err := fc.UpdateNoteOnParent(context.Background(), "org", "repo", "issues", 1, 404, "x")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFakeClient_UpdateNoteOnParent_Error(t *testing.T) {
+	fc := NewFakeClient()
+	fc.Errors = map[string]error{"UpdateNoteOnParent": errors.New("boom")}
+	err := fc.UpdateNoteOnParent(context.Background(), "org", "repo", "issues", 1, 1, "x")
+	assert.Error(t, err)
+}
+
 func TestFakeClient_AddIssueCommentReaction(t *testing.T) {
 	fc := NewFakeClient()
 
@@ -1512,6 +1611,53 @@ func TestFakeClient_ListWorkflowRuns_WorkflowRunsList(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, runs, 1)
 	assert.Equal(t, 1, runs[0].ID)
+}
+
+// TestFakeClient_ListWorkflowRunsSince is a regression test (#7996 review):
+// ListWorkflowRunsSince was added to FakeClient alongside the live GitHub
+// and GitLab clients' paginated implementations, but nothing exercised it
+// directly within this package, leaving it at 0% patch coverage. It filters
+// the same configured runs as ListWorkflowRuns down to those created at or
+// after since, and must also surface a ListWorkflowRuns error and treat an
+// unparsable CreatedAt as excluded rather than included.
+func TestFakeClient_ListWorkflowRunsSince(t *testing.T) {
+	fc := NewFakeClient()
+	fc.WorkflowRunsList = map[string][]WorkflowRun{
+		"org/repo/ci.yml": {
+			{ID: 1, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-03T00:00:00Z"},
+			{ID: 2, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-01T00:00:00Z"},
+			{ID: 3, Status: "completed", Conclusion: "success", CreatedAt: "not-a-time"},
+		},
+	}
+
+	since := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	runs, err := fc.ListWorkflowRunsSince(context.Background(), "org", "repo", "ci.yml", since)
+	require.NoError(t, err)
+	require.Len(t, runs, 1, "only the run at or after since with a parsable CreatedAt must be included")
+	assert.Equal(t, 1, runs[0].ID)
+
+	fc.Errors = map[string]error{"ListWorkflowRuns": errors.New("boom")}
+	_, err = fc.ListWorkflowRunsSince(context.Background(), "org", "repo", "ci.yml", since)
+	require.Error(t, err, "an underlying ListWorkflowRuns error must propagate")
+}
+
+// TestFakeClient_ListWorkflowRunsSince_OwnErrorKey is a regression test
+// (#7996 review): ListWorkflowRunsSince delegated to ListWorkflowRuns, which
+// only checks FakeClient.Errors["ListWorkflowRuns"], so tests could not
+// inject a failure under the method-name error-injection convention's
+// expected key, "ListWorkflowRunsSince".
+func TestFakeClient_ListWorkflowRunsSince_OwnErrorKey(t *testing.T) {
+	fc := NewFakeClient()
+	fc.WorkflowRunsList = map[string][]WorkflowRun{
+		"org/repo/ci.yml": {
+			{ID: 1, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-03T00:00:00Z"},
+		},
+	}
+	fc.Errors = map[string]error{"ListWorkflowRunsSince": errors.New("boom")}
+
+	since := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	_, err := fc.ListWorkflowRunsSince(context.Background(), "org", "repo", "ci.yml", since)
+	require.Error(t, err, "injecting ListWorkflowRunsSince's own error key must fail the call")
 }
 
 func TestFakeClient_DownloadWorkflowRunArtifact(t *testing.T) {
@@ -1702,6 +1848,41 @@ func TestFakeClient_CreatePipeline_Error(t *testing.T) {
 	fc.Errors["CreatePipeline"] = fmt.Errorf("forbidden")
 
 	p, err := fc.CreatePipeline(ctx, "org", "repo", "main", nil)
+	require.Error(t, err)
+	assert.Nil(t, p)
+	assert.Empty(t, fc.CreatedPipelines)
+}
+
+func TestFakeClient_CreatePipelineWithInputs(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	p, err := fc.CreatePipelineWithInputs(ctx, "org", "repo", "main", map[string]PipelineInputValue{
+		"STAGE": StringInput("triage"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), p.ID)
+	assert.Contains(t, p.WebURL, "pipelines/1")
+	require.Len(t, fc.PipelineInputsCalls, 1)
+	assert.Equal(t, "org", fc.PipelineInputsCalls[0].Owner)
+	assert.Equal(t, StringInput("triage"), fc.PipelineInputsCalls[0].Inputs["STAGE"])
+	// CreatePipelineWithInputs must never populate the variables-based
+	// call record — that would misrepresent the no-user-defined-variable
+	// dispatch path this method exists for.
+	assert.Empty(t, fc.PipelineCalls)
+
+	p2, err := fc.CreatePipelineWithInputs(ctx, "org", "repo", "main", nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), p2.ID)
+	require.Len(t, fc.PipelineInputsCalls, 2)
+}
+
+func TestFakeClient_CreatePipelineWithInputs_Error(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+	fc.Errors["CreatePipelineWithInputs"] = fmt.Errorf("forbidden")
+
+	p, err := fc.CreatePipelineWithInputs(ctx, "org", "repo", "main", nil)
 	require.Error(t, err)
 	assert.Nil(t, p)
 	assert.Empty(t, fc.CreatedPipelines)

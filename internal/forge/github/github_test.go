@@ -3681,6 +3681,104 @@ func TestDeleteFiles_Atomic(t *testing.T) {
 	assert.True(t, treeCreated)
 }
 
+func TestGetIssueComment(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/org/repo/issues/comments/42", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         42,
+			"node_id":    "IC_42",
+			"html_url":   "https://github.com/org/repo/issues/1#issuecomment-42",
+			"body":       "playback-current: 3",
+			"user":       map[string]string{"login": "fullsend-bot"},
+			"created_at": "2026-01-01T00:00:00Z",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	comment, err := client.GetIssueComment(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, 42, comment.ID)
+	assert.Equal(t, "IC_42", comment.NodeID)
+	assert.Equal(t, "playback-current: 3", comment.Body)
+	assert.Equal(t, "fullsend-bot", comment.Author)
+}
+
+func TestGetIssueComment_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+}
+
+func TestGetIssueComment_DecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("{not valid json"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode issue comment")
+}
+
+// TestGetIssueComment_EscapesOwnerAndRepo guards against a crafted owner
+// or repo value redirecting the request to a different path or smuggling
+// query data (e.g. an unescaped "?" terminating the path early). Both
+// fields are exercised independently.
+func TestGetIssueComment_EscapesOwnerAndRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/org%3Fevil/repo/issues/comments/42", r.URL.EscapedPath())
+		assert.Empty(t, r.URL.RawQuery, "a stray delimiter in owner must not start a query string")
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "body": "ok"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org?evil", "repo", 42)
+	require.NoError(t, err)
+}
+
+func TestGetIssueComment_EscapesRepoField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/org/repo%3Fx=/issues/comments/42", r.URL.EscapedPath())
+		assert.Empty(t, r.URL.RawQuery, "a stray delimiter in repo must not start a query string")
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "body": "ok"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org", "repo?x=", 42)
+	require.NoError(t, err)
+}
+
+// TestUpdateIssueComment_EscapesOwnerAndRepo is UpdateIssueComment's
+// counterpart to TestGetIssueComment_EscapesOwnerAndRepo.
+func TestUpdateIssueComment_EscapesOwnerAndRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PATCH", r.Method)
+		assert.Equal(t, "/repos/org%3Fevil/repo%3Fx=/issues/comments/42", r.URL.EscapedPath())
+		assert.Empty(t, r.URL.RawQuery, "a stray delimiter in owner/repo must not start a query string")
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "body": "updated"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.UpdateIssueComment(context.Background(), "org?evil", "repo?x=", 42, "updated")
+	require.NoError(t, err)
+}
+
 func TestDeleteIssueComment(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "DELETE", r.Method)
@@ -3776,6 +3874,144 @@ func TestListWorkflowRuns_IncludesEvent(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, runs, 1)
 	assert.Equal(t, "issues", runs[0].Event)
+}
+
+// TestListWorkflowRunsSince_PaginatesBeyondFirstPage is a regression test
+// (#7996 review): ListWorkflowRuns's live implementation requests only
+// per_page=10 with no pagination, so an eligible run older than the ten
+// newest runs would never be seen — e.g. by harnessRoundPollOnce's
+// earliest-round selection. ListWorkflowRunsSince must instead keep
+// paginating (ordered newest-first) until it reaches a run older than the
+// since boundary, so a run far older than a single page is still returned.
+func TestListWorkflowRunsSince_PaginatesBeyondFirstPage(t *testing.T) {
+	since := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
+	var pageRequests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pageRequests = append(pageRequests, r.URL.RawQuery)
+		switch r.URL.Query().Get("page") {
+		case "1":
+			// A full page of 100 runs, all newer than the boundary — this
+			// is more than ListWorkflowRuns's old per_page=10 cap ever saw.
+			runs := make([]map[string]any, 100)
+			for i := range runs {
+				runs[i] = map[string]any{
+					"id": 300 - i, "name": "fullsend", "event": "issues",
+					"status": "completed", "conclusion": "success",
+					"html_url": "https://example/run", "created_at": "2024-01-03T00:00:00Z",
+				}
+			}
+			json.NewEncoder(w).Encode(map[string]any{"workflow_runs": runs})
+		case "2":
+			// The earliest eligible run (id 100, at the boundary) plus one
+			// older run (id 99) that signals pagination can stop.
+			json.NewEncoder(w).Encode(map[string]any{
+				"workflow_runs": []map[string]any{
+					{
+						"id": 100, "name": "fullsend", "event": "issues",
+						"status": "completed", "conclusion": "success",
+						"html_url": "https://example/run/100", "created_at": "2024-01-02T00:00:00Z",
+					},
+					{
+						"id": 99, "name": "fullsend", "event": "issues",
+						"status": "completed", "conclusion": "success",
+						"html_url": "https://example/run/99", "created_at": "2024-01-01T00:00:00Z",
+					},
+				},
+			})
+		default:
+			t.Errorf("unexpected page request %q", r.URL.RawQuery)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	runs, err := client.ListWorkflowRunsSince(context.Background(), "org", "repo", "fullsend.yaml", since)
+	require.NoError(t, err)
+	require.Len(t, runs, 101, "should include the 100 newer runs plus the earliest eligible run at the boundary")
+	assert.Equal(t, 100, runs[len(runs)-1].ID, "the earliest eligible run beyond the first page must be included")
+	for _, r := range runs {
+		assert.NotEqual(t, 99, r.ID, "a run older than the since boundary must not be included")
+	}
+	assert.Len(t, pageRequests, 2, "pagination must stop once a run older than since is seen")
+}
+
+// TestListWorkflowRunsSince_EscapesPathComponents is a regression test
+// (#7996 review): owner, repo, and workflowFile were interpolated
+// directly into the request path. A "#" or "?" delimiter character in one
+// of them would be parsed by url.Parse as the start of the fragment or
+// query component instead of literal path content, silently truncating
+// the request (observed: everything from "#" onward, including the
+// "runs" path suffix and the per_page/page query, was dropped). Escaping
+// each component keeps the delimiter inert so the intended path and
+// query survive intact.
+func TestListWorkflowRunsSince_EscapesPathComponents(t *testing.T) {
+	var gotPath, gotRawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotRawQuery = r.URL.RawQuery
+		json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{}})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRunsSince(context.Background(), "org/evil", "repo#frag", "file?.yml", time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, "/repos/org/evil/repo#frag/actions/workflows/file?.yml/runs", gotPath,
+		"the full path must survive intact instead of being truncated at an unescaped '#' or '?'")
+	assert.Equal(t, "per_page=100&page=1", gotRawQuery,
+		"the per_page/page query must not be dropped by an unescaped delimiter earlier in the path")
+}
+
+func TestListWorkflowRunsSince_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRunsSince(context.Background(), "org", "repo", "fullsend.yaml", time.Now())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list workflow runs since")
+}
+
+func TestListWorkflowRunsSince_EmptyFirstPage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{}})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	runs, err := client.ListWorkflowRunsSince(context.Background(), "org", "repo", "fullsend.yaml", time.Now())
+	require.NoError(t, err)
+	assert.Empty(t, runs)
+}
+
+// TestListWorkflowRunsSince_PaginationExceeded guards the maxPages safety
+// valve: if every page is full and since is never reached, pagination must
+// stop with an error instead of looping indefinitely.
+func TestListWorkflowRunsSince_PaginationExceeded(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		runs := make([]map[string]any, 100)
+		for i := range runs {
+			runs[i] = map[string]any{
+				"id": page*1000 + i, "name": "fullsend", "event": "issues",
+				"status": "completed", "conclusion": "success",
+				"html_url": "https://example/run", "created_at": "2024-01-03T00:00:00Z",
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"workflow_runs": runs})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := client.ListWorkflowRunsSince(context.Background(), "org", "repo", "fullsend.yaml", since)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pagination exceeded")
+	assert.Equal(t, 100, page)
 }
 
 // TestGetCached_ConditionalRequestReuses304 exercises the #6702 fix
@@ -3934,6 +4170,29 @@ func TestListWorkflowRunJobs(t *testing.T) {
 	assert.Equal(t, "dispatch / Harness run (triage)", jobs[1].Name)
 }
 
+// TestListWorkflowRunJobs_EscapesPathComponents is a regression test
+// (#7996 review): owner and repo were interpolated into the request URL
+// without escaping, so a delimiter-containing value (e.g. "#") could alter
+// the requested path or turn the jobs suffix and pagination query into a
+// URL fragment instead of part of the request.
+func TestListWorkflowRunJobs_EscapesPathComponents(t *testing.T) {
+	var gotPath, gotRawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotRawQuery = r.URL.RawQuery
+		json.NewEncoder(w).Encode(map[string]any{"jobs": []map[string]any{}})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRunJobs(context.Background(), "org/evil", "repo#frag", 42)
+	require.NoError(t, err)
+	assert.Equal(t, "/repos/org/evil/repo#frag/actions/runs/42/jobs", gotPath,
+		"the full path must survive intact instead of being truncated at an unescaped '#'")
+	assert.Equal(t, "per_page=100&page=1", gotRawQuery,
+		"the per_page/page query must not be dropped by an unescaped delimiter earlier in the path")
+}
+
 func TestListWorkflowRunJobs_APIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -3943,6 +4202,79 @@ func TestListWorkflowRunJobs_APIError(t *testing.T) {
 	client := newTestClient(t, srv)
 	_, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
 	require.Error(t, err)
+}
+
+// TestListWorkflowRunJobs_PaginatesBeyondFirstPage is a regression test
+// (#7996 review): ListWorkflowRunJobs previously issued a single
+// per_page=100 request with no pagination, so a run with more than 100
+// jobs (e.g. a large matrix build) would silently drop jobs beyond that
+// page — including, for earliest-round selection
+// (harnessRoundPollOnce), the earliest eligible run's matching agent job,
+// which could make the scan fall through to a later run whose matching
+// job had already succeeded. ListWorkflowRunJobs must instead keep
+// paginating until a short page signals the end of the listing, so a job
+// far beyond a single page is still returned.
+func TestListWorkflowRunJobs_PaginatesBeyondFirstPage(t *testing.T) {
+	var pageRequests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pageRequests = append(pageRequests, r.URL.RawQuery)
+		switch r.URL.Query().Get("page") {
+		case "1":
+			// A full page of 100 unrelated jobs — more than the matching
+			// agent job ever needed to share a run with on the old,
+			// unpaginated per_page=100 request.
+			jobs := make([]map[string]any, 100)
+			for i := range jobs {
+				jobs[i] = map[string]any{
+					"id": i + 10, "name": "dispatch / Other", "status": "completed", "conclusion": "success",
+				}
+			}
+			json.NewEncoder(w).Encode(map[string]any{"jobs": jobs})
+		case "2":
+			// The earliest eligible run's matching agent job, beyond the
+			// first page.
+			json.NewEncoder(w).Encode(map[string]any{
+				"jobs": []map[string]any{
+					{"id": 1, "name": "dispatch / Harness run (review)", "status": "completed", "conclusion": "success"},
+				},
+			})
+		default:
+			t.Errorf("unexpected page request %q", r.URL.RawQuery)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	jobs, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 100)
+	require.NoError(t, err)
+	require.Len(t, jobs, 101, "should include the 100 jobs on the first page plus the matching job beyond it")
+	assert.Equal(t, "dispatch / Harness run (review)", jobs[len(jobs)-1].Name, "the matching job beyond the first page must be included")
+	assert.Len(t, pageRequests, 2, "pagination must stop once a short page is seen")
+}
+
+// TestListWorkflowRunJobs_PaginationExceeded guards the maxPages safety
+// valve: if every page is full, pagination must stop with an error instead
+// of looping indefinitely.
+func TestListWorkflowRunJobs_PaginationExceeded(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		jobs := make([]map[string]any, 100)
+		for i := range jobs {
+			jobs[i] = map[string]any{
+				"id": page*1000 + i, "name": "dispatch / Other", "status": "completed", "conclusion": "success",
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"jobs": jobs})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 100)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pagination exceeded")
+	assert.Equal(t, 100, page)
 }
 
 func TestListWorkflowRunArtifacts(t *testing.T) {
@@ -4737,6 +5069,12 @@ func TestUnsupportedMethods(t *testing.T) {
 		_, err := client.CreatePipeline(ctx, "o", "r", "main", nil)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
+	t.Run("CreatePipelineWithInputs", func(t *testing.T) {
+		_, err := client.CreatePipelineWithInputs(ctx, "o", "r", "main", map[string]forge.PipelineInputValue{
+			"STAGE": forge.StringInput("triage"),
+		})
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("CreatePipelineSchedule", func(t *testing.T) {
 		_, err := client.CreatePipelineSchedule(ctx, "o", "r", "main", "desc", "0 * * * *", nil)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
@@ -5316,7 +5654,7 @@ func TestGetCached_InvalidJSONNotCached(t *testing.T) {
 	client := newTestClient(t, srv)
 	_, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "decode workflow runs")
+	assert.Contains(t, err.Error(), "list workflow runs: decode /repos/org/repo/actions/workflows/fullsend.yaml/runs")
 	runs, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
 	require.NoError(t, err)
 	assert.Equal(t, "in_progress", runs[0].Status)
@@ -5463,6 +5801,10 @@ func TestEtagCache_ReplaceAdjustsBytes(t *testing.T) {
 // body, so mutating a fetched body cannot corrupt it.
 func TestGetCached_CachedBodyNotAliased(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 		w.Header().Set("ETag", `"v1"`)
 		json.NewEncoder(w).Encode(runsBody("in_progress"))
 	}))
@@ -5479,6 +5821,18 @@ func TestGetCached_CachedBodyNotAliased(t *testing.T) {
 	cached := client.etagCache[client.baseURL+path].Value.(*etagEntry).body
 	client.etagMu.Unlock()
 	assert.True(t, json.Valid(cached), "the cached body must not alias the returned one")
+
+	// A 304 returns the cached body; mutating that result must not reach
+	// the cache either.
+	notModified, err := client.fetchConditional(context.Background(), client.baseURL+path, path)
+	require.NoError(t, err)
+	for i := range notModified.body {
+		notModified.body[i] = 'X'
+	}
+	client.etagMu.Lock()
+	cached = client.etagCache[client.baseURL+path].Value.(*etagEntry).body
+	client.etagMu.Unlock()
+	assert.True(t, json.Valid(cached), "the 304 result must not alias the cache")
 }
 
 // TestGetCached_ReadErrorNamesPath: a body read failure says which
@@ -5661,9 +6015,9 @@ func TestFetchConditional_304WithoutEntryIsAnError(t *testing.T) {
 	assert.Contains(t, err.Error(), "304 Not Modified without a cached entry")
 }
 
-// TestGetCachedJSON_CancelledCallerStartsNoFetch: a caller whose context
+// TestGetCached_CancelledCallerStartsNoFetch: a caller whose context
 // is already done returns at once without starting a request.
-func TestGetCachedJSON_CancelledCallerStartsNoFetch(t *testing.T) {
+func TestGetCached_CancelledCallerStartsNoFetch(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
