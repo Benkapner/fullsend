@@ -585,7 +585,7 @@ func (c *LiveClient) getConditional(ctx context.Context, path, etag string) (res
 // etagMaxBodyBytes. If v cannot decode a cached body, the entry is
 // dropped so the next request is a plain GET rather than a replay of the
 // same failure.
-func (c *LiveClient) getCachedJSON(ctx context.Context, path, decodeLabel string, v any) error {
+func (c *LiveClient) getCachedJSON(ctx context.Context, path string, v any) error {
 	key := c.baseURL + path
 	// Don't start a detached fetch for a caller that has already given up.
 	if err := ctx.Err(); err != nil {
@@ -618,7 +618,7 @@ func (c *LiveClient) getCachedJSON(ctx context.Context, path, decodeLabel string
 	// straight from the shared body is safe; the cache holds its own copy.
 	if err := json.Unmarshal(fetched.body, v); err != nil {
 		c.dropCachedETag(key, fetched.etag)
-		return fmt.Errorf("%s: %w", decodeLabel, err)
+		return fmt.Errorf("decode %s: %w", path, err)
 	}
 	return nil
 }
@@ -646,7 +646,8 @@ func (c *LiveClient) fetchConditional(ctx context.Context, key, path string) (co
 		if !ok {
 			return conditionalBody{}, fmt.Errorf("GET %s: 304 Not Modified without a cached entry", path)
 		}
-		return conditionalBody{etag: prev.etag, body: prev.body}, nil
+		// Return a copy: prev.body is the cached backing array.
+		return conditionalBody{etag: prev.etag, body: slices.Clone(prev.body)}, nil
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
@@ -2615,6 +2616,17 @@ func (c *LiveClient) RepoSecretExists(ctx context.Context, owner, repo, name str
 	return false, &APIError{StatusCode: resp.StatusCode, Message: "unexpected status checking secret"}
 }
 
+// GetRepoSecretProtection reports whether a repository Actions secret
+// exists. GitHub encrypts secrets and masks them in logs, and they have no
+// branch-protection scoping, so an existing secret reports both controls.
+func (c *LiveClient) GetRepoSecretProtection(ctx context.Context, owner, repo, name string) (forge.SecretProtection, error) {
+	exists, err := c.RepoSecretExists(ctx, owner, repo, name)
+	if err != nil || !exists {
+		return forge.SecretProtection{}, err
+	}
+	return forge.SecretProtection{Exists: true, Masked: true, Protected: true}, nil
+}
+
 // CreateOrUpdateRepoVariable creates or updates a repository Actions variable.
 func (c *LiveClient) CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error {
 	payload := map[string]string{
@@ -3081,6 +3093,41 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 	return result, nil
 }
 
+// GetIssueComment fetches a single comment by its numeric ID. GitHub
+// addresses comments globally (no issue number needed in the path).
+// owner and repo are percent-escaped into the request path: callers are
+// expected to pass validated identifiers, but escaping keeps a stray
+// delimiter in either field from being interpreted as a path or query
+// separator instead of literal owner/repo data.
+// Returns forge.ErrNotFound (wrapped) if the comment does not exist.
+func (c *LiveClient) GetIssueComment(ctx context.Context, owner, repo string, commentID int) (*forge.IssueComment, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", url.PathEscape(owner), url.PathEscape(repo), commentID))
+	if err != nil {
+		return nil, fmt.Errorf("get issue comment %d: %w", commentID, err)
+	}
+	var result struct {
+		ID      int    `json:"id"`
+		NodeID  string `json:"node_id"`
+		HTMLURL string `json:"html_url"`
+		Body    string `json:"body"`
+		User    struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode issue comment %d: %w", commentID, err)
+	}
+	return &forge.IssueComment{
+		ID:        result.ID,
+		NodeID:    result.NodeID,
+		HTMLURL:   result.HTMLURL,
+		Body:      result.Body,
+		Author:    result.User.Login,
+		CreatedAt: result.CreatedAt,
+	}, nil
+}
+
 // CreateIssueComment creates a new comment on an issue or pull request.
 func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
 	payload := map[string]string{"body": body}
@@ -3111,10 +3158,11 @@ func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string,
 	}, nil
 }
 
-// UpdateIssueComment updates the body of an existing issue comment.
+// UpdateIssueComment updates the body of an existing issue comment. See
+// GetIssueComment for why owner and repo are percent-escaped.
 func (c *LiveClient) UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error {
 	payload := map[string]string{"body": body}
-	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, commentID), payload)
+	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", url.PathEscape(owner), url.PathEscape(repo), commentID), payload)
 	if err != nil {
 		return fmt.Errorf("update issue comment %d: %w", commentID, err)
 	}
@@ -3339,6 +3387,32 @@ func (c *LiveClient) ListPullRequestFiles(ctx context.Context, owner, repo strin
 		}
 	}
 	return files, nil
+}
+
+// ListPullRequestCommits returns the commit SHAs on a pull request,
+// oldest first (the order GitHub's API reports them in). GitHub caps PR
+// commit lists at 250 commits regardless of pagination.
+func (c *LiveClient) ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error) {
+	var shas []string
+	for page := 1; page <= 3; page++ {
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100&page=%d", owner, repo, number, page))
+		if err != nil {
+			return nil, fmt.Errorf("list pull request commits page %d: %w", page, err)
+		}
+		var raw []struct {
+			SHA string `json:"sha"`
+		}
+		if err := decodeJSON(resp, &raw); err != nil {
+			return nil, fmt.Errorf("decoding pull request commits page %d: %w", page, err)
+		}
+		for _, cm := range raw {
+			shas = append(shas, cm.SHA)
+		}
+		if len(raw) < 100 {
+			break
+		}
+	}
+	return shas, nil
 }
 
 // ListPullRequestFileDiffs returns the files changed by a pull request
@@ -3578,7 +3652,7 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 			CreatedAt  string `json:"created_at"`
 		} `json:"workflow_runs"`
 	}
-	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?per_page=10", owner, repo, workflowFile), "decode workflow runs", &result); err != nil {
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?per_page=10", owner, repo, workflowFile), &result); err != nil {
 		return nil, fmt.Errorf("list workflow runs: %w", err)
 	}
 	runs := make([]forge.WorkflowRun, len(result.WorkflowRuns))
@@ -3594,6 +3668,62 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 		}
 	}
 	return runs, nil
+}
+
+// ListWorkflowRunsSince returns workflow runs for workflowFile created at or
+// after since, paginating through as many 100-per-page requests as needed
+// instead of ListWorkflowRuns's single per_page=10 request. GitHub orders
+// runs newest-first, so once a page's run was created before since (or a
+// short page signals the end of the listing), earlier pages cannot contain
+// anything newer and pagination stops. Without this, earliest-round
+// selection (harnessRoundPollOnce) could miss an eligible, unconsumed run
+// that ten newer harness runs — for this agent or others — pushed past the
+// first page (#7996 review).
+func (c *LiveClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time) ([]forge.WorkflowRun, error) {
+	const maxPages = 100
+	const perPage = 100
+	var all []forge.WorkflowRun
+	for page := 1; page <= maxPages; page++ {
+		var result struct {
+			WorkflowRuns []struct {
+				ID         int    `json:"id"`
+				Name       string `json:"name"`
+				Event      string `json:"event"`
+				Status     string `json:"status"`
+				Conclusion string `json:"conclusion"`
+				HTMLURL    string `json:"html_url"`
+				CreatedAt  string `json:"created_at"`
+			} `json:"workflow_runs"`
+		}
+		path := fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?per_page=%d&page=%d",
+			url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(workflowFile), perPage, page)
+		if err := c.getCachedJSON(ctx, path, &result); err != nil {
+			return nil, fmt.Errorf("list workflow runs since page %d: %w", page, err)
+		}
+		if len(result.WorkflowRuns) == 0 {
+			return all, nil
+		}
+		reachedBoundary := false
+		for _, r := range result.WorkflowRuns {
+			if runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt); parseErr == nil && runTime.Before(since) {
+				reachedBoundary = true
+				break
+			}
+			all = append(all, forge.WorkflowRun{
+				ID:         r.ID,
+				Name:       r.Name,
+				Event:      r.Event,
+				Status:     r.Status,
+				Conclusion: r.Conclusion,
+				HTMLURL:    r.HTMLURL,
+				CreatedAt:  r.CreatedAt,
+			})
+		}
+		if reachedBoundary || len(result.WorkflowRuns) < perPage {
+			return all, nil
+		}
+	}
+	return nil, fmt.Errorf("list workflow runs since: pagination exceeded %d pages", maxPages)
 }
 
 // ListRecentWorkflowRuns returns recent workflow runs across all workflows.
@@ -3615,7 +3745,7 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 			CreatedAt  string `json:"created_at"`
 		} `json:"workflow_runs"`
 	}
-	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=%d", owner, repo, perPage), "decode recent workflow runs", &result); err != nil {
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=%d", owner, repo, perPage), &result); err != nil {
 		return nil, fmt.Errorf("list recent workflow runs: %w", err)
 	}
 	runs := make([]forge.WorkflowRun, len(result.WorkflowRuns))
@@ -3633,29 +3763,54 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 	return runs, nil
 }
 
-// ListWorkflowRunJobs returns the jobs within a workflow run.
+// ListWorkflowRunJobs returns the jobs within a workflow run, paginating
+// through as many 100-per-page requests as needed. A single
+// per_page=100 request only ever returns the first page, so a run with
+// more than 100 jobs (e.g. a large matrix build) could silently drop
+// jobs beyond that page. Earliest-round selection
+// (harnessRoundPollOnce) relies on this listing to find an agent's job
+// within a run; a truncated listing could make it treat the agent as
+// absent from the earliest eligible run and fall through to a later
+// run instead (#7996 review).
+//
+// owner and repo are escaped with url.PathEscape, as ListWorkflowRunsSince
+// already does, since an unescaped delimiter (e.g. "#") would otherwise let
+// the jobs suffix and pagination query be parsed as part of the path/query
+// rather than a fragment (#7996 review).
 func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
-	var result struct {
-		Jobs []struct {
-			ID         int    `json:"id"`
-			Name       string `json:"name"`
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-		} `json:"jobs"`
-	}
-	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", owner, repo, runID), "decode workflow run jobs", &result); err != nil {
-		return nil, fmt.Errorf("list workflow run jobs: %w", err)
-	}
-	jobs := make([]forge.WorkflowJob, len(result.Jobs))
-	for i, j := range result.Jobs {
-		jobs[i] = forge.WorkflowJob{
-			ID:         j.ID,
-			Name:       j.Name,
-			Status:     j.Status,
-			Conclusion: j.Conclusion,
+	const maxPages = 100
+	const perPage = 100
+	var jobs []forge.WorkflowJob
+	for page := 1; page <= maxPages; page++ {
+		var result struct {
+			Jobs []struct {
+				ID         int    `json:"id"`
+				Name       string `json:"name"`
+				Status     string `json:"status"`
+				Conclusion string `json:"conclusion"`
+			} `json:"jobs"`
+		}
+		path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=%d&page=%d",
+			url.PathEscape(owner), url.PathEscape(repo), runID, perPage, page)
+		if err := c.getCachedJSON(ctx, path, &result); err != nil {
+			return nil, fmt.Errorf("list workflow run jobs page %d: %w", page, err)
+		}
+		if len(result.Jobs) == 0 {
+			return jobs, nil
+		}
+		for _, j := range result.Jobs {
+			jobs = append(jobs, forge.WorkflowJob{
+				ID:         j.ID,
+				Name:       j.Name,
+				Status:     j.Status,
+				Conclusion: j.Conclusion,
+			})
+		}
+		if len(result.Jobs) < perPage {
+			return jobs, nil
 		}
 	}
-	return jobs, nil
+	return nil, fmt.Errorf("list workflow run jobs: pagination exceeded %d pages", maxPages)
 }
 
 // ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
@@ -3666,7 +3821,7 @@ func (c *LiveClient) ListWorkflowRunArtifacts(ctx context.Context, owner, repo s
 			Name string `json:"name"`
 		} `json:"artifacts"`
 	}
-	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts", owner, repo, runID), "decode workflow run artifacts", &result); err != nil {
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts", owner, repo, runID), &result); err != nil {
 		return nil, fmt.Errorf("list workflow run artifacts: %w", err)
 	}
 	artifacts := make([]forge.WorkflowArtifact, len(result.Artifacts))
@@ -3723,7 +3878,7 @@ func (c *LiveClient) ListRepositoryArtifacts(ctx context.Context, owner, repo st
 			} `json:"workflow_run"`
 		} `json:"artifacts"`
 	}
-	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/artifacts?per_page=%d", owner, repo, perPage), "decode repository artifacts", &result); err != nil {
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/artifacts?per_page=%d", owner, repo, perPage), &result); err != nil {
 		return nil, fmt.Errorf("list repository artifacts: %w", err)
 	}
 	artifacts := make([]forge.RepositoryArtifact, 0, len(result.Artifacts))
@@ -4293,6 +4448,22 @@ func (c *LiveClient) GrantProtectedBranchMergeUser(_ context.Context, _, _, _ st
 // CreatePipeline is not supported on GitHub.
 func (c *LiveClient) CreatePipeline(_ context.Context, _, _, _ string, _ map[string]string) (*forge.Pipeline, error) {
 	return nil, forge.ErrNotSupported
+}
+
+// CreatePipelineWithInputs is not supported on GitHub. GitHub Actions has
+// no equivalent to GitLab CI/CD Inputs for API-triggered workflow runs.
+func (c *LiveClient) CreatePipelineWithInputs(_ context.Context, _, _, _ string, _ map[string]forge.PipelineInputValue) (*forge.Pipeline, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// GetPipelineSchedule is not supported on GitHub.
+func (c *LiveClient) GetPipelineSchedule(_ context.Context, _, _ string, _ int64) (*forge.PipelineSchedule, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// DeletePipelineScheduleVariable is not supported on GitHub.
+func (c *LiveClient) DeletePipelineScheduleVariable(_ context.Context, _, _ string, _ int64, _ string) error {
+	return forge.ErrNotSupported
 }
 
 // CreatePipelineSchedule is not supported on GitHub.
