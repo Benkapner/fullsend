@@ -155,6 +155,49 @@ func TestGitLabWebhookSafety_UnboundPrivilegedBearerRemoved(t *testing.T) {
 		assert.Empty(t, c.variable(forge.SecretTriggerToken), "an unbounded bearer is removed when its privilege cannot be verified")
 		assert.Empty(t, c.hooks())
 	})
+	// Binding is evaluated independently of the variable's protection: an
+	// unprotected, unmasked, or unverifiable variable that may hold an unmanaged
+	// Maintainer-owned bearer must be removed, not just have the managed
+	// triggers revoked.
+	key := webhookTestOwner + "/" + webhookTestRepo + "/" + forge.SecretTriggerToken
+	for _, tc := range []struct {
+		name  string
+		setup func(c webhookFake)
+	}{
+		{"unprotected variable", func(c webhookFake) {
+			c.SecretProtections[key] = forge.SecretProtection{Exists: true, Masked: true, Protected: false}
+		}},
+		{"unmasked variable", func(c webhookFake) {
+			c.SecretProtections[key] = forge.SecretProtection{Exists: true, Masked: false, Protected: true}
+		}},
+		{"protection lookup failure", func(c webhookFake) {
+			c.Errors = map[string]error{"GetRepoSecretProtection": errors.New("boom")}
+		}},
+	} {
+		t.Run("unbound bearer removed with "+tc.name, func(t *testing.T) {
+			c, managedID := unboundPrivilegedBearerFake(t)
+			tc.setup(c)
+			_, err := ReconcileGitLabWebhookSafety(ctx, c, webhookTestOwner, webhookTestRepo, false)
+			if tc.name == "protection lookup failure" {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Empty(t, c.variable(forge.SecretTriggerToken), "the stored bearer is removed")
+			assert.Empty(t, c.hooks())
+			assert.Contains(t, c.RevokedTriggerTokenIDs, managedID)
+			assertUnmanagedTriggerPreserved(t, c)
+		})
+		t.Run("unbound bearer removed with "+tc.name+" and readiness deferral", func(t *testing.T) {
+			c, _ := unboundPrivilegedBearerFake(t)
+			tc.setup(c)
+			delete(c.FileContents, webhookTestOwner+"/"+webhookTestRepo+"/"+fullsendDispatcherTemplatePath)
+			res, _ := EnsureGitLabWebhookFastPath(ctx, c, webhookTestBase, webhookTestOwner, webhookTestRepo, false, false)
+			assert.Equal(t, "deferred", res.Action)
+			assert.Empty(t, c.variable(forge.SecretTriggerToken), "the bearer is removed even though readiness defers")
+			assertUnmanagedTriggerPreserved(t, c)
+		})
+	}
 	t.Run("no unmanaged privileged trigger keeps a compliant bearer", func(t *testing.T) {
 		c := newWebhookFake()
 		ownedBy(c, webhookDeveloperUserID, forge.GitLabAccessLevelDeveloper)

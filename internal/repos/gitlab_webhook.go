@@ -905,10 +905,11 @@ func protectedRuleAdmitsUser(rule forge.ProtectedBranchRule, userID int64, level
 // jobs or logs, so it must not stay valid while readiness checks or
 // replacement provisioning succeed, fail, or defer. Managed triggers are
 // identified by their description alone; the webhook is left for the
-// ordinary repair, which replaces the token. A protected stored bearer whose
-// privilege cannot be bounded (an unmanaged trigger owned at or above
-// Maintainer, or unverifiable, could be it) is removed instead, together with
-// the managed webhooks (see removeUnboundTriggerCredential). details is
+// ordinary repair, which replaces the token. A stored bearer whose privilege
+// cannot be bounded (an unmanaged trigger owned at or above Maintainer, or
+// unverifiable, could be it) is removed instead, regardless of the variable's
+// protection, together with the managed webhooks (see
+// removeUnboundTriggerCredential). details is
 // non-empty only when something was (or, for dryRun, would be) revoked.
 func revokeUnsafeTriggerCredential(ctx context.Context, client forge.Client, owner, repo string, dryRun bool) (details []string, err error) {
 	red := &credentialRedactor{}
@@ -929,19 +930,25 @@ func revokeUnsafeTriggerCredential(ctx context.Context, client forge.Client, own
 			why = "its stored credential protection could not be verified"
 		case !secretUsable(prot):
 			why = "its stored " + forge.SecretTriggerToken + " was not a masked, protected, wildcard-scoped environment variable"
-		default:
-			// A properly protected stored bearer is still not bounded to the
-			// Developer runtime ceiling while an unmanaged trigger owned at or
-			// above Maintainer (or unverifiable) could be that bearer.
-			unbound, unboundErr := storedBearerUnbound(ctx, client, owner, repo)
-			if unboundErr != nil {
-				errs = append(errs, safeAPIError("listing pipeline trigger tokens", unboundErr))
+		}
+		// The stored bearer is not bounded to the Developer runtime ceiling
+		// while an unmanaged trigger owned at or above Maintainer (or
+		// unverifiable) could be that bearer. Evaluate that independently of
+		// the variable's protection: an unprotected, unmasked, or unverifiable
+		// variable holding such a bearer is the worst case, and revoking only
+		// the managed triggers would leave it exposed.
+		unbound, unboundErr := storedBearerUnbound(ctx, client, owner, repo)
+		if unboundErr != nil {
+			errs = append(errs, safeAPIError("listing pipeline trigger tokens", unboundErr))
+			if why == "" {
 				why = "its stored " + forge.SecretTriggerToken + " privilege could not be verified"
-				removeStored = true
-			} else if unbound {
-				why = "its stored " + forge.SecretTriggerToken + " could belong to an unmanaged pipeline trigger owned at or above Maintainer"
-				removeStored = true
 			}
+			removeStored = true
+		} else if unbound {
+			if why == "" {
+				why = "its stored " + forge.SecretTriggerToken + " could belong to an unmanaged pipeline trigger owned at or above Maintainer"
+			}
+			removeStored = true
 		}
 	}
 	if why == "" {
