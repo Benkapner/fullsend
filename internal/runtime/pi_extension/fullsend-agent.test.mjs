@@ -253,6 +253,8 @@ test("vertexCredentialsUsable: a non-empty regular file, else gcloud's ADC file 
   assert.equal(vertexCredentialsUsable({ GOOGLE_APPLICATION_CREDENTIALS: file }), true);
   assert.equal(vertexCredentialsUsable({ google_application_credentials: file }), true, "the lowercase form when the variable is unset");
   assert.equal(vertexCredentialsUsable({ GOOGLE_APPLICATION_CREDENTIALS: join(dir, "nope.json"), google_application_credentials: file }), false, "a set variable wins");
+  assert.equal(vertexCredentialsUsable({ GOOGLE_APPLICATION_CREDENTIALS: `${file} ` }), false, "the value is used verbatim");
+  assert.equal(vertexCredentialsUsable({ GOOGLE_APPLICATION_CREDENTIALS: " ", google_application_credentials: file }), false, "a whitespace-only variable still wins");
   for (const [name, env] of Object.entries({
     missing: { GOOGLE_APPLICATION_CREDENTIALS: join(dir, "nope.json") },
     empty: { GOOGLE_APPLICATION_CREDENTIALS: empty },

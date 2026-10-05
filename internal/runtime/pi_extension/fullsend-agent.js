@@ -398,9 +398,9 @@ export function vertexCredentialsUsable(env, stat = statSync) {
       return false;
     }
   };
-  // google-auth-library's order; a set but unusable value does not fall through.
+  // google-auth-library's order, values used verbatim; a set but unusable one does not fall through.
   for (const key of ["GOOGLE_APPLICATION_CREDENTIALS", "google_application_credentials"]) {
-    const value = typeof env?.[key] === "string" ? env[key].trim() : "";
+    const value = typeof env?.[key] === "string" ? env[key] : "";
     if (value !== "") return usable(value);
   }
   const home = typeof env?.HOME === "string" ? env.HOME : "";
