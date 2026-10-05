@@ -691,8 +691,8 @@ var piXaiVertexModels = []string{"xai/grok-4.6"}
 // because the extension always accepts the parent's own model spec.
 func piAgentProviderModels() map[string][]string {
 	return map[string][]string{
-		"google-vertex":     append([]string(nil), piGoogleVertexModels...),
-		piXaiVertexProvider: append([]string(nil), piXaiVertexModels...),
+		piGoogleVertexProvider: append([]string(nil), piGoogleVertexModels...),
+		piXaiVertexProvider:    append([]string(nil), piXaiVertexModels...),
 	}
 }
 

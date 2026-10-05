@@ -587,6 +587,43 @@ logged and ignored, because the runner's resolution is the authoritative one. `E
 keeps its meaning, and any other unrecognised value is rejected naming the registered
 personas.
 
+#### Vertex sub-agents under an OpenAI parent
+
+A child on `anthropic-vertex`, `google-vertex` or `xai-vertex` (`sonnet`, for example) needs a
+GCP credential file in the sandbox, even when the parent runs on `openai/`. The harness mounts it
+from `${GOOGLE_APPLICATION_CREDENTIALS}`
+([bring your own agent › Pick a route](../guides/user/bring-your-own-agent.md#pick-a-route)).
+A `google-vertex` child can use `GOOGLE_CLOUD_API_KEY` in the sandbox instead. Without either:
+
+1. **A `subagents` entry on `anthropic-vertex` or `xai-vertex`, and the variable has no usable
+   file.** The run stops before the pre-script (a `google-vertex` entry is checked at dispatch):
+
+   ```console
+     ✗ Sub-agent model needs Vertex credentials
+   Error: sub-agent model resolves to Vertex, but GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.default → anthropic-vertex/claude-sonnet-4-6; set GOOGLE_APPLICATION_CREDENTIALS to a credential file mounted in host_files, or move the sub-agent off Vertex
+   ```
+
+   Fix: set `GOOGLE_APPLICATION_CREDENTIALS` to a credential file, or move the entry off Vertex.
+2. **The variable has no usable file, and no `subagents` entry fails early.** The run
+   continues with one line:
+
+   ```console
+       Vertex sub-agents need a credential file: GOOGLE_APPLICATION_CREDENTIALS is not set
+   ```
+
+   Fix: nothing, unless you want Vertex children. Then set the variable.
+3. **An `Agent` call or a persona picks a Vertex model, and the sandbox has no credential file.**
+   The dispatch is refused, and the parent sees:
+
+   ```text
+   model "sonnet": provider "anthropic-vertex" is not available in this run (Vertex sub-agents need GOOGLE_APPLICATION_CREDENTIALS set on the runner and mounted in host_files)
+   ```
+
+   Fix: mount the file and set the variable, or move those sub-agents to `openai/`.
+
+On GitHub Actions, a failed credential setup adds `(Vertex credential setup failed; see the
+warning above)` to the reason.
+
 #### What you see
 
 Bootstrap prints the resolved table, one line per persona, with where each model came from —

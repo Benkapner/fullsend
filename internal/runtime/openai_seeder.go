@@ -1,7 +1,5 @@
 package runtime
 
-import "os"
-
 // OpenAICredentialSeeder is implemented by runtimes that read the OpenAI
 // credential placeholder from a runner-owned file the runner re-seeds after
 // every refresh (ADR 0092). OpenAIAuthSeed returns the POSIX sh fragment
@@ -71,20 +69,6 @@ func NeedsOpenAIProvider(backend, runModel, agentModel string, configAliases map
 // without the Agent tool, which dispatches no children. A model an Agent
 // call names at dispatch time is not covered: it is not known before the
 // sandbox starts.
-func OpenAIChildren(backend, agentPath string, subagentsCfg map[string]*string, skillDirs []string, agentName string, configAliases map[string]string) []OpenAIChild {
-	if backend != "pi" {
-		return nil
-	}
-	data, err := os.ReadFile(agentPath)
-	if err != nil {
-		return nil
-	}
-	def, err := parsePiAgent(data)
-	if err != nil || !piAgentToolEnabled(def) {
-		return nil
-	}
-	// discoverPersonas never returns a non-nil error; Bootstrap runs the
-	// same discovery on the same directories.
-	personas, _, _ := discoverPersonas(skillDirs, agentName)
-	return piConfiguredOpenAIChildren(personas, subagentsCfg, piAgentModels(def.Model, configAliases))
+func OpenAIChildren(backend, agentPath string, subagentsCfg map[string]*string, skillDirs []string, agentName string, configAliases map[string]string) []PiChild {
+	return piChildrenOn(backend, agentPath, subagentsCfg, skillDirs, agentName, configAliases, piOpenAIProvider)
 }

@@ -201,9 +201,8 @@ const vertexSubagentHeader = "# To dispatch Vertex sub-agents (e.g. sonnet), unc
 // struct, so uncommenting it yields a harness the loader accepts.
 //
 // The credentials mount is required, not optional as in a Vertex harness:
-// the runner checks GCP credentials up front only when the parent model is
-// on Vertex, so an optional mount would let the run start and the Vertex
-// children fail part-way through on a missing file.
+// a missing file then fails the run up front, where an optional mount
+// would let it start and refuse each Vertex child at dispatch.
 func vertexSubagentBlock() ([]byte, error) {
 	overlay := struct {
 		Overlays []harness.OverlayEntry `yaml:"overlays"`
