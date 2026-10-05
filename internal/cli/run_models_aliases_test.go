@@ -114,7 +114,39 @@ func TestRunAgent_RejectedConfigFailsBeforeAgentSourceResolution(t *testing.T) {
 	err := runAgent(context.Background(), "unregistered", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
 		statusOpts{}, ui.New(&buf), false, runOverrideFlags{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "reading fullsend config")
+	assert.Contains(t, err.Error(), "loading fullsend config")
 	assert.NotContains(t, buf.String(), "agents repo")
 	assert.NotContains(t, buf.String(), "Fetching")
+}
+
+// A malformed base-only config (no config.yaml) must fail the run before
+// agent-source resolution instead of being treated as an absent config that
+// falls back to the default allowlist and the agents repository. The
+// base-only deny-all case is covered by TestLoadLockConfig_BaseLayer, which
+// exercises the loader shared with the run path.
+func TestRunAgent_BaseOnlyConfigFailsBeforeAgentSourceResolution(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{name: "malformed base-only config", content: "{{invalid yaml", wantErr: "parsing base config"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			usePreScriptStub(t)
+			dir := newSkipHarnessDir(t, "")
+			require.NoError(t, os.Remove(filepath.Join(dir, "config.yaml")))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(tt.content), 0o644))
+
+			var buf bytes.Buffer
+			rFlags := resolveFlags{maxDepth: 10, maxResources: 50, offline: true}
+			err := runAgent(context.Background(), "unregistered", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+				statusOpts{}, ui.New(&buf), false, runOverrideFlags{})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.NotContains(t, buf.String(), "agents repo")
+			assert.NotContains(t, buf.String(), "Fetching")
+		})
+	}
 }

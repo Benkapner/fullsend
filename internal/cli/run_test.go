@@ -607,7 +607,7 @@ func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "reading fullsend config for remote resource validation")
+	assert.Contains(t, err.Error(), "loading fullsend config")
 }
 
 func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
@@ -634,7 +634,7 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "reading fullsend config for remote resource validation")
+	assert.Contains(t, err.Error(), "loading fullsend config")
 }
 
 func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
@@ -1020,7 +1020,7 @@ func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "reading fullsend config for remote resource validation")
+	assert.Contains(t, err.Error(), "loading fullsend config")
 }
 
 func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {

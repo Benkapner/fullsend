@@ -497,19 +497,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// to agents-repo resolution; a malformed file is warned by
 	// tryLoadOrgConfig but not surfaced as a distinct error here.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
-	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
-	if orgCfg == nil {
-		// A config file that exists but cannot be loaded (malformed,
-		// unreadable, or a rejected per-org format) must not be treated
-		// as absent: that would substitute the default allowlist for an
-		// explicit allowed_remote_resources (including a deny-all) and
-		// allow remote fetching before the load error surfaces.
-		if _, statErr := os.Stat(orgConfigPath); !errors.Is(statErr, os.ErrNotExist) {
-			var loadErr error
-			if orgCfg, loadErr = requireOrgConfig(orgConfigPath, printer); loadErr != nil {
-				return loadErr
-			}
-		}
+	//
+	// The layered config (config.yaml over config.base.yaml) is loaded
+	// strictly: a layer that exists but cannot be loaded (malformed,
+	// unreadable, or a rejected per-org format) must not be treated as
+	// absent, and a base-only config must be honored. Substituting the
+	// default allowlist for an explicit allowed_remote_resources
+	// (including a deny-all) would allow remote fetching before the load
+	// error surfaces. The config is absent only when neither layer exists.
+	orgCfg, err := loadLockConfig(orgConfigPath)
+	if err != nil {
+		printer.StepFail("Failed to load fullsend config")
+		return err
 	}
 
 	// Detect forge platform after config is loaded so config.forge can be consulted (ADR 0088).

@@ -150,7 +150,8 @@ func printResolvedDeps(printer *ui.Printer, deps []resolve.Dependency) {
 }
 
 // loadLockConfig loads the layered fullsend config (config.yaml over
-// config.base.yaml) from the directory containing path for locking. Unlike
+// config.base.yaml) from the directory containing path for locking, running,
+// and eval measurement. Unlike
 // tryLoadOrgConfig it distinguishes an absent config (nil, nil — neither
 // layer exists) from an existing config that cannot be loaded (nil, error),
 // so a rejected configuration is never mistaken for the removal of its
