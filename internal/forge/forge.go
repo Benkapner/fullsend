@@ -808,28 +808,17 @@ type Client interface {
 	ListRepoVariables(ctx context.Context, owner, repo string) (map[string]string, error)
 	DeleteRepoVariable(ctx context.Context, owner, repo, name string) error
 
-	// Org-level secrets (for cross-repo dispatch tokens)
-	CreateOrgSecret(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
+	// Org-level secrets (cleanup of legacy dispatch tokens)
 	OrgSecretExists(ctx context.Context, org, name string) (bool, error)
 	DeleteOrgSecret(ctx context.Context, org, name string) error
-	SetOrgSecretRepos(ctx context.Context, org, name string, repoIDs []int64) error
-	// GetOrgSecretRepos returns the list of repository IDs that have access
-	// to the given org-level secret.
-	GetOrgSecretRepos(ctx context.Context, org, name string) ([]int64, error)
 
-	// Org-level variables (for dispatch function URL)
-	CreateOrUpdateOrgVariable(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
+	// Org-level variables (foreign-mint authorization and mint discovery)
 	// CreateOrUpdateOrgVariableAll creates or updates an org-wide Actions variable
 	// (visibility all). Used for mint FOREIGN policy variables read via the org API.
 	CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error
-	OrgVariableExists(ctx context.Context, org, name string) (bool, error)
 	GetOrgVariable(ctx context.Context, org, name string) (value string, exists bool, err error)
 	ListOrgVariables(ctx context.Context, org string) ([]OrgVariable, error)
 	DeleteOrgVariable(ctx context.Context, org, name string) error
-	SetOrgVariableRepos(ctx context.Context, org, name string, repoIDs []int64) error
-	// GetOrgVariableRepos returns the list of repository IDs that have access
-	// to the given org-level variable.
-	GetOrgVariableRepos(ctx context.Context, org, name string) ([]int64, error)
 
 	// CI/Workflow operations
 	GetWorkflow(ctx context.Context, owner, repo, workflowFile string) (*Workflow, error)

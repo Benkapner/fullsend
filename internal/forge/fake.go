@@ -49,16 +49,9 @@ type SecretRecord struct {
 	Owner, Repo, Name, Value string
 }
 
-// OrgSecretRecord records an org-level secret creation call.
-type OrgSecretRecord struct {
-	Org, Name, Value string
-	RepoIDs          []int64
-}
-
 // OrgVariableRecord records an org-level variable creation/update call.
 type OrgVariableRecord struct {
 	Org, Name, Value string
-	RepoIDs          []int64
 }
 
 // VariableRecord records a variable creation/update call.
@@ -233,13 +226,11 @@ type FakeClient struct {
 	OrgMemberships map[string]OrgMembership
 
 	// Org-level secret state
-	OrgSecrets       map[string]bool    // key: "org/name"
-	OrgSecretRepoIDs map[string][]int64 // key: "org/name" → repo IDs
+	OrgSecrets map[string]bool // key: "org/name"
 
 	// Org-level variable state
-	OrgVariables       map[string]bool    // key: "org/name"
-	OrgVariableValues  map[string]string  // key: "org/name" → value
-	OrgVariableRepoIDs map[string][]int64 // key: "org/name" → repo IDs
+	OrgVariables      map[string]bool   // key: "org/name"
+	OrgVariableValues map[string]string // key: "org/name" → value
 
 	// Protected branches for IsProtectedBranch.
 	ProtectedBranches map[string]bool // key: "owner/repo/branch"
@@ -368,7 +359,6 @@ type FakeClient struct {
 	Variables               []VariableRecord
 	DeletedVariables        []VariableRecord
 	DeletedOrgSecrets       []string // "org/name"
-	CreatedOrgSecrets       []OrgSecretRecord
 	CreatedOrgVariables     []OrgVariableRecord
 	DeletedOrgVariables     []string // "org/name"
 	CreatedIssues           []CreatedIssueRecord
@@ -2172,28 +2162,6 @@ func (f *FakeClient) GetOrgMembership(_ context.Context, org, username string) (
 	return OrgMembership{}, ErrNotFound
 }
 
-func (f *FakeClient) CreateOrgSecret(_ context.Context, org, name, value string, selectedRepoIDs []int64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if e := f.err("CreateOrgSecret"); e != nil {
-		return e
-	}
-
-	f.CreatedOrgSecrets = append(f.CreatedOrgSecrets, OrgSecretRecord{
-		Org:     org,
-		Name:    name,
-		Value:   value,
-		RepoIDs: selectedRepoIDs,
-	})
-
-	if f.OrgSecrets == nil {
-		f.OrgSecrets = make(map[string]bool)
-	}
-	f.OrgSecrets[org+"/"+name] = true
-	return nil
-}
-
 func (f *FakeClient) OrgSecretExists(_ context.Context, org, name string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2220,48 +2188,18 @@ func (f *FakeClient) DeleteOrgSecret(_ context.Context, org, name string) error 
 	return nil
 }
 
-func (f *FakeClient) SetOrgSecretRepos(_ context.Context, org, name string, repoIDs []int64) error {
+func (f *FakeClient) CreateOrUpdateOrgVariableAll(_ context.Context, org, name, value string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if e := f.err("SetOrgSecretRepos"); e != nil {
-		return e
-	}
-
-	if f.OrgSecretRepoIDs == nil {
-		f.OrgSecretRepoIDs = make(map[string][]int64)
-	}
-	f.OrgSecretRepoIDs[org+"/"+name] = repoIDs
-	return nil
-}
-
-func (f *FakeClient) GetOrgSecretRepos(_ context.Context, org, name string) ([]int64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if e := f.err("GetOrgSecretRepos"); e != nil {
-		return nil, e
-	}
-
-	if f.OrgSecretRepoIDs == nil {
-		return nil, nil
-	}
-	return f.OrgSecretRepoIDs[org+"/"+name], nil
-}
-
-func (f *FakeClient) CreateOrUpdateOrgVariable(_ context.Context, org, name, value string, selectedRepoIDs []int64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if e := f.err("CreateOrUpdateOrgVariable"); e != nil {
+	if e := f.err("CreateOrUpdateOrgVariableAll"); e != nil {
 		return e
 	}
 
 	f.CreatedOrgVariables = append(f.CreatedOrgVariables, OrgVariableRecord{
-		Org:     org,
-		Name:    name,
-		Value:   value,
-		RepoIDs: selectedRepoIDs,
+		Org:   org,
+		Name:  name,
+		Value: value,
 	})
 
 	if f.OrgVariables == nil {
@@ -2273,27 +2211,7 @@ func (f *FakeClient) CreateOrUpdateOrgVariable(_ context.Context, org, name, val
 		f.OrgVariableValues = make(map[string]string)
 	}
 	f.OrgVariableValues[org+"/"+name] = value
-
-	if f.OrgVariableRepoIDs == nil {
-		f.OrgVariableRepoIDs = make(map[string][]int64)
-	}
-	f.OrgVariableRepoIDs[org+"/"+name] = selectedRepoIDs
 	return nil
-}
-
-func (f *FakeClient) CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error {
-	return f.CreateOrUpdateOrgVariable(ctx, org, name, value, nil)
-}
-
-func (f *FakeClient) OrgVariableExists(ctx context.Context, org, name string) (bool, error) {
-	f.mu.Lock()
-	e := f.err("OrgVariableExists")
-	f.mu.Unlock()
-	if e != nil {
-		return false, e
-	}
-	_, exists, err := f.GetOrgVariable(ctx, org, name)
-	return exists, err
 }
 
 func (f *FakeClient) GetOrgVariable(_ context.Context, org, name string) (string, bool, error) {
@@ -2336,35 +2254,6 @@ func (f *FakeClient) ListOrgVariables(_ context.Context, org string) ([]OrgVaria
 		out = append(out, OrgVariable{Name: name, Value: val})
 	}
 	return out, nil
-}
-
-func (f *FakeClient) SetOrgVariableRepos(_ context.Context, org, name string, repoIDs []int64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if e := f.err("SetOrgVariableRepos"); e != nil {
-		return e
-	}
-
-	if f.OrgVariableRepoIDs == nil {
-		f.OrgVariableRepoIDs = make(map[string][]int64)
-	}
-	f.OrgVariableRepoIDs[org+"/"+name] = repoIDs
-	return nil
-}
-
-func (f *FakeClient) GetOrgVariableRepos(_ context.Context, org, name string) ([]int64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if e := f.err("GetOrgVariableRepos"); e != nil {
-		return nil, e
-	}
-
-	if f.OrgVariableRepoIDs == nil {
-		return nil, nil
-	}
-	return f.OrgVariableRepoIDs[org+"/"+name], nil
 }
 
 func (f *FakeClient) DeleteOrgVariable(_ context.Context, org, name string) error {
