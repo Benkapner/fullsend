@@ -211,6 +211,37 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 	}, pr.Jobs.StopFix.Permissions, "stop-fix job permissions")
 }
 
+// TestShimPerRepoSkipsForks verifies the per-repo shim never runs agent jobs
+// in a fork and instead explains why the run was skipped (#7895).
+func TestShimPerRepoSkipsForks(t *testing.T) {
+	content, err := FullsendRepoFile("templates/shim-per-repo.yaml")
+	require.NoError(t, err)
+
+	var wf struct {
+		Jobs map[string]struct {
+			If    string `yaml:"if"`
+			Steps []struct {
+				Run string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &wf))
+
+	for _, job := range []string{"dispatch", "stop-fix"} {
+		cond := strings.Fields(wf.Jobs[job].If)
+		require.NotEmpty(t, cond, "%s job must have an if condition", job)
+		assert.Equal(t, "!github.event.repository.fork", cond[0],
+			"%s job must be skipped in forks", job)
+	}
+
+	notice, ok := wf.Jobs["fork-notice"]
+	require.True(t, ok, "per-repo shim must have a fork-notice job")
+	assert.Equal(t, "github.event.repository.fork", notice.If)
+	require.Len(t, notice.Steps, 1)
+	assert.Contains(t, notice.Steps[0].Run, "::notice")
+	assert.Contains(t, notice.Steps[0].Run, "https://fullsend.sh/docs/getting-started/")
+}
+
 // TestShimStopFixAuthorization verifies the stop-fix job authorizes the
 // /fs-fix-stop command via the collaborator permission API (ADR 0054) rather
 // than author_association. See issue #5421: author_association grants

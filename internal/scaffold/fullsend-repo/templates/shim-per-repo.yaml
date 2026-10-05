@@ -30,9 +30,25 @@ on:
 permissions: {}
 
 jobs:
+  # Forks inherit this workflow but were never onboarded to fullsend (no
+  # secrets, variables, or mint enrollment), so agent runs there would only
+  # fail. Skip all agent jobs in forks and explain why instead (#7895).
+  fork-notice:
+    if: github.event.repository.fork
+    runs-on: __GH_RUNNER__
+    permissions: {}
+    steps:
+      - name: Skip fullsend in forks
+        run: >-
+          echo "::notice title=fullsend skipped::This is not the original
+          repository the workflow was templated for, please reonboard this
+          repository to Fullsend if required following
+          https://fullsend.sh/docs/getting-started/"
+
   dispatch:
     if: >-
-      (github.event_name != 'pull_request_target' && github.event_name != 'pull_request_review'
+      !github.event.repository.fork
+      && (github.event_name != 'pull_request_target' && github.event_name != 'pull_request_review'
        || github.event.pull_request.head.ref != 'fullsend/scaffold-install')
       && (github.event_name != 'issue_comment'
        || (startsWith(github.event.comment.body, '/fs-')
@@ -66,7 +82,8 @@ jobs:
     # hatch) is made in the step below, so a maintainer whose author_association
     # is not MEMBER (e.g. private org membership) is not filtered out (ADR 0054).
     if: >-
-      github.event_name == 'issue_comment'
+      !github.event.repository.fork
+        && github.event_name == 'issue_comment'
         && github.event.issue.pull_request
         && github.event.comment.user.type != 'Bot'
         && github.event.comment.body == '/fs-fix-stop'
