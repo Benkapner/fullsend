@@ -18,66 +18,12 @@ These flags are inherited by all `repos` subcommands:
 
 | Command | Description |
 |---------|-------------|
-| `fullsend repos migrate <org>` | Migrate an org from per-org to per-repo install |
 | `fullsend repos install [repos...]` | Converge repos to the desired state defined in a manifest |
 | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos and remove from manifest |
 | `fullsend repos status` | Compare manifest against actual repo state |
 | `fullsend repos set-default <key> <value>` | Set or remove a platform-level default in repos.yaml |
 
-## `repos migrate`
-
-One-command migration from per-org to per-repo fullsend installation. For each repo enrolled in the org's per-org config:
-
-1. Check inference WIF status; provision if needed
-2. Install per-repo (scaffold workflows, variables, secrets) with config carried over from the org config
-3. Remove the repository entry from per-org config
-
-Successfully migrated repositories — and selected repositories already detected as per-repo installed — are deleted from the source `<org>/.fullsend/config.yaml`. They are not left as `enabled: false`, which would queue them for legacy offboarding. Failed, unselected, and pre-existing disabled entries are left unchanged, as is unrelated configuration. Dry runs do not modify the source config.
-
-Generates a `repos.yaml` manifest reflecting the migrated state. When a `repos.yaml` already exists (e.g. from a previous `--repo`-filtered run), newly migrated repos are merged into it instead of overwriting it. Re-running after a partial migration picks up where it left off.
-
-The generated manifest does not include an [inference authentication selection](#inference-authentication-selection). Migrate provisions Vertex WIF, so add `inference.auth: vertex-wif` (for example `fullsend repos set-default defaults.inference.auth vertex-wif`) before running `repos install` or `repos status` against it.
-
-### Config carry-over
-
-The migrate command maps portable fields from the org-level `config.yaml` into each repo's per-repo `.fullsend/config.yaml`:
-
-| Org config field | Per-repo config field | Notes |
-|---|---|---|
-| `agents` | `agents` | Full deep copy including enabled state |
-| `allowed_remote_resources` | `allowed_remote_resources` | Default resources are merged in |
-| `create_issues` | `create_issues` | Deep copy of allow targets |
-| `defaults.roles` | `roles` | Per-repo overrides from `repos.<name>.roles` take precedence |
-| `defaults.runtime` | `runtime` | Only when explicitly set |
-| `kill_switch` | `kill_switch` | Only when active |
-| `defaults.status_notifications` | `status_notifications` | Deep copy |
-
-The following org config fields have no per-repo equivalent and are **not** carried over. A warning is emitted for each:
-
-- `defaults.max_implementation_retries`
-- `defaults.auto_merge`
-
-**Note:** Any automated process that keeps the org-level `config.yaml` up to date (e.g., agent source pinning) needs to be replicated for each migrated repo's `.fullsend/config.yaml`.
-
-```bash
-fullsend repos migrate <org> --project <gcp-project>
-```
-
-### Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--project` | **(required)** | GCP project ID for inference |
-| `--repo` | | Filter to specific repos (repeatable, supports globs) |
-| `--dry-run` | `false` | Preview only |
-| `--direct` | `false` | Push scaffold to default branch instead of PR |
-| `--concurrency` | `4` | Parallel limit (1-32) |
-| `-f`, `--manifest` | `repos.yaml` | Output path for generated repos.yaml |
-
-### Required GCP permissions
-
-- `roles/iam.workloadIdentityPoolAdmin`
-- `roles/resourcemanager.projectIamAdmin`
+The former `repos migrate <org>` command (per-org to per-repo migration) has been removed along with per-org installation.
 
 ## `repos install`
 
@@ -95,8 +41,7 @@ provided, `repos install` bootstraps a new manifest (`version: 1`),
 adds the specified repos, and writes the file. The `--forge` flag is
 required in this case, and so is `--inference-auth` (a new manifest has no
 inherited [inference authentication selection](#inference-authentication-selection)).
-This enables a greenfield setup without running `repos migrate` or manually
-creating the YAML first.
+This enables a greenfield setup without manually creating the YAML first.
 
 Runs in two phases:
 

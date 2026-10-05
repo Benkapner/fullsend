@@ -317,11 +317,11 @@ During installation, the GCF provisioner creates:
 
 ## GitHub Secrets & Variables Deployment
 
-> Individual values can be updated with `fullsend github set <target> <key> <value>`. See [Operations](../getting-started/operations.md#updating-configuration-values) for the full configuration management guide.
+> Individual values can be updated with `fullsend github set <owner/repo> <key> <value>`. See [Operations](../getting-started/operations.md#updating-configuration-values) for the full configuration management guide.
 
-Secrets and variables are deployed at different scopes depending on the installation mode.
+Secrets and variables are deployed on the target repository. The CLI no longer installs per-org secrets and variables; the legacy per-org layout below is retained only as a historical reference for existing org-mode installations.
 
-### Per-Org Mode Secrets/Variables
+### Per-Org Mode Secrets/Variables (historical, removed from CLI installation)
 
 **Org-level variable:**
 - `FULLSEND_MINT_URL` — URL of the token mint Cloud Function

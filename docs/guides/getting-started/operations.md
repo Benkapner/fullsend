@@ -134,13 +134,8 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Repo Maintainer (OpenAI) | `fullsend inference openai request <owner/repo>[,...]` | Generate the provider/mapping request for an OpenAI organization admin (GPT on pi or codex) |
 | Repo Maintainer (OpenAI) | `fullsend inference openai import [reply.json]` | Record the admin's reply in `config.yaml`, or set the repository variables |
 | Repo Maintainer (OpenAI) | `fullsend inference openai status <owner/repo>` | Check the OpenAI WIF identifiers, and the exchange when run inside Actions |
-| GitHub Maintainer | `fullsend github setup <org\|owner/repo>` | Configure GitHub org or repo (no GCP needed) |
-| GitHub Maintainer | `fullsend github enroll <org> [repo...]` | Add repositories to agent enrollment |
-| GitHub Maintainer | `fullsend github unenroll <org> [repo...]` | Remove repositories from agent enrollment |
-| GitHub Maintainer | `fullsend github set <org\|owner/repo> <key> <value>` | Update a single config value (secret or variable) |
-| GitHub Maintainer | `fullsend github status <org>` | Analyze GitHub-side installation state |
-| GitHub Maintainer | `fullsend github sync-scaffold <org>` | Update workflow templates to current CLI version |
-| GitHub Maintainer | `fullsend github uninstall <org>` | Remove GitHub configuration (org-level only) |
+| GitHub Maintainer | `fullsend github setup <owner/repo>` | Configure a GitHub repo (no GCP needed) |
+| GitHub Maintainer | `fullsend github set <owner/repo> <key> <value>` | Update a single config value (secret or variable) |
 | GCP Admin (Mint) | `fullsend mint deploy` | Deploy the token mint Cloud Function |
 | GCP Admin (Mint) | `fullsend mint delete` | Tear down mint infrastructure (inverse of deploy) |
 | GCP Admin (Mint) | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |
@@ -149,7 +144,6 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
 | GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
 
-| Fleet Admin | `fullsend repos migrate <org> --project <gcp-project>` | Migrate an org from per-org to per-repo install, generating a `repos.yaml` manifest |
 | Platform Admin | `fullsend repos install [repos...]` | Converge repos to desired state: provision new, repair component drift (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access, GitLab pipeline-variable override-role inspection — typed jobs require verified `no_one_allowed` before template delivery; legacy upgrades need maintenance-window preparation; legacy variable-based wrappers are exempt), repair scaffold content drift, refresh a declared configuration preset, rewrite a drifted managed `.fullsend/config.yaml`, upgrade refs |
 | Platform Admin | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos and remove from manifest |
 | Fleet Admin | `fullsend repos status` | Compare manifest against actual per-repo state: detect missing or drifted components, ref drift, scaffold content drift, declared configuration-preset drift, managed `.fullsend/config.yaml` drift, and GitLab `protected-ref-pipeline` drift |

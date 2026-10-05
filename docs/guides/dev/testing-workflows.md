@@ -27,7 +27,6 @@ into its `.fullsend/` directory:
 go run ./cmd/fullsend github setup "$OWNER/$REPO" \
   --vendor \
   --fullsend-source "$PWD" \
-  --skip-app-setup \
   --mint-url "$MINT_URL"
 ```
 

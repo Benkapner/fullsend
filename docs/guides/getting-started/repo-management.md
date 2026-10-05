@@ -40,47 +40,8 @@ needed only for Vertex agents.
 
 ## Getting started
 
-### Creating a manifest via migration
-
-Migrate an org from per-org to per-repo install and generate a
-`repos.yaml` manifest:
-
-```bash
-fullsend repos migrate <org> --project <gcp-project>
-```
-
-Migrate only specific repos:
-
-```bash
-fullsend repos migrate <org> --project <gcp-project> --repo api --repo web
-```
-
-Preview what would be migrated without making changes:
-
-```bash
-fullsend repos migrate <org> --project <gcp-project> --dry-run
-```
-
-The command discovers enrolled repos from the per-org config, provisions
-WIF infrastructure per repo, installs per-repo (scaffold, variables,
-secrets), removes migrated repository entries from the per-org config,
-and generates a `repos.yaml` manifest. If a manifest already exists,
-newly migrated repos are merged into it rather than overwriting it.
-Successful migrations delete the source config entry entirely rather
-than setting `enabled: false`.
-
-The generated manifest does not select an
-[inference authentication method](#inference-authentication). Migrate
-provisions Vertex WIF, so add the selection before running
-`repos install` or `repos status`:
-
-```bash
-fullsend repos set-default defaults.inference.auth vertex-wif
-```
-
 ### Creating a manifest from scratch
 
-If you do not have an existing per-org installation to migrate from,
 `repos install` can bootstrap a new manifest for you. Pass repo names
 as positional arguments with `--forge` and `--inference-auth`:
 
@@ -147,8 +108,8 @@ repos are present, including gitlab.com; there is no manifest default. Pass
 `--forge=gitlab` when no forge is specified), or set it later with
 `fullsend repos set-default gitlab.url <url>`. The env-var fallback chain
 (`FULLSEND_GITLAB_URL` → `GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to
-gitlab.com) applies only to call paths without a manifest URL, such as
-`repos migrate`; it does not override manifest validation. Self-hosted
+gitlab.com) applies only to call paths without a manifest URL; it does
+not override manifest validation. Self-hosted
 instances that use a private CA need runner `tls-ca-file` plus separate
 sandbox-host trust — see [Private CA (self-hosted GitLab)](operations.md#private-ca-self-hosted-gitlab).
 
@@ -737,8 +698,13 @@ fails its early credential check. An OpenAI run does not use the GCP pair.
 
 ## Migrating from per-org mode to manifest management
 
+> **Removed:** `fullsend repos migrate` and the `fullsend github` org commands
+> referenced in this section have been removed along with per-org installation.
+> Install repositories directly with `fullsend repos install` instead. This
+> section is kept for historical reference only.
+
 Organizations migrating from per-org mode to per-repo manifest management
-can use `repos migrate` — a single command that handles the full migration.
+could use `repos migrate` — a single command that handled the full migration.
 
 ### Step 1: Migrate from per-org to per-repo
 
