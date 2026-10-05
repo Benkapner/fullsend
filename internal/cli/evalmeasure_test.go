@@ -454,6 +454,38 @@ func TestEvalMeasureFetchContext(t *testing.T) {
 	assert.True(t, opts2.FetchPolicy.Offline)
 }
 
+func TestEvalMeasureFetchContext_RejectedConfigDeniesRemote(t *testing.T) {
+	printer := ui.New(io.Discard)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "org-shaped config with explicit deny-all",
+			content: "version: \"1\"\ndefaults:\n  roles: [coder]\nrepos:\n  api:\n    enabled: true\nallowed_remote_resources: []\n",
+		},
+		{
+			name:    "malformed yaml",
+			content: "allowed_remote_resources: [\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tt.content), 0o644))
+
+			opts, _ := evalMeasureFetchContext(dir, false, printer)
+			assert.NotNil(t, opts.OrgAllowlist)
+			assert.Empty(t, opts.OrgAllowlist,
+				"an existing but unloadable config must fail closed, not fall back to the default allowlist")
+		})
+	}
+}
+
 func TestResolveEvalMeasureRegistry_LocalOverride(t *testing.T) {
 	fsDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(fsDir, "eval", "measurements"), 0o755))

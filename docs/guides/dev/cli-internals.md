@@ -740,7 +740,7 @@ var executableFiles = map[string]struct{}{
 | `internal/inference/vertex/vertex.go` | ~80 | Agent Platform (Vertex AI) implementation |
 | `internal/inference/openaiwif/openaiwif.go` | ~330 | OpenAI Workload Identity Federation token exchange (runner-side) |
 | `internal/cli/run_openai.go` | ~550 | OpenAI credential resolution, run-scoped provider lifecycle and refresh |
-| `internal/config/config.go` | ~264 | Org/repo config structures |
+| `internal/config/config.go` | ~264 | Per-repo config structures |
 
 ## See Also
 
