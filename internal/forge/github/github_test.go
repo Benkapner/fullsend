@@ -6298,3 +6298,78 @@ func TestGetCached_AbandonedFetchStillFillsCache(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "in_progress", runs[0].Status)
 }
+
+func writeBlobTestFile(t *testing.T, size int) (string, []byte) {
+	t.Helper()
+	content := make([]byte, size)
+	for i := range content {
+		content[i] = byte(i * 7)
+	}
+	path := filepath.Join(t.TempDir(), "blob.bin")
+	require.NoError(t, os.WriteFile(path, content, 0o644))
+	return path, content
+}
+
+func assertBlobUpload(t *testing.T, r *http.Request, want []byte) {
+	t.Helper()
+	body, err := io.ReadAll(r.Body)
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(body)), r.ContentLength, "uploaded bytes must match ContentLength")
+	assert.Equal(t, blobJSONLength(int64(len(want))), int64(len(body)))
+	var parsed map[string]string
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	assert.Equal(t, "base64", parsed["encoding"])
+	decoded, err := base64.StdEncoding.DecodeString(parsed["content"])
+	require.NoError(t, err)
+	assert.Equal(t, want, decoded)
+}
+
+func TestCreateBlobFromFile_RetryReplaysFullFile(t *testing.T) {
+	path, content := writeBlobTestFile(t, 200*1024+1)
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/git/blobs", r.URL.Path)
+		if attempts.Add(1) == 1 {
+			// Consume the first body fully, then ask for a retry.
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		assertBlobUpload(t, r, content)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{"sha": "blobsha"})
+	}))
+	defer srv.Close()
+
+	sha, err := newTestClient(t, srv).createBlobFromFile(context.Background(), "org", "repo", path)
+	require.NoError(t, err)
+	assert.Equal(t, "blobsha", sha)
+	assert.Equal(t, int32(2), attempts.Load())
+}
+
+func TestCreateBlobFromFile_RedirectReplaysBody(t *testing.T) {
+	path, content := writeBlobTestFile(t, 50*1024+2)
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/git/blobs":
+			_, _ = io.Copy(io.Discard, r.Body)
+			http.Redirect(w, r, "/redirected/blobs", http.StatusTemporaryRedirect)
+		case "/redirected/blobs":
+			hits.Add(1)
+			assert.Equal(t, http.MethodPost, r.Method)
+			assertBlobUpload(t, r, content)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "blobsha"})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	sha, err := newTestClient(t, srv).createBlobFromFile(context.Background(), "org", "repo", path)
+	require.NoError(t, err)
+	assert.Equal(t, "blobsha", sha)
+	assert.Equal(t, int32(1), hits.Load())
+}

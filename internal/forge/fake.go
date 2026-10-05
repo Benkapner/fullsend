@@ -939,17 +939,26 @@ func (f *FakeClient) applyFileContents(owner, repo string, files []TreeFile) err
 	if f.FileContents == nil {
 		f.FileContents = make(map[string][]byte)
 	}
-	for _, file := range files {
-		key := owner + "/" + repo + "/" + file.Path
+	// Resolve every payload before mutating FileContents so a failed read
+	// leaves the fake repository unchanged, matching real forge behavior.
+	contents := make([][]byte, len(files))
+	for i, file := range files {
 		if file.Delete {
-			delete(f.FileContents, key)
 			continue
 		}
 		content, err := file.Bytes()
 		if err != nil {
 			return err
 		}
-		f.FileContents[key] = content
+		contents[i] = content
+	}
+	for i, file := range files {
+		key := owner + "/" + repo + "/" + file.Path
+		if file.Delete {
+			delete(f.FileContents, key)
+			continue
+		}
+		f.FileContents[key] = contents[i]
 	}
 	return nil
 }

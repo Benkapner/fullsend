@@ -89,3 +89,44 @@ func bytesOf(n int, b byte) []byte {
 	}
 	return out
 }
+
+type countingReader struct {
+	r     io.Reader
+	reads int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	c.reads++
+	return c.r.Read(p)
+}
+
+type closeTracker struct {
+	io.Reader
+	closed int
+}
+
+func (c *closeTracker) Close() error {
+	c.closed++
+	return nil
+}
+
+func TestBlobJSONReadCloser_BuffersSourceReads(t *testing.T) {
+	const size = 1 << 20
+	content := bytesOf(size, 0x42)
+	src := &countingReader{r: strings.NewReader(string(content))}
+	r := newBlobJSONReadCloser(io.NopCloser(src))
+	body, err := io.ReadAll(r)
+	require.NoError(t, err)
+	assert.Equal(t, blobJSONLength(size), int64(len(body)))
+	// Unbuffered 3-byte reads would need ~size/3 source reads.
+	assert.LessOrEqual(t, src.reads, size/blobReadBufferSize+2)
+}
+
+func TestBlobJSONReadCloser_ClosesSource(t *testing.T) {
+	src := &closeTracker{Reader: strings.NewReader("abc")}
+	r := newBlobJSONReadCloser(src)
+	_, err := io.ReadAll(r)
+	require.NoError(t, err)
+	require.NoError(t, r.Close())
+	assert.Equal(t, 1, src.closed)
+}

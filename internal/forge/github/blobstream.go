@@ -1,9 +1,15 @@
 package github
 
 import (
+	"bufio"
 	"encoding/base64"
 	"io"
 )
+
+// blobReadBufferSize bounds how much of the source is read per underlying
+// Read call. The encoder consumes the source three bytes at a time, so the
+// source is buffered to avoid one syscall per 3 bytes of a large file.
+const blobReadBufferSize = 64 * 1024
 
 const (
 	blobJSONPrefix = `{"content":"`
@@ -21,7 +27,8 @@ func blobJSONLength(size int64) int64 {
 // The source is encoded in 3-byte chunks so the raw file is never held in
 // memory alongside the base64 payload.
 type blobJSONReadCloser struct {
-	src    io.ReadCloser
+	src    io.ReadCloser // closed by Close
+	rd     io.Reader     // buffered view of src
 	prefix []byte
 	suffix []byte
 	raw    [3]byte
@@ -36,6 +43,7 @@ type blobJSONReadCloser struct {
 func newBlobJSONReadCloser(src io.ReadCloser) *blobJSONReadCloser {
 	return &blobJSONReadCloser{
 		src:    src,
+		rd:     bufio.NewReaderSize(src, blobReadBufferSize),
 		prefix: []byte(blobJSONPrefix),
 		suffix: []byte(blobJSONSuffix),
 	}
@@ -68,7 +76,7 @@ func (r *blobJSONReadCloser) Read(p []byte) (int, error) {
 				continue
 			}
 			for r.rawN < 3 && !r.eof {
-				nn, err := r.src.Read(r.raw[r.rawN:])
+				nn, err := r.rd.Read(r.raw[r.rawN:])
 				r.rawN += nn
 				if err == io.EOF {
 					r.eof = true
