@@ -386,9 +386,9 @@ export function childEnv(base, modelSpec) {
 }
 
 // vertexCredentialsUsable reports whether a Vertex child would find an ADC
-// file: GOOGLE_APPLICATION_CREDENTIALS when set, else gcloud's well-known
-// $HOME/.config/gcloud/application_default_credentials.json. The file must
-// be a non-empty regular file (#7980).
+// file: GOOGLE_APPLICATION_CREDENTIALS (or its lowercase form) when set,
+// else gcloud's $HOME/.config/gcloud/application_default_credentials.json.
+// The file must be a non-empty regular file (#7980).
 export function vertexCredentialsUsable(env, stat = statSync) {
   const usable = (path) => {
     try {
@@ -398,8 +398,11 @@ export function vertexCredentialsUsable(env, stat = statSync) {
       return false;
     }
   };
-  const gac = typeof env?.GOOGLE_APPLICATION_CREDENTIALS === "string" ? env.GOOGLE_APPLICATION_CREDENTIALS.trim() : "";
-  if (gac !== "") return usable(gac);
+  // google-auth-library's order; a set but unusable value does not fall through.
+  for (const key of ["GOOGLE_APPLICATION_CREDENTIALS", "google_application_credentials"]) {
+    const value = typeof env?.[key] === "string" ? env[key].trim() : "";
+    if (value !== "") return usable(value);
+  }
   const home = typeof env?.HOME === "string" ? env.HOME : "";
   return home !== "" && usable(`${home}/.config/gcloud/application_default_credentials.json`);
 }
