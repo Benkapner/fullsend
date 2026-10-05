@@ -301,10 +301,10 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any, head
 			return io.NopCloser(bytes.NewReader(bodyData)), nil
 		}
 	}
-	return c.doRequest(ctx, method, path, length, open, body != nil, headers...)
+	return c.doRequest(ctx, method, path, length, open, headers...)
 }
 
-func (c *LiveClient) doRequest(ctx context.Context, method, path string, contentLength int64, open func() (io.ReadCloser, error), hasBody bool, headers ...requestHeader) (*http.Response, error) {
+func (c *LiveClient) doRequest(ctx context.Context, method, path string, contentLength int64, open func() (io.ReadCloser, error), headers ...requestHeader) (*http.Response, error) {
 	url := c.baseURL + path
 
 	for attempt := range maxRetries {
@@ -324,10 +324,8 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 			}
 			return nil, fmt.Errorf("create request: %w", err)
 		}
-		if hasBody {
-			req.ContentLength = contentLength
-		}
 		if open != nil {
+			req.ContentLength = contentLength
 			req.GetBody = open
 		}
 
@@ -336,7 +334,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 		}
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-		if hasBody {
+		if open != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
 		for _, h := range headers {
@@ -1805,7 +1803,7 @@ func (c *LiveClient) createBlobFromFile(ctx context.Context, owner, repo, path s
 		}
 		return newBlobJSONReadCloser(f), nil
 	}
-	resp, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/git/blobs", owner, repo), length, open, true)
+	resp, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/git/blobs", owner, repo), length, open)
 	if err != nil {
 		return "", fmt.Errorf("create blob: %w", err)
 	}
