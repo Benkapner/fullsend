@@ -72,26 +72,6 @@ var thinCallerConcurrencyExpectations = map[string]stageConcurrencyExpectation{
 }
 
 var reusableAgentConcurrencyExpectations = map[string]stageConcurrencyExpectation{
-	"triage": {
-		groupPrefix: "fullsend-triage-agent-",
-		groupMust:   []string{"inputs.source_repo", "issue.number", "pull_request.number"},
-	},
-	"code": {
-		groupPrefix: "fullsend-code-agent-",
-		groupMust:   []string{"inputs.source_repo", "issue.number", "pull_request.number"},
-	},
-	"review": {
-		groupPrefix: "fullsend-review-agent-",
-		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number"},
-	},
-	"fix": {
-		groupPrefix: "fullsend-fix-agent-",
-		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number", "inputs.pr_number"},
-	},
-	"retro": {
-		groupPrefix: "fullsend-retro-agent-",
-		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number"},
-	},
 	"prioritize": {
 		groupPrefix: "fullsend-prioritize-agent-",
 		groupMust:   []string{"inputs.source_repo", "issue.number", "pull_request.number"},
@@ -455,9 +435,9 @@ func TestOpenAIAPIKeySecretThreading(t *testing.T) {
 	declaration := "FULLSEND_OPENAI_API_KEY:\n        required: false"
 	export := "OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}"
 
-	// Standalone reusable-{stage}.yml files have exactly one job/one agent
-	// step each, so a whole-file substring check is unambiguous.
-	standaloneStages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+	// The standalone reusable-prioritize.yml has exactly one job/one agent
+	// step, so a whole-file substring check is unambiguous.
+	standaloneStages := []string{"prioritize"}
 	for _, stage := range standaloneStages {
 		t.Run("reusable-"+stage+".yml", func(t *testing.T) {
 			content := string(loadRepoFile(fmt.Sprintf(".github/workflows/reusable-%s.yml", stage))(t))
@@ -577,8 +557,8 @@ func TestOTELVariableForwarding(t *testing.T) {
 		return v + ": ${{ vars." + v + " }}"
 	}
 
-	// Reusable stage workflows (single agent step each).
-	stages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+	// Standalone reusable stage workflows (single agent step each).
+	stages := []string{"prioritize"}
 	for _, stage := range stages {
 		t.Run("reusable-"+stage+".yml", func(t *testing.T) {
 			content := string(loadRepoFile(fmt.Sprintf(".github/workflows/reusable-%s.yml", stage))(t))
@@ -1292,7 +1272,7 @@ func TestOpenAIVariableForwarding(t *testing.T) {
 		return v + ": ${{ vars." + v + " }}"
 	}
 
-	stages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+	stages := []string{"prioritize"}
 	for _, stage := range stages {
 		t.Run("reusable-"+stage+".yml", func(t *testing.T) {
 			content := string(loadRepoFile(fmt.Sprintf(".github/workflows/reusable-%s.yml", stage))(t))
@@ -1396,7 +1376,7 @@ func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
 	}{
 		{"actions/prepare-workspace/action.yml", loadRepoFile(".github/actions/prepare-workspace/action.yml")},
 	}
-	for _, stage := range []string{"triage", "code", "review", "fix", "retro", "prioritize", "dispatch"} {
+	for _, stage := range []string{"prioritize", "dispatch"} {
 		files = append(files, struct {
 			name    string
 			content func(t *testing.T) []byte

@@ -48,6 +48,7 @@ func TestRenderPrioritizeThinCaller(t *testing.T) {
 	out := string(rendered)
 	assert.Contains(t, out, "uses: ./.github/workflows/reusable-prioritize.yml")
 	assert.NotContains(t, out, "install_mode")
+	assert.NotContains(t, out, "distribution_mode")
 	assert.Contains(t, out, "project_number: ${{ inputs.project_number || vars.FULLSEND_PROJECT_NUMBER }}")
 	assertFreeOfRenderPlaceholders(t, out)
 }
@@ -62,20 +63,6 @@ func TestRenderThinCallerNormalizesLegacyInstallMode(t *testing.T) {
 	out := string(rendered)
 	assert.Contains(t, out, "install_mode: per-repo")
 	assert.NotContains(t, out, "install_mode: per-org")
-}
-
-func TestRenderPrioritizeThinCallerVendored(t *testing.T) {
-	raw, err := FullsendRepoFile(".github/workflows/prioritize.yml")
-	require.NoError(t, err)
-
-	rendered, err := RenderTemplate(".github/workflows/prioritize.yml", raw, RenderOptions{
-		Vendored: true,
-	})
-	require.NoError(t, err)
-	out := string(rendered)
-	assert.Contains(t, out, "uses: ./.github/workflows/reusable-prioritize.yml")
-	assert.NotContains(t, out, "distribution_mode")
-	assert.Contains(t, out, "project_number: ${{ inputs.project_number || vars.FULLSEND_PROJECT_NUMBER }}")
 }
 
 func TestWalkUpstreamIncludesReusableWorkflows(t *testing.T) {
