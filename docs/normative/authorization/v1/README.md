@@ -102,19 +102,25 @@ logins; labels, review types, and arbitrary event-content strings are not bot
 identity signals. For `actor.kind: bot`, `actor.role` MUST be `none`, and
 `actor.role_verified` is true exactly when the provider completes the bot-role
 lookup, including a successful no-match result; it is false when resolution
-fails. For `actor.kind: human`,
-`actor.bot_role` MUST be absent or `null`, and `actor.role` contains the forge
-permission role when `actor.role_verified` is true. Only a non-null,
-provider-resolved `actor.bot_role` can pass the bot dispatch gate; CEL may
-further restrict it but cannot create or broaden it. Once that gate succeeds,
-the actor.role-keyed observation and mutation thresholds below do not apply to
-the bot; the bot is authorized by role recognition plus the selected harness's
-generic transition/target policy and any further CEL restrictions.
+fails. For `actor.kind: human`, `actor.bot_role` MUST be absent or `null`, and
+`actor.role` contains the forge permission role when `actor.role_verified` is
+true. For non-label dispatch, only a non-null, provider-resolved
+`actor.bot_role` can pass the bot gate. Once that gate succeeds, the
+actor.role-keyed observation and mutation thresholds below do not apply to the
+bot; platform authorization instead requires a valid normalized event, an
+applicable source and target, and a transition supported by the selected
+harness. CEL may further restrict routing but cannot create or broaden bot
+identity authorization.
 
 For humans, `role_verified: false` denies the event regardless of the role
 string. A missing `role_verified` on a trusted pre-migration event is treated
 as legacy input and retains the current human authorization behavior; new
-adapters MUST emit the field, and their false value MUST fail closed.
+adapters MUST emit the field, and their false value MUST fail closed. Legacy
+status is determined by the adapter's migration/configuration boundary, not by
+guessing from this field's absence. The permanent GitHub label exception below
+does not require bot-role lookup, so `role_verified` is not an authorization
+input on that path; omission means that lookup is not applicable, not that it
+failed.
 
 ## Default thresholds
 
@@ -161,8 +167,8 @@ migration is complete.
 |-----------|---------|
 | Collaborator API returns an unrecognized `role_name` | Mapped to `none`; denied |
 | Collaborator API returns an error or times out | Denied (function returns failure) |
-| Bot-role lookup returns no registered identity | `actor.role` remains `none`; `actor.role_verified` is true; `actor.bot_role` is absent/null; denied |
-| Bot-role lookup fails or is unverifiable | `actor.role` remains `none`; `actor.role_verified` is false; `actor.bot_role` is absent/null; denied, with the failure retained in resolver/audit diagnostics |
+| Bot-role lookup returns no registered identity on a non-label path | `actor.role` remains `none`; `actor.role_verified` is true; `actor.bot_role` is absent/null; denied |
+| Bot-role lookup fails or is unverifiable on a non-label path | `actor.role` remains `none`; `actor.role_verified` is false; `actor.bot_role` is absent/null; denied, with the failure retained in resolver/audit diagnostics |
 | Custom repository roles (GitHub) | Mapped to `none`; denied until custom roles are handled platform-wide |
 | `actor.role` is empty or missing | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | `actor.role_verified` is false for a human | Denied regardless of `actor.role` |
@@ -191,17 +197,17 @@ rationale.
 
 When `source.system` is `github`, `transition.kind` is `label_changed`,
 and `label.action` is `added`, the event is authorized regardless of
-`actor.role`. This exception applies only when `source.system` is
-`github`. GitHub's own permission model requires at least `triage`
-access to apply a label, so label application is an **implicit
-authorization gate**. Bot accounts that apply labels as part of
-agent-to-agent handoff (e.g., adding `ready-to-code` after triage
-completes) rely on this path because the collaborator API often returns
-404 for `[bot]` accounts even when the GitHub App has write access via
-its installation token.
-
-> **Current compatibility behavior:** Until ADR 0107 is implemented, this
-> exception remains in force and is not replaced by the bot-role gate.
+`actor.role`. This is a permanent current-and-target behavior preserved from
+ADR 0054, not a new exception introduced by ADR 0107. GitHub's own permission
+model requires at least `triage` access to apply a label, so label application
+is an **implicit authorization gate**. For a bot actor, the adapter MUST
+positively classify it using provider-controlled metadata, such as GitHub's
+`sender.type == "Bot"` or provider-controlled `[bot]` login semantics, but
+`actor.bot_role` lookup is not required. The platform gate MUST NOT inspect
+the label name or maintain an agent-role label allowlist; harness/CEL routing
+owns that mapping. This preserves bot-to-bot handoffs such as adding
+`ready-to-code` after triage completes, including handoffs from provider bots
+that are not Fullsend-registered.
 
 ### Bot-submitted reviews (GitHub)
 

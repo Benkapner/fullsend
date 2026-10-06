@@ -325,7 +325,7 @@
         },
         "role_verified": {
           "type": "boolean",
-          "description": "Optional lookup-verification bit: for humans, true means role is a trusted forge permission; for bots, true means bot-role lookup completed, including a successful no-match result."
+          "description": "Optional lookup-verification bit: for humans, true means role is a trusted forge permission; for bots, true means bot-role lookup completed, including a successful no-match result. It is not required for the permanent GitHub label-added authorization exception."
         },
         "is_entity_author": {
           "type": "boolean",

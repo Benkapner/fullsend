@@ -26,126 +26,87 @@ not require a future normalized-event or authorization version.
 ## Context
 
 ADR 0054 authorizes human event actors from current repository permissions. It
-also preserves bot-to-bot dispatch through labels and later implementation
-exceptions for bot-authored reviews and pull requests. Those exceptions are
-necessary because a forge collaborator-permission lookup often cannot resolve
-an installed App bot. The source system's bot identity signal and Fullsend's
-registered role lookup are separate concerns.
+also preserves bot-to-bot dispatch through labels and contains implementation
+exceptions for bot-authored reviews and pull requests, because a forge
+collaborator lookup often cannot resolve an installed App bot. The source
+system's bot signal, the mint's registered bot identity, and the bot's
+credential permissions are separate concerns.
 
 The mint already knows the GitHub Apps and roles it serves. Authorization needs
-to use that identity knowledge rather than making each forge adapter infer bot
-authority independently. Forges and deployments without the hosted mint need
-the same contract from their replacement identity provider.
+that identity knowledge rather than independent, forge-specific guesses. Forges
+and deployments without the hosted mint need an equivalent trusted provider.
+The historical drift and contract gap are tracked in
+[#7764](https://github.com/fullsend-ai/fullsend/issues/7764).
 
-The historical drift and remaining contract gap are tracked in issue
-[#7764](https://github.com/fullsend-ai/fullsend/issues/7764), which motivates
-this decision.
-
-This decision does not yet modify the Go runtime implementation (normalized-
-event structs, forge adapters, resolver, or dispatch authorization). The
-accompanying normative specification documents are updated in this PR to
-describe the target contract; those updates do not imply that the behavior is
-already deployed.
-
-## Options
-
-Inferring the Fullsend role from a username suffix or forge `actor.kind` is
-rejected because it cannot distinguish a registered Fullsend role from an
-unrelated or spoofed automation identity. Source-native bot classification is
-still allowed where the forge defines an authoritative signal, such as GitHub's
-`[bot]` login convention. Repeating App-to-role mapping in every forge adapter
-is also rejected because it creates inconsistent trust decisions and cannot
-share the mint's authoritative installation knowledge. A provider-backed lookup
-centralizes identity resolution while keeping the authorization contract
-portable to non-mint deployments.
+This is a target contract; it does not yet modify the Go runtime, adapters,
+resolver, or dispatch authorization. Existing compatibility behavior remains
+authoritative until those components migrate.
 
 ## Decision
 
-Fullsend introduces a provider-backed bot-role resolution step before event
-authorization. The resolver receives the verified source system, target
-repository or project, and actor identity from the forge adapter. It returns
-one of:
+Fullsend adds a provider-backed bot-role resolution step before authorization
+for bot-originated dispatch, except for the permanent label-triggered
+exception defined below. The resolver receives the verified source system,
+target repository or project, and actor identity. It returns a recognized bot
+role, a successful no-match result, or a resolution error.
 
-- a recognized bot role;
-- no recognized bot role; or
-- an error resolving the identity.
-
-The resolver MUST match the verified actor name/identity against an exact
-registered bot identity. It MUST NOT accept a
-bot role, role name, or authorization result supplied by the event payload or
-by a CEL expression. Where the mint is used, it performs this lookup from its
-registered role-to-App knowledge and, where the forge exposes it, verifies the
-relevant installation on the target. A non-mint deployment MUST provide an
+The provider MUST classify the verified actor using authoritative source metadata.
+It MAY use a provider-controlled naming convention, such as GitHub's `[bot]`
+login semantics. Labels, review types, and arbitrary event content are not bot
+identity evidence. The resolver MUST match the verified identity exactly
+against a registered bot identity and MUST NOT accept a role or authorization
+claim from the event payload or CEL. A non-mint deployment MUST provide an
 equivalent trusted lookup.
 
-The provider MUST determine whether the verified actor is a bot using the
-source system's authoritative actor metadata. This MAY include the provider's
-actor name when that forge gives the name bot-specific semantics, as GitHub
-does for `[bot]` logins. Labels, review types, and arbitrary event-content
-strings are not bot-identity signals. The normalized actor MUST carry the
-result in `actor.kind`.
+For a bot, the normalized representation keeps `actor.role` as `none` and
+places a recognized canonical role, such as `review`, in `actor.bot_role`. For
+a human, `actor.bot_role` is absent or null and `actor.role` contains the
+verified forge permission. `bot_role` identifies the registered agent; it does
+not make the bot's content trustworthy.
 
-The returned bot role is the canonical registered role name, such as `review`.
-It is carried in a separate optional field, so it does not share a namespace
-with forge permission roles and does not require a special suffix. For every
-bot, `actor.kind` is `bot` and the existing compatibility field
-`actor.role` remains `none`. When recognized, `actor.bot_role` contains the
-canonical role name; when it is absent, the bot is not authorized by the new
-bot gate. For a human, `actor.kind` is `human`, `actor.bot_role` is absent or
-`null`, and `actor.role` contains the resolved forge permission role. A bot
-role identifies the registered agent identity; it is not a claim that the
-bot's content is trustworthy.
+The platform authorization rules are:
 
-Authorization then follows these rules:
+1. For non-label bot dispatch, a provider-positive bot classification and a
+   successful, recognized `bot_role` are required. After that recognition,
+   `actor.role`-keyed observation and mutation thresholds do not apply to the
+   bot. Platform policy still requires a valid normalized event, an applicable
+   source and target, and a transition supported by the selected harness.
+   Harness/CEL policy may further restrict the recognized bot, transition,
+   label, review, fork, or target, but cannot authorize an unrecognized bot.
+2. GitHub's label-added exception is preserved as current and target behavior;
+   this ADR does not introduce it or make it temporary. The forge's accepted
+   label mutation is the platform authorization evidence. For a bot actor, the
+   adapter MUST positively classify it using provider-controlled metadata, but
+   `bot_role` resolution is not required. The platform gate MUST NOT inspect
+   label names or maintain an agent-role label allowlist; harness/CEL routing
+   owns that agent-specific mapping.
+3. A bot with no recognized role, or a bot whose lookup fails, is denied on
+   non-label paths before CEL evaluation. The label exception is the explicit
+   exception to this rule. Human actors continue to use ADR 0054's permission
+   thresholds and configured providers, including `OWNERS` where enabled.
+4. `role_verified` is additive lookup status: for humans it is true only for a
+   verified forge role; for bots it is true for a completed bot-role lookup,
+   including a successful no-match result, and false for lookup failure. The
+   label exception does not require that lookup, so `role_verified` is not an
+   authorization input on that path; omission there means not applicable, not
+   resolver failure. Pre-migration events without the field retain v1
+   compatibility behavior; new adapters MUST emit it.
 
-1. A recognized bot satisfies only the bot-identity prerequisite for
-   bot-originated dispatch. It does not by itself authorize an event, stage,
-   forge mutation, or destination. The selected harness's generic
-   transition/target policy remains mandatory before dispatch. After
-   successful `actor.bot_role` recognition, the actor.role-keyed observation
-   and mutation thresholds do not apply to bots; their authorization is
-   recognition plus the harness's transition/target policy and any CEL or
-   other routing restrictions. Those restrictions MAY narrow this by requiring
-   a particular `actor.bot_role`, transition, label, review state, fork state,
-   or other policy condition, but MUST NOT broaden authorization to an
-   unrecognized bot. This same contract supports BYOA identities without a
-   bot-name-to-stage allowlist.
-2. A bot with no recognized role, or a bot whose lookup fails, is denied before
-   CEL evaluation. Neither bot classification without a recognized role, nor
-   a label transition, nor a bot-authored review is by itself sufficient
-   authorization evidence.
-3. Human actors continue to use ADR 0054's current permission thresholds and
-   configured permission providers, including `OWNERS` where enabled.
-4. The normalized event retains `actor.kind`, `actor.role: "none"`, an
-   optional `actor.role_verified` flag, and the optional resolved bot role. For
-   bots, the flag is true when the provider completed the bot-role lookup,
-   whether or not it found a registered role; it is false when resolution
-   failed. For humans, it is true only when `actor.role` is a verified forge
-   permission. The resolver and audit record retain whether bot-role
-   resolution was successful and recognized, successful but unrecognized, or
-   failed. An unavailable or unverifiable actor-resolution result is
-   authorization unusable; neither failed nor unrecognized resolution may
-   trigger an agent.
-
-Adapters MUST resolve the actor that actually caused the transition. For an
-edited comment or other mutable content, authorization uses the editor rather
-than the original author. All event content remains untrusted after bot
-authorization; identity authorization does not authorize instructions in the
-event.
+The mint's installation permission map remains a credential-scoping check. It
+is not converted into `actor.role`, `bot_role`, or a bot event threshold.
 
 ## Consequences
 
-- Bot dispatch authorization becomes based on a registered role identity rather
-  than a naming convention or a broad event-specific exception.
-- CEL gains a separate canonical bot-role value that can distinguish `review`
-  from other recognized agent roles without becoming the authorization boundary.
-- Existing v1 consumers continue to receive the bot-compatible `role: "none"`
-  value; `role_verified` and `bot_role` are additive and may be absent when no
-  role is resolved.
-- Mint and non-mint deployments must maintain an exact bot-identity registry and
-  fail closed when it is unavailable or incomplete.
-- Existing `[bot]` regex carve-outs and generic label/review exceptions remain
-  compatibility behavior until the resolver is implemented; they must not be
-  mistaken for the target contract.
-- Human authorization, least-privilege thresholds, and zero-trust treatment of
-  bot-produced content remain unchanged.
+- Non-label bot authorization is based on an exact registered identity rather
+  than a naming convention or broad review exception; CEL remains a routing
+  filter, not a source of bot identity.
+- Human permission thresholds and the existing label-triggered handoff behavior
+  remain unchanged; label names remain harness-specific rather than platform
+  authorization policy.
+- Mint installation permissions continue to enforce least-privilege token
+  capabilities, but are deliberately not reused as event actor roles.
+- Existing CEL rules that route reviews from non-Fullsend bots will no longer
+  match after non-label bot resolution is deployed unless the provider
+  recognizes those bots; this is an intentional migration consequence.
+- Non-mint providers, including the GitLab path, must supply equivalent bot-role
+  lookup for non-label bot dispatch; bot classification alone is insufficient.

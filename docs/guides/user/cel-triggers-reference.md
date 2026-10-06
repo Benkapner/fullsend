@@ -70,8 +70,11 @@ The `event` variable has the following top-level fields:
 > `actor.role: "none"` for bots, but current adapters may still populate a
 > forge/project permission there during migration. `role_verified` is not
 > authorization evidence by itself: for bots it only indicates lookup
-> completion, not recognition. CEL filters selecting a bot role must use
-> `has(event.actor.bot_role)` and compare the resolved role.
+> completion, not recognition. The permanent GitHub label-added exception
+> does not require bot-role lookup; its provider-positive bot classification
+> and forge-authorized label mutation remain sufficient platform evidence.
+> CEL filters selecting a bot role must use `has(event.actor.bot_role)` and
+> compare the resolved role.
 
 This table covers the most common trigger fields. For the complete field list — including `event.entity.url`, `event.entity.key`, `event.source.raw_type`, and all `event.state.change_proposal` sub-fields — see the [NormalizedEvent v1 schema](../../normative/normalized-event/v1/normalized-event.schema.json).
 

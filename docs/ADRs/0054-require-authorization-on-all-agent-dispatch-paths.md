@@ -33,8 +33,8 @@ consolidates the normative rules from this ADR and subsequent
 implementation changes into a single reference for dispatch
 implementations, forge adapters, and harness authors.
 
-Bot identity resolution and the retirement of generic bot-specific exceptions
-are decided in [ADR 0107](0107-bot-identity-resolution-for-dispatch-authorization.md).
+Bot identity resolution and the boundary between registered bot dispatch and
+the preserved GitHub label handoff exception are decided in [ADR 0107](0107-bot-identity-resolution-for-dispatch-authorization.md).
 
 [ADR 0098](0098-entity-first-harness-evaluation.md) extends this decision for
 Fullsend-originated entity discovery without a prompting event. Event-backed
@@ -231,11 +231,13 @@ permission list, not by bypassing the check.
 > read. Prow `filters:` blocks and nested per-directory OWNERS files
 > are not supported.
 
-> **Note (2026-09-27, ADR 0107):** Bot authorization is being migrated from
-> `[bot]` naming and transition-specific exceptions to provider-backed exact
-> bot-role resolution. Until that migration is complete, the compatibility
-> behavior above remains the implementation state; the new contract requires
-> unknown or unresolved bots to fail closed.
+> **Note (2026-09-27, ADR 0107):** Non-label bot authorization is being
+> migrated from `[bot]` naming and transition-specific exceptions to
+> provider-backed exact bot-role resolution. The existing GitHub label-added
+> authorization remains a permanent exception: provider-positive bot
+> classification is required, but the forge's accepted label mutation remains
+> sufficient platform evidence and no bot-role lookup or label allowlist is
+> introduced.
 
 ## Consequences
 

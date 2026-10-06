@@ -184,6 +184,13 @@ recognized bot has `role_verified: true` and a provider-resolved `bot_role`; an
 unknown bot has `role_verified: true` and an absent/null `bot_role`; failed
 resolution has `role_verified: false` and no `bot_role`.
 
+For a GitHub label-added event, the permanent label authorization exception
+does not require bot-role lookup. On that path, the provider's positive bot
+classification and the forge-authorized label mutation are sufficient; an
+absent `role_verified` field means that bot-role lookup was not applicable.
+Whether an event is pre-migration legacy input is determined by the adapter's
+migration/configuration boundary, not inferred from field omission alone.
+
 This is the ADR 0107 target representation; it is not yet emitted by the
 production adapters or available as a runtime CEL field.
 
@@ -332,3 +339,4 @@ GitLab is a normative v1 source system ([gitlab-implementation.md](../../../prob
 | MR closed (unmerged) | Cron poll (`closed_at` > watermark, `merged_at` empty) → `transition.kind: closed` (retro) |
 | Notes | `note` → `transition.kind: comment_added` |
 | Role mapping | Guest→`read`, Reporter→`triage`, Developer→`write`, Maintainer→`maintain`, Owner→`admin` |
+| Bot identity | GitLab provider metadata may classify project-token actors as bots, but bot classification alone does not provide the registered `bot_role` required for non-label bot dispatch; an equivalent provider lookup is required. |
