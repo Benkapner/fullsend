@@ -180,7 +180,7 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 	}
 	writeStub("fullsend", "echo POLL_RAN\nexit 0\n")
 
-	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"; echo ANALYST="${FULLSEND_GITLAB_ANALYST_TOKEN-unset}"; echo CODER="${FULLSEND_GITLAB_CODER_TOKEN-unset}"; echo SHARED="${FULLSEND_FORGE_TOKEN-unset}"; echo JOB="${FULLSEND_JOB_TOKEN-unset}"`)
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"; echo ANALYST="${FULLSEND_GITLAB_ANALYST_TOKEN-unset}"; echo CODER="${FULLSEND_GITLAB_CODER_TOKEN-unset}"; echo SHARED="${FULLSEND_FORGE_TOKEN-unset}"; echo JOB="${FULLSEND_JOB_TOKEN-unset}"; echo TRIGGER="${FULLSEND_TRIGGER_TOKEN-unset}"; echo WEBHOOK_SECRET="${FULLSEND_WEBHOOK_SECRET-unset}"`)
 	cmd.Env = append([]string{
 		"SCRIPT=" + script,
 		"PATH=" + bin + ":" + os.Getenv("PATH"),
@@ -192,6 +192,8 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 		"FULLSEND_GITLAB_ANALYST_TOKEN=analyst-pat",
 		"FULLSEND_GITLAB_CODER_TOKEN=coder-pat",
 		"FULLSEND_FORGE_TOKEN=shared-pat",
+		"FULLSEND_TRIGGER_TOKEN=trigger-bearer",
+		"FULLSEND_WEBHOOK_SECRET=webhook-secret",
 		"FULLSEND_POLL_MODE=events",
 		"CI_PROJECT_ID=1",
 		"CI_PROJECT_PATH=group/project",
@@ -205,6 +207,27 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 	assert.Contains(t, got, "CODER=unset")
 	assert.Contains(t, got, "SHARED=unset")
 	assert.Contains(t, got, "JOB=poll-pat")
+	assert.Contains(t, got, "TRIGGER=unset", "the webhook trigger bearer must not outlive the job preamble")
+	assert.Contains(t, got, "WEBHOOK_SECRET=unset", "the webhook secret must not outlive the job preamble")
+}
+
+// TestGitLabJobScripts_UnsetWebhookCredentialsBeforePin guards the poller,
+// dispatcher and agent job scripts clearing the webhook fast-path
+// credentials before the identity pin or any credential selection runs, so
+// no later step or host-side script can read the trigger bearer or webhook
+// secret. The agent script is checked structurally: its full behavior needs
+// a signed dispatch fixture that is irrelevant to this guard.
+func TestGitLabJobScripts_UnsetWebhookCredentialsBeforePin(t *testing.T) {
+	for _, path := range []string{gitlabRunPollJobScriptPath, gitlabRunDispatcherJobScriptPath, gitlabRunAgentJobScriptPath} {
+		t.Run(path, func(t *testing.T) {
+			s := gitlabPerRepoText(t, path)
+			unsetIdx := strings.Index(s, "unset FULLSEND_TRIGGER_TOKEN FULLSEND_WEBHOOK_SECRET\n")
+			require.NotEqual(t, -1, unsetIdx, "expected the webhook credential unset")
+			pinIdx := strings.Index(s, ". \"${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/pin-ci-job-identity.sh\"")
+			require.NotEqual(t, -1, pinIdx, "expected the identity pin to be sourced")
+			assert.Less(t, unsetIdx, pinIdx, "webhook credentials must be cleared before the identity pin")
+		})
+	}
 }
 
 func TestRunAgentJobScript_DebugTraceAborts(t *testing.T) {
@@ -463,6 +486,7 @@ func TestRunAgentJobScript_UserlessPipelineRefetchesWithPinnedIDs(t *testing.T) 
 		"CI_JOB_TOKEN=job-token",
 		"FULLSEND_GITLAB_POLLER_TOKEN=poller-pat",
 		"STAGE=triage",
+		"FULLSEND_POLL_JOB_URL=https://${PROTECTED_VARIABLE}/private",
 		"RESOURCE_KEY=test-key",
 		"CI_PIPELINE_SOURCE=api",
 		// Deliberately different from the pinned project/pipeline (42/100)
@@ -474,6 +498,8 @@ func TestRunAgentJobScript_UserlessPipelineRefetchesWithPinnedIDs(t *testing.T) 
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err, "stdout/stderr: %s", out)
 	assert.Contains(t, string(out), "FULLSEND_DISPATCH_SECRET is not configured")
+	assert.NotContains(t, string(out), "Dispatched by:")
+	assert.NotContains(t, string(out), "PROTECTED_VARIABLE")
 	assert.True(t, sawPinnedRefetch.Load(), "PAT re-fetch must use the pinned project/pipeline IDs")
 	assert.False(t, sawUnpinnedRefetch.Load(), "PAT re-fetch must not use the overridable CI_PROJECT_ID/CI_PIPELINE_ID")
 }
@@ -821,6 +847,63 @@ func TestRunAgentJobScript_UsesPinnedIdentityForStatusRepo(t *testing.T) {
 // invoking `fullsend run`, so that resolution never falls through to one
 // of those instead.
 func TestRunAgentJobScript_UsesPinnedGitLabURLForFullsendRun(t *testing.T) {
+	got, srvURL := runAgentJobScriptForFullsendRun(t, []string{
+		// Deliberately distinct from the pin-validated API root so a
+		// passing assertion below proves the `fullsend run` child
+		// environment's FULLSEND_GITLAB_URL comes from
+		// FULLSEND_PINNED_GITLAB_URL, not these overridable variables.
+		"CI_SERVER_URL=https://unpinned.example",
+		"GITLAB_API_URL=https://also-unpinned.example",
+		"FULLSEND_GITLAB_URL=https://also-unpinned.example",
+	})
+	assert.Contains(t, got, "FULLSEND_GITLAB_URL: "+srvURL)
+	assert.NotContains(t, got, "unpinned.example")
+}
+
+// TestRunAgentJobScript_MapsOnlyPrefixedOpenAIKey verifies the GitLab job
+// maps FULLSEND_OPENAI_API_KEY to the OPENAI_API_KEY name `fullsend run`
+// reads, and never falls back to an unprefixed OPENAI_API_KEY CI/CD
+// variable (#8011).
+func TestRunAgentJobScript_MapsOnlyPrefixedOpenAIKey(t *testing.T) {
+	tests := []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{
+			name: "prefixed variable is mapped",
+			env:  []string{"FULLSEND_OPENAI_API_KEY=prefixed-test-key"},
+			want: "OPENAI_API_KEY=prefixed-test-key",
+		},
+		{
+			name: "prefixed variable wins over legacy variable",
+			env:  []string{"FULLSEND_OPENAI_API_KEY=prefixed-test-key", "OPENAI_API_KEY=legacy-test-key"},
+			want: "OPENAI_API_KEY=prefixed-test-key",
+		},
+		{
+			name: "legacy variable alone is not used",
+			env:  []string{"OPENAI_API_KEY=legacy-test-key"},
+			want: "OPENAI_API_KEY=<unset>",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _ := runAgentJobScriptForFullsendRun(t, tt.env)
+			assert.Contains(t, got, tt.want)
+			assert.NotContains(t, got, "legacy-test-key")
+			// The prefixed name must not reach the `fullsend run` environment.
+			assert.Contains(t, got, "FULLSEND_OPENAI_API_KEY=<unset>")
+		})
+	}
+}
+
+// runAgentJobScriptForFullsendRun runs run-agent-job.sh for the triage
+// stage against a fake GitLab API, with a stub `fullsend` binary that
+// prints the FULLSEND_GITLAB_URL and OPENAI_API_KEY it receives. extraEnv
+// is appended to the job environment. It returns the combined output and
+// the fake API's URL.
+func runAgentJobScriptForFullsendRun(t *testing.T, extraEnv []string) (string, string) {
+	t.Helper()
 	root := t.TempDir()
 	writeGitLabScript(t, root, ".gitlab/ci/scripts/trust-ci-server-ca.sh")
 	writeGitLabScript(t, root, gitlabPinCIJobIdentityScriptPath)
@@ -863,6 +946,8 @@ func TestRunAgentJobScript_UsesPinnedGitLabURLForFullsendRun(t *testing.T) {
 		`#!/bin/sh
 if [ "$1" = "run" ]; then
   echo "FULLSEND_GITLAB_URL: $FULLSEND_GITLAB_URL"
+  echo "OPENAI_API_KEY=${OPENAI_API_KEY-<unset>}"
+  echo "FULLSEND_OPENAI_API_KEY=${FULLSEND_OPENAI_API_KEY-<unset>}"
 fi
 `), 0o755))
 
@@ -873,7 +958,7 @@ fi
 
 	cmd := exec.Command("bash", "-c", "set -euo pipefail; . \"$SCRIPT\"")
 	cmd.Dir = root
-	cmd.Env = append([]string{
+	env := []string{
 		"SCRIPT=" + script,
 		"PATH=" + bin + ":" + os.Getenv("PATH"),
 		"HOME=" + t.TempDir(),
@@ -890,19 +975,12 @@ fi
 		"CI_PIPELINE_URL=https://gitlab.example/pinned/project/-/pipelines/999",
 		"CI_PROJECT_ID=1",
 		"CI_PROJECT_PATH=pinned/project",
-		// Deliberately distinct from the pin-validated API root so a
-		// passing assertion below proves the `fullsend run` child
-		// environment's FULLSEND_GITLAB_URL comes from
-		// FULLSEND_PINNED_GITLAB_URL, not these overridable variables.
-		"CI_SERVER_URL=https://unpinned.example",
-		"GITLAB_API_URL=https://also-unpinned.example",
-		"FULLSEND_GITLAB_URL=https://also-unpinned.example",
-	}, pinTLSEnv(t, srv)...)
+	}
+	env = append(env, extraEnv...)
+	cmd.Env = append(env, pinTLSEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "stdout/stderr: %s", out)
-	got := string(out)
-	assert.Contains(t, got, "FULLSEND_GITLAB_URL: "+srv.URL)
-	assert.NotContains(t, got, "unpinned.example")
+	return string(out), srv.URL
 }
 
 // TestRunAgentJobScript_UsesPinnedRefForTrustedConfigAndTargetBranch is a

@@ -4,12 +4,32 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestFakeClient_ListPullRequestCommits(t *testing.T) {
+	f := NewFakeClient()
+	f.PRCommits = map[string][]string{"o/r/7": {"a", "b"}}
+
+	shas, err := f.ListPullRequestCommits(context.Background(), "o", "r", 7)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "b"}, shas)
+
+	shas, err = f.ListPullRequestCommits(context.Background(), "o", "r", 8)
+	require.NoError(t, err)
+	assert.Empty(t, shas)
+
+	f.Errors["ListPullRequestCommits"] = errors.New("boom")
+	_, err = f.ListPullRequestCommits(context.Background(), "o", "r", 7)
+	require.Error(t, err)
+}
 
 func TestFakeClient_ListOrgRepos(t *testing.T) {
 	ctx := context.Background()
@@ -528,75 +548,6 @@ func TestFakeClient_OrgSecretExists(t *testing.T) {
 	})
 }
 
-func TestFakeClient_CreateOrgSecret(t *testing.T) {
-	ctx := context.Background()
-	fc := &FakeClient{}
-
-	err := fc.CreateOrgSecret(ctx, "myorg", "DISPATCH_TOKEN", "secret-value", []int64{100, 200})
-	require.NoError(t, err)
-
-	// Should be recorded.
-	require.Len(t, fc.CreatedOrgSecrets, 1)
-	assert.Equal(t, "myorg", fc.CreatedOrgSecrets[0].Org)
-	assert.Equal(t, "DISPATCH_TOKEN", fc.CreatedOrgSecrets[0].Name)
-	assert.Equal(t, "secret-value", fc.CreatedOrgSecrets[0].Value)
-	assert.Equal(t, []int64{100, 200}, fc.CreatedOrgSecrets[0].RepoIDs)
-
-	// Should be queryable.
-	exists, err := fc.OrgSecretExists(ctx, "myorg", "DISPATCH_TOKEN")
-	require.NoError(t, err)
-	assert.True(t, exists)
-}
-
-func TestFakeClient_OrgVariableExists(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("exists", func(t *testing.T) {
-		fc := &FakeClient{
-			OrgVariables: map[string]bool{"myorg/DISPATCH_URL": true},
-		}
-		exists, err := fc.OrgVariableExists(ctx, "myorg", "DISPATCH_URL")
-		require.NoError(t, err)
-		assert.True(t, exists)
-	})
-
-	t.Run("not exists", func(t *testing.T) {
-		fc := &FakeClient{
-			OrgVariables: map[string]bool{},
-		}
-		exists, err := fc.OrgVariableExists(ctx, "myorg", "MISSING")
-		require.NoError(t, err)
-		assert.False(t, exists)
-	})
-
-	t.Run("nil map", func(t *testing.T) {
-		fc := &FakeClient{}
-		exists, err := fc.OrgVariableExists(ctx, "myorg", "VAR")
-		require.NoError(t, err)
-		assert.False(t, exists)
-	})
-}
-
-func TestFakeClient_CreateOrUpdateOrgVariable(t *testing.T) {
-	ctx := context.Background()
-	fc := &FakeClient{}
-
-	err := fc.CreateOrUpdateOrgVariable(ctx, "myorg", "DISPATCH_URL", "https://func.example.com", []int64{100, 200})
-	require.NoError(t, err)
-
-	// Should be recorded.
-	require.Len(t, fc.CreatedOrgVariables, 1)
-	assert.Equal(t, "myorg", fc.CreatedOrgVariables[0].Org)
-	assert.Equal(t, "DISPATCH_URL", fc.CreatedOrgVariables[0].Name)
-	assert.Equal(t, "https://func.example.com", fc.CreatedOrgVariables[0].Value)
-	assert.Equal(t, []int64{100, 200}, fc.CreatedOrgVariables[0].RepoIDs)
-
-	// Should be queryable.
-	exists, err := fc.OrgVariableExists(ctx, "myorg", "DISPATCH_URL")
-	require.NoError(t, err)
-	assert.True(t, exists)
-}
-
 func TestFakeClient_GetOrgVariable(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{
@@ -643,9 +594,18 @@ func TestFakeClient_CreateOrUpdateOrgVariableAll(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{}
 	require.NoError(t, fc.CreateOrUpdateOrgVariableAll(ctx, "myorg", "FOREIGN", "caller"))
-	exists, err := fc.OrgVariableExists(ctx, "myorg", "FOREIGN")
+
+	// Should be recorded.
+	require.Len(t, fc.CreatedOrgVariables, 1)
+	assert.Equal(t, "myorg", fc.CreatedOrgVariables[0].Org)
+	assert.Equal(t, "FOREIGN", fc.CreatedOrgVariables[0].Name)
+	assert.Equal(t, "caller", fc.CreatedOrgVariables[0].Value)
+
+	// Should be queryable.
+	value, exists, err := fc.GetOrgVariable(ctx, "myorg", "FOREIGN")
 	require.NoError(t, err)
 	assert.True(t, exists)
+	assert.Equal(t, "caller", value)
 }
 
 func TestFakeClient_DeleteOrgVariable(t *testing.T) {
@@ -851,17 +811,11 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 			_, err := fc.ListOrgInstallations(ctx, "org")
 			return err
 		}},
-		{"CreateOrgSecret", func(fc *FakeClient) error {
-			return fc.CreateOrgSecret(ctx, "o", "n", "v", nil)
-		}},
 		{"OrgSecretExists", func(fc *FakeClient) error {
 			_, err := fc.OrgSecretExists(ctx, "o", "n")
 			return err
 		}},
 		{"DeleteOrgSecret", func(fc *FakeClient) error { return fc.DeleteOrgSecret(ctx, "o", "n") }},
-		{"SetOrgSecretRepos", func(fc *FakeClient) error {
-			return fc.SetOrgSecretRepos(ctx, "o", "n", nil)
-		}},
 		{"CommitFiles", func(fc *FakeClient) error {
 			_, err := fc.CommitFiles(ctx, "o", "r", "m", nil)
 			return err
@@ -876,28 +830,18 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		{"SetPipelineVariablesMinimumOverrideRole", func(fc *FakeClient) error {
 			return fc.SetPipelineVariablesMinimumOverrideRole(ctx, "o", "r", PipelineVarOverrideOwner)
 		}},
-		{"CreateOrUpdateOrgVariable", func(fc *FakeClient) error {
-			return fc.CreateOrUpdateOrgVariable(ctx, "o", "n", "v", nil)
-		}},
-		{"OrgVariableExists", func(fc *FakeClient) error {
-			_, err := fc.OrgVariableExists(ctx, "o", "n")
-			return err
+		{"CreateOrUpdateOrgVariableAll", func(fc *FakeClient) error {
+			return fc.CreateOrUpdateOrgVariableAll(ctx, "o", "n", "v")
 		}},
 		{"GetOrgVariable", func(fc *FakeClient) error { _, _, err := fc.GetOrgVariable(ctx, "o", "n"); return err }},
 		{"ListOrgVariables", func(fc *FakeClient) error { _, err := fc.ListOrgVariables(ctx, "o"); return err }},
+		{"ListInstanceVariables", func(fc *FakeClient) error { _, err := fc.ListInstanceVariables(ctx); return err }},
 		{"IsInstallationToken", func(fc *FakeClient) error { _, err := fc.IsInstallationToken(ctx); return err }},
 		{"DeleteOrgVariable", func(fc *FakeClient) error {
 			return fc.DeleteOrgVariable(ctx, "o", "n")
 		}},
 		{"DeleteRepoVariable", func(fc *FakeClient) error {
 			return fc.DeleteRepoVariable(ctx, "o", "r", "n")
-		}},
-		{"SetOrgVariableRepos", func(fc *FakeClient) error {
-			return fc.SetOrgVariableRepos(ctx, "o", "n", nil)
-		}},
-		{"GetOrgVariableRepos", func(fc *FakeClient) error {
-			_, err := fc.GetOrgVariableRepos(ctx, "o", "n")
-			return err
 		}},
 		{"DeleteIssueComment", func(fc *FakeClient) error {
 			return fc.DeleteIssueComment(ctx, "o", "r", 1)
@@ -1018,17 +962,13 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_, _ = fc.GetLatestWorkflowRun(ctx, "o", "r", "ci.yml")
 			_, _ = fc.GetWorkflowRun(ctx, "o", "r", 1)
 			_, _ = fc.ListOrgInstallations(ctx, "org")
-			_ = fc.CreateOrgSecret(ctx, "o", "n", "v", []int64{1})
 			_, _ = fc.OrgSecretExists(ctx, "o", "secret")
 			_ = fc.DeleteOrgSecret(ctx, "o", "n")
-			_ = fc.SetOrgSecretRepos(ctx, "o", "n", []int64{1, 2})
 			_, _ = fc.CommitFiles(ctx, "o", "r", "m", []TreeFile{{Path: "p", Content: []byte("c"), Mode: "100644"}})
 			_ = fc.ForceCommitFileToBranch(ctx, "o", "r", "state-branch", "state.json", "m", []byte("data"))
-			_ = fc.CreateOrUpdateOrgVariable(ctx, "o", "n", "v", []int64{1})
-			_, _ = fc.OrgVariableExists(ctx, "o", "var")
+			_ = fc.CreateOrUpdateOrgVariableAll(ctx, "o", "n", "v")
+			_, _, _ = fc.GetOrgVariable(ctx, "o", "var")
 			_ = fc.DeleteOrgVariable(ctx, "o", "n")
-			_ = fc.SetOrgVariableRepos(ctx, "o", "n", []int64{1, 2})
-			_, _ = fc.GetOrgVariableRepos(ctx, "o", "n")
 			_ = fc.DeleteIssueComment(ctx, "o", "r", 1)
 			_, _ = fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
 			_, _ = fc.ListRepositoryFiles(ctx, "o", "r")
@@ -1595,6 +1535,53 @@ func TestFakeClient_ListWorkflowRuns_WorkflowRunsList(t *testing.T) {
 	assert.Equal(t, 1, runs[0].ID)
 }
 
+// TestFakeClient_ListWorkflowRunsSince is a regression test (#7996 review):
+// ListWorkflowRunsSince was added to FakeClient alongside the live GitHub
+// and GitLab clients' paginated implementations, but nothing exercised it
+// directly within this package, leaving it at 0% patch coverage. It filters
+// the same configured runs as ListWorkflowRuns down to those created at or
+// after since, and must also surface a ListWorkflowRuns error and treat an
+// unparsable CreatedAt as excluded rather than included.
+func TestFakeClient_ListWorkflowRunsSince(t *testing.T) {
+	fc := NewFakeClient()
+	fc.WorkflowRunsList = map[string][]WorkflowRun{
+		"org/repo/ci.yml": {
+			{ID: 1, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-03T00:00:00Z"},
+			{ID: 2, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-01T00:00:00Z"},
+			{ID: 3, Status: "completed", Conclusion: "success", CreatedAt: "not-a-time"},
+		},
+	}
+
+	since := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	runs, err := fc.ListWorkflowRunsSince(context.Background(), "org", "repo", "ci.yml", since)
+	require.NoError(t, err)
+	require.Len(t, runs, 1, "only the run at or after since with a parsable CreatedAt must be included")
+	assert.Equal(t, 1, runs[0].ID)
+
+	fc.Errors = map[string]error{"ListWorkflowRuns": errors.New("boom")}
+	_, err = fc.ListWorkflowRunsSince(context.Background(), "org", "repo", "ci.yml", since)
+	require.Error(t, err, "an underlying ListWorkflowRuns error must propagate")
+}
+
+// TestFakeClient_ListWorkflowRunsSince_OwnErrorKey is a regression test
+// (#7996 review): ListWorkflowRunsSince delegated to ListWorkflowRuns, which
+// only checks FakeClient.Errors["ListWorkflowRuns"], so tests could not
+// inject a failure under the method-name error-injection convention's
+// expected key, "ListWorkflowRunsSince".
+func TestFakeClient_ListWorkflowRunsSince_OwnErrorKey(t *testing.T) {
+	fc := NewFakeClient()
+	fc.WorkflowRunsList = map[string][]WorkflowRun{
+		"org/repo/ci.yml": {
+			{ID: 1, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-03T00:00:00Z"},
+		},
+	}
+	fc.Errors = map[string]error{"ListWorkflowRunsSince": errors.New("boom")}
+
+	since := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	_, err := fc.ListWorkflowRunsSince(context.Background(), "org", "repo", "ci.yml", since)
+	require.Error(t, err, "injecting ListWorkflowRunsSince's own error key must fail the call")
+}
+
 func TestFakeClient_DownloadWorkflowRunArtifact(t *testing.T) {
 	fc := NewFakeClient()
 	fc.WorkflowArtifactContents = map[int][]byte{
@@ -2063,6 +2050,68 @@ func TestFakeClient_CreateProtectedCIVariable(t *testing.T) {
 	assert.Equal(t, "SECRET_KEY", fc.CreatedProtectedVars[0].Name)
 	assert.Equal(t, "secret-val", fc.CreatedProtectedVars[0].Value)
 	assert.True(t, fc.CreatedProtectedVars[0].Protected)
+}
+
+func TestFakeClient_CommitFiles_LocalPath(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fullsend")
+	content := []byte{0x7f, 0x45, 0x4c, 0x46, 0xff}
+	require.NoError(t, os.WriteFile(path, content, 0o755))
+
+	fc := NewFakeClient()
+	changed, err := fc.CommitFiles(ctx, "org", "repo", "vendor", []TreeFile{
+		{Path: "bin/fullsend", LocalPath: path, Mode: "100755"},
+	})
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Equal(t, content, fc.FileContents["org/repo/bin/fullsend"])
+}
+
+func TestFakeClient_CommitFiles_LocalPathMissing(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+	_, err := fc.CommitFiles(ctx, "org", "repo", "vendor", []TreeFile{
+		{Path: "bin/fullsend", LocalPath: filepath.Join(t.TempDir(), "missing"), Mode: "100755"},
+	})
+	require.Error(t, err)
+}
+
+func TestFakeClient_CommitFiles_LocalPathMissingIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	missing := filepath.Join(t.TempDir(), "missing")
+	files := []TreeFile{
+		{Path: "update.txt", Content: []byte("new"), Mode: "100644"},
+		{Path: "delete.txt", Delete: true},
+		{Path: "bin/fullsend", LocalPath: missing, Mode: "100755"},
+	}
+	setup := func() *FakeClient {
+		fc := NewFakeClient()
+		fc.FileContents["org/repo/update.txt"] = []byte("old")
+		fc.FileContents["org/repo/delete.txt"] = []byte("keep")
+		return fc
+	}
+	assertUnchanged := func(t *testing.T, fc *FakeClient) {
+		t.Helper()
+		assert.Equal(t, []byte("old"), fc.FileContents["org/repo/update.txt"])
+		assert.Equal(t, []byte("keep"), fc.FileContents["org/repo/delete.txt"])
+		assert.NotContains(t, fc.FileContents, "org/repo/bin/fullsend")
+		assert.Empty(t, fc.CommittedFiles)
+		assert.Empty(t, fc.CommittedFilesToBranch)
+	}
+
+	t.Run("CommitFiles", func(t *testing.T) {
+		fc := setup()
+		_, err := fc.CommitFiles(ctx, "org", "repo", "msg", files)
+		require.Error(t, err)
+		assertUnchanged(t, fc)
+	})
+	t.Run("CommitFilesToBranch", func(t *testing.T) {
+		fc := setup()
+		_, err := fc.CommitFilesToBranch(ctx, "org", "repo", "branch", "msg", files)
+		require.Error(t, err)
+		assertUnchanged(t, fc)
+	})
 }
 
 func TestFakeClient_CommitFilesErrSeq(t *testing.T) {

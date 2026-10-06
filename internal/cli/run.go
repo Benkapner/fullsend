@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,8 +24,6 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/spf13/cobra"
 
@@ -225,11 +224,12 @@ type aggregateMetrics struct {
 	// "harness", "default") so a silent override is visible after the fact.
 	OverrideSource string `json:"override_source,omitempty"`
 	// PerModelUsage attributes the totals above to the model specs that
-	// spent them. Only runtimes that dispatch sub-agents fill it (pi's
-	// Agent tool), and then on every iteration of such a run — including
-	// one that dispatched nothing, whose parent entry is what keeps the
-	// breakdown summing to the totals across a retry. A run on a runtime
-	// without sub-agents keeps metrics.json as it was.
+	// spent them. Only runtimes that dispatch sub-agents fill it: pi's
+	// Agent tool on every iteration of such a run — including one that
+	// dispatched nothing, whose parent entry is what keeps the breakdown
+	// summing to the totals across a retry — and claude from each
+	// iteration's result modelUsage. A run on a runtime without sub-agents
+	// keeps metrics.json as it was.
 	PerModelUsage map[string]agentruntime.ModelUsage `json:"per_model_usage,omitempty"`
 }
 
@@ -245,26 +245,6 @@ var (
 	errParsingConfigRuntime = errors.New("parsing config for runtime selection")
 	errResolvingRuntime     = errors.New("resolving runtime")
 )
-
-// resolveBackendFromConfigData selects the runtime for agentName from raw
-// config.yaml bytes (org or per-repo). Only the single file is consulted;
-// backendFromConfigFile is the layered (config.base.yaml-aware) entry point.
-func resolveBackendFromConfigData(configData []byte, agentName string) (agentruntime.Backend, error) {
-	if isOrgConfigData(configData) {
-		orgCfg, orgErr := config.ParseOrgConfig(configData)
-		if orgErr != nil {
-			return agentruntime.Backend{}, fmt.Errorf("%w: %w", errParsingConfigRuntime, orgErr)
-		}
-		backend, _, err := resolveBackendForAgent(orgCfg.AgentEntries(), orgCfg.OrgRepoDefaults().Runtime, agentName)
-		return backend, err
-	}
-	perRepoCfg, perRepoErr := config.ParsePerRepoConfig(configData)
-	if perRepoErr != nil {
-		return agentruntime.Backend{}, fmt.Errorf("%w: %w", errParsingConfigRuntime, perRepoErr)
-	}
-	backend, _, err := resolveBackendForAgent(perRepoCfg.AgentEntries(), perRepoCfg.ConfigRuntime(), agentName)
-	return backend, err
-}
 
 // resolveBackendForAgent applies the agents: entry's runtime for agentName
 // (validated like the repo-wide key) before falling back to repoRuntime.
@@ -286,53 +266,26 @@ func agentSettingsSource(configPath, agentName string) string {
 	return fmt.Sprintf("%s agents.%s", configPath, agentName)
 }
 
-func isOrgConfigData(data []byte) bool {
-	text := string(data)
-	if strings.Contains(text, "fullsend per-repo configuration") {
-		return false
-	}
-	if strings.Contains(text, "fullsend organization configuration") {
-		return true
-	}
-	var probe struct {
-		Dispatch *struct {
-			Platform string `yaml:"platform"`
-		} `yaml:"dispatch"`
-		Defaults *struct {
-			Roles []string `yaml:"roles"`
-		} `yaml:"defaults"`
-		Repos map[string]any `yaml:"repos"`
-	}
-	if err := yaml.Unmarshal(data, &probe); err != nil {
-		return false
-	}
-	return probe.Dispatch != nil || probe.Defaults != nil || len(probe.Repos) > 0
-}
-
 // runConfig is the config file consulted by `fullsend run` for runtime
 // selection and per-agent settings: the file at the requested path, or the
-// sibling .fullsend/config.yaml when that is absent. Per-repo configs are
-// loaded layered (config.yaml over config.base.yaml, ADR 0069) so a preset
-// base can carry runtime: or agents: entries; org configs keep their raw
-// bytes and are parsed by resolveBackendFromConfigData.
+// sibling .fullsend/config.yaml when that is absent. Configs are loaded
+// layered (config.yaml over config.base.yaml, ADR 0069) so a preset base
+// can carry runtime: or agents: entries.
 type runConfig struct {
 	// source is the file the values came from, or "" when none exists.
 	source string
-	// perRepo is the layered per-repo config; nil for org configs and
-	// when no file exists.
+	// perRepo is the layered per-repo config; nil when no file exists.
 	perRepo config.PerRepoConfigReader
-	// orgData holds the raw bytes of an org-mode config; nil otherwise.
-	orgData []byte
 }
 
 // loadRunConfig reads the config for `fullsend run` (see runConfig). A
 // missing file is not an error: the zero runConfig means "use defaults".
 func loadRunConfig(path string) (runConfig, error) {
-	data, readErr := os.ReadFile(path)
+	_, readErr := os.ReadFile(path)
 	source := path
 	if readErr != nil && os.IsNotExist(readErr) {
 		alt := filepath.Join(filepath.Dir(path), ".fullsend", config.OverlayConfigFile)
-		data, readErr = os.ReadFile(alt)
+		_, readErr = os.ReadFile(alt)
 		if readErr == nil {
 			source = alt
 		}
@@ -359,17 +312,13 @@ func loadRunConfig(path string) (runConfig, error) {
 		}
 		return runConfig{}, nil
 	}
-	if isOrgConfigData(data) {
-		return runConfig{source: source, orgData: data}, nil
-	}
 	cfg, loadErr := config.LoadConfig(filepath.Dir(source), config.LoadOpts{MissingOK: false})
 	if loadErr != nil {
 		return runConfig{source: source}, fmt.Errorf("%w: %w", errParsingConfigRuntime, loadErr)
 	}
 	perRepoCfg, ok := cfg.(config.PerRepoConfigReader)
 	if !ok {
-		// Header said per-repo but the keys say org: parse as org.
-		return runConfig{source: source, orgData: data}, nil
+		return runConfig{source: source}, fmt.Errorf("%w: unexpected config type %T", errParsingConfigRuntime, cfg)
 	}
 	return runConfig{source: source, perRepo: perRepoCfg}, nil
 }
@@ -390,12 +339,6 @@ func backendFromConfigFile(path, agentName string) (agentruntime.Backend, string
 // backend resolves the runtime for agentName from the loaded config.
 func (rc runConfig) backend(agentName string) (agentruntime.Backend, string, error) {
 	switch {
-	case rc.orgData != nil:
-		backend, resolveErr := resolveBackendFromConfigData(rc.orgData, agentName)
-		if resolveErr != nil {
-			return agentruntime.Backend{}, rc.source, resolveErr
-		}
-		return backend, rc.source, nil
 	case rc.perRepo != nil:
 		backend, perAgent, resolveErr := resolveBackendForAgent(rc.perRepo.AgentEntries(), rc.perRepo.ConfigRuntime(), agentName)
 		if resolveErr != nil {
@@ -425,12 +368,6 @@ func (rc runConfig) agentSettings(agentName string) (config.AgentEntry, bool, er
 	switch {
 	case rc.perRepo != nil:
 		agents, allowlist = rc.perRepo.AgentEntries(), rc.perRepo.AllowedResources()
-	case rc.orgData != nil:
-		orgCfg, err := config.ParseOrgConfig(rc.orgData)
-		if err != nil {
-			return config.AgentEntry{}, false, fmt.Errorf("%w: %w", errParsingConfigRuntime, err)
-		}
-		agents, allowlist = orgCfg.AgentEntries(), orgCfg.AllowedResources()
 	default:
 		return config.AgentEntry{}, false, nil
 	}
@@ -560,7 +497,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// to agents-repo resolution; a malformed file is warned by
 	// tryLoadOrgConfig but not surfaced as a distinct error here.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
-	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
+	//
+	// The layered config (config.yaml over config.base.yaml) is loaded
+	// strictly: a layer that exists but cannot be loaded (malformed,
+	// unreadable, or a rejected per-org format) must not be treated as
+	// absent, and a base-only config must be honored. Substituting the
+	// default allowlist for an explicit allowed_remote_resources
+	// (including a deny-all) would allow remote fetching before the load
+	// error surfaces. The config is absent only when neither layer exists.
+	orgCfg, err := loadLockConfig(orgConfigPath)
+	if err != nil {
+		printer.StepFail("Failed to load fullsend config")
+		return err
+	}
 
 	// Detect forge platform after config is loaded so config.forge can be consulted (ADR 0088).
 	forgePlatform, err := detectForgePlatform(forgeFlag, orgCfg)
@@ -1030,27 +979,80 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if id, ok := configModelAliases[h.Model]; ok {
 		resolvedModel, modelRemapped = id, true
 	}
+	// Thread the agent's subagents config through early: both the
+	// provider-creation gate below and BootstrapInput (#7031, #7981) need
+	// it, and it is already known once the agents: entry is resolved.
+	var agentSubagents map[string]*string
+	if entryFound {
+		agentSubagents = entry.Subagents
+	}
 	agentDefModel := agentruntime.AgentDefinitionModel(h.Agent)
-	needsOpenAIProvider := agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
-	provider := runInferenceProvider(runtimeBackend.Runtime.Name(), needsOpenAIProvider)
+	// parentNeedsOpenAIProvider decides which inference credential the
+	// *parent's own call* needs (runInferenceProvider, just below) and must
+	// stay parent-only: a Vertex parent with an OpenAI persona still needs
+	// its own Vertex ADC validated, regardless of what its children run on.
+	parentNeedsOpenAIProvider := agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
+	provider := runInferenceProvider(runtimeBackend.Runtime.Name(), parentNeedsOpenAIProvider)
+	// openAIChildren are the configured pi children (subagents.<persona>,
+	// subagents.default, a persona's frontmatter model:) that resolve to
+	// the openai provider. They need the run-scoped OpenAI provider even
+	// when the parent does not (#7981), so they widen the provider gate
+	// below; the parent's own credential path above stays parent-only.
+	openAIChildren := agentruntime.OpenAIChildren(runtimeBackend.Runtime.Name(), h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
+	needsOpenAIProvider := parentNeedsOpenAIProvider || len(openAIChildren) > 0
 	// Prepare credentials before env validation and expansion, so harness
 	// references to GOOGLE_APPLICATION_CREDENTIALS resolve to the prepared file.
+	vertexSetupFailed := false
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		cleanup, err := setupActionsVertexCredentials(ctx, provider, printer, setFlagEnv)
+		cleanup, failed, err := setupActionsVertexCredentials(ctx, provider, printer, setFlagEnv)
 		if err != nil {
 			printer.StepFail("Vertex credential setup failed")
 			return err
 		}
+		vertexSetupFailed = failed
 		defer cleanup()
+	}
+	// A required mount needs its credential file whatever the provider:
+	// validateVertexGCPCredentials checks only optional mounts.
+	if err := validateRequiredGCPHostFile(h, provider); err != nil {
+		printer.StepFail("Inference credential validation failed")
+		return err
 	}
 	if provider == runProviderVertex {
 		if err := validateVertexGCPCredentials(h); err != nil {
 			printer.StepFail("Inference credential validation failed")
 			return err
 		}
-	} else if err := validateRequiredGCPHostFile(h); err != nil {
-		printer.StepFail("Inference credential validation failed")
-		return err
+	}
+	// A pi parent off Vertex can still dispatch Vertex children. When the
+	// harness mounts ${GOOGLE_APPLICATION_CREDENTIALS} and the variable has
+	// no usable file, a subagents entry on Vertex fails here; the Agent
+	// extension refuses any other Vertex child at dispatch (#7980).
+	vertexGap := ""
+	if provider != runProviderVertex && provider != runProviderNone && runtimeBackend.Runtime.Name() == "pi" {
+		vertexGap = vertexCredentialGap(h)
+	}
+	if vertexGap != "" && vertexSetupFailed {
+		vertexGap += " (Vertex credential setup failed; see the warning above)"
+	}
+	if vertexGap != "" {
+		var configured []string
+		for _, c := range agentruntime.VertexChildren("pi", h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases) {
+			// google-vertex also authenticates with an API key; dispatch decides for it.
+			if strings.HasPrefix(c.Spec, "google-vertex/") {
+				continue
+			}
+			if c.Configured {
+				configured = append(configured, c.String())
+			}
+		}
+		if len(configured) > 0 {
+			printer.StepFail("Sub-agent model needs Vertex credentials")
+			return fmt.Errorf("sub-agent model resolves to Vertex, but %s: %s; "+
+				"set GOOGLE_APPLICATION_CREDENTIALS to a credential file mounted in host_files, or move the sub-agent off Vertex",
+				vertexGap, strings.Join(configured, ", "))
+		}
+		printer.StepInfo("Vertex sub-agents need a credential file: " + vertexGap)
 	}
 
 	// Expand env vars in runner_env values. FULLSEND_DIR is injected so
@@ -1425,6 +1427,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepFail("Failed to load provider definitions")
 			return fmt.Errorf("loading provider definitions: %w", err)
 		}
+		warnReservedProviderNameOverrides(localDefs, result.Providers, printer)
+		listedReservedProfiles := warnReservedProfileCopies(result.Profiles, printer)
 
 		// A bare provider name with no local or URL-resolved definition
 		// falls back to the definition the scaffold embeds in this binary
@@ -1452,8 +1456,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// provider must not outlive the run (#6689).
 		created := make(map[string]struct{}, len(allDefs))
 		sharedDefs := allDefs[:0:0]
+		handledEmbeddedProfiles := make(map[string]struct{}, len(allDefs))
 		for _, pd := range allDefs {
 			if !strings.EqualFold(pd.Type, openAIProviderType) {
+				if _, done := handledEmbeddedProfiles[pd.Type]; !done && isReservedProfileID(pd.Type) {
+					handledEmbeddedProfiles[pd.Type] = struct{}{}
+					// A listed copy of a reserved profile was imported above
+					// and stays live for this release (warned about by
+					// warnReservedProfileCopies); importing the embedded one
+					// now would replace it under the same id (#7268).
+					if _, listed := listedReservedProfiles[pd.Type]; !listed {
+						if err := ensureEmbeddedProfile(ctx, pd.Type, printer); err != nil {
+							return err
+						}
+					}
+				}
 				sharedDefs = append(sharedDefs, pd)
 				continue
 			}
@@ -1491,10 +1508,22 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepInfo(fmt.Sprintf("Provider %q declared by the harness but not needed by runtime %s with model %s; skipped", pd.Name, runtimeBackend.Runtime.Name(), model))
 				continue
 			}
-			if err := ensureOpenAIProfile(ctx, pd.Type, printer); err != nil {
+			if err := ensureEmbeddedProfile(ctx, pd.Type, printer); err != nil {
 				return err
 			}
 			handle, err := ensureOpenAIProvider(ctx, pd, sandboxName, openAIConfigIDs(runCfg), runtimeBackend, printer)
+			var credErr openAICredentialError
+			if err != nil && !parentNeedsOpenAIProvider && !anyConfiguredOpenAIChild(openAIChildren) && errors.As(err, &credErr) {
+				// Only a persona's own frontmatter wanted openai. Before
+				// #7981 Bootstrap skipped such a persona with a warning; a
+				// runner with no OpenAI credential keeps that behaviour
+				// rather than failing a run nothing in the config asked
+				// to touch OpenAI.
+				skippedProviders[pd.Name] = struct{}{}
+				created[pd.Name] = struct{}{}
+				printer.StepWarn(fmt.Sprintf("Provider %q skipped: only persona frontmatter wanted it (%v); those personas will be skipped", pd.Name, err))
+				continue
+			}
 			if err != nil {
 				return err
 			}
@@ -1556,6 +1585,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 
 		allProviderNames = applyRunScopedProviderNames(dropSkippedProviders(sandboxProviderNames(h.Providers, result.Providers), skippedProviders), runScopedProviders)
+	}
+
+	// A subagents entry on openai with no openai provider to attach would
+	// only fail at Bootstrap, after the sandbox exists. Fail here instead,
+	// naming the entry and the fix (#7981). A persona's own frontmatter
+	// model is left to Bootstrap, which skips that persona with a warning,
+	// as it always has. A parent on an openai model is not this check's
+	// concern: its own launch path reports that case.
+	if !parentNeedsOpenAIProvider && len(openAIHandles) == 0 {
+		var configured []string
+		for _, c := range openAIChildren {
+			if c.Configured {
+				configured = append(configured, c.String())
+			}
+		}
+		if len(configured) > 0 {
+			printer.StepFail("Sub-agent model needs the openai provider")
+			return fmt.Errorf("sub-agent model resolves to the openai provider, but the harness declares no openai provider: %s; "+
+				"declare \"openai\" in the harness providers list, or move the sub-agent off openai/",
+				strings.Join(configured, ", "))
+		}
 	}
 
 	workItemID := resolveWorkItemID()
@@ -1994,13 +2044,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			forgeEgressEntry = host + ":" + port
 		}
 	}
-	// Thread the agent's subagents config into BootstrapInput so the pi
-	// runtime can resolve each persona's model (#7031).
-	var agentSubagents map[string]*string
-	if entryFound {
-		agentSubagents = entry.Subagents
-	}
-	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry, configModelAliases, agentSubagents, resolvedModel, remoteRepositoryDir)
+	// agentSubagents is threaded into BootstrapInput so the pi runtime can
+	// resolve each persona's model (#7031); openAIProviderAttached tells it
+	// whether OPENAI_API_KEY actually landed in the sandbox this run, so a
+	// pre-configured child naming the openai provider can be trusted only
+	// when the credential it needs is really there (#7981).
+	openAIProviderAttached := len(openAIHandles) > 0
+	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry, configModelAliases, agentSubagents, resolvedModel, remoteRepositoryDir, openAIProviderAttached)
 	if err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
@@ -2935,6 +2985,19 @@ var oidcDenyKeys = map[string]bool{
 	// harness cannot copy the real key under another name, and keeps it out
 	// of pre/post scripts.
 	"OPENAI_API_KEY": true,
+	// The GitLab CI/CD variable `fullsend repos install` provisions. The job
+	// script maps it to OPENAI_API_KEY and unsets it; if it is ever still
+	// present it holds the real key and must stay runner-only too.
+	"FULLSEND_OPENAI_API_KEY": true,
+	// The GitLab webhook fast-path credentials `fullsend repos install`
+	// provisions as protected, wildcard-scoped CI/CD variables. The trigger
+	// token is a bearer credential that starts pipelines on the protected
+	// default branch; no run needs either value. The job scripts unset both,
+	// and listing them here is defense in depth so a harness cannot expand
+	// them into sandbox-visible values and host-side scripts never inherit
+	// them.
+	"FULLSEND_TRIGGER_TOKEN":  true,
+	"FULLSEND_WEBHOOK_SECRET": true,
 }
 
 // workflowTokenEnv is the Actions workflow token preserved across minting
@@ -3298,19 +3361,12 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 
 	// Copy host files into the sandbox.
 	for _, hf := range h.HostFiles {
-		// Use safeExpandEnv instead of os.ExpandEnv to refuse OIDC
-		// credential vars in host_files src path expansion (#5832).
-		hostPath := safeExpandEnv(hf.Src)
-		if hostPath == "" {
+		hostPath, copied := hostFileSource(hf)
+		if !copied {
 			if hf.Optional {
 				continue
 			}
 			return fmt.Errorf("host_files: src %q expanded to empty string", hf.Src)
-		}
-		if hf.Optional {
-			if _, err := os.Stat(hostPath); err != nil {
-				continue
-			}
 		}
 
 		if hf.Expand {
@@ -3801,7 +3857,7 @@ func resolveWorkItemID() string {
 	if prNum := strings.TrimSpace(os.Getenv("PR_NUMBER")); prNum != "" {
 		return prNum
 	}
-	// GitHub retro: reusable-retro.yml sets ORIGINATING_URL (PR/issue HTML URL).
+	// GitHub retro: the retro job in reusable-dispatch.yml sets ORIGINATING_URL (PR/issue HTML URL).
 	// GitLab agent jobs export GITLAB_ISSUE_URL (issue or MR) when IID is known.
 	if v := strings.TrimSpace(os.Getenv("ORIGINATING_URL")); v != "" {
 		return v
@@ -4147,8 +4203,9 @@ func runInferenceProvider(runtimeName string, needsOpenAI bool) string {
 // prepared if both inputs are set (Vertex sub-agents, and fleet harnesses
 // that mount the file), and any failure is a warning. A run
 // whose parent does not use Vertex never mounts an existing credential file
-// that fails validation. The returned cleanup is never nil.
-func setupActionsVertexCredentials(ctx context.Context, provider string, printer *ui.Printer, setEnv func(key, value string)) (func(), error) {
+// that fails validation. The returned cleanup is never nil. failed reports
+// that a non-Vertex run warned and has no usable credential file.
+func setupActionsVertexCredentials(ctx context.Context, provider string, printer *ui.Printer, setEnv func(key, value string)) (cleanup func(), failed bool, err error) {
 	noop := func() {}
 	projectID := strings.TrimSpace(os.Getenv(vertexinference.SecretProjectID))
 	wifProvider := strings.TrimSpace(os.Getenv(vertexinference.SecretWIFProvider))
@@ -4161,39 +4218,43 @@ func setupActionsVertexCredentials(ctx context.Context, provider string, printer
 		switch {
 		case partial:
 			printer.StepWarn("Vertex credentials for sub-agents skipped: " + partialErr.Error())
+			failed = true
 		case inputsSet:
 			cleanup, err := prepareActionsWIF(ctx, projectID, wifProvider, setEnv)
 			if err == nil {
 				printer.StepDone("Vertex credentials: prepared GitHub WIF (for Vertex sub-agents)")
-				return cleanup, nil
+				return cleanup, false, nil
 			}
 			printer.StepWarn("Vertex credentials for sub-agents unavailable: " + err.Error())
+			failed = true
 		}
-		dropUnusableCredentialFile(printer, setEnv)
-		return noop, nil
+		if dropUnusableCredentialFile(printer, setEnv) {
+			failed = true
+		}
+		return noop, failed, nil
 	}
 
 	if partial {
-		return nil, partialErr
+		return nil, false, partialErr
 	}
 	if !inputsSet {
 		path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
 		if path == "" {
-			return nil, fmt.Errorf("Vertex inference requires %s and %s, or GOOGLE_APPLICATION_CREDENTIALS pointing to a credential file",
+			return nil, false, fmt.Errorf("Vertex inference requires %s and %s, or GOOGLE_APPLICATION_CREDENTIALS pointing to a credential file",
 				vertexinference.SecretProjectID, vertexinference.SecretWIFProvider)
 		}
 		if err := validateExistingGCPCredentialFile(path); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		printer.StepDone("Vertex credentials: existing GOOGLE_APPLICATION_CREDENTIALS file")
-		return noop, nil
+		return noop, false, nil
 	}
-	cleanup, err := prepareActionsWIF(ctx, projectID, wifProvider, setEnv)
+	cleanup, err = prepareActionsWIF(ctx, projectID, wifProvider, setEnv)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	printer.StepDone("Vertex credentials: prepared GitHub WIF")
-	return cleanup, nil
+	return cleanup, false, nil
 }
 
 // prepareActionsWIF exchanges the job's OIDC token for Google credentials
@@ -4218,16 +4279,18 @@ func prepareActionsWIF(ctx context.Context, projectID, wifProvider string, setEn
 
 // dropUnusableCredentialFile clears GOOGLE_APPLICATION_CREDENTIALS when the
 // file it names fails validation, so an optional mount cannot copy it into
-// the sandbox.
-func dropUnusableCredentialFile(printer *ui.Printer, setEnv func(key, value string)) {
+// the sandbox. It reports whether it cleared the variable.
+func dropUnusableCredentialFile(printer *ui.Printer, setEnv func(key, value string)) bool {
 	path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
 	if path == "" {
-		return
+		return false
 	}
 	if err := validateExistingGCPCredentialFile(path); err != nil {
 		printer.StepWarn("Ignoring GOOGLE_APPLICATION_CREDENTIALS: " + err.Error())
 		setEnv("GOOGLE_APPLICATION_CREDENTIALS", "")
+		return true
 	}
+	return false
 }
 
 // maskActionsValue asks GitHub Actions to mask a secret in the job log.
@@ -4243,8 +4306,8 @@ func maskActionsValue(value string) {
 // URL source, and URL headers would copy the runner's request token into
 // the sandbox.
 func validateExistingGCPCredentialFile(path string) error {
-	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+	info, ok := nonEmptyRegularFile(path)
+	if !ok {
 		return fmt.Errorf("GOOGLE_APPLICATION_CREDENTIALS must point to a non-empty credential file")
 	}
 	if info.Size() > maxGCPCredentialFileBytes {
@@ -4262,6 +4325,16 @@ func validateExistingGCPCredentialFile(path string) error {
 }
 
 const maxGCPCredentialFileBytes = 64 << 10
+
+// nonEmptyRegularFile stats path and reports whether it is a regular file
+// with content.
+func nonEmptyRegularFile(path string) (os.FileInfo, bool) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		return nil, false
+	}
+	return info, true
+}
 
 // gcpCredentialFile is the part of a Google credential file the runner
 // checks. Impersonation files nest their source in source_credentials.
@@ -4295,12 +4368,16 @@ func (creds *gcpCredentialFile) check() error {
 	return nil
 }
 
-// validateRequiredGCPHostFile fails a non-Vertex run before its pre-script
-// when a required GCP host-file mount has no credential file, for example
-// after dropUnusableCredentialFile cleared it.
-func validateRequiredGCPHostFile(h *harness.Harness) error {
+// validateRequiredGCPHostFile fails a run before its pre-script when a
+// required GCP host-file mount has no credential file, for example after
+// dropUnusableCredentialFile cleared it. A Vertex parent needs the file, so
+// its message does not suggest an optional mount.
+func validateRequiredGCPHostFile(h *harness.Harness, provider string) error {
 	for i, hf := range h.HostFiles {
 		if !hf.Optional && hf.Src == "${GOOGLE_APPLICATION_CREDENTIALS}" && os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") == "" {
+			if provider == runProviderVertex {
+				return fmt.Errorf("host_files[%d]: GOOGLE_APPLICATION_CREDENTIALS is empty; provide a credential file", i)
+			}
 			return fmt.Errorf("host_files[%d]: GOOGLE_APPLICATION_CREDENTIALS is empty; mark the mount optional or provide a credential file", i)
 		}
 	}
@@ -4330,6 +4407,66 @@ func validateVertexGCPCredentials(h *harness.Harness) error {
 		}
 	}
 	return nil
+}
+
+// hostFileSource expands hf.Src and reports whether bootstrapEnv copies
+// it: an empty path is never copied, and an optional mount whose file is
+// missing is skipped. Use safeExpandEnv, not os.ExpandEnv, so OIDC
+// credential vars are refused in src expansion (#5832).
+func hostFileSource(hf harness.HostFile) (string, bool) {
+	hostPath := safeExpandEnv(hf.Src)
+	if hostPath == "" {
+		return "", false
+	}
+	if hf.Optional {
+		if _, err := os.Stat(hostPath); err != nil {
+			return hostPath, false
+		}
+	}
+	return hostPath, true
+}
+
+// vertexCredentialGap returns why a harness that mounts
+// ${GOOGLE_APPLICATION_CREDENTIALS} has no usable credential file, or ""
+// when it has one or the sandbox path is not clearly that mount: env.sandbox
+// names another path, or it is unset and another credential file is
+// mounted. Those cases are judged in the sandbox, at dispatch.
+func vertexCredentialGap(h *harness.Harness) string {
+	for _, hf := range h.HostFiles {
+		if hf.Src != "${GOOGLE_APPLICATION_CREDENTIALS}" {
+			continue
+		}
+		pinned, set := "", false
+		if h.Env != nil {
+			pinned, set = h.Env.Sandbox["GOOGLE_APPLICATION_CREDENTIALS"]
+		}
+		if set && pinned != hf.Dest {
+			return ""
+		}
+		if !set && otherGCPCredentialMounted(h) {
+			return ""
+		}
+		path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+		if path == "" {
+			return "GOOGLE_APPLICATION_CREDENTIALS is not set"
+		}
+		if _, ok := nonEmptyRegularFile(path); !ok {
+			return "GOOGLE_APPLICATION_CREDENTIALS does not point to a non-empty credential file"
+		}
+		return ""
+	}
+	return ""
+}
+
+// otherGCPCredentialMounted reports whether a host_files entry other than
+// ${GOOGLE_APPLICATION_CREDENTIALS} is copied and holds a GCP credential file.
+func otherGCPCredentialMounted(h *harness.Harness) bool {
+	for _, hf := range h.HostFiles {
+		if path, copied := hostFileSource(hf); hf.Src != "${GOOGLE_APPLICATION_CREDENTIALS}" && copied && validateExistingGCPCredentialFile(path) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // runPreScript executes the harness pre-script with the pre-script output
@@ -6489,6 +6626,64 @@ func mergeProviderDefs(localDefs []harness.ProviderDef, urlProviders []resolve.R
 	return allDefs, shadowed
 }
 
+// builtinProviderNames are the provider names fullsend ships an embedded
+// definition and profile for (internal/scaffold/fullsend-repo/providers,
+// internal/scaffold/fullsend-repo/profiles). A bare name in a harness's
+// providers: list that matches one of these resolves to the embedded
+// provider definition (appendEmbeddedProviderDefs); the profile id the
+// definition declares, "fullsend-"+name, is reserved for the embedded copy
+// of the profile (#7268 — see isReservedProfileID, rejectReservedProfileID,
+// warnReservedProviderNameOverrides, ensureEmbeddedProfile).
+var builtinProviderNames = []string{
+	"vertex-ai", "github", "github-ro", "github-artifacts",
+	"gitleaks", "package-registries", "atlassian-cloud", "openai",
+}
+
+// isBuiltinProviderName reports whether name is one fullsend ships an
+// embedded provider definition for.
+func isBuiltinProviderName(name string) bool {
+	return slices.Contains(builtinProviderNames, name)
+}
+
+// isReservedProfileID reports whether id is the profile id fullsend's
+// embedded copy of a builtin provider's profile declares.
+func isReservedProfileID(id string) bool {
+	for _, n := range builtinProviderNames {
+		if "fullsend-"+n == id {
+			return true
+		}
+	}
+	return false
+}
+
+// warnReservedProviderNameOverrides warns about every provider definition
+// the run uses under a name fullsend ships an embedded definition for:
+// a file in the workspace's providers/ directory, a path-form harness entry
+// (what agent new wrote on v0.44.0), or a URL-resolved one. The name is
+// reserved so a stale copy can never silently shadow a fix shipped in the
+// binary (#7268, #7973). For one release the copy is still used and this
+// only warns; a later release makes it an error.
+func warnReservedProviderNameOverrides(localDefs []harness.ProviderDef, resolved []resolve.ResolvedProvider, printer *ui.Printer) {
+	warn := func(name, source string) {
+		if isBuiltinProviderName(name) {
+			printer.StepWarn(fmt.Sprintf("provider %q: the name is reserved for the definition built into fullsend, and a future release rejects %s. It is still used for now. Declare the bare name %q and delete the copy, or rename it to a name fullsend does not ship", name, source, name))
+		}
+	}
+	for _, d := range localDefs {
+		warn(d.Name, "the copy in the workspace providers/ directory")
+	}
+	for _, rp := range resolved {
+		if rp.FromURL {
+			warn(rp.Def.Name, "the URL-resolved copy")
+		} else {
+			// A repository file name must not inject log lines (%q escapes
+			// newlines and control characters) or a legacy "##[" workflow
+			// command, which the runner matches anywhere in a line.
+			warn(rp.Def.Name, "the copy at "+strings.ReplaceAll(fmt.Sprintf("%q", rp.LocalPath), "##[", `#\#[`))
+		}
+	}
+}
+
 // rejectReservedProfileID fails when the run resolved a provider profile
 // whose id the runner reserves for its embedded copy. Directory profiles
 // are not checked because they are no longer imported (#7095).
@@ -6499,6 +6694,27 @@ func rejectReservedProfileID(id string, resolved []resolve.ResolvedProfile) erro
 		}
 	}
 	return nil
+}
+
+// warnReservedProfileCopies warns once for each reserved profile id that
+// the harness lists its own copy of (openshell.profiles, by path or URL),
+// whether or not a provider in this run uses it, and returns those ids.
+// For one release the listed copy stays live: the caller does not import
+// the embedded profile over it. fullsend-openai is skipped here because it
+// is already an error (rejectReservedProfileID) (#7268).
+func warnReservedProfileCopies(resolved []resolve.ResolvedProfile, printer *ui.Printer) map[string]struct{} {
+	listed := make(map[string]struct{})
+	for _, rp := range resolved {
+		if rp.ID == openAIProviderType || !isReservedProfileID(rp.ID) {
+			continue
+		}
+		if _, seen := listed[rp.ID]; seen {
+			continue
+		}
+		listed[rp.ID] = struct{}{}
+		printer.StepWarn(fmt.Sprintf("provider profile %q will be rejected in a future release: the id is reserved for the copy built into fullsend. Your copy is still used for now. Remove it from openshell.profiles and declare the bare provider name %q instead", rp.ID, strings.TrimPrefix(rp.ID, "fullsend-")))
+	}
+	return listed
 }
 
 // appendEmbeddedProviderDefs adds the scaffold's embedded definition for
@@ -6530,13 +6746,17 @@ func appendEmbeddedProviderDefs(localDefs []harness.ProviderDef, resolved []reso
 			continue // not a scaffold-shipped provider; the caller warns
 		}
 		def, err := harness.ParseProviderDef(data)
-		if err != nil || def.Name != name || !strings.EqualFold(def.Type, openAIProviderType) {
-			// Only the OpenAI definition is filled in: its credential is
-			// resolved by the runner, so the file carries no secret reference
-			// and the embedded copy is exactly what CI layers in. The other
-			// scaffold providers keep their existing "no definition" warning.
+		if err != nil || def.Name != name {
 			continue
 		}
+		// Filling in an embedded definition is safe even when it carries a
+		// ${VAR} credential reference (github, github-ro: GH_TOKEN). The
+		// reference is fixed in this binary, not supplied by the repository
+		// or a URL, so it is created with fromURL=false like any local
+		// definition; it expands from the operator's own environment; and in
+		// CI it is byte-identical to the copy workspace preparation used to
+		// layer in. OpenAI's credential is resolved in process instead
+		// (ensureOpenAIProvider) (#7268).
 		printer.StepInfo(fmt.Sprintf("Provider %q: using the definition shipped with fullsend (no providers/%s.yaml in the workspace)", name, name))
 		localDefs = append(localDefs, def)
 		have[name] = true
@@ -6637,9 +6857,10 @@ func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profile
 	var mismatches []string
 	for _, rp := range providers {
 		// Profile types the runner imports from its embedded scaffold
-		// itself (ensureOpenAIProfile) are known even when nothing on disk
+		// itself (ensureEmbeddedProfile) are known even when nothing on disk
 		// declares them.
-		if strings.EqualFold(rp.Def.Type, openAIProviderType) {
+		// The OpenAI path normalizes the spelling; the others must match.
+		if strings.EqualFold(rp.Def.Type, openAIProviderType) || isReservedProfileID(rp.Def.Type) {
 			continue
 		}
 		if !profileIDs[rp.Def.Type] {

@@ -21,6 +21,14 @@ case "${CI_DEBUG_TRACE:-}" in
     ;;
 esac
 
+# Clear the webhook fast-path credentials. GitLab injects the protected
+# FULLSEND_TRIGGER_TOKEN (a bearer that starts default-branch pipelines)
+# and FULLSEND_WEBHOOK_SECRET into every protected-branch job, and no
+# agent step needs either: they exist only for the webhook and its
+# provisioning. Unset them before any later code, including the agent's
+# host-side scripts, can read them.
+unset FULLSEND_TRIGGER_TOKEN FULLSEND_WEBHOOK_SECRET
+
 # Pin job/pipeline/project identity to the CI_JOB_TOKEN job record
 # and admit only source=api. Disjoint from the poller (schedule) and
 # the dispatcher (trigger, #7771). Runs before any PAT-bearing call.
@@ -47,12 +55,6 @@ fi
 FULLSEND_PINNED_API_V4_URL="${FULLSEND_PINNED_GITLAB_URL}/api/v4"
 
 # Back-link to the poll job that dispatched this pipeline
-if [ -n "${FULLSEND_POLL_JOB_URL:-}" ]; then
-  case "${FULLSEND_POLL_JOB_URL}" in
-    https://*) echo "Dispatched by: ${FULLSEND_POLL_JOB_URL}" ;;
-    *) echo "WARNING: FULLSEND_POLL_JOB_URL is not a valid HTTPS URL — ignoring" ;;
-  esac
-fi
 
 # Inference credential setup — write a file-based credential config
 # for Vertex AI so GOOGLE_APPLICATION_CREDENTIALS is available in the
@@ -81,6 +83,22 @@ INFERENCECRED
   export GOOGLE_CLOUD_PROJECT="${FULLSEND_GCP_PROJECT_ID}"
   export GCP_OIDC_TOKEN_FILE="${OIDC_TOKEN_FILE}"
 fi
+
+# OpenAI static key (inference.auth openai-api-key) — `fullsend repos
+# install` writes FULLSEND_OPENAI_API_KEY as a masked CI/CD variable.
+# Map it to OPENAI_API_KEY, the name the fullsend CLI reads on the host.
+# There is deliberately no fallback to an unprefixed OPENAI_API_KEY
+# CI/CD variable (it may be shared with unrelated jobs): when
+# FULLSEND_OPENAI_API_KEY is unset, any inherited OPENAI_API_KEY is
+# cleared so it cannot satisfy the credential check. The prefixed name is
+# unset after mapping so the real key is exported under only one name,
+# which the runner treats as runner-only (oidcDenyKeys).
+if [ -n "${FULLSEND_OPENAI_API_KEY:-}" ]; then
+  export OPENAI_API_KEY="${FULLSEND_OPENAI_API_KEY}"
+else
+  unset OPENAI_API_KEY
+fi
+unset FULLSEND_OPENAI_API_KEY
 
 # Bootstrap identity for the pre-verification calls below (resource
 # group PUT, pipeline-metadata GET, bot-identity /user call): select
@@ -232,6 +250,13 @@ fi
 # it is kept explicit as a second, independent guard against a
 # role-specific credential ever being selected on an unverified STAGE.
 if [ "${DISPATCH_VERIFIED}" = "true" ]; then
+  # Never log caller-controlled metadata before creator/HMAC authentication.
+  if [ -n "${FULLSEND_POLL_JOB_URL:-}" ]; then
+    case "${FULLSEND_POLL_JOB_URL}" in
+      https://*) echo "Dispatched by: ${FULLSEND_POLL_JOB_URL}" ;;
+      *) echo "WARNING: FULLSEND_POLL_JOB_URL is not a valid HTTPS URL — ignoring" ;;
+    esac
+  fi
   # shellcheck disable=SC2034  # consumed by sourced select-gitlab-role-token.sh
   FULLSEND_JOB_KIND=agent
   FULLSEND_JOB_AGENT="${STAGE:-}"
@@ -642,7 +667,7 @@ if [ "${STAGE}" = "code" ] || [ "${STAGE}" = "fix" ] || [ "${STAGE}" = "review" 
 fi
 
 # Pre-fetch review body for the fix agent — equivalent to the
-# "Pre-fetch review body" step in reusable-fix.yml. Queries the
+# "Pre-fetch review body" step in the fix job of reusable-dispatch.yml. Queries the
 # GitLab Notes API for the last review bot comment, validates
 # size and non-empty for bot-triggered runs, and exports
 # REVIEW_BODY_FILE for the harness.
@@ -766,8 +791,8 @@ if [ "${STAGE}" = "fix" ]; then
   export REVIEW_BODY_FILE
 
   # Fix-stage environment variables — equivalent to the env vars
-  # set by reusable-fix.yml's "Extract PR number and context",
-  # "Record pre-agent HEAD", and "Run fix agent" steps. These are
+  # set by the fix job in reusable-dispatch.yml ("Extract PR number and context",
+  # "Record pre-agent HEAD", and "Run fix agent" steps). These are
   # required by the fix harness env.runner and forge.gitlab blocks.
 
   # Target branch (MR base branch). This job's admit source is
@@ -835,7 +860,7 @@ if [ "${STAGE}" = "fix" ]; then
   # Human instruction — extracted from the /fs-fix note body in
   # the event payload. Default to "none" so the env var is always
   # non-empty (the fullsend binary rejects empty runner_env values).
-  # Bot-triggered runs always get "none" (matching reusable-fix.yml).
+  # Bot-triggered runs always get "none" (matching the fix job in reusable-dispatch.yml).
   HUMAN_INSTRUCTION="none"
   if [ "${_IS_BOT_TRIGGER}" != "true" ] && [ -n "${EVENT_PAYLOAD_B64:-}" ]; then
     _NOTE_BODY=$(printf '%s' "${EVENT_PAYLOAD_B64}" | base64 -d \

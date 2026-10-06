@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 )
@@ -95,18 +96,16 @@ const (
 	// masked, protected CI/CD variable. Never logged.
 	SecretWebhookSecret = "FULLSEND_WEBHOOK_SECRET"
 
-	// Opt-in OpenAI static-key secret (ADR 0092), GitHub only: never part
-	// of requiredSecrets/requiredSecretsForForge — a repository with no
-	// OpenAI WIF and no static key configured is not unhealthy. Uninstall
-	// deletes it if present so a torn-down repo doesn't keep a long-lived
-	// key around. It's a dedicated, FULLSEND_-namespaced secret (via
-	// `fullsend github set` or pasted directly into GitHub settings)
-	// fullsend can safely delete regardless of who created it — unlike
+	// OpenAI static-key secret (ADR 0092). `fullsend repos install`
+	// writes it on GitHub and GitLab for repositories whose inference.auth
+	// is openai-api-key, and probe/converge require it for those repos
+	// only — it is never part of requiredSecrets/requiredSecretsForForge.
+	// GitHub uninstall deletes it if present so a torn-down repo doesn't
+	// keep a long-lived key around. GitLab CI maps it to OPENAI_API_KEY
+	// for the job. GitLab uninstall deletes this prefixed key too;
 	// GitLab's unprefixed, potentially-shared OPENAI_API_KEY CI/CD
-	// variable, which fullsend never forwards and does not delete on
-	// uninstall — see gitlabUninstallSecrets
-	// in internal/repos/uninstall.go for why that one is deliberately not
-	// deleted.
+	// variable is no longer read by the job and is never deleted — see
+	// gitlabUninstallSecrets in internal/repos/uninstall.go.
 	SecretOpenAIAPIKey = "FULLSEND_OPENAI_API_KEY"
 
 	// Legacy uninstall-only variables — GitLab.
@@ -302,6 +301,26 @@ func IsNotSupported(err error) bool {
 	return errors.Is(err, ErrNotSupported)
 }
 
+// SecretProtection describes the exposure controls on an existing repo
+// secret. Forges that always encrypt and mask secrets report both true.
+type SecretProtection struct {
+	// Exists reports whether the secret is present.
+	Exists bool
+	// Masked reports that the forge redacts the value in job logs.
+	Masked bool
+	// Protected reports that the value is only exposed to jobs on
+	// protected branches and tags.
+	Protected bool
+	// FileType reports that the secret is a file-type variable, whose
+	// value jobs receive as a temporary file path rather than the value.
+	// Forges without variable types always report false.
+	FileType bool
+	// EnvironmentScoped reports that the secret is limited to specific
+	// environments, so jobs that declare no environment do not receive
+	// it. Forges without environment scopes always report false.
+	EnvironmentScoped bool
+}
+
 // Repository represents a repository on a git forge.
 type Repository struct {
 	ID            int64
@@ -311,6 +330,10 @@ type Repository struct {
 	Private       bool
 	Archived      bool
 	Fork          bool
+	// CIConfigPath is the project's configured CI configuration path, as
+	// reported by GitLab (ci_config_path). Empty means the default
+	// .gitlab-ci.yml at the repository root. Other forges leave it empty.
+	CIConfigPath string
 }
 
 // ChangeProposal represents a pull request or merge request.
@@ -495,7 +518,7 @@ type Installation struct {
 	Permissions   map[string]string
 }
 
-// OrgVariable is an org-level GitHub Actions variable.
+// OrgVariable is a GitHub organization variable or an inherited GitLab group variable.
 type OrgVariable struct {
 	Name  string
 	Value string
@@ -535,11 +558,34 @@ func FormatSignOffTrailer(name, email string) (string, error) {
 // Mode controls file permissions: "100644" for regular files,
 // "100755" for executable files (e.g., shell scripts).
 // When Delete is true, the file is removed from the tree.
+//
+// Large binaries (e.g. a vendored CLI) should set LocalPath instead of
+// Content so callers do not hold the full payload in memory between
+// collection and CommitFiles. Forge clients stream or read LocalPath at
+// commit time. When LocalPath is set, Content is ignored.
 type TreeFile struct {
-	Path    string
-	Content []byte
-	Mode    string // "100644" or "100755"
-	Delete  bool   // remove file from tree instead of adding/updating
+	Path      string
+	Content   []byte
+	LocalPath string // stream from this filesystem path instead of Content
+	Mode      string // "100644" or "100755"
+	Delete    bool   // remove file from tree instead of adding/updating
+}
+
+// Bytes returns the file payload. LocalPath, when set, is read from disk
+// so callers can keep large binaries out of TreeFile.Content. Delete
+// entries have no payload.
+func (f TreeFile) Bytes() ([]byte, error) {
+	if f.Delete {
+		return nil, nil
+	}
+	if f.LocalPath != "" {
+		data, err := os.ReadFile(f.LocalPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", f.LocalPath, err)
+		}
+		return data, nil
+	}
+	return f.Content, nil
 }
 
 // DirectoryEntry represents a file or subdirectory in a repository directory listing.
@@ -773,8 +819,17 @@ type Client interface {
 	IsInstallationToken(ctx context.Context) (bool, error)
 
 	// Secrets and variables
+	//
+	// On GitLab, RepoSecretExists, GetRepoSecretProtection, and
+	// DeleteRepoSecret address only the wildcard-scoped (environment_scope
+	// "*") variable; an environment-specific variable with the same key is
+	// ignored and left untouched. ListRepoVariables returns the
+	// wildcard-scoped value when a key exists for several scopes.
 	CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
+	// GetRepoSecretProtection reports whether a repo secret exists and the
+	// masking/protection controls applied to it. It never returns the value.
+	GetRepoSecretProtection(ctx context.Context, owner, repo, name string) (SecretProtection, error)
 	DeleteRepoSecret(ctx context.Context, owner, repo, name string) error
 	CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error
 	RepoVariableExists(ctx context.Context, owner, repo, name string) (bool, error)
@@ -782,28 +837,22 @@ type Client interface {
 	ListRepoVariables(ctx context.Context, owner, repo string) (map[string]string, error)
 	DeleteRepoVariable(ctx context.Context, owner, repo, name string) error
 
-	// Org-level secrets (for cross-repo dispatch tokens)
-	CreateOrgSecret(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
+	// Org-level secrets (cleanup of legacy dispatch tokens)
 	OrgSecretExists(ctx context.Context, org, name string) (bool, error)
 	DeleteOrgSecret(ctx context.Context, org, name string) error
-	SetOrgSecretRepos(ctx context.Context, org, name string, repoIDs []int64) error
-	// GetOrgSecretRepos returns the list of repository IDs that have access
-	// to the given org-level secret.
-	GetOrgSecretRepos(ctx context.Context, org, name string) ([]int64, error)
 
-	// Org-level variables (for dispatch function URL)
-	CreateOrUpdateOrgVariable(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
+	// Org-level variables (foreign-mint authorization and mint discovery)
 	// CreateOrUpdateOrgVariableAll creates or updates an org-wide Actions variable
 	// (visibility all). Used for mint FOREIGN policy variables read via the org API.
 	CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error
-	OrgVariableExists(ctx context.Context, org, name string) (bool, error)
 	GetOrgVariable(ctx context.Context, org, name string) (value string, exists bool, err error)
 	ListOrgVariables(ctx context.Context, org string) ([]OrgVariable, error)
+	// ListInstanceVariables lists the names of instance-level CI/CD variables
+	// (self-managed GitLab). Forges without instance-level variables, or
+	// where the caller cannot inspect them, return an error; ErrForbidden
+	// means the caller lacks the access to inspect them.
+	ListInstanceVariables(ctx context.Context) ([]OrgVariable, error)
 	DeleteOrgVariable(ctx context.Context, org, name string) error
-	SetOrgVariableRepos(ctx context.Context, org, name string, repoIDs []int64) error
-	// GetOrgVariableRepos returns the list of repository IDs that have access
-	// to the given org-level variable.
-	GetOrgVariableRepos(ctx context.Context, org, name string) ([]int64, error)
 
 	// CI/Workflow operations
 	GetWorkflow(ctx context.Context, owner, repo, workflowFile string) (*Workflow, error)
@@ -865,6 +914,14 @@ type Client interface {
 	// ListPullRequestFiles returns the relative file paths changed by a pull
 	// request. On GitHub, the API caps results at 3000 files total.
 	ListPullRequestFiles(ctx context.Context, owner, repo string, number int) ([]string, error)
+	// ListPullRequestCommits returns the commit SHAs on a pull request,
+	// oldest first. The result is the pull request's current commit list,
+	// not a historical record: force-pushing or rebasing the head branch
+	// can replace it, and the first entry is the commit the PR was opened
+	// with only while the PR has not been rewritten (and, for a
+	// multi-commit PR, the PR opens at its last commit). On GitHub the
+	// API caps results at 250 commits.
+	ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error)
 	// ListPullRequestFileDiffs returns the files changed by a pull request
 	// along with their unified diff patches. Use this when you need to
 	// determine which lines are within diff hunks (e.g. for inline comments).
@@ -889,6 +946,13 @@ type Client interface {
 
 	// Workflow run listing
 	ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]WorkflowRun, error)
+	// ListWorkflowRunsSince returns workflow runs for workflowFile created at
+	// or after since, paginating as needed rather than returning only the
+	// newest page. Use this instead of ListWorkflowRuns when the caller must
+	// not miss an older-but-still-eligible run that newer runs (including
+	// ones for other agents) could otherwise push off the first page (#7996
+	// review).
+	ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time) ([]WorkflowRun, error)
 	// ListRecentWorkflowRuns returns recent workflow runs across all workflows.
 	ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]WorkflowRun, error)
 
@@ -921,6 +985,20 @@ type Client interface {
 	// GitLab uses these access levels to decide who may create pipelines
 	// for the ref. GitHub returns ErrNotSupported.
 	GetProtectedBranch(ctx context.Context, owner, repo, branch string) (*ProtectedBranchRule, error)
+
+	// ListProtectedBranches returns every protected-branch rule on the
+	// project, including wildcard patterns (Name is the rule's pattern).
+	// GitLab webhook readiness uses it to see which refs a project-wide
+	// pipeline trigger token could start pipelines on. GitHub returns
+	// ErrNotSupported.
+	ListProtectedBranches(ctx context.Context, owner, repo string) ([]ProtectedBranchRule, error)
+
+	// ListProtectedTags returns the name or wildcard pattern of every
+	// protected-tag rule on the project. GitLab pipeline trigger tokens can
+	// target tag refs as well as branches, so webhook readiness uses it to
+	// see which tag refs the token could start pipelines on. GitHub returns
+	// ErrNotSupported.
+	ListProtectedTags(ctx context.Context, owner, repo string) ([]string, error)
 
 	// GrantProtectedBranchMergeUser grants userID merge access on a
 	// protected branch. Idempotent if the user already has merge or push
@@ -961,6 +1039,11 @@ type Client interface {
 
 	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
 	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
+	// GetPipelineSchedule includes variables omitted by GitLab's list endpoint.
+	GetPipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) (*PipelineSchedule, error)
+	// DeletePipelineScheduleVariable deletes one schedule-level variable from
+	// an existing pipeline schedule. GitHub returns ErrNotSupported.
+	DeletePipelineScheduleVariable(ctx context.Context, owner, repo string, scheduleID int64, key string) error
 	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
 	// UpdatePipelineSchedule sets whether an existing pipeline schedule is
 	// active. Used to reactivate required GitLab schedules that exist but
@@ -986,6 +1069,12 @@ type Client interface {
 	// RevokePipelineTriggerToken deletes a trigger token by ID.
 	// Returns ErrNotFound if the token does not exist.
 	RevokePipelineTriggerToken(ctx context.Context, owner, repo string, tokenID int64) error
+	// GetProjectMemberAccessLevel returns userID's effective access level
+	// on owner/repo, including membership inherited from groups (GitLab
+	// /projects/:id/members/all/:user_id). Returns ErrNotFound when the
+	// user has no access. Used to verify a trigger token owner's runtime
+	// privilege; see the GitLabAccessLevel constants.
+	GetProjectMemberAccessLevel(ctx context.Context, owner, repo string, userID int64) (int, error)
 
 	// CreateProjectHook creates a project webhook with the given URL,
 	// secret token, and event filters.
@@ -1136,11 +1225,23 @@ type PipelineSchedule struct {
 // PipelineTriggerToken is a GitLab pipeline trigger token.
 // Token is populated only in the CreatePipelineTriggerToken response;
 // list responses omit it.
+//
+// OwnerID is the numeric ID of the user the token acts as (GitLab runs
+// trigger pipelines with the owner's permissions); 0 means the owner is
+// unknown, which callers must treat as unverifiable.
 type PipelineTriggerToken struct {
 	ID          int64
 	Description string
 	Token       string
+	OwnerID     int64
 }
+
+// GitLab project access levels (members API access_level).
+const (
+	GitLabAccessLevelDeveloper  = 30
+	GitLabAccessLevelMaintainer = 40
+	GitLabAccessLevelOwner      = 50
+)
 
 // ProjectHook is a GitLab project webhook. Token is write-only:
 // GitLab never returns the secret on list or update responses.
@@ -1168,6 +1269,20 @@ type ProjectHook struct {
 	// On write, the GitLab client always enforces true regardless of
 	// this field's value: Fullsend never disables TLS verification.
 	EnableSSLVerification bool
+	// AlertStatus is GitLab's reported delivery state on read ("executable",
+	// "temporarily_disabled", or "disabled"); "" when the server does not
+	// report it. It is never sent on write.
+	AlertStatus string
+	// DisabledUntil is the RFC 3339 time a temporarily disabled hook is
+	// retried, or "" when the hook is not temporarily disabled. Read only.
+	DisabledUntil string
+}
+
+// HookDeliveryDisabled reports whether GitLab has permanently disabled
+// delivery for the hook after repeated failures. Such a hook stays
+// configured but never fires until it is re-enabled or recreated.
+func (h ProjectHook) HookDeliveryDisabled() bool {
+	return h.AlertStatus == "disabled"
 }
 
 // OrgMembership is a user's membership in a GitHub organization.

@@ -16,6 +16,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -288,26 +289,44 @@ func withHeader(key, value string) requestHeader {
 
 // do performs an HTTP request against the GitHub API with retry on rate limits.
 func (c *LiveClient) do(ctx context.Context, method, path string, body any, headers ...requestHeader) (*http.Response, error) {
-	url := c.baseURL + path
-
-	var bodyData []byte
+	var open func() (io.ReadCloser, error)
+	var length int64
 	if body != nil {
-		var err error
-		bodyData, err = json.Marshal(body)
+		bodyData, err := json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("marshal request body: %w", err)
 		}
+		length = int64(len(bodyData))
+		open = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(bodyData)), nil
+		}
 	}
+	return c.doRequest(ctx, method, path, length, open, headers...)
+}
+
+func (c *LiveClient) doRequest(ctx context.Context, method, path string, contentLength int64, open func() (io.ReadCloser, error), headers ...requestHeader) (*http.Response, error) {
+	url := c.baseURL + path
 
 	for attempt := range maxRetries {
 		var reqBody io.Reader
-		if bodyData != nil {
-			reqBody = bytes.NewReader(bodyData)
+		if open != nil {
+			rc, err := open()
+			if err != nil {
+				return nil, err
+			}
+			reqBody = rc
 		}
 
 		req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
 		if err != nil {
+			if closer, ok := reqBody.(io.Closer); ok {
+				_ = closer.Close()
+			}
 			return nil, fmt.Errorf("create request: %w", err)
+		}
+		if open != nil {
+			req.ContentLength = contentLength
+			req.GetBody = open
 		}
 
 		if c.token != "" {
@@ -315,7 +334,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any, head
 		}
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-		if body != nil {
+		if open != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
 		for _, h := range headers {
@@ -327,6 +346,9 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any, head
 			c.observeRateLimit(resp.Header)
 		}
 		if err != nil {
+			if closer, ok := reqBody.(io.Closer); ok {
+				_ = closer.Close()
+			}
 			// If the caller's context is done, propagate immediately
 			// — retrying is pointless when the parent has cancelled.
 			if ctx.Err() != nil {
@@ -1298,6 +1320,8 @@ func (c *LiveClient) getCommitTreeSHA(ctx context.Context, owner, repo, commitSH
 // all files already match the current tree (idempotent).
 // Text files are embedded as UTF-8 tree content. Binary files (e.g.
 // vendored ELF) are uploaded via the Git Blob API and referenced by SHA.
+// TreeFile.LocalPath is hashed and streamed from disk so callers do not
+// have to buffer the payload in TreeFile.Content.
 //
 // Returns forge.ErrBranchProtected (wrapped) when the ref update fails
 // with a 422, which indicates branch protection rules prevent direct pushes.
@@ -1426,7 +1450,10 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 			continue
 		}
 
-		expectedSHA := blobSHA(f.Content)
+		expectedSHA, err := treeFileBlobSHA(f)
+		if err != nil {
+			return false, fmt.Errorf("hash %s: %w", f.Path, err)
+		}
 		info, exists := existing[f.Path]
 		if exists && info.sha == expectedSHA && info.mode == f.Mode {
 			continue
@@ -1437,14 +1464,15 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 			"mode": f.Mode,
 			"type": "blob",
 		}
-		if utf8.Valid(f.Content) {
+		inlineText := f.LocalPath == "" && utf8.Valid(f.Content)
+		if inlineText {
 			entry["content"] = string(f.Content)
 		} else {
 			blobSHAValue := expectedSHA
 			if exists && info.sha == expectedSHA {
 				blobSHAValue = info.sha
 			} else {
-				createdSHA, err := c.createBlob(ctx, owner, repo, f.Content)
+				createdSHA, err := c.createBlobForFile(ctx, owner, repo, f)
 				if err != nil {
 					return false, fmt.Errorf("create blob for %s: %w", f.Path, err)
 				}
@@ -1714,6 +1742,42 @@ func blobSHA(content []byte) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+func blobSHAReader(r io.Reader, size int64) (string, error) {
+	h := sha1.New()
+	fmt.Fprintf(h, "blob %d\x00", size)
+	if _, err := io.Copy(h, r); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+func blobSHAFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	return blobSHAReader(f, info.Size())
+}
+
+func treeFileBlobSHA(f forge.TreeFile) (string, error) {
+	if f.LocalPath != "" {
+		return blobSHAFile(f.LocalPath)
+	}
+	return blobSHA(f.Content), nil
+}
+
+func (c *LiveClient) createBlobForFile(ctx context.Context, owner, repo string, f forge.TreeFile) (string, error) {
+	if f.LocalPath != "" {
+		return c.createBlobFromFile(ctx, owner, repo, f.LocalPath)
+	}
+	return c.createBlob(ctx, owner, repo, f.Content)
+}
+
 func (c *LiveClient) createBlob(ctx context.Context, owner, repo string, content []byte) (string, error) {
 	payload := map[string]string{
 		"content":  base64.StdEncoding.EncodeToString(content),
@@ -1723,6 +1787,33 @@ func (c *LiveClient) createBlob(ctx context.Context, owner, repo string, content
 	if err != nil {
 		return "", fmt.Errorf("create blob: %w", err)
 	}
+	return decodeBlobSHA(resp)
+}
+
+func (c *LiveClient) createBlobFromFile(ctx context.Context, owner, repo, path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("stat blob file: %w", err)
+	}
+	length := blobJSONLength(info.Size())
+	open := func() (io.ReadCloser, error) {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		return newBlobJSONReadCloser(f), nil
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/git/blobs", owner, repo), length, open)
+	if err != nil {
+		return "", fmt.Errorf("create blob: %w", err)
+	}
+	if err := checkStatus(resp, http.StatusOK, http.StatusCreated); err != nil {
+		return "", err
+	}
+	return decodeBlobSHA(resp)
+}
+
+func decodeBlobSHA(resp *http.Response) (string, error) {
 	var blob struct {
 		SHA string `json:"sha"`
 	}
@@ -2616,6 +2707,17 @@ func (c *LiveClient) RepoSecretExists(ctx context.Context, owner, repo, name str
 	return false, &APIError{StatusCode: resp.StatusCode, Message: "unexpected status checking secret"}
 }
 
+// GetRepoSecretProtection reports whether a repository Actions secret
+// exists. GitHub encrypts secrets and masks them in logs, and they have no
+// branch-protection scoping, so an existing secret reports both controls.
+func (c *LiveClient) GetRepoSecretProtection(ctx context.Context, owner, repo, name string) (forge.SecretProtection, error) {
+	exists, err := c.RepoSecretExists(ctx, owner, repo, name)
+	if err != nil || !exists {
+		return forge.SecretProtection{}, err
+	}
+	return forge.SecretProtection{Exists: true, Masked: true, Protected: true}, nil
+}
+
 // CreateOrUpdateRepoVariable creates or updates a repository Actions variable.
 func (c *LiveClient) CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error {
 	payload := map[string]string{
@@ -3378,6 +3480,32 @@ func (c *LiveClient) ListPullRequestFiles(ctx context.Context, owner, repo strin
 	return files, nil
 }
 
+// ListPullRequestCommits returns the commit SHAs on a pull request,
+// oldest first (the order GitHub's API reports them in). GitHub caps PR
+// commit lists at 250 commits regardless of pagination.
+func (c *LiveClient) ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error) {
+	var shas []string
+	for page := 1; page <= 3; page++ {
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100&page=%d", owner, repo, number, page))
+		if err != nil {
+			return nil, fmt.Errorf("list pull request commits page %d: %w", page, err)
+		}
+		var raw []struct {
+			SHA string `json:"sha"`
+		}
+		if err := decodeJSON(resp, &raw); err != nil {
+			return nil, fmt.Errorf("decoding pull request commits page %d: %w", page, err)
+		}
+		for _, cm := range raw {
+			shas = append(shas, cm.SHA)
+		}
+		if len(raw) < 100 {
+			break
+		}
+	}
+	return shas, nil
+}
+
 // ListPullRequestFileDiffs returns the files changed by a pull request
 // along with their unified diff patches. Same API endpoint as
 // ListPullRequestFiles but also extracts the patch field.
@@ -3633,6 +3761,62 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 	return runs, nil
 }
 
+// ListWorkflowRunsSince returns workflow runs for workflowFile created at or
+// after since, paginating through as many 100-per-page requests as needed
+// instead of ListWorkflowRuns's single per_page=10 request. GitHub orders
+// runs newest-first, so once a page's run was created before since (or a
+// short page signals the end of the listing), earlier pages cannot contain
+// anything newer and pagination stops. Without this, earliest-round
+// selection (harnessRoundPollOnce) could miss an eligible, unconsumed run
+// that ten newer harness runs — for this agent or others — pushed past the
+// first page (#7996 review).
+func (c *LiveClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time) ([]forge.WorkflowRun, error) {
+	const maxPages = 100
+	const perPage = 100
+	var all []forge.WorkflowRun
+	for page := 1; page <= maxPages; page++ {
+		var result struct {
+			WorkflowRuns []struct {
+				ID         int    `json:"id"`
+				Name       string `json:"name"`
+				Event      string `json:"event"`
+				Status     string `json:"status"`
+				Conclusion string `json:"conclusion"`
+				HTMLURL    string `json:"html_url"`
+				CreatedAt  string `json:"created_at"`
+			} `json:"workflow_runs"`
+		}
+		path := fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?per_page=%d&page=%d",
+			url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(workflowFile), perPage, page)
+		if err := c.getCachedJSON(ctx, path, &result); err != nil {
+			return nil, fmt.Errorf("list workflow runs since page %d: %w", page, err)
+		}
+		if len(result.WorkflowRuns) == 0 {
+			return all, nil
+		}
+		reachedBoundary := false
+		for _, r := range result.WorkflowRuns {
+			if runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt); parseErr == nil && runTime.Before(since) {
+				reachedBoundary = true
+				break
+			}
+			all = append(all, forge.WorkflowRun{
+				ID:         r.ID,
+				Name:       r.Name,
+				Event:      r.Event,
+				Status:     r.Status,
+				Conclusion: r.Conclusion,
+				HTMLURL:    r.HTMLURL,
+				CreatedAt:  r.CreatedAt,
+			})
+		}
+		if reachedBoundary || len(result.WorkflowRuns) < perPage {
+			return all, nil
+		}
+	}
+	return nil, fmt.Errorf("list workflow runs since: pagination exceeded %d pages", maxPages)
+}
+
 // ListRecentWorkflowRuns returns recent workflow runs across all workflows.
 func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]forge.WorkflowRun, error) {
 	if perPage <= 0 {
@@ -3670,29 +3854,54 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 	return runs, nil
 }
 
-// ListWorkflowRunJobs returns the jobs within a workflow run.
+// ListWorkflowRunJobs returns the jobs within a workflow run, paginating
+// through as many 100-per-page requests as needed. A single
+// per_page=100 request only ever returns the first page, so a run with
+// more than 100 jobs (e.g. a large matrix build) could silently drop
+// jobs beyond that page. Earliest-round selection
+// (harnessRoundPollOnce) relies on this listing to find an agent's job
+// within a run; a truncated listing could make it treat the agent as
+// absent from the earliest eligible run and fall through to a later
+// run instead (#7996 review).
+//
+// owner and repo are escaped with url.PathEscape, as ListWorkflowRunsSince
+// already does, since an unescaped delimiter (e.g. "#") would otherwise let
+// the jobs suffix and pagination query be parsed as part of the path/query
+// rather than a fragment (#7996 review).
 func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
-	var result struct {
-		Jobs []struct {
-			ID         int    `json:"id"`
-			Name       string `json:"name"`
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-		} `json:"jobs"`
-	}
-	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", owner, repo, runID), &result); err != nil {
-		return nil, fmt.Errorf("list workflow run jobs: %w", err)
-	}
-	jobs := make([]forge.WorkflowJob, len(result.Jobs))
-	for i, j := range result.Jobs {
-		jobs[i] = forge.WorkflowJob{
-			ID:         j.ID,
-			Name:       j.Name,
-			Status:     j.Status,
-			Conclusion: j.Conclusion,
+	const maxPages = 100
+	const perPage = 100
+	var jobs []forge.WorkflowJob
+	for page := 1; page <= maxPages; page++ {
+		var result struct {
+			Jobs []struct {
+				ID         int    `json:"id"`
+				Name       string `json:"name"`
+				Status     string `json:"status"`
+				Conclusion string `json:"conclusion"`
+			} `json:"jobs"`
+		}
+		path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=%d&page=%d",
+			url.PathEscape(owner), url.PathEscape(repo), runID, perPage, page)
+		if err := c.getCachedJSON(ctx, path, &result); err != nil {
+			return nil, fmt.Errorf("list workflow run jobs page %d: %w", page, err)
+		}
+		if len(result.Jobs) == 0 {
+			return jobs, nil
+		}
+		for _, j := range result.Jobs {
+			jobs = append(jobs, forge.WorkflowJob{
+				ID:         j.ID,
+				Name:       j.Name,
+				Status:     j.Status,
+				Conclusion: j.Conclusion,
+			})
+		}
+		if len(result.Jobs) < perPage {
+			return jobs, nil
 		}
 	}
-	return jobs, nil
+	return nil, fmt.Errorf("list workflow run jobs: pagination exceeded %d pages", maxPages)
 }
 
 // ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
@@ -3989,62 +4198,6 @@ func (c *LiveClient) GetOrgMembership(ctx context.Context, org, username string)
 	return forge.OrgMembership{State: body.State, Role: body.Role}, nil
 }
 
-// CreateOrgSecret creates or updates an encrypted organization-level secret
-// scoped to the given repository IDs.
-// The value is trimmed of whitespace before encryption to prevent corruption
-// from stray newlines or carriage returns in pasted input.
-func (c *LiveClient) CreateOrgSecret(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error {
-	value = strings.TrimSpace(value)
-	// Step 1: Get the org's public key for secret encryption.
-	keyResp, err := c.get(ctx, fmt.Sprintf("/orgs/%s/actions/secrets/public-key", org))
-	if err != nil {
-		return fmt.Errorf("get org public key: %w", err)
-	}
-
-	var pubKey struct {
-		KeyID string `json:"key_id"`
-		Key   string `json:"key"`
-	}
-	if err := decodeJSON(keyResp, &pubKey); err != nil {
-		return fmt.Errorf("decode org public key: %w", err)
-	}
-
-	// Step 2: Decode the public key and encrypt the secret value.
-	keyBytes, err := base64.StdEncoding.DecodeString(pubKey.Key)
-	if err != nil {
-		return fmt.Errorf("decode org public key base64: %w", err)
-	}
-
-	var recipientKey [32]byte
-	copy(recipientKey[:], keyBytes)
-
-	encrypted, err := box.SealAnonymous(nil, []byte(value), &recipientKey, nil)
-	if err != nil {
-		return fmt.Errorf("encrypt org secret: %w", err)
-	}
-
-	// Step 3: Upload the encrypted secret.
-	// Always use visibility "selected" so that SetOrgSecretRepos can later
-	// update the repo access list without a 409 Conflict (which GitHub
-	// returns when trying to set selected repos on a visibility "all" secret).
-	if selectedRepoIDs == nil {
-		selectedRepoIDs = []int64{}
-	}
-	payload := map[string]any{
-		"encrypted_value":         base64.StdEncoding.EncodeToString(encrypted),
-		"key_id":                  pubKey.KeyID,
-		"visibility":              "selected",
-		"selected_repository_ids": selectedRepoIDs,
-	}
-
-	resp, err := c.put(ctx, fmt.Sprintf("/orgs/%s/actions/secrets/%s", org, name), payload)
-	if err != nil {
-		return fmt.Errorf("create org secret %s: %w", name, err)
-	}
-	resp.Body.Close()
-	return nil
-}
-
 // OrgSecretExists checks if an org-level secret exists.
 func (c *LiveClient) OrgSecretExists(ctx context.Context, org, name string) (bool, error) {
 	resp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/orgs/%s/actions/secrets/%s", org, name), nil)
@@ -4083,61 +4236,10 @@ func (c *LiveClient) DeleteOrgSecret(ctx context.Context, org, name string) erro
 	return &APIError{StatusCode: resp.StatusCode, Message: "unexpected status deleting org secret"}
 }
 
-// GetOrgSecretRepos returns the repository IDs that have access to an org secret.
-func (c *LiveClient) GetOrgSecretRepos(ctx context.Context, org, name string) ([]int64, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/orgs/%s/actions/secrets/%s/repositories", org, name))
-	if err != nil {
-		return nil, fmt.Errorf("get org secret repos for %s: %w", name, err)
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Repositories []struct {
-			ID int64 `json:"id"`
-		} `json:"repositories"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode org secret repos for %s: %w", name, err)
-	}
-
-	ids := make([]int64, len(result.Repositories))
-	for i, r := range result.Repositories {
-		ids[i] = r.ID
-	}
-	return ids, nil
-}
-
-// SetOrgSecretRepos sets the list of repositories that can access an org secret.
-func (c *LiveClient) SetOrgSecretRepos(ctx context.Context, org, name string, repoIDs []int64) error {
-	if repoIDs == nil {
-		repoIDs = []int64{}
-	}
-	payload := map[string]any{
-		"selected_repository_ids": repoIDs,
-	}
-
-	resp, err := c.put(ctx, fmt.Sprintf("/orgs/%s/actions/secrets/%s/repositories", org, name), payload)
-	if err != nil {
-		return fmt.Errorf("set org secret repos for %s: %w", name, err)
-	}
-	resp.Body.Close()
-	return nil
-}
-
-// CreateOrUpdateOrgVariable creates or updates an org-level Actions variable
-// scoped to the given repository IDs.
-func (c *LiveClient) CreateOrUpdateOrgVariable(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error {
-	return c.createOrUpdateOrgVariable(ctx, org, name, value, "selected", selectedRepoIDs)
-}
-
 // CreateOrUpdateOrgVariableAll creates or updates an org-level Actions variable
 // visible to all repositories in the org (visibility all).
 func (c *LiveClient) CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error {
-	return c.createOrUpdateOrgVariable(ctx, org, name, value, "all", nil)
-}
-
-func (c *LiveClient) createOrUpdateOrgVariable(ctx context.Context, org, name, value, visibility string, selectedRepoIDs []int64) error {
-	resp, err := c.patch(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s", org, name), orgVariableBody("", value, visibility, selectedRepoIDs))
+	resp, err := c.patch(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s", org, name), orgVariableBody("", value))
 	if err == nil {
 		resp.Body.Close()
 		return nil
@@ -4147,7 +4249,7 @@ func (c *LiveClient) createOrUpdateOrgVariable(ctx context.Context, org, name, v
 		return fmt.Errorf("update org variable %s: %w", name, err)
 	}
 
-	resp2, err := c.post(ctx, fmt.Sprintf("/orgs/%s/actions/variables", org), orgVariableBody(name, value, visibility, selectedRepoIDs))
+	resp2, err := c.post(ctx, fmt.Sprintf("/orgs/%s/actions/variables", org), orgVariableBody(name, value))
 	if err != nil {
 		return fmt.Errorf("create org variable %s: %w", name, err)
 	}
@@ -4155,29 +4257,17 @@ func (c *LiveClient) createOrUpdateOrgVariable(ctx context.Context, org, name, v
 	return nil
 }
 
-// orgVariableBody builds a GitHub org Actions variable request body.
-// name is included only for create (POST) requests.
-func orgVariableBody(name, value, visibility string, selectedRepoIDs []int64) map[string]any {
+// orgVariableBody builds a GitHub org Actions variable request body with
+// visibility "all". name is included only for create (POST) requests.
+func orgVariableBody(name, value string) map[string]any {
 	body := map[string]any{
 		"value":      value,
-		"visibility": visibility,
+		"visibility": "all",
 	}
 	if name != "" {
 		body["name"] = name
 	}
-	if visibility == "selected" {
-		if selectedRepoIDs == nil {
-			selectedRepoIDs = []int64{}
-		}
-		body["selected_repository_ids"] = selectedRepoIDs
-	}
 	return body
-}
-
-// OrgVariableExists checks if an org-level variable exists.
-func (c *LiveClient) OrgVariableExists(ctx context.Context, org, name string) (bool, error) {
-	_, exists, err := c.GetOrgVariable(ctx, org, name)
-	return exists, err
 }
 
 // GetOrgVariable reads an org-level Actions variable value.
@@ -4205,6 +4295,11 @@ func (c *LiveClient) GetOrgVariable(ctx context.Context, org, name string) (stri
 	default:
 		return "", false, &APIError{StatusCode: resp.StatusCode, Message: "unexpected status reading org variable"}
 	}
+}
+
+// ListInstanceVariables is not supported on GitHub.
+func (c *LiveClient) ListInstanceVariables(_ context.Context) ([]forge.OrgVariable, error) {
+	return nil, forge.ErrNotSupported
 }
 
 // ListOrgVariables lists org-level Actions variables (paginated).
@@ -4252,47 +4347,6 @@ func (c *LiveClient) DeleteOrgVariable(ctx context.Context, org, name string) er
 	return &APIError{StatusCode: resp.StatusCode, Message: "unexpected status deleting org variable"}
 }
 
-// SetOrgVariableRepos sets the list of repositories that can access an org variable.
-func (c *LiveClient) SetOrgVariableRepos(ctx context.Context, org, name string, repoIDs []int64) error {
-	if repoIDs == nil {
-		repoIDs = []int64{}
-	}
-	payload := map[string]any{
-		"selected_repository_ids": repoIDs,
-	}
-
-	resp, err := c.put(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s/repositories", org, name), payload)
-	if err != nil {
-		return fmt.Errorf("set org variable repos for %s: %w", name, err)
-	}
-	resp.Body.Close()
-	return nil
-}
-
-// GetOrgVariableRepos returns the repository IDs that have access to an org variable.
-func (c *LiveClient) GetOrgVariableRepos(ctx context.Context, org, name string) ([]int64, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s/repositories", org, name))
-	if err != nil {
-		return nil, fmt.Errorf("get org variable repos for %s: %w", name, err)
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Repositories []struct {
-			ID int64 `json:"id"`
-		} `json:"repositories"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode org variable repos for %s: %w", name, err)
-	}
-
-	ids := make([]int64, len(result.Repositories))
-	for i, r := range result.Repositories {
-		ids[i] = r.ID
-	}
-	return ids, nil
-}
-
 // IsProtectedBranch checks whether the given branch has protection rules
 // enabled on GitHub by querying the branch protection API endpoint.
 // GitHub returns 404 both when a branch exists but is not protected and
@@ -4336,6 +4390,16 @@ func (c *LiveClient) CreatePipeline(_ context.Context, _, _, _ string, _ map[str
 // no equivalent to GitLab CI/CD Inputs for API-triggered workflow runs.
 func (c *LiveClient) CreatePipelineWithInputs(_ context.Context, _, _, _ string, _ map[string]forge.PipelineInputValue) (*forge.Pipeline, error) {
 	return nil, forge.ErrNotSupported
+}
+
+// GetPipelineSchedule is not supported on GitHub.
+func (c *LiveClient) GetPipelineSchedule(_ context.Context, _, _ string, _ int64) (*forge.PipelineSchedule, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// DeletePipelineScheduleVariable is not supported on GitHub.
+func (c *LiveClient) DeletePipelineScheduleVariable(_ context.Context, _, _ string, _ int64, _ string) error {
+	return forge.ErrNotSupported
 }
 
 // CreatePipelineSchedule is not supported on GitHub.
@@ -4383,6 +4447,11 @@ func (c *LiveClient) RevokePipelineTriggerToken(_ context.Context, _, _ string, 
 	return forge.ErrNotSupported
 }
 
+// GetProjectMemberAccessLevel is not supported on GitHub.
+func (c *LiveClient) GetProjectMemberAccessLevel(_ context.Context, _, _ string, _ int64) (int, error) {
+	return 0, forge.ErrNotSupported
+}
+
 // CreateProjectHook is not supported on GitHub.
 func (c *LiveClient) CreateProjectHook(_ context.Context, _, _ string, _ forge.ProjectHook) (*forge.ProjectHook, error) {
 	return nil, forge.ErrNotSupported
@@ -4401,6 +4470,16 @@ func (c *LiveClient) UpdateProjectHook(_ context.Context, _, _ string, _ int64, 
 // DeleteProjectHook is not supported on GitHub.
 func (c *LiveClient) DeleteProjectHook(_ context.Context, _, _ string, _ int64) error {
 	return forge.ErrNotSupported
+}
+
+// ListProtectedBranches is not supported on GitHub.
+func (c *LiveClient) ListProtectedBranches(_ context.Context, _, _ string) ([]forge.ProtectedBranchRule, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// ListProtectedTags is not supported on GitHub.
+func (c *LiveClient) ListProtectedTags(_ context.Context, _, _ string) ([]string, error) {
+	return nil, forge.ErrNotSupported
 }
 
 // GetPipelineVariablesMinimumOverrideRole is not supported on GitHub.
