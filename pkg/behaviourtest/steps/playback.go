@@ -322,7 +322,8 @@ var dispatchVisibilityRetryDelay = 15 * time.Second
 // at least once since w.ScenarioStart. CountHarnessDispatches settles
 // pending runs before counting, so this also waits out an in-flight
 // dispatch rather than racing it; the retry loop here additionally waits
-// out a dispatch that has not become visible through the CI API yet.
+// out a dispatch that has not become visible through the CI API yet,
+// whether that shows up as a zero count or as a not-found error.
 func thenAgentIsTriggered(w *world.World, agent string) error {
 	agent = strings.TrimSpace(agent)
 	if w.ScenarioStart.IsZero() {
@@ -331,13 +332,20 @@ func thenAgentIsTriggered(w *world.World, agent string) error {
 	var lastErr error
 	for attempt := 0; attempt < dispatchVisibilityAttempts; attempt++ {
 		count, err := w.CI.CountHarnessDispatches(context.Background(), w.Org, w.RepoName, agent, w.ScenarioStart)
-		if err != nil {
+		switch {
+		case err != nil && forge.IsNotFound(err):
+			// A run can appear in the workflow-run listing before its
+			// jobs endpoint is readable, so a 404 there is the same
+			// visibility gap as a zero count (#8123). Other errors
+			// (401, 403, ...) are not transient and fail at once.
+			lastErr = fmt.Errorf("checking %q agent dispatch: %w", agent, err)
+		case err != nil:
 			return fmt.Errorf("checking %q agent dispatch: %w", agent, err)
-		}
-		if count >= 1 {
+		case count >= 1:
 			return nil
+		default:
+			lastErr = fmt.Errorf("%q agent was not dispatched since %s", agent, w.ScenarioStart.Format(time.RFC3339))
 		}
-		lastErr = fmt.Errorf("%q agent was not dispatched since %s", agent, w.ScenarioStart.Format(time.RFC3339))
 		if attempt < dispatchVisibilityAttempts-1 {
 			time.Sleep(dispatchVisibilityRetryDelay)
 		}
