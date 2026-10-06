@@ -16,6 +16,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -288,26 +289,44 @@ func withHeader(key, value string) requestHeader {
 
 // do performs an HTTP request against the GitHub API with retry on rate limits.
 func (c *LiveClient) do(ctx context.Context, method, path string, body any, headers ...requestHeader) (*http.Response, error) {
-	url := c.baseURL + path
-
-	var bodyData []byte
+	var open func() (io.ReadCloser, error)
+	var length int64
 	if body != nil {
-		var err error
-		bodyData, err = json.Marshal(body)
+		bodyData, err := json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("marshal request body: %w", err)
 		}
+		length = int64(len(bodyData))
+		open = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(bodyData)), nil
+		}
 	}
+	return c.doRequest(ctx, method, path, length, open, headers...)
+}
+
+func (c *LiveClient) doRequest(ctx context.Context, method, path string, contentLength int64, open func() (io.ReadCloser, error), headers ...requestHeader) (*http.Response, error) {
+	url := c.baseURL + path
 
 	for attempt := range maxRetries {
 		var reqBody io.Reader
-		if bodyData != nil {
-			reqBody = bytes.NewReader(bodyData)
+		if open != nil {
+			rc, err := open()
+			if err != nil {
+				return nil, err
+			}
+			reqBody = rc
 		}
 
 		req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
 		if err != nil {
+			if closer, ok := reqBody.(io.Closer); ok {
+				_ = closer.Close()
+			}
 			return nil, fmt.Errorf("create request: %w", err)
+		}
+		if open != nil {
+			req.ContentLength = contentLength
+			req.GetBody = open
 		}
 
 		if c.token != "" {
@@ -315,7 +334,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any, head
 		}
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-		if body != nil {
+		if open != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
 		for _, h := range headers {
@@ -327,6 +346,9 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any, head
 			c.observeRateLimit(resp.Header)
 		}
 		if err != nil {
+			if closer, ok := reqBody.(io.Closer); ok {
+				_ = closer.Close()
+			}
 			// If the caller's context is done, propagate immediately
 			// — retrying is pointless when the parent has cancelled.
 			if ctx.Err() != nil {
@@ -1298,6 +1320,8 @@ func (c *LiveClient) getCommitTreeSHA(ctx context.Context, owner, repo, commitSH
 // all files already match the current tree (idempotent).
 // Text files are embedded as UTF-8 tree content. Binary files (e.g.
 // vendored ELF) are uploaded via the Git Blob API and referenced by SHA.
+// TreeFile.LocalPath is hashed and streamed from disk so callers do not
+// have to buffer the payload in TreeFile.Content.
 //
 // Returns forge.ErrBranchProtected (wrapped) when the ref update fails
 // with a 422, which indicates branch protection rules prevent direct pushes.
@@ -1426,7 +1450,10 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 			continue
 		}
 
-		expectedSHA := blobSHA(f.Content)
+		expectedSHA, err := treeFileBlobSHA(f)
+		if err != nil {
+			return false, fmt.Errorf("hash %s: %w", f.Path, err)
+		}
 		info, exists := existing[f.Path]
 		if exists && info.sha == expectedSHA && info.mode == f.Mode {
 			continue
@@ -1437,14 +1464,15 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 			"mode": f.Mode,
 			"type": "blob",
 		}
-		if utf8.Valid(f.Content) {
+		inlineText := f.LocalPath == "" && utf8.Valid(f.Content)
+		if inlineText {
 			entry["content"] = string(f.Content)
 		} else {
 			blobSHAValue := expectedSHA
 			if exists && info.sha == expectedSHA {
 				blobSHAValue = info.sha
 			} else {
-				createdSHA, err := c.createBlob(ctx, owner, repo, f.Content)
+				createdSHA, err := c.createBlobForFile(ctx, owner, repo, f)
 				if err != nil {
 					return false, fmt.Errorf("create blob for %s: %w", f.Path, err)
 				}
@@ -1714,6 +1742,42 @@ func blobSHA(content []byte) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+func blobSHAReader(r io.Reader, size int64) (string, error) {
+	h := sha1.New()
+	fmt.Fprintf(h, "blob %d\x00", size)
+	if _, err := io.Copy(h, r); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+func blobSHAFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	return blobSHAReader(f, info.Size())
+}
+
+func treeFileBlobSHA(f forge.TreeFile) (string, error) {
+	if f.LocalPath != "" {
+		return blobSHAFile(f.LocalPath)
+	}
+	return blobSHA(f.Content), nil
+}
+
+func (c *LiveClient) createBlobForFile(ctx context.Context, owner, repo string, f forge.TreeFile) (string, error) {
+	if f.LocalPath != "" {
+		return c.createBlobFromFile(ctx, owner, repo, f.LocalPath)
+	}
+	return c.createBlob(ctx, owner, repo, f.Content)
+}
+
 func (c *LiveClient) createBlob(ctx context.Context, owner, repo string, content []byte) (string, error) {
 	payload := map[string]string{
 		"content":  base64.StdEncoding.EncodeToString(content),
@@ -1723,6 +1787,33 @@ func (c *LiveClient) createBlob(ctx context.Context, owner, repo string, content
 	if err != nil {
 		return "", fmt.Errorf("create blob: %w", err)
 	}
+	return decodeBlobSHA(resp)
+}
+
+func (c *LiveClient) createBlobFromFile(ctx context.Context, owner, repo, path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("stat blob file: %w", err)
+	}
+	length := blobJSONLength(info.Size())
+	open := func() (io.ReadCloser, error) {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		return newBlobJSONReadCloser(f), nil
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/git/blobs", owner, repo), length, open)
+	if err != nil {
+		return "", fmt.Errorf("create blob: %w", err)
+	}
+	if err := checkStatus(resp, http.StatusOK, http.StatusCreated); err != nil {
+		return "", err
+	}
+	return decodeBlobSHA(resp)
+}
+
+func decodeBlobSHA(resp *http.Response) (string, error) {
 	var blob struct {
 		SHA string `json:"sha"`
 	}
