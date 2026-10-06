@@ -4164,11 +4164,13 @@ func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo,
 	return perm.baseRole(), nil
 }
 
+// collaboratorPermission is the subset of GitHub's collaborator permission
+// response used to resolve a base role.
 type collaboratorPermission struct {
 	Permission string `json:"permission"`
 	RoleName   string `json:"role_name"`
 	User       struct {
-		Permissions struct {
+		Permissions *struct {
 			Admin    bool `json:"admin"`
 			Maintain bool `json:"maintain"`
 			Push     bool `json:"push"`
@@ -4179,25 +4181,28 @@ type collaboratorPermission struct {
 }
 
 // baseRole returns role_name for built-in roles. Custom role names resolve
-// from GitHub's effective permission flags, then the legacy permission field,
-// else "none". Keep in sync with has_repo_permission in reusable-dispatch.yml.
+// from GitHub's effective permission flags when present, otherwise from the
+// legacy permission field, else "none". Keep in sync with has_repo_permission
+// in reusable-dispatch.yml.
 func (p collaboratorPermission) baseRole() string {
 	switch p.RoleName {
 	case "admin", "maintain", "write", "triage", "read":
 		return p.RoleName
 	}
-	f := p.User.Permissions
-	switch {
-	case f.Admin:
-		return "admin"
-	case f.Maintain:
-		return "maintain"
-	case f.Push:
-		return "write"
-	case f.Triage:
-		return "triage"
-	case f.Pull:
-		return "read"
+	if f := p.User.Permissions; f != nil {
+		switch {
+		case f.Admin:
+			return "admin"
+		case f.Maintain:
+			return "maintain"
+		case f.Push:
+			return "write"
+		case f.Triage:
+			return "triage"
+		case f.Pull:
+			return "read"
+		}
+		return "none"
 	}
 	switch p.Permission {
 	case "admin", "write", "read":

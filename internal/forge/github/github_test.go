@@ -4758,6 +4758,8 @@ func TestGetCollaboratorPermission(t *testing.T) {
 			{"legacy write only", `{"permission":"write","role_name":"Dev"}`, "write"},
 			{"legacy read only stays read", `{"permission":"read","role_name":"Helper"}`, "read"},
 			{"no signals", `{"role_name":"Mystery"}`, "none"},
+			{"all flags false ignores legacy", `{"permission":"write","role_name":"Dev","user":{"permissions":{"admin":false,"maintain":false,"push":false,"triage":false,"pull":false}}}`, "none"},
+			{"null flags fall back to legacy", `{"permission":"write","role_name":"Dev","user":{"permissions":null}}`, "write"},
 			{"built-in role wins over flags", `{"permission":"read","role_name":"triage","user":{"permissions":{"pull":true}}}`, "triage"},
 		}
 		for _, tc := range cases {

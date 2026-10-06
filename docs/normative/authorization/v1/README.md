@@ -52,11 +52,12 @@ On GitHub the mapping source is the collaborator permission API
 (`GET /repos/{owner}/{repo}/collaborators/{username}/permission`), which
 returns the user's **effective** role including inherited org grants
 regardless of membership visibility. A built-in `role_name` is used as is.
-A custom repository role resolves to the strongest base role set in
-`user.permissions` (`admin`, `maintain`, `push` → `write`, `triage`,
-`pull` → `read`), then to the legacy `permission` field (`admin`, `write`,
-`read`), and otherwise to `none`. Legacy `read` stays `read`, because it
-cannot distinguish Read from Triage. Fork authors and non-collaborators
+A custom repository role resolves to the strongest base role set to `true`
+in `user.permissions` (`admin`, `maintain`, `push` → `write`, `triage`,
+`pull` → `read`), or `none` if no flag is set. Only when
+`user.permissions` is absent does the legacy `permission` field (`admin`,
+`write`, `read`) apply; anything else is `none`. Legacy `read` stays
+`read`, because it cannot distinguish Read from Triage. Fork authors and non-collaborators
 are mapped to `read` (public repositories) or `none`, never `external`.
 The `external` role is currently produced only by the Jira adapter for
 actors without project membership. The default thresholds deny `read`,

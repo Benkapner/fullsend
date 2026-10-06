@@ -240,12 +240,15 @@ jobs:
             }
             role=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${username}/permission" \
               --jq '.user.permissions as $p
-                | if (.role_name | IN("admin", "maintain", "write", "triage", "read")) then .role_name
-                  elif $p.admin == true then "admin"
-                  elif $p.maintain == true then "maintain"
-                  elif $p.push == true then "write"
-                  elif $p.triage == true then "triage"
-                  elif $p.pull == true then "read"
+                | if (.role_name | type) != "string" or .role_name == "" then "none"
+                  elif (.role_name | IN("admin", "maintain", "write", "triage", "read")) then .role_name
+                  elif ($p | type) == "object" then
+                    if $p.admin == true then "admin"
+                    elif $p.maintain == true then "maintain"
+                    elif $p.push == true then "write"
+                    elif $p.triage == true then "triage"
+                    elif $p.pull == true then "read"
+                    else "none" end
                   elif (.permission | IN("admin", "write", "read")) then .permission
                   else "none" end' 2>"${api_err}") || {
               echo "::warning::Permission API call failed for ${username}: $(cat "${api_err}")" >&2

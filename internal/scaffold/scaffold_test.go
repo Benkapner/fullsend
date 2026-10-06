@@ -351,7 +351,10 @@ func TestCollaboratorPermissionJQ(t *testing.T) {
 		{"custom triage", `{"permission":"read","role_name":"Helper","user":{"permissions":{"triage":true,"pull":true}}}`, "triage"},
 		{"custom legacy write", `{"permission":"write","role_name":"Dev"}`, "write"},
 		{"custom legacy read stays read", `{"permission":"read","role_name":"Helper"}`, "read"},
-		{"custom non-boolean flag", `{"role_name":"Dev","user":{"permissions":{"push":"true"}}}`, "none"},
+		{"custom non-boolean flag ignores legacy", `{"permission":"write","role_name":"Dev","user":{"permissions":{"push":"true"}}}`, "none"},
+		{"custom all flags false ignores legacy", `{"permission":"write","role_name":"Dev","user":{"permissions":{"admin":false,"maintain":false,"push":false,"triage":false,"pull":false}}}`, "none"},
+		{"missing role_name", `{"permission":"write","user":{"permissions":{"push":true,"pull":true}}}`, "none"},
+		{"non-string role_name", `{"permission":"write","role_name":7}`, "none"},
 		{"custom no signals", `{"role_name":"Mystery"}`, "none"},
 	}
 	for _, tc := range cases {
