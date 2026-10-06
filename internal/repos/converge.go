@@ -3396,8 +3396,8 @@ type resolvedRef struct {
 }
 
 // resolveTargetRef resolves the target ref for scaffold generation.
-// It centralises the ref-resolution logic shared by convergeRepo,
-// convergeScaffoldFiles, and migrateRepo.
+// It centralises the ref-resolution logic shared by convergeRepo and
+// convergeScaffoldFiles.
 //
 // Only semver tag refs (vX.Y.Z) are resolved to SHAs for pinning.
 // Branch refs like "main" are used as-is because their HEAD moves
@@ -3449,7 +3449,7 @@ func resolveTargetRef(ctx context.Context, fullsendRef, upstreamRef, upstreamTag
 
 // defaultRoles returns the provided roles or falls back to the
 // per-repo defaults. Centralises the roles-defaulting pattern shared
-// by convergeRepo, convergeScaffoldFiles, and migrateRepo.
+// by convergeRepo and convergeScaffoldFiles.
 func defaultRoles(roles []string) []string {
 	if len(roles) == 0 {
 		return config.PerRepoDefaultRoles()
