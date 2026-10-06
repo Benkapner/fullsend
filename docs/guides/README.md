@@ -6,7 +6,7 @@ Practical how-to documentation for fullsend, organized by audience. For design d
 
 Guides for onboarding organizations and configuring GitHub or GitLab — the first thing most users need.
 
-- [Mint enrollment](getting-started/README.md) — Enroll your org or repo in a token mint before configuring anything else
+- [Mint enrollment](getting-started/README.md) — Enroll your repo in a token mint before configuring anything else
 - [Getting Inference](getting-started/getting-inference.md) — Provision GCP inference access for your org or repo
 - [Configuring GitHub](getting-started/configuring-github.md) — Install GitHub Apps and run the setup CLI
 - [Configuring GitLab](getting-started/configuring-gitlab.md) — Install via `repos install --forge gitlab`, runners, polling, and role-credential lifecycle

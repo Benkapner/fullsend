@@ -571,8 +571,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// channel when --event-file is not provided. The Go dispatch path
 	// (ProjectExecutionRef) embeds the complete normalized event in the
 	// legacy event_payload as _normalized_event (#6748). Try the on-disk
-	// dispatch file first (per-org path), then GITHUB_EVENT_PATH (per-repo
-	// workflow_call path where event_payload is nested in inputs).
+	// dispatch file first (written by reusable-dispatch.yml), then
+	// GITHUB_EVENT_PATH (workflow_call path where event_payload is nested
+	// in inputs).
 	if eventMap == nil {
 		eventMap = extractNormalizedEventFromDispatch(absFullsendDir)
 	}
@@ -5654,7 +5655,7 @@ func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner,
 	sha := os.Getenv("GITHUB_SHA")
 	// Prefer explicit PR_HEAD_SHA (set by per-repo workflow_call callers
 	// where GITHUB_EVENT_PATH lacks the dispatched event_payload wrapper).
-	// Fall back to extracting from event payload (per-org workflow_dispatch).
+	// Fall back to extracting from the workflow_dispatch event payload.
 	if prSHA := os.Getenv("PR_HEAD_SHA"); prSHA != "" {
 		sha = prSHA
 	} else if prSHA := prHeadSHAFromEventPath(os.Getenv("GITHUB_EVENT_PATH")); prSHA != "" {
@@ -5833,10 +5834,10 @@ func prHeadSHAFromEventPath(path string) string {
 // embedded by ProjectExecutionRef in the legacy event_payload channel (#6748).
 //
 // It checks two locations in order:
-//  1. <fullsendDir>/dispatch/event-payload.json — written by the per-org
+//  1. <fullsendDir>/dispatch/event-payload.json — written by the
 //     reusable-dispatch workflow before invoking the action.
-//  2. GITHUB_EVENT_PATH → inputs.event_payload — the per-repo workflow_call
-//     path where event_payload is a nested JSON string inside the
+//  2. GITHUB_EVENT_PATH → inputs.event_payload — the workflow_call path
+//     where event_payload is a nested JSON string inside the
 //     workflow_dispatch event file.
 //
 // In both cases, the function looks for a top-level "_normalized_event" key
@@ -5845,11 +5846,11 @@ func prHeadSHAFromEventPath(path string) string {
 // if the normalized event is absent or invalid (best-effort; overlays fall
 // back to the empty-map behavior documented in ResolveOverlays).
 func extractNormalizedEventFromDispatch(fullsendDir string) map[string]any {
-	// Try 1: on-disk dispatch event-payload.json (per-org path).
+	// Try 1: on-disk dispatch event-payload.json (reusable-dispatch path).
 	if m := extractNormalizedEventFromFile(filepath.Join(fullsendDir, "dispatch", "event-payload.json")); m != nil {
 		return m
 	}
-	// Try 2: GITHUB_EVENT_PATH → inputs.event_payload (per-repo path).
+	// Try 2: GITHUB_EVENT_PATH → inputs.event_payload (workflow_call path).
 	ghEventPath := os.Getenv("GITHUB_EVENT_PATH")
 	if ghEventPath == "" {
 		return nil
