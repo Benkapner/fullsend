@@ -288,7 +288,7 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 
 			t.Run("custom role with maintain flags authorized", func(t *testing.T) {
 				_, labeled := runScenario(t, script, "bob", "alice",
-					`{"permission":"write","user":{"login":"custom-role-maintainer","type":"User","permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true},"role_name":"ODH Repo Maintainer"},"role_name":"ODH Repo Maintainer"}`)
+					`{"permission":"write","user":{"login":"custom-role-maintainer","type":"User","permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true},"role_name":"Repo Maintainer"},"role_name":"Repo Maintainer"}`)
 				assert.True(t, labeled, "custom role with effective maintain must be authorized")
 			})
 
@@ -347,7 +347,7 @@ func TestCollaboratorPermissionJQ(t *testing.T) {
 
 	cases := []struct{ name, response, want string }{
 		{"built-in role", `{"permission":"read","role_name":"triage"}`, "triage"},
-		{"custom maintain", `{"permission":"write","user":{"login":"custom-role-maintainer","type":"User","permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true},"role_name":"ODH Repo Maintainer"},"role_name":"ODH Repo Maintainer"}`, "maintain"},
+		{"custom maintain", `{"permission":"write","user":{"login":"custom-role-maintainer","type":"User","permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true},"role_name":"Repo Maintainer"},"role_name":"Repo Maintainer"}`, "maintain"},
 		{"custom triage", `{"permission":"read","role_name":"Helper","user":{"permissions":{"triage":true,"pull":true}}}`, "triage"},
 		{"custom legacy write", `{"permission":"write","role_name":"Dev"}`, "write"},
 		{"custom legacy read stays read", `{"permission":"read","role_name":"Helper"}`, "read"},

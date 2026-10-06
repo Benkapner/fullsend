@@ -52,6 +52,9 @@ On GitHub the mapping source is the collaborator permission API
 (`GET /repos/{owner}/{repo}/collaborators/{username}/permission`), which
 returns the user's **effective** role including inherited org grants
 regardless of membership visibility. A built-in `role_name` is used as is.
+Custom repository roles are an organization-level GitHub Enterprise Cloud
+feature, so most repositories only ever return built-in names; Fullsend
+does not interpret a custom role's name or its fine-grained permissions.
 A custom repository role resolves to the strongest base role set to `true`
 in `user.permissions` (`admin`, `maintain`, `push` → `write`, `triage`,
 `pull` → `read`), or `none` if no flag is set. Only when

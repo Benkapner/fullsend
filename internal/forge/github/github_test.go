@@ -4750,7 +4750,7 @@ func TestGetCollaboratorPermission(t *testing.T) {
 		cases := []struct {
 			name, body, want string
 		}{
-			{"maintain flags", `{"permission":"write","user":{"login":"custom-role-maintainer","type":"User","permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true},"role_name":"ODH Repo Maintainer"},"role_name":"ODH Repo Maintainer"}`, "maintain"},
+			{"maintain flags", `{"permission":"write","user":{"login":"custom-role-maintainer","type":"User","permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true},"role_name":"Repo Maintainer"},"role_name":"Repo Maintainer"}`, "maintain"},
 			{"admin flags", `{"permission":"admin","role_name":"Org Admin","user":{"permissions":{"admin":true,"maintain":true,"push":true,"triage":true,"pull":true}}}`, "admin"},
 			{"push flags", `{"permission":"write","role_name":"Dev","user":{"permissions":{"push":true,"pull":true}}}`, "write"},
 			{"triage flags", `{"permission":"read","role_name":"Helper","user":{"permissions":{"triage":true,"pull":true}}}`, "triage"},
