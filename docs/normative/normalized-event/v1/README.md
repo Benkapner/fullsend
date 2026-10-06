@@ -34,7 +34,8 @@ and native-webhook input, and **Jira poll** input:
   events (see [jira-poll-adapter.md](jira-poll-adapter.md)).
 - The `gha-event` input driver is the production GitHub adapter; `gitlab-poll`
   is the production GitLab poll adapter ([ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md));
-  `gitlab-webhook` is the planned GitLab native-webhook adapter
+  `gitlab-webhook` is the GitLab native-webhook adapter, provisioned at
+  install time once its readiness gates hold and not yet live-validated
   ([ADR 0125](../../../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md));
   `jira-poll` is the production Jira poll adapter; `json` supports tests and
   replay.
@@ -178,6 +179,50 @@ follow-up PRs **must** gate on `!state.change_proposal.is_fork` in harness
 `trigger` expressions or rely on dispatch-level authorization per ADR 0054.
 Read-only agents (triage, review, retro) may run on fork PRs when policy allows.
 
+### Change facts (`state.change_proposal.diff`, `state.change_proposal.linked_work_items`)
+
+Optional and added for
+[ADR 0112](../../../ADRs/0112-overlays-may-set-any-harness-field.md)'s routing; no v1
+adapter populates them yet. When known, adapters set
+`state.change_proposal.diff` (file count, additions, deletions and changed
+paths at `head_sha`, with `paths_complete` false when the forge truncated the
+list, in which case a check for a path's absence should treat it as unknown)
+and `linked_work_items` (each linked work item's id, optional key, state and
+labels).
+Harness `trigger` and `overlays:` expressions may read them, for example to
+route `model` and `effort` per task; they are untrusted (see below)
+([ADR 0112](../../../ADRs/0112-overlays-may-set-any-harness-field.md)). A
+`trigger` that reads them lets the change's author decide whether a harness
+runs, so security-relevant harnesses shouldn't trigger on them.
+
+### Trusted fields
+
+A field is **trusted** when neither the change's or entity's author nor an
+actor below the permission level [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
+requires can choose its value beyond what their permission already allows
+(for example, only an author with write access can make `is_fork` false). An
+overlay that sets a guarded harness field may read only these fields, `runtime.forge` and `config`
+([ADR 0112](../../../ADRs/0112-overlays-may-set-any-harness-field.md)):
+
+- `repo`
+- `source.system`, and `entity.source.system` in the entity context of
+  [ADR 0098](../../../ADRs/0098-entity-first-harness-evaluation.md)
+- `actor.role`
+- `state.change_proposal.base_repo` and `is_fork`
+
+Every other field, including a field added to this schema later, is untrusted
+until it is listed here. For example `transition.comment` (its `body`,
+`command` and `instruction` all come from the comment text), the action fields
+(`transition.kind`, `source.raw_type`, `source.raw_action`, `entity.kind`),
+`actor.kind` (some adapters infer it from a display name),
+`actor.is_entity_author` (the author makes it true by acting), `state.labels`,
+`base_ref` (the author picks the target branch), `head_*` and the change facts
+are untrusted. A guarded overlay may test `has()` only on objects the schema
+always requires, such as `source`; reading `is_fork` when there is no change
+proposal is simply no match. `actor.role` says who triggered the event, not
+who wrote the change, so an overlay that loosens a guarded value on a change
+proposal should also require `!state.change_proposal.is_fork`.
+
 ## CEL trigger examples
 
 Harness `trigger` expressions are CEL booleans over `event`:
@@ -306,7 +351,7 @@ GitLab is a normative v1 source system ([gitlab-implementation.md](../../../prob
 
 | Concern | Mapping |
 |---------|---------|
-| Input driver | `gitlab-poll` (production, cron-polled; [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) and `gitlab-webhook` (planned fast-path from the file `TRIGGER_PAYLOAD` points to, re-fetched with a `CI_JOB_TOKEN`-pinned project identity — host/base-URL pin still open — and fail-closed on mismatch; see the Adapters table above; [ADR 0125](../../../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)) |
+| Input driver | `gitlab-poll` (production, cron-polled; [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) and `gitlab-webhook` (fast-path, provisioned at install time behind readiness gates, with live-GitLab validation still outstanding, from the file `TRIGGER_PAYLOAD` points to, re-fetched with a `CI_JOB_TOKEN`-pinned project identity — host/base-URL pin still open — and fail-closed on mismatch; see the Adapters table above; [ADR 0125](../../../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)) |
 | `source.system` | `gitlab` |
 | `repo` slug | Nested group path (`group/subgroup/project`) — `repo_path` pattern supports multi-segment paths |
 | MR events | Cron-polled MR → `entity.kind: change_proposal` (native `merge_request_event` dispatch removed in [#7322](https://github.com/fullsend-ai/fullsend/issues/7322); see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) |

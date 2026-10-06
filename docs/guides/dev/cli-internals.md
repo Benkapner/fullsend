@@ -82,6 +82,7 @@ fullsend
 │   │   ├── --gitlab-role-token role=token   #   Administrator-provided GitLab role PAT (repeatable)
 │   │   ├── --rotate-gitlab-roles            #   Force-rotate GitLab role credentials
 │   │   ├── --rotate-gitlab-role <name>      #   Rotate a specific GitLab role (repeatable)
+│   │   ├── --rotate-gitlab-trigger-token    #   Force-rotate the GitLab webhook fast-path trigger token
 │   ├── uninstall    <repos...>              # Tear down fullsend from repos and remove from manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
@@ -95,7 +96,7 @@ fullsend
 │   │   ├── --json                           #   Emit JSON output instead of table
 │   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
 │   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
-├── agent                                    # Generate and manage agents in config
+├── agent                                    # Generate and manage agents in config (--fullsend-dir default: .fullsend)
 │   ├── new          <name>                   # Generate a complete custom agent and register it
 │   │   ├── --role <name>                    #   Mint role: triage|review|coder|retro|prioritize
 │   │   ├── --on <preset>                    #   Trigger preset (command:/label:/issue-opened/pr-opened)
@@ -117,14 +118,14 @@ fullsend
 │   └── remove       <name>                   # Unregister agent from config
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml
 │   ├── --all                                #   Lock all harnesses in the harness directory
-│   ├── --fullsend-dir <path>                #   .fullsend configuration directory
+│   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
 │   ├── --forge <platform>                   #   Lock only this forge variant; omit for all
 │   ├── --update                             #   Force re-resolve even if current
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth
 │   └── --max-resources <int>                #   Max total remote resources
 ├── run                                      # Execute an agent in a sandbox
-│   ├── --fullsend-dir <path>                #   .fullsend configuration directory
+│   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
 │   ├── --target-repo <path>                 #   Path to the target repository
 │   ├── --output-dir <path>                  #   Base directory for run output
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
@@ -354,7 +355,7 @@ fullsend admin install <org>              → error: requires an owner/repo targ
 
 ### Install orchestration
 
-`runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. The CLI no longer composes a layer stack for installation; the `Layer` types under `internal/layers` that remain (for example `WorkflowsLayer` or `VendorBinaryLayer`) are not used by CLI orchestration. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers.
+`runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. The CLI no longer composes a layer stack for installation; the `Layer` types under `internal/layers` that remain (for example `VendorBinaryLayer`) are not used by CLI orchestration. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers.
 
 ### Binary acquisition (`internal/binary`)
 
@@ -644,10 +645,8 @@ var executableFiles = map[string]struct{}{
     "scripts/fullsend-check-output":          {},
     "scripts/install-precommit-tools.sh":     {},
     "scripts/prepare-sandbox-credentials.sh": {},
-    "scripts/reconcile-repos.sh":             {},
     "scripts/resolve-precommit-tools.py":     {},
     "scripts/setup-prioritize.sh":            {},
-    "scripts/validate-source-repo.sh":        {},
 }
 ```
 
@@ -740,7 +739,7 @@ var executableFiles = map[string]struct{}{
 | `internal/inference/vertex/vertex.go` | ~80 | Agent Platform (Vertex AI) implementation |
 | `internal/inference/openaiwif/openaiwif.go` | ~330 | OpenAI Workload Identity Federation token exchange (runner-side) |
 | `internal/cli/run_openai.go` | ~550 | OpenAI credential resolution, run-scoped provider lifecycle and refresh |
-| `internal/config/config.go` | ~264 | Org/repo config structures |
+| `internal/config/config.go` | ~264 | Per-repo config structures |
 
 ## See Also
 

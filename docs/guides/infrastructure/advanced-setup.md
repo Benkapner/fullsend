@@ -17,7 +17,7 @@ Most users should use the **managed** model — the [Getting Started guides](../
 
 When a platform operator has already deployed the mint and shared `fullsend-ai-*` apps, installation follows the standard [Getting Started](../getting-started/) flow — you only need a GCP project for inference. Before running the installer, confirm with your platform operator that:
 
-- Your organization is registered in the mint's `ALLOWED_ORGS`
+- Your repository is enrolled in the mint's `PER_REPO_WIF_REPOS` (or the mint explicitly runs in public mode with `PER_REPO_WIF_REPOS=*`)
 - The shared GitHub Apps are installed on your repository (or org)
 - Mint-side WIF is configured to accept OIDC tokens from your organization
 
