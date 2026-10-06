@@ -25,7 +25,7 @@ admin > maintain > write > triage > read > none > external
 | `triage` | Label and moderate without push access |
 | `read` | Read-only collaborator |
 | `none` | Authenticated user without explicit repository permission |
-| `external` | Actor outside the repository or project (currently Jira-only; GitHub/GitLab map non-collaborators to `none`) |
+| `external` | Actor outside the repository or project (currently Jira-only; GitHub maps non-collaborators to `read` on public repositories or `none`; GitLab maps them to `none`) |
 
 ### Forge-native permission mapping
 
@@ -37,7 +37,7 @@ admin > maintain > write > triage > read > none > external
 | | `triage` | `triage` |
 | | `read` | `read` |
 | | _(no collaborator entry)_ | `none` |
-| | _(fork/non-collaborator)_ | `none` |
+| | _(fork/non-collaborator)_ | `read` (public repository) or `none` |
 | **GitLab** | Owner | `admin` |
 | | Maintainer | `maintain` |
 | | Developer | `write` |
@@ -55,10 +55,10 @@ regardless of membership visibility. A built-in `role_name` is used as is.
 A custom repository role resolves to the strongest base role set to `true`
 in `user.permissions` (`admin`, `maintain`, `push` → `write`, `triage`,
 `pull` → `read`), or `none` if no flag is set. Only when
-`user.permissions` is absent does the legacy `permission` field (`admin`,
-`write`, `read`) apply; anything else is `none`. Legacy `read` stays
-`read`, because it cannot distinguish Read from Triage. Fork authors and non-collaborators
-are mapped to `read` (public repositories) or `none`, never `external`.
+`user.permissions` is absent or null does the legacy `permission` field
+(`admin`, `write`, `read`) apply; anything else is `none`. Legacy `read`
+stays `read`, because it cannot distinguish Read from Triage. Fork authors
+and non-collaborators are mapped to `read` (public repositories) or `none`, never `external`.
 The `external` role is currently produced only by the Jira adapter for
 actors without project membership. The default thresholds deny `read`,
 `none` and `external` alike. The `author_association` field is
@@ -127,7 +127,7 @@ describe behavior currently implemented by `fullsend dispatch` or
 |-----------|---------|
 | Collaborator API returns a custom `role_name` with no effective permission signal | Mapped to `none`; denied |
 | Collaborator API returns an error or times out | Denied (function returns failure) |
-| Collaborator API response is not valid JSON | Denied |
+| Collaborator API response is not valid JSON or does not match the expected shape | Denied |
 | `actor.role` is empty or missing | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | Username is empty | Denied |
 | `OWNERS` is missing or malformed, or `OWNERS_ALIASES` is present but malformed (`owners_file` enabled) | OWNERS check skipped; the collaborator API decides |

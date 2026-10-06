@@ -100,6 +100,8 @@ jobs:
                 --jq '.user.permissions as $p
                   | if (.role_name | type) != "string" or .role_name == "" then "none"
                     elif (.role_name | IN("admin", "maintain", "write", "triage", "read")) then .role_name
+                    elif $p == null then
+                      if (.permission | IN("admin", "write", "read")) then .permission else "none" end
                     elif ($p | type) == "object" then
                       if $p.admin == true then "admin"
                       elif $p.maintain == true then "maintain"
@@ -107,7 +109,6 @@ jobs:
                       elif $p.triage == true then "triage"
                       elif $p.pull == true then "read"
                       else "none" end
-                    elif (.permission | IN("admin", "write", "read")) then .permission
                     else "none" end' 2>"$api_err"); then
                 case "$role" in
                   admin|maintain|write) authorized=true ;;
