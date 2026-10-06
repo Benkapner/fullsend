@@ -110,43 +110,16 @@ When should the system stop retrying and ask a human?
 - **On novel failure types.** If each retry fails for a different reason, the task may be beyond the agent's current capability. Escalate after 2-3 distinct failure types.
 - **On regression.** If a retry makes things worse (introduces new test failures that the previous attempt did not have), stop immediately.
 
-### Expressing escalation thresholds as config
+### Where escalation thresholds would live
 
-The triggers above are stated qualitatively ("after N identical failures", "2-3 distinct failure types"). Making them tunable per repo and per agent role, rather than baked into the harness as constants, needs somewhere to put the values. Several shapes could carry them, each with a different trade-off:
+The triggers above are stated qualitatively ("after N identical failures", "2-3 distinct failure types"). Today the only live limit is an attempt count: the fix pipeline derives the iteration number itself from the PR's history and stops at a cap, and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md) places the per-run time budget with the runner rather than the sandbox. Nothing distinguishes identical from distinct failures, and nothing accumulates cost across attempts. Making the triggers tunable per repository needs somewhere to put the values, and each candidate surface has a trade-off:
 
-- **Per-agent harness config (what happens today).** The fix agent's harness declares `ITERATION_CAP`, `ITERATION_CAP_HUMAN`, and `STRATEGY_ESCALATION_THRESHOLD` under `env.sandbox`. That block is exported only into the sandbox (what the agent is told). The scripts that enforce the cap (`pre-fix` / `post-fix`) run on the runner and read the runner env (`env.runner` merged with `runner_env`); nothing there, and nothing in the reusable fix/dispatch workflows, sets those variables, so both enforcement and the printed `FIX_ITERATION=<n> of <cap>` fall through to the script defaults of 5 (bot) and 10 (human). Exhaustion still surfaces via the `needs-human` label, but against that default, not the harness value. Wiring the harness value onto the runner belongs in fullsend-ai/agents. A separate in-run layer, `validation_loop.max_iterations`, relaunches the same sandbox when `agent-result.json` fails schema validation; it is not a review-to-fix attempt count. The live cap still only counts attempts: nothing distinguishes identical from distinct failures, and nothing accumulates cost across runs.
-- **Existing per-run budget fields, extended.** `max_turns` / `max_cost_usd` already exist per run in the functional test framework (PR #1682); a cross-run budget could reuse that vocabulary. It conflates a single-attempt cap with a cumulative one unless the names are kept distinct (see below). Reusing that vocabulary for a runtime cap would first require the harness to enforce them at all, which it does not today (the bullet under Retry budgets records and checks them as eval-time judge annotations, not as a live runtime budget).
-- **A dedicated declarative config block (illustrated below).** Inspectable and tunable per repo/role without a code change. The illustration is a repo-level default plus per-role `overrides:` — pipeline/dispatch policy, which [ADR 0080](../ADRs/0080-config-yaml-vs-agent-env-var-scope.md) assigns to `.fullsend/config.yaml` (plain name, no `{AGENT}_` prefix), not to one agent's harness. Extending the per-agent harness surface instead would be ADR 0080's other branch, and is the surface whose declared caps currently never reach enforcement (see the first option).
-- **CEL-expressed conditions** ([cel-triggers.md](../contributing/cel-triggers.md)). Most expressive in principle, but the normalized event CEL evaluates (`repo`, `entity`, `transition`, `actor`, `state`, `source`) carries no prior-run outcomes, cost, or failure history, so none of the four triggers above can be written as a CEL trigger today — a new run-history signal or a different evaluation context would be required first. It also does not by itself model the identical-vs-distinct failure-signature distinction.
+- **Per-agent harness config.** Closest to where the fix loop already lives, but values declared for the sandbox are visible to the agent, not enforced by the runner. ADR 0105 is the precedent: enforcement belongs on the runner side.
+- **Existing per-run budget fields, extended.** `max_turns` / `max_cost_usd` already exist per attempt in the functional test framework (PR #1682). Reusing their names for a cumulative cross-run budget conflates a single-attempt cap with a total unless the names stay distinct.
+- **A dedicated block in `.fullsend/config.yaml`.** Pipeline policy, which [ADR 0080](../ADRs/0080-config-yaml-vs-agent-env-var-scope.md) assigns to `config.yaml`. Inspectable and tunable without a code change. It would need a name that does not collide with the harness `security.escalation` field, and per-agent tuning would follow the existing agent-keyed layout rather than a role-keyed one ([ADR 0091](../ADRs/0091-per-agent-runtime-model-effort.md)).
+- **CEL conditions** ([cel-triggers.md](../contributing/cel-triggers.md)). Most expressive, but the evaluated event carries no prior-run outcomes, cost, or failure history, so none of the four triggers can be written as a CEL trigger today.
 
-Declarative config is a common shape elsewhere: Kubernetes Jobs cap retries with `backoffLimit`, GitLab CI uses `retry: max:`, and Argo Workflows use a `retryStrategy` with a `limit`. None of them counts consecutive identical failures, but all three gate retry on failure class (Kubernetes `podFailurePolicy`, GitLab `retry:when` / `retry:exit_codes`, Argo `retryPolicy` / an `expression` over last-retry status) — prior art for the regression and distinct-failure legs. The identical-failure signature is the part with no off-the-shelf model, and the part most likely to need iteration (see below). As an illustration of the dedicated-block option, one such config applied to agent escalation reads roughly like:
-
-```yaml
-escalation:
-  # Stop retrying and hand off to a human when any rule below trips.
-  identical_failure_limit: 3   # N consecutive attempts failing the same way
-  distinct_failure_limit: 3    # distinct failure types before the task is deemed out of scope
-  regression_policy: stop      # stop | continue when a retry introduces new failures
-  budget:
-    # Cross-run budget. Names are deliberately distinct from the
-    # functional-test-framework `max_turns` / `max_cost_usd` (PR #1682):
-    # those are per-case judge annotations for a single attempt, these
-    # accumulate across attempts for the same task.
-    total_attempts: 3          # cumulative across runs for the same task
-    cumulative_cost_usd: 10    # cumulative across all attempts
-  overrides:
-    # Per-role tuning: a role tightens below the repo default, so config
-    # cannot silently grant an agent more retries than the repo allows.
-    review:
-      identical_failure_limit: 2
-```
-
-Two things a shape like this has to pin down:
-
-- **Each threshold is a named, overridable value**, so a repo or role can tune it without a code change and the effective value for any run is inspectable rather than implicit.
-- **"Same failure" needs a definition, not just a count.** Counting identical failures requires a stable failure signature (for example, the failing check name plus a normalized error line), otherwise cosmetically different messages for the same root cause never reach the limit. That signature is the part most likely to need iteration.
-
-This is illustrative and inert: it describes what such thresholds could look like, not a change to how the system behaves. The concrete numbers (`3`, `3`, `$10`) are placeholders, not calibrated defaults; real values depend on measured recovery outcomes. Where the thresholds are enforced belongs to whatever component owns the retry loop, and absent any such config the retry and escalation behavior is whatever the harness already does.
+Kubernetes Jobs (`backoffLimit`, `podFailurePolicy`), GitLab CI (`retry: max`, `retry:when`) and Argo Workflows (`retryStrategy`, `retryPolicy`) all cap retries and gate them on failure class, which covers the regression and distinct-failure legs. None counts consecutive identical failures. That leg needs a stable failure signature (for example, the failing check name plus a normalized error line). The signature must be computed by the pipeline from system-derived signals, not reported by the agent: an agent that produces its own signature can vary the failure text and never reach the limit, the same evasion the [memory attack surface](#memory-as-an-attack-surface) section describes for cross-run memory.
 
 ### Interaction with cross-run memory
 
@@ -173,4 +146,4 @@ Retry loops can become flapping when the system does not converge. See [flapping
 - What retention model prevents stale memory from dominating: time-based, count-based, outcome-based, or explicit supersession?
 - Should the retro agent curate memory by pruning stale entries and proposing durable skill additions, or would that give it too much influence over future runs?
 - How should memory interact with structured agent output? Should agent output include an "observations" field that post-scripts can validate and classify?
-- What is the stable failure signature that makes "N identical failures" countable across runs, and who computes it: the post-script from system-derived signals, or the agent?
+- What is the stable failure signature that makes "N identical failures" countable across runs, given that the pipeline, not the agent, has to compute it?
