@@ -671,3 +671,40 @@ func TestRunGitHubSetupPerRepo_BaseOnlyComposesInheritedValues(t *testing.T) {
 	assert.Equal(t, "base-project", secrets["FULLSEND_GCP_PROJECT_ID"])
 	assert.Equal(t, validWIFProvider, secrets["FULLSEND_GCP_WIF_PROVIDER"], "WIF provider must come from the base, not be reported missing")
 }
+
+func TestRunGitHubSetupPerRepo_BaseOnlyInheritsRolesWhenAgentsOmitted(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	baseYAML := []byte("version: \"1\"\nroles:\n  - triage\ninference:\n  project: base-project\n  wif_provider: " + validWIFProvider + "\n")
+	run := func(t *testing.T, cfg githubSetupConfig) []byte {
+		t.Helper()
+		client := newSetupClient(t)
+		client.FileContents = map[string][]byte{
+			"acme/widget/.fullsend/config.base.yaml": baseYAML,
+		}
+		cfg.target = "acme/widget"
+		if cfg.agents == "" {
+			cfg.agents = strings.Join(config.PerRepoDefaultRoles(), ",")
+		}
+		require.NoError(t, runGitHubSetupPerRepo(context.Background(), client, ui.New(&discardWriter{}), cfg))
+		return committedSetupFiles(client)[".fullsend/config.yaml"]
+	}
+
+	t.Run("omitted --agents leaves roles unset", func(t *testing.T) {
+		overlay := run(t, githubSetupConfig{changedFlags: map[string]bool{}})
+		assert.NotRegexp(t, `(?m)^roles:`, string(overlay), "overlay must not materialize default roles")
+
+		effective, err := config.ParsePerRepoConfigWriterLayered(overlay, baseYAML)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"triage"}, effective.ConfigRoles())
+	})
+
+	t.Run("explicit --agents is written to the overlay", func(t *testing.T) {
+		overlay := run(t, githubSetupConfig{
+			agents:       "triage,review",
+			changedFlags: map[string]bool{"agents": true},
+		})
+		effective, err := config.ParsePerRepoConfigWriterLayered(overlay, baseYAML)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"triage", "review"}, effective.ConfigRoles())
+	})
+}
