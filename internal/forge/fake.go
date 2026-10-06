@@ -224,12 +224,8 @@ type FakeClient struct {
 	// App client IDs for GetAppClientID
 	AppClientIDs map[string]string // key: app slug → client ID
 
-	// CollaboratorPermissions maps "owner/repo/username" → role_name for
-	// backwards-compatible GetCollaboratorPermission test setup.
+	// CollaboratorPermissions maps "owner/repo/username" → role_name for GetCollaboratorPermission.
 	CollaboratorPermissions map[string]string
-	// CollaboratorPermissionDetails overrides CollaboratorPermissions with a
-	// complete GitHub collaborator permission response.
-	CollaboratorPermissionDetails map[string]GitHubCollaboratorPermission
 	// AddedCollaborators records AddCollaborator calls as "owner/repo/username" → permission.
 	AddedCollaborators map[string]string
 	// OrgMemberships maps "org/username" → membership for GetOrgMembership.
@@ -2151,26 +2147,21 @@ func (f *FakeClient) GetAppClientID(_ context.Context, slug string) (string, err
 	return "", fmt.Errorf("%w: app %s", ErrNotFound, slug)
 }
 
-func (f *FakeClient) GetCollaboratorPermission(_ context.Context, owner, repo, username string) (GitHubCollaboratorPermission, error) {
+func (f *FakeClient) GetCollaboratorPermission(_ context.Context, owner, repo, username string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	if e := f.err("GetCollaboratorPermission"); e != nil {
-		return GitHubCollaboratorPermission{}, e
+		return "", e
 	}
 
 	key := owner + "/" + repo + "/" + username
-	if f.CollaboratorPermissionDetails != nil {
-		if permission, ok := f.CollaboratorPermissionDetails[key]; ok {
-			return permission, nil
-		}
-	}
 	if f.CollaboratorPermissions != nil {
 		if role, ok := f.CollaboratorPermissions[key]; ok {
-			return GitHubCollaboratorPermission{RoleName: role}, nil
+			return role, nil
 		}
 	}
-	return GitHubCollaboratorPermission{}, ErrNotFound
+	return "", ErrNotFound
 }
 
 func (f *FakeClient) AddCollaborator(_ context.Context, owner, repo, username, permission string) error {

@@ -4147,21 +4147,63 @@ func (c *LiveClient) GetAppClientID(ctx context.Context, slug string) (string, e
 	return app.ClientID, nil
 }
 
-func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (forge.GitHubCollaboratorPermission, error) {
+func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (string, error) {
 	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s/permission",
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
 	resp, err := c.get(ctx, path)
 	if err != nil {
-		return forge.GitHubCollaboratorPermission{}, fmt.Errorf("get collaborator permission for %s: %w", username, err)
+		return "", fmt.Errorf("get collaborator permission for %s: %w", username, err)
 	}
-	var perm forge.GitHubCollaboratorPermission
+	var perm collaboratorPermission
 	if err := decodeJSON(resp, &perm); err != nil {
-		return forge.GitHubCollaboratorPermission{}, fmt.Errorf("decode collaborator permission for %s: %w", username, err)
+		return "", fmt.Errorf("decode collaborator permission for %s: %w", username, err)
 	}
 	if perm.RoleName == "" {
-		return forge.GitHubCollaboratorPermission{}, fmt.Errorf("%w: no permission for %s", forge.ErrNotFound, username)
+		return "", fmt.Errorf("%w: no permission for %s", forge.ErrNotFound, username)
 	}
-	return perm, nil
+	return perm.baseRole(), nil
+}
+
+type collaboratorPermission struct {
+	Permission string `json:"permission"`
+	RoleName   string `json:"role_name"`
+	User       struct {
+		Permissions struct {
+			Admin    bool `json:"admin"`
+			Maintain bool `json:"maintain"`
+			Push     bool `json:"push"`
+			Triage   bool `json:"triage"`
+			Pull     bool `json:"pull"`
+		} `json:"permissions"`
+	} `json:"user"`
+}
+
+// baseRole returns role_name for built-in roles. Custom role names resolve
+// from GitHub's effective permission flags, then the legacy permission field,
+// else "none". Keep in sync with has_repo_permission in reusable-dispatch.yml.
+func (p collaboratorPermission) baseRole() string {
+	switch p.RoleName {
+	case "admin", "maintain", "write", "triage", "read":
+		return p.RoleName
+	}
+	f := p.User.Permissions
+	switch {
+	case f.Admin:
+		return "admin"
+	case f.Maintain:
+		return "maintain"
+	case f.Push:
+		return "write"
+	case f.Triage:
+		return "triage"
+	case f.Pull:
+		return "read"
+	}
+	switch p.Permission {
+	case "admin", "write", "read":
+		return p.Permission
+	}
+	return "none"
 }
 
 func (c *LiveClient) AddCollaborator(ctx context.Context, owner, repo, username, permission string) error {

@@ -744,11 +744,7 @@ func hasWriteAccess(ctx context.Context, client forge.Client, owner, repo, user 
 	if !ok {
 		return false
 	}
-	permission, err := ghExt.GetCollaboratorPermission(ctx, owner, repo, user)
-	if err != nil {
-		return false
-	}
-	role, err := forge.ResolveGitHubCollaboratorPermission(permission)
+	role, err := ghExt.GetCollaboratorPermission(ctx, owner, repo, user)
 	if err != nil {
 		return false
 	}

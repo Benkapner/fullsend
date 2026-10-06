@@ -301,9 +301,9 @@ func IsWriteAuthorized(role ActorRole) bool {
 	}
 }
 
-// MapGitHubPermission maps a resolved GitHub base role to ActorRole. Callers
-// must resolve custom collaborator roles from effective permission signals
-// before invoking this mapping.
+// MapGitHubPermission maps a GitHub base role to ActorRole. The GitHub client
+// resolves custom repository roles to a base role before this mapping;
+// unrecognized values map to RoleNone.
 func MapGitHubPermission(roleName string) ActorRole {
 	switch strings.ToLower(strings.TrimSpace(roleName)) {
 	case "admin":
