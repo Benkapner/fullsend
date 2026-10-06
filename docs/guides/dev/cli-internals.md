@@ -355,7 +355,7 @@ fullsend admin install <org>              → error: requires an owner/repo targ
 
 ### Install orchestration
 
-`runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. The CLI no longer composes a layer stack for installation; the `Layer` types under `internal/layers` that remain (for example `WorkflowsLayer` or `VendorBinaryLayer`) are not used by CLI orchestration. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers.
+`runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. The CLI no longer composes a layer stack for installation; the `Layer` types under `internal/layers` that remain (for example `VendorBinaryLayer`) are not used by CLI orchestration. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers.
 
 ### Binary acquisition (`internal/binary`)
 
@@ -645,10 +645,8 @@ var executableFiles = map[string]struct{}{
     "scripts/fullsend-check-output":          {},
     "scripts/install-precommit-tools.sh":     {},
     "scripts/prepare-sandbox-credentials.sh": {},
-    "scripts/reconcile-repos.sh":             {},
     "scripts/resolve-precommit-tools.py":     {},
     "scripts/setup-prioritize.sh":            {},
-    "scripts/validate-source-repo.sh":        {},
 }
 ```
 
