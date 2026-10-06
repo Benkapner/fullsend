@@ -4746,6 +4746,46 @@ func TestGetCollaboratorPermission(t *testing.T) {
 		assert.Equal(t, "write", role)
 	})
 
+	t.Run("custom roles", func(t *testing.T) {
+		cases := []struct {
+			name, body, want string
+		}{
+			{"maintain flags", `{"permission":"write","user":{"login":"custom-role-maintainer","type":"User","permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true},"role_name":"Repo Maintainer"},"role_name":"Repo Maintainer"}`, "maintain"},
+			{"admin flags", `{"permission":"admin","role_name":"Org Admin","user":{"permissions":{"admin":true,"maintain":true,"push":true,"triage":true,"pull":true}}}`, "admin"},
+			{"push flags", `{"permission":"write","role_name":"Dev","user":{"permissions":{"push":true,"pull":true}}}`, "write"},
+			{"triage flags", `{"permission":"read","role_name":"Helper","user":{"permissions":{"triage":true,"pull":true}}}`, "triage"},
+			{"pull flags", `{"permission":"read","role_name":"Viewer","user":{"permissions":{"pull":true}}}`, "read"},
+			{"legacy write only", `{"permission":"write","role_name":"Dev"}`, "write"},
+			{"legacy read only stays read", `{"permission":"read","role_name":"Helper"}`, "read"},
+			{"no signals", `{"role_name":"Mystery"}`, "none"},
+			{"all flags false ignores legacy", `{"permission":"write","role_name":"Dev","user":{"permissions":{"admin":false,"maintain":false,"push":false,"triage":false,"pull":false}}}`, "none"},
+			{"null flags fall back to legacy", `{"permission":"write","role_name":"Dev","user":{"permissions":null}}`, "write"},
+			{"built-in role wins over flags", `{"permission":"read","role_name":"triage","user":{"permissions":{"pull":true}}}`, "triage"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = w.Write([]byte(tc.body))
+				}))
+				defer srv.Close()
+
+				role, err := newTestClient(t, srv).GetCollaboratorPermission(context.Background(), "o", "r", "alice")
+				require.NoError(t, err)
+				assert.Equal(t, tc.want, role)
+			})
+		}
+	})
+
+	t.Run("malformed flags fail", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"role_name":"Dev","user":{"permissions":{"push":"true"}}}`))
+		}))
+		defer srv.Close()
+
+		_, err := newTestClient(t, srv).GetCollaboratorPermission(context.Background(), "o", "r", "alice")
+		require.Error(t, err)
+	})
+
 	t.Run("not found", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)

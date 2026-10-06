@@ -198,8 +198,10 @@ jobs:
             return 1
           }
 
-          # Collaborator role_name vs min (write|triage). See #5223 / ADR 0054.
+          # Collaborator role vs min (write|triage). See #5223 / ADR 0054.
           # API resolves org membership regardless of visibility (gh-aw-mcpg#2862).
+          # Custom role names resolve from GitHub's effective permission flags,
+          # then the legacy permission field; anything else is none (#7834).
           has_repo_permission() {
             local username="${1:-}" min="${2:-write}" role api_err
             [[ -z "${username}" ]] && return 1
@@ -237,7 +239,19 @@ jobs:
               return 1
             }
             role=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${username}/permission" \
-              --jq '.role_name' 2>"${api_err}") || {
+              --jq '.user.permissions as $p
+                | if (.role_name | type) != "string" or .role_name == "" then "none"
+                  elif (.role_name | IN("admin", "maintain", "write", "triage", "read")) then .role_name
+                  elif $p == null then
+                    if (.permission | IN("admin", "write", "read")) then .permission else "none" end
+                  elif ($p | type) == "object" then
+                    if $p.admin == true then "admin"
+                    elif $p.maintain == true then "maintain"
+                    elif $p.push == true then "write"
+                    elif $p.triage == true then "triage"
+                    elif $p.pull == true then "read"
+                    else "none" end
+                  else "none" end' 2>"${api_err}") || {
               echo "::warning::Permission API call failed for ${username}: $(cat "${api_err}")" >&2
               rm -f "${api_err}"
               return 1
