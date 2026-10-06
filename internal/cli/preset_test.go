@@ -638,3 +638,36 @@ func TestRunGitHubSetupPerRepo_PaddedCLIValueRestatingPaddedBaseIsAPin(t *testin
 	overlayYAML := string(committedSetupFiles(client)[".fullsend/config.yaml"])
 	assert.Regexp(t, `region:\s*['"] global ['"]`, overlayYAML)
 }
+
+func TestRunGitHubSetupPerRepo_BaseOnlyComposesInheritedValues(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newSetupClient(t)
+	// config.base.yaml exists but the overlay does not, and no --config.
+	client.FileContents = map[string][]byte{
+		"acme/widget/.fullsend/config.base.yaml": []byte("version: \"1\"\nmint_url: https://mint-base.example.run.app\ninference:\n  project: base-project\n  region: europe-west1\n  wif_provider: " + validWIFProvider + "\n"),
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:           "acme/widget",
+		agents:           strings.Join(config.PerRepoDefaultRoles(), ","),
+		inferenceProject: "base-project",
+		changedFlags:     map[string]bool{"inference-project": true},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "inference.project is being pinned")
+
+	vars := make(map[string]string)
+	for _, v := range client.Variables {
+		vars[v.Name] = v.Value
+	}
+	assert.Equal(t, "https://mint-base.example.run.app", vars["FULLSEND_MINT_URL"])
+	assert.Equal(t, "europe-west1", vars["FULLSEND_GCP_REGION"])
+	secrets := make(map[string]string)
+	for _, s := range client.CreatedSecrets {
+		secrets[s.Name] = s.Value
+	}
+	assert.Equal(t, "base-project", secrets["FULLSEND_GCP_PROJECT_ID"])
+	assert.Equal(t, validWIFProvider, secrets["FULLSEND_GCP_WIF_PROVIDER"], "WIF provider must come from the base, not be reported missing")
+}

@@ -246,11 +246,14 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	// otherwise the repo's existing base layer, otherwise compiled
 	// defaults. Do this before applySetupFlagsToConfig so overlay
 	// values already on disk cannot mask a pin against the parent.
+	// The same parent is used below to compose the effective config, so
+	// a base-only repo (overlay missing) resolves omitted values from its
+	// base rather than compiled defaults.
+	inheritedBase := presetData
+	if len(inheritedBase) == 0 {
+		inheritedBase = existingBase
+	}
 	if configFlagsChanged {
-		inheritedBase := presetData
-		if len(inheritedBase) == 0 {
-			inheritedBase = existingBase
-		}
 		warnPinnedSetupFlags(printer, cfg, inheritedSetupReader(inheritedBase), roles)
 	}
 
@@ -281,7 +284,10 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		// explicitly-set flags are written to the overlay; unset
 		// values fall through overlay → base → code defaults
 		// (ADR 0069 Decision 1, same pattern as buildPresetOverlay).
-		perRepoCfg := config.NewPerRepoConfig(roles, cfg.target)
+		perRepoCfg, err := newSetupOverlay(roles, cfg.target, inheritedBase)
+		if err != nil {
+			return err
+		}
 		if cfg.runtime != "" && !cfg.changedFlags["runtime"] {
 			perRepoCfg.SetRuntime(cfg.runtime)
 		}
@@ -315,7 +321,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 	}
 
-	effective, err := composeSetupLayers(cfgYAML, overlay, presetData)
+	effective, err := composeSetupLayers(cfgYAML, overlay, inheritedBase)
 	if err != nil {
 		return err
 	}
@@ -845,9 +851,29 @@ func validateSetupValueFormats(r config.PerRepoConfigReader, source string) erro
 	return nil
 }
 
+// newSetupOverlay creates the first-install overlay. When baseData is
+// non-empty (an on-disk config.base.yaml with no overlay) the overlay is
+// parented on that base so validation and value resolution see it.
+func newSetupOverlay(roles []string, target string, baseData []byte) (config.PerRepoConfigWriter, error) {
+	w := config.NewPerRepoConfig(roles, target)
+	if len(baseData) == 0 {
+		return w, nil
+	}
+	data, err := w.Marshal()
+	if err != nil {
+		return nil, fmt.Errorf("marshaling per-repo config: %w", err)
+	}
+	layered, err := config.ParsePerRepoConfigWriterLayered(data, baseData)
+	if err != nil {
+		return nil, fmt.Errorf("composing per-repo config with existing base: %w", err)
+	}
+	return layered, nil
+}
+
 // composeSetupLayers returns the effective per-repo config used for
 // required-value checks and install-time variable/secret generation.
-// overlay is the writable top layer; baseData is the --config preset.
+// overlay is the writable top layer; baseData is the inherited lower layer (the --config preset, or the
+// repo's existing config.base.yaml).
 func composeSetupLayers(overlayYAML []byte, overlay config.PerRepoConfigWriter, baseData []byte) (config.PerRepoConfigReader, error) {
 	if len(baseData) == 0 {
 		if overlay != nil {
