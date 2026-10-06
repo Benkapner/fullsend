@@ -3857,7 +3857,7 @@ func resolveWorkItemID() string {
 	if prNum := strings.TrimSpace(os.Getenv("PR_NUMBER")); prNum != "" {
 		return prNum
 	}
-	// GitHub retro: reusable-retro.yml sets ORIGINATING_URL (PR/issue HTML URL).
+	// GitHub retro: the retro job in reusable-dispatch.yml sets ORIGINATING_URL (PR/issue HTML URL).
 	// GitLab agent jobs export GITLAB_ISSUE_URL (issue or MR) when IID is known.
 	if v := strings.TrimSpace(os.Getenv("ORIGINATING_URL")); v != "" {
 		return v

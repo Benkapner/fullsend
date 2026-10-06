@@ -1205,8 +1205,9 @@ func roleAppPrivateKeySecret(role string) string {
 
 // installRequiredScopes is the set of OAuth scopes the install command
 // needs when it must also create GitHub Apps. It is the union of
-// RequiredScopes(OpInstall) across all layers plus admin:org, which app
-// creation needs; TestCheckInstallScopes_SyncWithLayers asserts parity.
+// perRepoRequiredScopes and RequiredScopes(OpInstall) across all layers
+// plus admin:org, which app creation needs;
+// TestCheckInstallScopes_SyncWithLayers asserts parity.
 var installRequiredScopes = []string{"repo", "workflow", "admin:org"}
 
 // perRepoRequiredScopes is the set of OAuth scopes needed for per-repo install.
