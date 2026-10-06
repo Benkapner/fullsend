@@ -672,6 +672,31 @@ func TestRunGitHubSetupPerRepo_BaseOnlyComposesInheritedValues(t *testing.T) {
 	assert.Equal(t, validWIFProvider, secrets["FULLSEND_GCP_WIF_PROVIDER"], "WIF provider must come from the base, not be reported missing")
 }
 
+func TestRunGitHubSetupPerRepo_BaseOnlyOverlayStaysSparse(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	baseYAML := []byte("version: \"1\"\nallowed_remote_resources: []\ncreate_issues:\n  allow_targets:\n    repos:\n      - acme/dependencies\ninference:\n  project: base-project\n  wif_provider: " + validWIFProvider + "\n")
+	client := newSetupClient(t)
+	client.FileContents = map[string][]byte{
+		"acme/widget/.fullsend/config.base.yaml": baseYAML,
+	}
+
+	require.NoError(t, runGitHubSetupPerRepo(context.Background(), client, ui.New(&discardWriter{}), githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: map[string]bool{},
+	}))
+
+	overlay := committedSetupFiles(client)[".fullsend/config.yaml"]
+	assert.NotRegexp(t, `(?m)^create_issues:`, string(overlay), "overlay must not materialize create_issues targets")
+	assert.NotRegexp(t, `(?m)^allowed_remote_resources:`, string(overlay), "overlay must not materialize the remote-resource allowlist")
+
+	effective, err := config.ParsePerRepoConfigWriterLayered(overlay, baseYAML)
+	require.NoError(t, err)
+	require.NotNil(t, effective.IssueCreationConfig())
+	assert.Equal(t, []string{"acme/dependencies"}, effective.IssueCreationConfig().AllowTargets.Repos)
+	assert.Empty(t, effective.AllowedResources(), "empty base allowlist must stay deny-all")
+}
+
 func TestRunGitHubSetupPerRepo_BaseOnlyInheritsRolesWhenAgentsOmitted(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	baseYAML := []byte("version: \"1\"\nroles:\n  - triage\ninference:\n  project: base-project\n  wif_provider: " + validWIFProvider + "\n")

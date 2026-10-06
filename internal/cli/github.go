@@ -858,14 +858,15 @@ func validateSetupValueFormats(r config.PerRepoConfigReader, source string) erro
 // newSetupOverlay creates the first-install overlay. When baseData is
 // non-empty (an on-disk config.base.yaml with no overlay) the overlay is
 // parented on that base so validation and value resolution see it. With a
-// base present, roles are left unset so they inherit from the base; the
-// caller writes them only when --agents was passed explicitly.
+// base present the overlay is sparse (like the --config preset path): no
+// roles, create_issues targets, or remote-resource allowlist are
+// materialized, so they inherit from the base; the caller writes only
+// values passed through explicit flags.
 func newSetupOverlay(roles []string, target string, baseData []byte) (config.PerRepoConfigWriter, error) {
-	w := config.NewPerRepoConfig(roles, target)
 	if len(baseData) == 0 {
-		return w, nil
+		return config.NewPerRepoConfig(roles, target), nil
 	}
-	w.SetRoles(nil)
+	w := config.NewEmptyPerRepoOverlay()
 	data, err := w.Marshal()
 	if err != nil {
 		return nil, fmt.Errorf("marshaling per-repo config: %w", err)
