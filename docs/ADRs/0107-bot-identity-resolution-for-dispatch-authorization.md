@@ -73,6 +73,13 @@ The platform authorization rules are:
    source and target, and a transition supported by the selected harness.
    Harness/CEL policy may further restrict the recognized bot, transition,
    label, review, fork, or target, but cannot authorize an unrecognized bot.
+   This boundary prevents any bot capable of producing a forge event from
+   satisfying a CEL routing expression and thereby becoming an eligible
+   dispatch signal without the required Fullsend/provider trust relationship.
+   The event content remains untrusted; the restriction concerns admission of
+   the event as a trigger. Supporting selected third-party bots beyond the
+   registered provider identities will require a future ADR defining a
+   provider-backed allowlist, including its scope, ownership, and revocation.
 2. GitHub's label-added exception is preserved as current and target behavior;
    this ADR does not introduce it or make it temporary. The forge's accepted
    label mutation is the platform authorization evidence. For a bot actor, the
