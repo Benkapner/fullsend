@@ -320,12 +320,9 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 }
 
 // TestCollaboratorPermissionJQ checks that reusable-dispatch.yml and the
-// stop-fix shim share one --jq role resolution and that it maps custom roles
+// stop-fix shims share one --jq role resolution and that it maps custom roles
 // to their effective base role (#7834).
 func TestCollaboratorPermissionJQ(t *testing.T) {
-	if _, err := exec.LookPath("jq"); err != nil {
-		t.Skip("jq not available")
-	}
 	jqExpr := regexp.MustCompile(`(?s)/permission" \\\s*--jq '(.*?)' 2>`)
 	extract := func(t *testing.T, content []byte) string {
 		t.Helper()
@@ -340,6 +337,13 @@ func TestCollaboratorPermissionJQ(t *testing.T) {
 	require.NoError(t, err)
 	expr := extract(t, dispatch)
 	require.Equal(t, expr, extract(t, shim), "dispatch and stop-fix shim must resolve roles identically")
+	managed, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "fullsend.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, expr, extract(t, managed), "this repo's managed shim must match the template")
+
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not available")
+	}
 
 	cases := []struct{ name, response, want string }{
 		{"built-in role", `{"permission":"read","role_name":"triage"}`, "triage"},

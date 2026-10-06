@@ -57,10 +57,10 @@ A custom repository role resolves to the strongest base role set in
 `pull` → `read`), then to the legacy `permission` field (`admin`, `write`,
 `read`), and otherwise to `none`. Legacy `read` stays `read`, because it
 cannot distinguish Read from Triage. Fork authors and non-collaborators
-are mapped to `none` (not `external`); the `external` role is currently produced only
-by the Jira adapter for actors without project membership. Both `none`
-and `external` are denied by the default thresholds, so the
-authorization outcome is identical. The `author_association` field is
+are mapped to `read` (public repositories) or `none`, never `external`.
+The `external` role is currently produced only by the Jira adapter for
+actors without project membership. The default thresholds deny `read`,
+`none` and `external` alike. The `author_association` field is
 **not** used because it does not correctly reflect private org membership
 (see [Excluded fields](#excluded-fields)).
 
@@ -126,7 +126,7 @@ describe behavior currently implemented by `fullsend dispatch` or
 |-----------|---------|
 | Collaborator API returns a custom `role_name` with no effective permission signal | Mapped to `none`; denied |
 | Collaborator API returns an error or times out | Denied (function returns failure) |
-| Collaborator API response cannot be parsed (for example, non-boolean `user.permissions` flags in the Go client) | Denied |
+| Collaborator API response is not valid JSON | Denied |
 | `actor.role` is empty or missing | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | Username is empty | Denied |
 | `OWNERS` is missing or malformed, or `OWNERS_ALIASES` is present but malformed (`owners_file` enabled) | OWNERS check skipped; the collaborator API decides |
