@@ -557,6 +557,14 @@ func (f *fakeForkSCM) CreateForkChangeProposal(_ context.Context, _, _, _, _, _,
 	return &forge.ChangeProposal{Number: f.prNumber, Head: "test-branch"}, nil
 }
 
+func (f *fakeForkSCM) ListPullRequestCommits(context.Context, string, string, int) ([]string, error) {
+	return nil, nil
+}
+
+func (f *fakeForkSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
+	return nil, nil
+}
+
 // Unused scm.Driver methods -- required for interface satisfaction.
 
 func (f *fakeForkSCM) CreateIssue(context.Context, string, string, string, string, ...string) (*forge.Issue, error) {
@@ -582,6 +590,10 @@ func (f *fakeForkSCM) GetIssue(context.Context, string, string, int) (*forge.Iss
 }
 
 func (f *fakeForkSCM) GetFileContent(context.Context, string, string, string) ([]byte, error) {
+	return nil, nil
+}
+
+func (f *fakeForkSCM) GetFileContentAtRef(context.Context, string, string, string, string) ([]byte, error) {
 	return nil, nil
 }
 
