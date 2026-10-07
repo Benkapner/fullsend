@@ -103,18 +103,22 @@ cat > "${SHIM_DIR}/btrfs" <<'STUB'
 case "$*" in
   "filesystem show --raw /")
     echo "Label: 'fedora'  uuid: 00000000-0000-0000-0000-000000000000"
-    echo "	Total devices $(wc -l < "${STATE}/btrfs-devs") FS bytes used 3459923968"
-    while read -r size path; do
-      echo "	devid    1 size ${size} used 5402263552 path ${path}"
+    echo "	Total devices $(cat "${STATE}/btrfs-total" 2>/dev/null || wc -l < "${STATE}/btrfs-devs") FS bytes used 3459923968"
+    [ -f "${STATE}/btrfs-extra-line" ] && cat "${STATE}/btrfs-extra-line"
+    while read -r id size path; do
+      echo "	devid    ${id} size ${size} used 5402263552 path ${path}"
     done < "${STATE}/btrfs-devs"
     ;;
-  "filesystem resize max /")
+  "filesystem resize "*":max /")
     echo "btrfs $*" >> "${STATE}/calls.log"
+    id="${3%%:*}"
+    [ "${id}" = "$(awk '{ print $1; exit }' "${STATE}/btrfs-devs")" ] \
+      || { echo "ERROR: invalid device id ${id}" >&2; exit 1; }
     [ "$(cat "${STATE}/btrfs-resize-mode")" = "ok" ] || { echo "ERROR: unable to resize" >&2; exit 1; }
     part=$(cat "${STATE}/sysfs/sda4/size")
-    path=$(awk '{ print $2; exit }' "${STATE}/btrfs-devs")
-    echo "$(( part * 512 )) ${path}" > "${STATE}/btrfs-devs"
-    echo "Resize device id 1 (${path}) from old to max"
+    path=$(awk '{ print $3; exit }' "${STATE}/btrfs-devs")
+    echo "${id} $(( part * 512 )) ${path}" > "${STATE}/btrfs-devs"
+    echo "Resize device id ${id} (${path}) from old to max"
     ;;
   *) exit 1 ;;
 esac
@@ -141,7 +145,8 @@ reset_fixture() {
   echo part > "${STATE}/lsblk-TYPE-sda4"
   echo sda > "${STATE}/lsblk-PKNAME-sda4"
   echo disk > "${STATE}/lsblk-TYPE-sda"
-  echo "$(( root_sectors * 512 )) /dev/sda4" > "${STATE}/btrfs-devs"
+  echo "1 $(( root_sectors * 512 )) /dev/sda4" > "${STATE}/btrfs-devs"
+  rm -f "${STATE}/btrfs-total" "${STATE}/btrfs-extra-line"
   echo grow > "${STATE}/growpart-mode"
   echo ok > "${STATE}/btrfs-resize-mode"
   : > "${CALL_LOG}"
@@ -185,7 +190,7 @@ if [ "${RUN_RC}" -ne 0 ]; then
   fail "unexpanded 30 GiB disk should grow and verify (rc=${RUN_RC}): ${RUN_OUT}"
 elif ! called 'growpart /dev/sda 4'; then
   fail "growpart was not run on /dev/sda partition 4: $(calls)"
-elif ! called 'btrfs filesystem resize max /'; then
+elif ! called 'btrfs filesystem resize 1:max /'; then
   fail "btrfs resize was not run: $(calls)"
 elif ! out_has 'OK: root filesystem spans the disk'; then
   fail "missing success line: ${RUN_OUT}"
@@ -235,7 +240,7 @@ fi
 reset_fixture 30 "${UNEXPANDED}"
 echo fail > "${STATE}/btrfs-resize-mode"
 run_grow 30
-if [ "${RUN_RC}" -ne 0 ] && out_has 'ERROR: btrfs filesystem resize max / failed'; then
+if [ "${RUN_RC}" -ne 0 ] && out_has 'ERROR: btrfs filesystem resize 1:max / failed'; then
   pass "btrfs resize failure stops with a clear error"
 else
   fail "btrfs resize failure not reported (rc=${RUN_RC}): ${RUN_OUT}"
@@ -257,6 +262,62 @@ if [ "${RUN_RC}" -ne 0 ] && out_has 'expected at least 30 GiB'; then
   pass "disk smaller than MIN_DISK_GIB fails verification"
 else
   fail "20 GiB disk passed a 30 GiB minimum (rc=${RUN_RC}): ${RUN_OUT}"
+fi
+
+echo "== single device with a non-1 devid (e.g. after a device replace) =="
+reset_fixture 30 "${UNEXPANDED}"
+echo "3 $(( UNEXPANDED * 512 )) /dev/sda4" > "${STATE}/btrfs-devs"
+run_grow 30
+if [ "${RUN_RC}" -ne 0 ]; then
+  fail "non-1 devid should grow and verify (rc=${RUN_RC}): ${RUN_OUT}"
+elif ! called 'btrfs filesystem resize 3:max /'; then
+  fail "btrfs resize did not target devid 3: $(calls)"
+else
+  pass "btrfs resize targets the filesystem's sole devid"
+fi
+
+echo "== create-gcp-vm.sh requires the completion marker =="
+GROW_FN=$(sed -n '/^GROW_ROOT_FS_OK_MARKER=/p;/^grow_root_fs() {/,/^}/p' "${CREATE_GCP}")
+GCLOUD_STUB_DIR=$(mktemp -d)
+trap 'rm -rf "${STATE}" "${SHIM_DIR}" "${GCLOUD_STUB_DIR}"' EXIT
+# gcloud stub: runs the streamed script (stdin) the way `bash -s` would, or a
+# truncated prefix of it (all but the final `main` call) when TRUNCATE=1.
+cat > "${GCLOUD_STUB_DIR}/gcloud" <<'STUB'
+#!/bin/sh
+if [ "${TRUNCATE:-0}" = 1 ]; then
+  sed '$d' | bash -s
+else
+  cat >/dev/null
+  echo "==> OK: root filesystem spans the disk"
+fi
+exit "${STUB_RC:-0}"
+STUB
+chmod +x "${GCLOUD_STUB_DIR}/gcloud"
+run_grow_fn() {
+  RUN_RC=0
+  RUN_OUT=$(
+    PATH="${GCLOUD_STUB_DIR}:${PATH}" TRUNCATE="${1:-0}" STUB_RC="${2:-0}" \
+      SCRIPT_DIR="${SCRIPT_DIR}" vm_name=vm GCP_PROJECT=p GCP_ZONE=z GCE_SSH_FLAGS=() \
+      BOOT_DISK_GB=30 bash -c "${GROW_FN}"$'\n''grow_root_fs' 2>&1
+  ) && RUN_RC=0 || RUN_RC=$?
+}
+run_grow_fn 0 0
+if [ "${RUN_RC}" -eq 0 ]; then
+  pass "complete run with the marker succeeds"
+else
+  fail "run with the marker should succeed (rc=${RUN_RC}): ${RUN_OUT}"
+fi
+run_grow_fn 1 0
+if [ "${RUN_RC}" -ne 0 ] && printf '%s' "${RUN_OUT}" | grep -Fq 'without its completion marker'; then
+  pass "truncated-but-valid stream (exit 0, no marker) fails"
+else
+  fail "truncated stream passed as success (rc=${RUN_RC}): ${RUN_OUT}"
+fi
+run_grow_fn 0 7
+if [ "${RUN_RC}" -eq 7 ]; then
+  pass "ssh failure status is propagated"
+else
+  fail "ssh failure not propagated (rc=${RUN_RC}): ${RUN_OUT}"
 fi
 
 echo "== unsupported layouts fail before modifying any device =="
@@ -287,8 +348,25 @@ echo lvm > "${STATE}/lsblk-TYPE-sda4"
 check_unsupported "root that is not a partition is rejected" "is not a partition (type: lvm)"
 
 reset_fixture 30 "${UNEXPANDED}"
-echo '8482979840 /dev/sdb' >> "${STATE}/btrfs-devs"
+echo '2 8482979840 /dev/sdb' >> "${STATE}/btrfs-devs"
 check_unsupported "multi-device Btrfs is rejected" "spans 2 devices"
+
+reset_fixture 30 "${UNEXPANDED}"
+echo 2 > "${STATE}/btrfs-total"
+check_unsupported "degraded multi-device Btrfs (one visible devid row) is rejected" "declares 2 devices"
+
+reset_fixture 30 "${UNEXPANDED}"
+echo 2 > "${STATE}/btrfs-total"
+echo "	*** Some devices missing" > "${STATE}/btrfs-extra-line"
+check_unsupported "Btrfs reporting missing devices is rejected" "declares 2 devices"
+
+reset_fixture 30 "${UNEXPANDED}"
+echo unknown > "${STATE}/btrfs-total"
+check_unsupported "unparseable Btrfs device count fails closed" "cannot determine the root Btrfs device count"
+
+reset_fixture 30 "${UNEXPANDED}"
+echo "	*** Some devices missing" > "${STATE}/btrfs-extra-line"
+check_unsupported "Btrfs reporting missing devices with a count of 1 is rejected" "reports missing devices"
 
 reset_fixture 30 "${UNEXPANDED}"
 echo 1000 > "${STATE}/uid"

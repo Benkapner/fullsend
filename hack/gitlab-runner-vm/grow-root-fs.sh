@@ -15,7 +15,7 @@
 # grows all three. Anything else fails before any device is modified.
 #
 # Idempotent: when the partition and filesystem already fill the disk,
-# growpart reports NOCHANGE, `btrfs filesystem resize max` is a no-op, and
+# growpart reports NOCHANGE, `btrfs filesystem resize <devid>:max` is a no-op, and
 # verification passes. Safe on a running runner — growth is online and does
 # not touch registration, images, or workspace data.
 #
@@ -117,11 +117,23 @@ main() {
   [[ "${partnum}" =~ ^[0-9]+$ ]] \
     || die "cannot determine the partition number of ${root_dev}; no changes made"
 
-  local show devid_count devid_path
+  local show devid_count total_devices devid devid_path
   show=$(btrfs filesystem show --raw /) || die "btrfs filesystem show / failed; no changes made"
   devid_count=$(awk '$1 == "devid"' <<<"${show}" | wc -l)
   [ "${devid_count}" -eq 1 ] \
     || die "root Btrfs filesystem spans ${devid_count} devices — unsupported layout; no changes made"
+  # A degraded multi-device filesystem can print one devid row while still
+  # declaring more devices, so also require the declared count to be 1.
+  total_devices=$(awk '$1 == "Total" && $2 == "devices" { print $3; exit }' <<<"${show}")
+  [[ "${total_devices}" =~ ^[0-9]+$ ]] \
+    || die "cannot determine the root Btrfs device count — unsupported layout; no changes made"
+  [ "${total_devices}" -eq 1 ] \
+    || die "root Btrfs filesystem declares ${total_devices} devices — unsupported layout; no changes made"
+  ! grep -qi 'missing' <<<"${show}" \
+    || die "root Btrfs filesystem reports missing devices — unsupported layout; no changes made"
+  devid=$(awk '$1 == "devid" { print $2; exit }' <<<"${show}")
+  [[ "${devid}" =~ ^[0-9]+$ ]] \
+    || die "cannot determine the root Btrfs device ID; no changes made"
   devid_path=$(btrfs_devid_field path <<<"${show}")
   [ "$(readlink -f "${devid_path}")" = "${root_dev}" ] \
     || die "root Btrfs device ${devid_path} does not match mounted device ${root_dev}; no changes made"
@@ -143,8 +155,8 @@ main() {
     die "growpart /dev/${disk_name} ${partnum} failed (exit ${rc})"
   fi
 
-  log "resizing the root Btrfs filesystem to fill ${root_dev}"
-  btrfs filesystem resize max / || die "btrfs filesystem resize max / failed"
+  log "resizing the root Btrfs filesystem (devid ${devid}) to fill ${root_dev}"
+  btrfs filesystem resize "${devid}:max" / || die "btrfs filesystem resize ${devid}:max / failed"
 
   # --- Verify --------------------------------------------------------------
   local disk_bytes part_bytes part_start fs_bytes unused

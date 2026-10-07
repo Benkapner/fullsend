@@ -440,12 +440,24 @@ echo "  OK: packages installed"
 # call, so a dropped stream runs nothing and a retry is safe. Done before
 # runner registration so a failure needs no deregistration.
 echo "==> Growing root filesystem to fill the ${BOOT_DISK_GB} GiB boot disk..."
+#
+# A stream cut at a command boundary makes `bash -s` exit 0 without running
+# main, so success also requires the completion marker that grow-root-fs.sh
+# prints only after verification passes.
+GROW_ROOT_FS_OK_MARKER="OK: root filesystem spans the disk"
 grow_root_fs() {
-  timeout 600 gcloud compute ssh "${vm_name}" \
+  local out rc=0
+  out=$(timeout 600 gcloud compute ssh "${vm_name}" \
     --project="${GCP_PROJECT}" \
     --zone="${GCP_ZONE}" \
     "${GCE_SSH_FLAGS[@]}" \
-    -- "sudo env MIN_DISK_GIB=${BOOT_DISK_GB} bash -s" < "${SCRIPT_DIR}/grow-root-fs.sh"
+    -- "sudo env MIN_DISK_GIB=${BOOT_DISK_GB} bash -s" < "${SCRIPT_DIR}/grow-root-fs.sh" 2>&1) || rc=$?
+  printf '%s\n' "${out}"
+  [ "${rc}" -eq 0 ] || return "${rc}"
+  if ! grep -Fq "==> ${GROW_ROOT_FS_OK_MARKER}" <<<"${out}"; then
+    echo "  ERROR: grow-root-fs.sh exited 0 without its completion marker (truncated stream?)" >&2
+    return 1
+  fi
 }
 if ! with_backoff grow_root_fs; then
   echo "ERROR: root filesystem growth or capacity verification failed — see grow-root-fs.sh output above" >&2

@@ -295,11 +295,14 @@ script:
    `ERROR: ... no changes made` before any device is modified.
 2. Installs `cloud-utils-growpart` / `btrfs-progs` with `dnf` if they are
    missing, then runs `growpart` on the root partition (`NOCHANGE` counts
-   as success) and `btrfs filesystem resize max /`.
+   as success) and `btrfs filesystem resize <devid>:max /` for the
+   filesystem's sole device.
 3. Verifies capacity: the disk is at least `MIN_DISK_GIB` (30 when run by
    `create-gcp-vm.sh`), the root partition reaches the end of the disk, and
    the Btrfs device size matches the partition. If any check fails,
-   provisioning stops and prints the cleanup hint.
+   provisioning stops and prints the cleanup hint. `create-gcp-vm.sh` also
+   requires the script's `OK: root filesystem spans the disk` line in the
+   SSH output, so a truncated stream cannot pass as success.
 
 Expected usable capacity: roughly **27–28 GiB** for `/`, `/home`, and
 `/var` together (they share one Btrfs filesystem) on a 30 GiB disk, about
