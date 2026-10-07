@@ -88,19 +88,18 @@ The platform authorization rules are:
    the event as a trigger. Supporting selected third-party bots beyond the
    registered provider identities will require a future ADR defining a
    provider-backed allowlist, including its scope, ownership, and revocation.
-2. The label-added exception is preserved as current and target behavior across
-   source systems; this ADR does not introduce it or make it temporary. The
-   source forge's accepted label mutation, with authoritative actor-to-
-   transition provenance, is the platform authorization evidence. At the time
-   of this ADR, the exception is implemented only for GitHub; other adapters
-   MUST provide equivalent forge-authoritative evidence before enabling the
-   target behavior. That evidence MUST establish that the label mutation is
-   controlled at or above the minimum platform authority for the stage that
-   the label can trigger; absent or unverifiable evidence denies the event.
-   For a bot actor, the adapter MUST positively classify it using provider-
-   controlled metadata, but `bot_role` resolution is not required. The
-   platform gate MUST NOT inspect label names or maintain an agent-role label
-   allowlist; harness/CEL routing owns that agent-specific mapping.
+2. The label-added exception is preserved as current and target behavior; this
+   ADR does not introduce it or make it temporary. For GitHub, the source
+   forge's accepted label mutation, with authoritative actor-to-transition
+   provenance, is a separate platform authorization grant and bypasses the
+   ordinary `actor.role` stage threshold. At the time of this ADR, GitHub is
+   the only implementation. Any other adapter MUST provide equivalent
+   forge-authoritative evidence before enabling the same grant; absent or
+   unverifiable evidence denies the event. For a bot actor, the adapter MUST
+   positively classify it using provider-controlled metadata, but `bot_role`
+   resolution is not required. The platform gate MUST NOT inspect label names
+   or maintain an agent-role label allowlist; harness/CEL routing owns that
+   agent-specific mapping and may further narrow the dispatch.
 3. A bot with no recognized role, or a bot whose lookup fails, is denied on
    non-label paths before CEL evaluation. The label exception is the explicit
    exception to this rule. Human actors continue to use ADR 0054's permission

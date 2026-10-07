@@ -211,20 +211,19 @@ preserves bot-to-bot handoffs such as adding `ready-to-code` after triage
 completes, including handoffs from provider bots that are not Fullsend-
 registered.
 
-**ADR 0107 target behavior:** For every source system, when
-`transition.kind` is `label_changed` and `label.action` is `added`, the event
-is authorized regardless of `actor.role` once the adapter has established an
-accepted forge label mutation and authoritative actor-to-transition provenance.
-The forge's own permission model is therefore the **implicit authorization
-gate**. At the time of this ADR, this target exception is implemented only for
-GitHub; other adapters MUST provide equivalent forge-authoritative evidence
-before enabling it. That evidence MUST establish that the label mutation is
-controlled at or above the minimum platform authority for the stage that the
-label can trigger; absent or unverifiable evidence denies the event. For a bot
-actor, the adapter MUST positively classify it using provider-controlled
-metadata, but `actor.bot_role` lookup is not required. The platform gate MUST
-NOT inspect the label name or maintain an agent-role label allowlist;
-harness/CEL routing owns that mapping.
+**ADR 0107 target behavior:** When
+`transition.kind` is `label_changed` and `label.action` is `added`, GitHub
+authorizes the event regardless of `actor.role` once the adapter has
+established an accepted forge label mutation and authoritative actor-to-
+transition provenance. This is a separate platform authorization grant, not an
+application of the ordinary stage threshold. At the time of this ADR, GitHub
+is the only implementation; another adapter MUST provide equivalent
+forge-authoritative evidence before enabling the same grant, and absent or
+unverifiable evidence denies the event. For a bot actor, the adapter MUST
+positively classify it using provider-controlled metadata, but `actor.bot_role`
+lookup is not required. The platform gate MUST NOT inspect the label name or
+maintain an agent-role label allowlist; harness/CEL routing owns that mapping
+and may further narrow the dispatch.
 
 ### Bot-submitted reviews (GitHub)
 

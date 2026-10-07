@@ -321,6 +321,7 @@
         "bot_role": {
           "type": ["string", "null"],
           "minLength": 1,
+          "maxLength": 255,
           "description": "Optional provider-resolved canonical Fullsend bot role; absent or null for humans and unrecognized bots."
         },
         "role_verified": {
