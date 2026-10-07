@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# setup_test.sh — Tests for setup.sh idempotency hygiene (patch_config backup,
-# configure_per_job_gateway seed-start skip, setup_runner_user UID drop-in),
+# setup_test.sh — Tests for setup.sh idempotency hygiene (patch_config backup
+# and stale custom-executor path reconciliation, configured executor path
+# verification, configure_per_job_gateway seed-start skip, setup_runner_user
+# UID drop-in),
 # the OpenShell 0.1 upgrade path (configure_gateway, install_openshell), and
 # CA hook permissions for rootless Podman (install_ca_hook).
 #
@@ -189,23 +191,37 @@ check_interval = 0
 TOML
 }
 
+# Usage: write_custom_config [home]
+# Writes a custom-executor config whose managed paths live under home
+# (default: FAKE_HOME, i.e. what setup.sh would write for this user).
 write_custom_config() {
-  cat > "${CONFIG_TOML}" <<'TOML'
+  local home="${1:-${FAKE_HOME}}"
+  cat > "${CONFIG_TOML}" <<TOML
 concurrent = 1
 check_interval = 0
 
 [[runners]]
   name = "test"
   url = "https://gitlab.example.com"
+  id = 42
   token = "glrt-test"
   executor = "custom"
-  builds_dir = "/home/test/builds"
-  cache_dir = "/home/test/cache"
+  builds_dir = "${home}/builds"
+  cache_dir = "${home}/cache"
+  [runners.cache]
+    MaxUploadedArchiveSize = 0
   [runners.custom]
-    prepare_exec = "/home/test/gitlab-runner-executor/prepare.sh"
-    run_exec = "/home/test/gitlab-runner-executor/run.sh"
-    cleanup_exec = "/home/test/gitlab-runner-executor/cleanup.sh"
+    prepare_exec = "${home}/gitlab-runner-executor/prepare.sh"
+    prepare_exec_timeout = 300
+    run_exec = "${home}/gitlab-runner-executor/run.sh"
+    cleanup_exec = "${home}/gitlab-runner-executor/cleanup.sh"
+    cleanup_exec_timeout = 120
 TOML
+}
+
+# Config lines other than the five managed custom-executor keys.
+unmanaged_lines() {
+  grep -Ev '^[[:space:]]*(builds_dir|cache_dir|prepare_exec|run_exec|cleanup_exec) =' "$1"
 }
 
 echo "== contract comments (static) =="
@@ -331,7 +347,367 @@ else
   fail "patch_config did not report already-custom: ${RUN_SETUP_OUT}"
 fi
 
+echo "== patch_config: reconcile stale custom-executor paths (#8160) =="
+# Custom executor already configured for a different home directory.
+write_custom_config /home/fedora
+cp "${CONFIG_TOML}" "${WORK_DIR}/stale.toml"
+rm -f "${CONFIG_TOML}.bak"
+run_setup patch_config
+if [ "${RUN_SETUP_RC}" -ne 0 ]; then
+  fail "patch_config on a stale custom config should succeed (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+elif grep -q '/home/fedora' "${CONFIG_TOML}"; then
+  fail "patch_config left stale /home/fedora paths: $(tr '\n' '|' < "${CONFIG_TOML}")"
+elif ! grep -Fxq "  builds_dir = \"${BUILDS_DIR}\"" "${CONFIG_TOML}" \
+  || ! grep -Fxq "  cache_dir = \"${CACHE_DIR}\"" "${CONFIG_TOML}" \
+  || ! grep -Fxq "    prepare_exec = \"${EXECUTOR_DIR}/prepare.sh\"" "${CONFIG_TOML}" \
+  || ! grep -Fxq "    run_exec = \"${EXECUTOR_DIR}/run.sh\"" "${CONFIG_TOML}" \
+  || ! grep -Fxq "    cleanup_exec = \"${EXECUTOR_DIR}/cleanup.sh\"" "${CONFIG_TOML}"; then
+  fail "patch_config did not reconcile managed paths to ${FAKE_HOME}: $(tr '\n' '|' < "${CONFIG_TOML}")"
+elif [ "$(unmanaged_lines "${WORK_DIR}/stale.toml")" != "$(unmanaged_lines "${CONFIG_TOML}")" ]; then
+  fail "patch_config changed unmanaged config (registration/token/other keys): $(tr '\n' '|' < "${CONFIG_TOML}")"
+elif ! cmp -s "${WORK_DIR}/stale.toml" "${CONFIG_TOML}.bak"; then
+  fail "patch_config did not back up the stale config to config.toml.bak"
+elif [ ! -d "${BUILDS_DIR}" ] || [ ! -d "${CACHE_DIR}" ]; then
+  fail "patch_config did not create the reconciled builds/cache dirs"
+else
+  pass "stale custom-executor paths are reconciled; registration and other keys preserved"
+fi
+
+# Re-running on the repaired config is a no-op.
+cp "${CONFIG_TOML}" "${WORK_DIR}/repaired.toml"
+rm -f "${CONFIG_TOML}.bak"
+run_setup patch_config
+if [ "${RUN_SETUP_RC}" -eq 0 ] && cmp -s "${WORK_DIR}/repaired.toml" "${CONFIG_TOML}" \
+  && [ ! -e "${CONFIG_TOML}.bak" ]; then
+  pass "patch_config re-run after reconciliation is a no-op"
+else
+  fail "patch_config re-run changed a reconciled config (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
+# Unconventional spacing with current values is not rewritten.
+write_custom_config
+awk '{ sub(/^    run_exec = /, "    run_exec=") } { print }' "${CONFIG_TOML}" > "${WORK_DIR}/spacing.toml"
+cp "${WORK_DIR}/spacing.toml" "${CONFIG_TOML}"
+rm -f "${CONFIG_TOML}.bak"
+run_setup patch_config
+if [ "${RUN_SETUP_RC}" -eq 0 ] && cmp -s "${WORK_DIR}/spacing.toml" "${CONFIG_TOML}" \
+  && [ ! -e "${CONFIG_TOML}.bak" ]; then
+  pass "patch_config compares values, not formatting"
+else
+  fail "patch_config rewrote a config whose values were already current (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
+# Table headers with trailing comments are still recognised: current config is
+# a no-op, stale config is reconciled.
+write_custom_config
+awk '/^[ \t]*\[/ { $0 = $0 " # section note" } { print }' "${CONFIG_TOML}" > "${WORK_DIR}/hdrcomment.toml"
+cp "${WORK_DIR}/hdrcomment.toml" "${CONFIG_TOML}"
+rm -f "${CONFIG_TOML}.bak"
+run_setup patch_config
+if [ "${RUN_SETUP_RC}" -eq 0 ] && cmp -s "${WORK_DIR}/hdrcomment.toml" "${CONFIG_TOML}" \
+  && [ ! -e "${CONFIG_TOML}.bak" ]; then
+  pass "patch_config no-op on a config with commented table headers"
+else
+  fail "patch_config mishandled commented table headers (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+write_custom_config /home/fedora
+awk '/^[ \t]*\[/ { $0 = $0 " # section note" } { print }' "${CONFIG_TOML}" > "${WORK_DIR}/hdrcomment.toml"
+cp "${WORK_DIR}/hdrcomment.toml" "${CONFIG_TOML}"
+run_setup patch_config
+if [ "${RUN_SETUP_RC}" -eq 0 ] && ! grep -q '/home/fedora' "${CONFIG_TOML}" \
+  && grep -Fxq "    run_exec = \"${EXECUTOR_DIR}/run.sh\"" "${CONFIG_TOML}" \
+  && grep -Fxq '  [runners.cache] # section note' "${CONFIG_TOML}"; then
+  pass "patch_config reconciles a stale config with commented table headers"
+else
+  fail "patch_config did not reconcile commented-header config (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
+# CRLF line endings: current config is a no-op, stale config is reconciled.
+write_custom_config
+awk '{ printf "%s\r\n", $0 }' "${CONFIG_TOML}" > "${WORK_DIR}/crlf.toml"
+cp "${WORK_DIR}/crlf.toml" "${CONFIG_TOML}"
+rm -f "${CONFIG_TOML}.bak"
+run_setup patch_config
+if [ "${RUN_SETUP_RC}" -eq 0 ] && cmp -s "${WORK_DIR}/crlf.toml" "${CONFIG_TOML}" \
+  && [ ! -e "${CONFIG_TOML}.bak" ]; then
+  pass "patch_config no-op on a CRLF config"
+else
+  fail "patch_config mishandled a CRLF config (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+write_custom_config /home/fedora
+awk '{ printf "%s\r\n", $0 }' "${CONFIG_TOML}" > "${WORK_DIR}/crlf.toml"
+cp "${WORK_DIR}/crlf.toml" "${CONFIG_TOML}"
+run_setup patch_config
+if [ "${RUN_SETUP_RC}" -eq 0 ] && ! grep -q '/home/fedora' "${CONFIG_TOML}" \
+  && [ "$(grep -c "$(printf '\r')$" "${CONFIG_TOML}")" -eq "$(wc -l < "${CONFIG_TOML}")" ]; then
+  pass "patch_config reconciles a stale CRLF config and keeps CRLF endings"
+else
+  fail "patch_config did not reconcile CRLF config (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
+# Current values written with a trailing comment or as a literal string are
+# already correct: no write, no backup.
+write_custom_config
+EXECUTOR_DIR_VAL="${EXECUTOR_DIR}" awk '{ sub(/^  builds_dir = .*/, "&  # note") } { sub(/^    run_exec = "[^"]*"/, "    run_exec = \047" ENVIRON["EXECUTOR_DIR_VAL"] "/run.sh\047") } { print }' "${CONFIG_TOML}" > "${WORK_DIR}/decoded.toml"
+cp "${WORK_DIR}/decoded.toml" "${CONFIG_TOML}"
+rm -f "${CONFIG_TOML}.bak"
+run_setup patch_config
+if grep -Fq "run_exec = '${EXECUTOR_DIR}/run.sh'" "${CONFIG_TOML}" \
+  && grep -Fq '# note' "${CONFIG_TOML}" \
+  && [ "${RUN_SETUP_RC}" -eq 0 ] && cmp -s "${WORK_DIR}/decoded.toml" "${CONFIG_TOML}" \
+  && [ ! -e "${CONFIG_TOML}.bak" ]; then
+  pass "patch_config no-op for a trailing comment and a literal string"
+else
+  fail "patch_config rewrote a config whose decoded values were current (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
+# setup.sh's fail() writes to stderr; fold it in so the message is checkable.
+patch_config_with_stderr() {
+  patch_config 2>&1
+}
+
+# Multiple [[runners]] blocks: fail clearly, change nothing.
+write_custom_config /home/fedora
+printf '\n[[runners]]\n  name = "second"\n  executor = "shell"\n' >> "${CONFIG_TOML}"
+cp "${CONFIG_TOML}" "${WORK_DIR}/multi.toml"
+rm -f "${CONFIG_TOML}.bak"
+run_setup patch_config_with_stderr
+if [ "${RUN_SETUP_RC}" -eq 0 ]; then
+  fail "patch_config should refuse a multi-runner config"
+elif ! cmp -s "${WORK_DIR}/multi.toml" "${CONFIG_TOML}" || [ -e "${CONFIG_TOML}.bak" ]; then
+  fail "patch_config modified a multi-runner config it refused"
+elif printf '%s' "${RUN_SETUP_OUT}" | grep -Fq 'expected exactly 1 [[runners]] block'; then
+  pass "multi-runner custom config fails clearly without modification"
+else
+  fail "patch_config multi-runner failure was unclear: ${RUN_SETUP_OUT}"
+fi
+
+# A managed key missing from its table: fail clearly, change nothing.
+write_custom_config /home/fedora
+grep -v 'cleanup_exec = ' "${CONFIG_TOML}" > "${WORK_DIR}/missing.toml"
+cp "${WORK_DIR}/missing.toml" "${CONFIG_TOML}"
+rm -f "${CONFIG_TOML}.bak"
+run_setup patch_config_with_stderr
+if [ "${RUN_SETUP_RC}" -eq 0 ]; then
+  fail "patch_config should refuse a custom config missing cleanup_exec"
+elif ! cmp -s "${WORK_DIR}/missing.toml" "${CONFIG_TOML}" || [ -e "${CONFIG_TOML}.bak" ]; then
+  fail "patch_config modified a custom config it refused"
+elif printf '%s' "${RUN_SETUP_OUT}" | grep -Fq 'cleanup_exec in config.toml, found 0'; then
+  pass "custom config missing a managed key fails clearly without modification"
+else
+  fail "patch_config missing-key failure was unclear: ${RUN_SETUP_OUT}"
+fi
+
+# A current config with no final newline is left alone (no write, no backup).
+write_custom_config
+printf '%s' "$(cat "${CONFIG_TOML}")" > "${WORK_DIR}/nonl.toml"
+cp "${WORK_DIR}/nonl.toml" "${CONFIG_TOML}"
+printf 'old backup\n' > "${CONFIG_TOML}.bak"
+run_setup patch_config
+if [ "${RUN_SETUP_RC}" -eq 0 ] && cmp -s "${WORK_DIR}/nonl.toml" "${CONFIG_TOML}" \
+  && [ "$(cat "${CONFIG_TOML}.bak")" = "old backup" ]; then
+  pass "patch_config leaves a current config without a final newline untouched"
+else
+  fail "patch_config rewrote a current config lacking a final newline (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+rm -f "${CONFIG_TOML}.bak"
+
+# Paths containing a backslash and a double quote are written as valid TOML
+# basic strings, read back exactly, and then left alone on a re-run.
+ORIG_BUILDS_DIR="${BUILDS_DIR}"
+ORIG_CACHE_DIR="${CACHE_DIR}"
+ORIG_EXECUTOR_DIR="${EXECUTOR_DIR}"
+ODD_HOME="${WORK_DIR}"'/odd\t"home'
+BUILDS_DIR="${ODD_HOME}/builds"
+CACHE_DIR="${ODD_HOME}/cache"
+EXECUTOR_DIR="${ODD_HOME}/gitlab-runner-executor"
+write_custom_config /home/fedora
+rm -f "${CONFIG_TOML}.bak"
+run_setup patch_config
+ODD_ESCAPED="${WORK_DIR}"'/odd\\t\"home'
+if [ "${RUN_SETUP_RC}" -ne 0 ]; then
+  fail "patch_config failed for a path with a backslash and quote (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+elif ! grep -Fxq "  builds_dir = \"${ODD_ESCAPED}/builds\"" "${CONFIG_TOML}" \
+  || ! grep -Fxq "    run_exec = \"${ODD_ESCAPED}/gitlab-runner-executor/run.sh\"" "${CONFIG_TOML}"; then
+  fail "patch_config did not TOML-escape the managed paths: $(tr '\n' '|' < "${CONFIG_TOML}")"
+else
+  cp "${CONFIG_TOML}" "${WORK_DIR}/odd.toml"
+  rm -f "${CONFIG_TOML}.bak"
+  run_setup patch_config
+  if [ "${RUN_SETUP_RC}" -eq 0 ] && cmp -s "${WORK_DIR}/odd.toml" "${CONFIG_TOML}" \
+    && [ ! -e "${CONFIG_TOML}.bak" ]; then
+    pass "backslash and quote in managed paths round-trip and re-run is a no-op"
+  else
+    fail "re-run rewrote a config with escaped paths (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+  fi
+fi
+BUILDS_DIR="${ORIG_BUILDS_DIR}"
+CACHE_DIR="${ORIG_CACHE_DIR}"
+EXECUTOR_DIR="${ORIG_EXECUTOR_DIR}"
+
+# The rewritten copy holds the runner token and must not outlive a failed run.
+write_custom_config /home/fedora
+LEAK_TMPDIR=$(mktemp -d)
+printf '#!/bin/sh\nexit 1\n' > "${SHIM_DIR}/cp"
+chmod +x "${SHIM_DIR}/cp"
+TMPDIR="${LEAK_TMPDIR}" run_setup patch_config
+rm -f "${SHIM_DIR}/cp"
+if [ "${RUN_SETUP_RC}" -ne 0 ] && [ -z "$(ls -A "${LEAK_TMPDIR}")" ]; then
+  pass "patch_config removes its temp copy of config.toml when reconciliation fails"
+else
+  fail "patch_config left a temp copy behind or did not fail (rc=${RUN_SETUP_RC}): $(ls -A "${LEAK_TMPDIR}")"
+fi
+rm -rf "${LEAK_TMPDIR}"
+
+# executor declared with other valid TOML spellings is still reconciled.
+for spelling in 'executor="custom"' "executor = 'custom'"; do
+  write_custom_config /home/fedora
+  EXECUTOR_SPELLING="${spelling}" awk '/^  executor = / { $0 = "  " ENVIRON["EXECUTOR_SPELLING"] } { print }' "${CONFIG_TOML}" > "${WORK_DIR}/spelling.toml"
+  cp "${WORK_DIR}/spelling.toml" "${CONFIG_TOML}"
+  rm -f "${CONFIG_TOML}.bak"
+  run_setup patch_config
+  if [ "${RUN_SETUP_RC}" -eq 0 ] && ! grep -q '/home/fedora' "${CONFIG_TOML}" \
+    && cmp -s "${WORK_DIR}/spelling.toml" "${CONFIG_TOML}.bak" \
+    && grep -Fxq "  ${spelling}" "${CONFIG_TOML}"; then
+    pass "patch_config reconciles a config declaring ${spelling}"
+  else
+    fail "patch_config did not reconcile ${spelling} (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+  fi
+done
+
+# An indented [[runners]] header is counted and reconciled.
+write_custom_config /home/fedora
+awk '/^\[\[runners\]\]/ { $0 = "  " $0 } { print }' "${CONFIG_TOML}" > "${WORK_DIR}/indented.toml"
+cp "${WORK_DIR}/indented.toml" "${CONFIG_TOML}"
+run_setup patch_config
+if [ "${RUN_SETUP_RC}" -eq 0 ] && ! grep -q '/home/fedora' "${CONFIG_TOML}"; then
+  pass "patch_config reconciles a single indented [[runners]] config"
+else
+  fail "patch_config mishandled an indented [[runners]] header (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
+# register_runner runs before patch_config: an indented [[runners]] header
+# must count as already registered, not demand a registration token.
+cp "${WORK_DIR}/indented.toml" "${CONFIG_TOML}"
+unset REGISTRATION_TOKEN
+GITLAB_URL="https://gitlab.example.com" run_setup register_runner
+if [ "${RUN_SETUP_RC}" -eq 0 ] && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq 'runner already registered'; then
+  pass "register_runner detects an indented [[runners]] header as registered"
+else
+  fail "register_runner missed an indented [[runners]] header (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
+# Mixed indentation with two runners is refused, changing nothing.
+write_custom_config /home/fedora
+printf '\n  [[runners]]\n    name = "second"\n    executor = "shell"\n' >> "${CONFIG_TOML}"
+cp "${CONFIG_TOML}" "${WORK_DIR}/mixed.toml"
+rm -f "${CONFIG_TOML}.bak"
+run_setup patch_config_with_stderr
+if [ "${RUN_SETUP_RC}" -ne 0 ] && cmp -s "${WORK_DIR}/mixed.toml" "${CONFIG_TOML}" \
+  && [ ! -e "${CONFIG_TOML}.bak" ] \
+  && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq 'expected exactly 1 [[runners]] block in config.toml, found 2'; then
+  pass "mixed-indentation multi-runner config fails clearly without modification"
+else
+  fail "patch_config accepted or mishandled mixed-indentation runners (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
+# No [[runners]] block at all reaches the diagnostic instead of aborting on
+# grep -c's exit status.
+printf 'concurrent = 1\n' > "${CONFIG_TOML}"
+run_setup patch_config_with_stderr
+if [ "${RUN_SETUP_RC}" -ne 0 ] \
+  && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq 'expected exactly 1 [[runners]] block in config.toml, found 0'; then
+  pass "config with no [[runners]] block fails with the diagnostic"
+else
+  fail "patch_config gave no diagnostic for zero runners (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
+echo "== verify_configured_executor_paths (#8160) =="
+# Scripts installed under EXECUTOR_DIR, but config.toml points elsewhere.
+mkdir -p "${EXECUTOR_DIR}" "${BUILDS_DIR}" "${CACHE_DIR}"
+for script in prepare.sh run.sh cleanup.sh; do
+  printf '#!/bin/sh\n' > "${EXECUTOR_DIR}/${script}"
+  chmod +x "${EXECUTOR_DIR}/${script}"
+done
+write_custom_config "${WORK_DIR}/nonexistent-home"
+run_setup verify_configured_executor_paths
+if [ "${RUN_SETUP_RC}" -eq 5 ] \
+  && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq "configured prepare_exec ${WORK_DIR}/nonexistent-home/gitlab-runner-executor/prepare.sh missing or not executable"; then
+  pass "verify flags configured executor paths that do not exist even when EXECUTOR_DIR scripts do"
+else
+  fail "verify missed stale configured paths (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
+# Configured paths match and are accessible.
+write_custom_config
+run_setup verify_configured_executor_paths
+if [ "${RUN_SETUP_RC}" -eq 0 ]; then
+  pass "verify accepts configured executor paths that exist and are executable"
+else
+  fail "verify rejected a correct config (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
+# Configured script present but not executable.
+chmod -x "${EXECUTOR_DIR}/run.sh"
+run_setup verify_configured_executor_paths
+if [ "${RUN_SETUP_RC}" -eq 1 ] \
+  && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq "configured run_exec ${EXECUTOR_DIR}/run.sh missing or not executable"; then
+  pass "verify flags a configured executor script that is not executable"
+else
+  fail "verify missed a non-executable configured script (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
+# Configured build dir that is writable but not searchable (mode 0600) is
+# unusable by the runner. Skipped when running as root, which bypasses modes.
+chmod +x "${EXECUTOR_DIR}/run.sh"
+if [ "$(id -u)" -ne 0 ]; then
+  chmod 0600 "${BUILDS_DIR}"
+  run_setup verify_configured_executor_paths
+  chmod 0755 "${BUILDS_DIR}"
+  if [ "${RUN_SETUP_RC}" -eq 1 ] \
+    && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq "configured builds_dir ${BUILDS_DIR} missing or not writable"; then
+    pass "verify flags a configured build dir that is not searchable"
+  else
+    fail "verify accepted a 0600 build dir (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+  fi
+fi
+rm -rf "${EXECUTOR_DIR}" "${BUILDS_DIR}" "${CACHE_DIR}"
+
+# verify() and the gateway seed skip decide "custom executor" from the decoded
+# executor value, so every valid spelling must count and shell must not.
+for spelling in 'executor = "custom"' 'executor="custom"' "executor = 'custom'"; do
+  write_custom_config
+  EXECUTOR_SPELLING="${spelling}" awk '/^  executor = / { $0 = "  " ENVIRON["EXECUTOR_SPELLING"] } { print }' "${CONFIG_TOML}" > "${WORK_DIR}/spelling.toml"
+  cp "${WORK_DIR}/spelling.toml" "${CONFIG_TOML}"
+  run_setup config_uses_custom_executor
+  if [ "${RUN_SETUP_RC}" -eq 0 ]; then
+    pass "custom executor check accepts ${spelling}"
+  else
+    fail "custom executor check rejected ${spelling} (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+  fi
+done
+write_shell_config
+run_setup config_uses_custom_executor
+if [ "${RUN_SETUP_RC}" -ne 0 ]; then
+  pass "custom executor check rejects a shell executor"
+else
+  fail "custom executor check accepted a shell executor"
+fi
+
 echo "== configure_per_job_gateway seed skip =="
+# An alternate executor spelling still counts as already seeded.
+write_custom_config
+EXECUTOR_SPELLING="executor='custom'" awk '/^  executor = / { $0 = "  " ENVIRON["EXECUTOR_SPELLING"] } { print }' "${CONFIG_TOML}" > "${WORK_DIR}/spelling.toml"
+cp "${WORK_DIR}/spelling.toml" "${CONFIG_TOML}"
+write_systemctl_stub seeded
+run_setup configure_per_job_gateway
+if [ "${RUN_SETUP_RC}" -eq 0 ] && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq 'skipping seed start' \
+  && ! grep -q 'start openshell-gateway.service' "${SYSTEMCTL_LOG}"; then
+  pass "already-seeded VM with executor='custom' skips the gateway start/stop cycle"
+else
+  fail "seeded re-run with executor='custom' did not skip (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
 write_custom_config
 write_systemctl_stub seeded
 run_setup configure_per_job_gateway

@@ -764,7 +764,7 @@ configure_per_job_gateway() {
   # If the unit has been re-enabled or is running, fall through and
   # pin it back to per-job.
   if [ -f "${CONFIG_TOML}" ] \
-    && grep -q 'executor = "custom"' "${CONFIG_TOML}" \
+    && config_uses_custom_executor \
     && user_systemctl cat openshell-gateway.service >/dev/null 2>&1 \
     && ! user_systemctl is-enabled --quiet openshell-gateway.service \
     && ! user_systemctl is-active --quiet openshell-gateway.service; then
@@ -824,6 +824,168 @@ install_executor() {
 # --------------------------------------------------------------------------
 # 7. Patch gitlab-runner config.toml
 # --------------------------------------------------------------------------
+# Read or rewrite the custom-executor keys setup.sh manages in a config.toml.
+#   custom_executor_keys read  <file>  — prints "key=value" per managed key,
+#                                        value decoded (quotes, \\ and \"
+#                                        escapes, any trailing comment removed),
+#                                        plus "executor=value" for the
+#                                        [[runners]] executor
+#   custom_executor_keys write <file>  — prints the whole file with each managed
+#                                        key whose decoded value differs from the
+#                                        wanted one rewritten; every other line
+#                                        (including a current key's comment)
+#                                        verbatim
+# Table headers are matched after dropping a trailing comment and CR, and
+# values may be basic ("...") or literal ('...') strings, so a commented or
+# CRLF config is parsed the same as a plain one.
+# Keys are scoped to the table gitlab-runner reads them from — builds_dir and
+# cache_dir in [[runners]], the *_exec keys in [runners.custom] — so a
+# same-named key under another table is never read or touched.
+# The wanted paths reach awk through ENVIRON, not -v, because -v interprets
+# backslash escapes. Basic strings are written with \ and " escaped and read
+# back by undoing exactly those two escapes; any other escape decodes to a
+# value that never matches, so such a line is rewritten.
+custom_executor_keys() {
+  local mode="$1" file="$2"
+  CE_BUILDS_DIR="${BUILDS_DIR}" \
+    CE_CACHE_DIR="${CACHE_DIR}" \
+    CE_PREPARE_EXEC="${EXECUTOR_DIR}/prepare.sh" \
+    CE_RUN_EXEC="${EXECUTOR_DIR}/run.sh" \
+    CE_CLEANUP_EXEC="${EXECUTOR_DIR}/cleanup.sh" \
+    awk -v mode="${mode}" '
+    function tomlenc(s,   i, c, out) {
+      out = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "\\" || c == "\"") out = out "\\"
+        out = out c
+      }
+      return out
+    }
+    function tomldec(s,   i, c, n, out) {
+      out = ""
+      n = length(s)
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c == "\\" && i < n) {
+          i++
+          c = substr(s, i, 1)
+          if (c != "\\" && c != "\"") out = out "\001"
+        }
+        out = out c
+      }
+      return out
+    }
+    BEGIN {
+      want["builds_dir"] = ENVIRON["CE_BUILDS_DIR"]
+      want["cache_dir"] = ENVIRON["CE_CACHE_DIR"]
+      want["prepare_exec"] = ENVIRON["CE_PREPARE_EXEC"]
+      want["run_exec"] = ENVIRON["CE_RUN_EXEC"]
+      want["cleanup_exec"] = ENVIRON["CE_CLEANUP_EXEC"]
+    }
+    /^[ \t]*\[/ {
+      section = $0
+      sub(/^[ \t]+/, "", section)
+      sub(/[ \t\r]*#.*$/, "", section)
+      sub(/[ \t\r]+$/, "", section)
+      if (mode == "write") print
+      next
+    }
+    /^[ \t]*[a-z_]+[ \t]*=/ {
+      key = $0
+      sub(/^[ \t]+/, "", key)
+      sub(/[ \t]*=.*$/, "", key)
+      if (((key in want) \
+        && ((section == "[[runners]]" && (key == "builds_dir" || key == "cache_dir")) \
+          || (section == "[runners.custom]" && key ~ /_exec$/))) \
+        || (mode == "read" && key == "executor" && section == "[[runners]]")) {
+        val = $0
+        sub(/^[^=]*=[ \t]*/, "", val)
+        if (match(val, /^"([^"\\]|\\.)*"/)) {
+          val = tomldec(substr(val, 2, RLENGTH - 2))
+        } else if (match(val, /^\047[^\047]*\047/)) {
+          val = substr(val, 2, RLENGTH - 2)
+        } else {
+          sub(/[ \t\r]*#.*$/, "", val)
+          sub(/[ \t\r]+$/, "", val)
+        }
+        if (mode == "read") {
+          print key "=" val
+        } else if (val == want[key]) {
+          print
+        } else {
+          indent = $0
+          sub(/[^ \t].*$/, "", indent)
+          eol = ($0 ~ /\r$/) ? "\r" : ""
+          print indent key " = \"" tomlenc(want[key]) "\"" eol
+        }
+        next
+      }
+    }
+    mode == "write" { print }
+  ' "${file}"
+}
+
+# True when config.toml's [[runners]] executor decodes to "custom". Uses the
+# same TOML-aware read as the managed keys, so `executor="custom"` and
+# `executor = 'custom'` count like `executor = "custom"`.
+config_uses_custom_executor() {
+  local executor
+  executor=$(custom_executor_keys read "${CONFIG_TOML}" | sed -n 's/^executor=//p')
+  [ "${executor}" = "custom" ]
+}
+
+# Bring an existing custom-executor config's managed paths back in line with
+# this user's EXECUTOR_DIR/BUILDS_DIR/CACHE_DIR. A runner whose config points
+# at another home fails every job in prepare ("fork/exec .../prepare.sh: no
+# such file or directory") while the scripts under EXECUTOR_DIR look healthy
+# (#8160). Only the managed values are rewritten — registration (name, url,
+# token, id) and every other setting stay byte-for-byte — and a config that
+# already matches is left untouched (no write, no .bak).
+reconcile_custom_executor_paths() {
+  local current key count
+  current=$(custom_executor_keys read "${CONFIG_TOML}")
+  for key in builds_dir cache_dir prepare_exec run_exec cleanup_exec; do
+    count=$(printf '%s\n' "${current}" | grep -c "^${key}=") || true
+    if [ "${count}" -ne 1 ]; then
+      fail "expected exactly 1 custom executor ${key} in config.toml, found ${count} — patch manually"
+    fi
+  done
+
+  # The rewritten copy holds the runner token: remove it on any exit, not just
+  # the success paths (global so the EXIT handler can still see it).
+  RECONCILE_TMP=$(mktemp)
+  trap 'rm -f "${RECONCILE_TMP:-}"' EXIT
+  local tmp="${RECONCILE_TMP}"
+  custom_executor_keys write "${CONFIG_TOML}" > "${tmp}"
+
+  # Compare decoded values, not bytes: awk always ends the last line with a
+  # newline, so a current config without one would otherwise look changed.
+  local wanted old new
+  wanted=$(custom_executor_keys read "${tmp}")
+  if [ "${current}" = "${wanted}" ]; then
+    rm -f "${tmp}"
+    trap - EXIT
+    ok "already using custom executor (executor, build and cache paths current)"
+    return
+  fi
+
+  for key in builds_dir cache_dir prepare_exec run_exec cleanup_exec; do
+    old=$(printf '%s\n' "${current}" | sed -n "s/^${key}=//p")
+    new=$(printf '%s\n' "${wanted}" | sed -n "s/^${key}=//p")
+    if [ "${old}" != "${new}" ]; then
+      echo "  stale ${key}: ${old} -> ${new}"
+    fi
+  done
+
+  cp "${CONFIG_TOML}" "${CONFIG_TOML}.bak"
+  ok "backed up config.toml"
+  cp "${tmp}" "${CONFIG_TOML}"
+  rm -f "${tmp}"
+  trap - EXIT
+  ok "custom executor paths reconciled to ${HOME}"
+}
+
 patch_config() {
   info "Patching ${CONFIG_TOML}"
 
@@ -839,18 +1001,25 @@ patch_config() {
   fi
 
   # Single-runner VM assumption: these VMs register exactly one runner.
-  # The executor = "custom" early-return greps the whole file, so a
-  # partially-patched multi-runner config (one custom block, one still
-  # shell) would skip the remaining shell block. Patch those by hand.
-  if grep -q 'executor = "custom"' "${CONFIG_TOML}"; then
-    ok "already using custom executor"
-    return
-  fi
-
+  # Both the shell -> custom patch and the custom-executor path
+  # reconciliation edit "the" [[runners]] block, so a multi-runner config
+  # is refused rather than partially patched. Patch those by hand.
   local runner_count
-  runner_count=$(grep -c '^\[\[runners\]\]' "${CONFIG_TOML}")
+  # Headers may be indented (valid TOML); grep -c exits 1 on zero matches,
+  # which must reach the diagnostic below rather than abort under set -e.
+  runner_count=$(grep -c '^[[:space:]]*\[\[runners\]\]' "${CONFIG_TOML}") || true
   if [ "${runner_count}" -ne 1 ]; then
     fail "expected exactly 1 [[runners]] block in config.toml, found ${runner_count} — patch manually"
+  fi
+
+  # Re-run: do not trust an existing custom executor's paths — reconcile
+  # them to this user's HOME (#8160). The executor value is read with the
+  # same TOML-aware parsing as the managed keys, so `executor="custom"` and
+  # `executor = 'custom'` are recognised too.
+  if config_uses_custom_executor; then
+    reconcile_custom_executor_paths
+    mkdir -p "${BUILDS_DIR}" "${CACHE_DIR}"
+    return
   fi
 
   # Single overwriting backup — a timestamped name accumulated a new
@@ -1020,6 +1189,33 @@ check_registration() {
   done
 }
 
+# Check the paths config.toml actually points the custom executor at, not
+# just the copies under EXECUTOR_DIR: a stale config fails every job while
+# EXECUTOR_DIR looks healthy (#8160). setup.sh runs as RUNNER_USER, the
+# service user setup_runner_user installs, so test(1) here checks access as
+# that user. Returns the number of problems found.
+verify_configured_executor_paths() {
+  local errors=0 settings key path
+  settings=$(custom_executor_keys read "${CONFIG_TOML}")
+  for key in prepare_exec run_exec cleanup_exec builds_dir cache_dir; do
+    path=$(printf '%s\n' "${settings}" | sed -n "s/^${key}=//p" | head -1)
+    if [ -z "${path}" ]; then
+      echo "  WARN: ${key} not configured in ${CONFIG_TOML}"; errors=$((errors + 1))
+    elif [ "${key}" = "builds_dir" ] || [ "${key}" = "cache_dir" ]; then
+      if [ -d "${path}" ] && [ -w "${path}" ] && [ -x "${path}" ]; then
+        ok "configured ${key} ${path} writable"
+      else
+        echo "  WARN: configured ${key} ${path} missing or not writable/searchable by ${RUNNER_USER}"; errors=$((errors + 1))
+      fi
+    elif [ -f "${path}" ] && [ -r "${path}" ] && [ -x "${path}" ]; then
+      ok "configured ${key} ${path} executable"
+    else
+      echo "  WARN: configured ${key} ${path} missing or not executable by ${RUNNER_USER}"; errors=$((errors + 1))
+    fi
+  done
+  return "${errors}"
+}
+
 verify() {
   info "Verifying setup"
 
@@ -1060,11 +1256,12 @@ verify() {
     echo "  WARN: gitlab-runner service not running"; errors=$((errors + 1))
   fi
 
-  if grep -q 'executor = "custom"' "${CONFIG_TOML}"; then
+  if config_uses_custom_executor; then
     ok "custom executor configured"
   else
     echo "  WARN: custom executor not in config"; errors=$((errors + 1))
   fi
+  verify_configured_executor_paths || errors=$((errors + $?))
 
   if ! check_registration; then
     errors=$((errors + 1))

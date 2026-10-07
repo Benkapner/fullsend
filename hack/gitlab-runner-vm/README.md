@@ -252,7 +252,7 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 - `create-gcp-vm.sh` — end-to-end VM creation on GCE + runner registration + setup
 - `delete-gcp-vm.sh` — drain in-flight jobs, then GCE VM teardown + runner deregistration
 - `setup.sh` — standalone VM configuration (called by create-openshift-vm.sh / create-gcp-vm.sh). Idempotent and safe to re-run in place as a debug convenience; recreation is the compliance path (see #7257). Re-running it on an already-provisioned VM also installs/refreshes the Podman prune timer.
-- `setup_test.sh` — unit tests for setup.sh idempotency hygiene (backup, gateway seed skip, registration check)
+- `setup_test.sh` — unit tests for setup.sh idempotency hygiene (backup, executor path reconciliation and verification, gateway seed skip)
 - `create-openshift-vm_test.sh` — end-to-end tests for create-openshift-vm.sh against stubbed `oc`/`virtctl`/GitLab API (shared-token path, cloud-init package repair, `--resume`)
 - `podman-prune.sh` — reclaims unused rootless Podman containers and images; installed as a user systemd timer by setup.sh and invoked from prepare/cleanup
 - `podman-prune_test.sh` — unit tests for the prune script and timer install
@@ -300,6 +300,36 @@ is the current example of (2); `job_id.sh`, `prepare.sh`, `run.sh`, and
 to `~/.local/lib/fullsend/podman-prune.sh` and `prepare.sh`/`cleanup.sh`
 invoke that path via `prune_unused_podman_storage` in `gateway.sh`. Do
 not add it to the five-file executor allowlist.
+
+## Repairing stale executor paths
+
+`setup.sh` derives the custom executor's paths from the `HOME` of the user
+running it: `prepare_exec`, `run_exec` and `cleanup_exec` under
+`~/gitlab-runner-executor/`, and `builds_dir`/`cache_dir` under `~/builds`
+and `~/cache`. If `/etc/gitlab-runner/config.toml` points them anywhere
+else (for example at another account's home), every job fails in prepare
+with `fork/exec .../prepare.sh: no such file or directory`.
+
+The supported repair is to re-run `setup.sh` as the runner service user,
+the account the runner should run as (`systemctl show -p User gitlab-runner`).
+`setup.sh` also switches the service to whichever user runs it. Copy the
+current `hack/gitlab-runner-vm/` files onto the VM and re-run `setup.sh`
+with the same `GITLAB_URL` / `RUNNER_IMAGE` used at provision time. Do not
+edit the TOML by hand or switch the executor back to `shell`. On an
+existing custom-executor config, `patch_config` then:
+
+- rewrites only those five managed keys when their values differ, after
+  saving the previous file as `config.toml.bak`. Registration (`name`,
+  `url`, `id`, `token`) and every other setting are left unchanged;
+- leaves an already-correct config untouched (no write, no backup);
+- fails without modifying anything if `config.toml` has more than one
+  `[[runners]]` block or a managed key is missing or duplicated. Fix
+  those by hand.
+
+`verify` then checks the paths `config.toml` actually configures, not just
+the scripts under `~/gitlab-runner-executor/`. The configured scripts must
+be executable and the build/cache directories writable by the runner user,
+or setup exits non-zero.
 
 ## Disk / image prune
 
