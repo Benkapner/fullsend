@@ -70,10 +70,17 @@ Breaking changes require `docs/normative/normalized-event/v2/`.
 The new optional actor fields are additive, but consumers that vendor this
 schema with `additionalProperties: false` must refresh their copy before an
 adapter emits `bot_role` or `role_verified`; otherwise their local validator
-may reject an otherwise valid v1 event. The JSON Schema's cross-field rules are
-currently stricter than the Go `normevent.Validate()` implementation. The
-adapter migration MUST bring the Go validator to parity before emitting the
-new fields; until then the schema remains the normative stricter check.
+may reject an otherwise valid v1 event. Fullsend controls the supported
+NormalizedEvent producers and consumers, so the bundled validator and other
+supported consumers MUST be updated to this v1 schema before any adapter emits
+the new fields. Older strict schema copies are not a supported
+producer/consumer combination after that rollout. v1 compatibility means that
+existing events without these fields remain valid; it does not require a
+stale `additionalProperties: false` schema to accept newly emitted fields.
+The JSON Schema's cross-field rules are currently stricter than the Go
+`normevent.Validate()` implementation. The adapter migration MUST bring the Go
+validator to parity before emitting the new fields; until then the schema
+remains the normative stricter check.
 
 Adding a new `transition.kind` is **non-breaking** — CEL triggers use boolean
 expressions, not exhaustive enum matching.
@@ -306,8 +313,8 @@ fixtures for ADR 0107 are under
 ## Examples
 
 See [`examples/`](examples/). The `examples/adr-0107/` subdirectory contains
-target representations and is not emitted until the adapter migration crosses
-its explicit boundary.
+target representations and is not emitted until an adapter adopts the ADR 0107
+target implementation.
 
 ## Execution ref projection
 
