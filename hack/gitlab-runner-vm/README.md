@@ -97,7 +97,53 @@ GL_TOKEN=glpat-xxx \
 
 # 3. List VMs:
 NAMESPACE=my-namespace ./delete-openshift-vm.sh --list
+
+# 4. Finish a VM whose provisioning failed (same environment as the create):
+RUNNER_TOKEN=glrt-xxx \
+  GITLAB_URL=https://gitlab.example.com \
+  NAMESPACE=my-namespace \
+  RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 \
+  ./create-openshift-vm.sh --resume 05
 ```
+
+### Recovering from a failed provisioning run
+
+The VM's cloud-init `bootcmd` makes the Fedora repos usable before cloud-init
+installs packages: it switches `metalink=` to `baseurl=`, replaces the
+`download.example` placeholder that recent Fedora cloud images ship, and
+disables the metalink-only OpenH264 repo. If the base packages are still
+missing after cloud-init, `create-openshift-vm.sh` sends the current `vm.yaml`
+repair commands to the VM (so a VM created from an older template is fixed too)
+and re-runs the package module once before running `setup.sh`, which then
+verifies the service and that the runner is registered with `GITLAB_URL` (and
+nowhere else). A reused runner config for a different GitLab, or with more
+than one runner, is rejected and leaves `gitlab-runner` stopped.
+
+If a run still fails after the VM exists, fix the cause and re-run with
+`--resume NUMBER` and the same environment. It never creates a second VM, and
+never creates a duplicate registration:
+
+- `RUNNER_TOKEN` (shared pool): no registration is created; `setup.sh` is
+  re-run with the pool token.
+- `GL_TOKEN`: the runner registered for `NAMESPACE/vm-name` is reused if the VM
+  holds its config (the config's runner ID must be that runner's, the VM's
+  token must verify as that runner using the system ID in
+  `/etc/gitlab-runner/.runner_system_id`, and GitLab must still report the
+  requested scope, `RUNNER_ACCESS_LEVEL` and `RUNNER_TAG` for it, with
+  `run_untagged` false and, for a project runner, locked to only the requested
+  project — otherwise `--resume` refuses and stops a running `gitlab-runner`,
+  as it also does when it cannot read the VM's runner config or look up the
+  registration).
+  The runner is found by its `NAMESPACE/vm-name` description, not by tag, so
+  edited tags never cause a duplicate. If none is registered (a failed run
+  deregisters the runner it created), a new one is registered and any stale
+  config on the VM is replaced — but only when GitLab confirms the config's
+  runner ID is gone. If several are registered, or one is registered but the VM never
+  received its token, `--resume` refuses — delete the VM with
+  `./delete-openshift-vm.sh` (which deregisters it) and create it again.
+
+`--resume` is safe to repeat. Recreating the VM (delete, then create) remains
+the compliance path for a VM that was configured and served jobs.
 
 ## Quick start — GCE (Google Compute Engine)
 
@@ -204,11 +250,13 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 - `create-gcp-vm.sh` — end-to-end VM creation on GCE + runner registration + setup
 - `delete-gcp-vm.sh` — drain in-flight jobs, then GCE VM teardown + runner deregistration
 - `setup.sh` — standalone VM configuration (called by create-openshift-vm.sh / create-gcp-vm.sh). Idempotent and safe to re-run in place as a debug convenience; recreation is the compliance path (see #7257). Re-running it on an already-provisioned VM also installs/refreshes the Podman prune timer.
-- `setup_test.sh` — unit tests for setup.sh idempotency hygiene (backup, gateway seed skip)
+- `setup_test.sh` — unit tests for setup.sh idempotency hygiene (backup, gateway seed skip, registration check)
+- `create-openshift-vm_test.sh` — end-to-end tests for create-openshift-vm.sh against stubbed `oc`/`virtctl`/GitLab API (shared-token path, cloud-init package repair, `--resume`)
 - `podman-prune.sh` — reclaims unused rootless Podman containers and images; installed as a user systemd timer by setup.sh and invoked from prepare/cleanup
 - `podman-prune_test.sh` — unit tests for the prune script and timer install
 - `gitlab-runner-version.sh` — central pin for the gitlab-runner version
 - `vm.yaml` — KubeVirt VirtualMachine template (OpenShift only)
+- `vm_test.sh` — tests that vm.yaml's `bootcmd` leaves Fedora repo files usable before cloud-init installs packages
 - `executor/job_id.sh` — shared helper resolving the trusted job ID
 - `executor/prepare.sh` — custom executor prepare stage (reaps leftover OpenShell containers, prunes unused images, starts a per-job gateway matched to the job image's OpenShell version)
 - `executor/run.sh` — custom executor run stage

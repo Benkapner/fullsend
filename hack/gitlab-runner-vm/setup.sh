@@ -280,13 +280,110 @@ install_gitlab_runner() {
   ok "gitlab-runner ${GITLAB_RUNNER_VERSION} installed"
 }
 
+# stop_runner_service — stop the system gitlab-runner service, used when a
+# registration check fails so the VM does not keep polling a GitLab instance
+# it should not serve. The stop is confirmed with `systemctl is-active`: when
+# it cannot be confirmed, an explicit containment-failure warning is printed
+# and the function returns 1. Either way it sets RUNNER_STOP_NOTE, the phrase
+# rejection messages use to say what actually happened to the service.
+RUNNER_STOP_NOTE="gitlab-runner left stopped"
+stop_runner_service() {
+  sudo systemctl stop gitlab-runner 2>/dev/null || true
+  if systemctl is-active --quiet gitlab-runner; then
+    RUNNER_STOP_NOTE="CONTAINMENT FAILED: gitlab-runner is still running and polling — stop it now with: sudo systemctl stop gitlab-runner"
+    echo "  WARN: ${RUNNER_STOP_NOTE}"
+    return 1
+  fi
+  RUNNER_STOP_NOTE="gitlab-runner left stopped"
+}
+
+# read_config_runners — structural, offline read of config.toml. Prints the
+# number of [[runners]] entries, then each entry's url, one per line. Parsed
+# as TOML, so indented or otherwise reformatted headers (e.g. "[[ runners ]]")
+# are counted too. Returns 1 when the file cannot be parsed.
+read_config_runners() {
+  python3 - "${CONFIG_TOML}" 2>/dev/null <<'PY'
+import sys, tomllib
+with open(sys.argv[1], "rb") as f:
+    runners = tomllib.load(f).get("runners", [])
+print(len(runners))
+for r in runners:
+    print(r.get("url", ""))
+PY
+}
+
+# check_registration_config — structural, offline check of config.toml: it
+# must hold exactly one runner and that runner's url must be GITLAB_URL (the
+# only instance this VM should serve).
+check_registration_config() {
+  local out count url
+  if ! out=$(read_config_runners); then
+    echo "  WARN: cannot parse ${CONFIG_TOML} as TOML"
+    return 1
+  fi
+  count=$(printf '%s\n' "${out}" | head -n 1)
+  if [ "${count}" -ne 1 ]; then
+    echo "  WARN: expected exactly one [[runners]] entry in ${CONFIG_TOML}, found ${count}"
+    return 1
+  fi
+  url=$(printf '%s\n' "${out}" | sed -n 2p)
+  if [ "${url%/}" != "${GITLAB_URL%/}" ]; then
+    echo "  WARN: runner is registered with '${url}', expected ${GITLAB_URL}"
+    return 1
+  fi
+}
+
+# config_runner_token_matches — succeeds when the single configured runner's
+# token equals REGISTRATION_TOKEN. The supplied token is handed to python via
+# the environment (not argv) and neither token is ever printed. Fails on an
+# unparseable config or a mismatch.
+config_runner_token_matches() {
+  SUPPLIED_TOKEN="${REGISTRATION_TOKEN}" python3 - "${CONFIG_TOML}" 2>/dev/null <<'PY'
+import hmac, os, sys, tomllib
+with open(sys.argv[1], "rb") as f:
+    runners = tomllib.load(f).get("runners", [])
+supplied = os.environ.get("SUPPLIED_TOKEN", "")
+ok = len(runners) == 1 and bool(supplied) and hmac.compare_digest(
+    str(runners[0].get("token", "")).encode(), supplied.encode())
+sys.exit(0 if ok else 1)
+PY
+}
+
 # --------------------------------------------------------------------------
 # 0c. Register runner with GitLab (first-time only)
 # --------------------------------------------------------------------------
 register_runner() {
   info "Checking runner registration"
 
-  if [ -f "${CONFIG_TOML}" ] && grep -q '^\[\[runners\]\]' "${CONFIG_TOML}"; then
+  # Whether a registration exists is decided from the parsed TOML, not a
+  # header grep, so every valid spelling of [[runners]] counts. An existing
+  # config that cannot be parsed is treated as a registration to check, which
+  # then fails closed.
+  local config_out config_count=0
+  if [ -f "${CONFIG_TOML}" ]; then
+    if config_out=$(read_config_runners); then
+      config_count=$(printf '%s\n' "${config_out}" | head -n 1)
+    else
+      config_count=-1
+    fi
+  fi
+
+  if [ "${config_count}" -ne 0 ]; then
+    # Reusing a config (e.g. --resume) must never leave this VM serving some
+    # other GitLab instance: check the target before the service can start
+    # or poll, and keep the service stopped if it is wrong.
+    if ! check_registration_config; then
+      stop_runner_service || true
+      fail "existing runner config in ${CONFIG_TOML} is not a single registration with ${GITLAB_URL} — ${RUNNER_STOP_NOTE}; remove the config and re-run"
+    fi
+    # A supplied registration token (shared-pool mode) must be the one this
+    # config already holds; otherwise the VM would keep serving another pool.
+    # Without a token (GL_TOKEN reuse), the config is trusted as-is.
+    if [ -n "${REGISTRATION_TOKEN:-}" ] && ! config_runner_token_matches; then
+      echo "  WARN: the runner in ${CONFIG_TOML} holds a different runner token than the one supplied"
+      stop_runner_service || true
+      fail "existing runner config in ${CONFIG_TOML} does not match the supplied runner token — ${RUNNER_STOP_NOTE}; remove the config and re-run"
+    fi
     ok "runner already registered"
     return
   fi
@@ -885,6 +982,44 @@ EOF
 # --------------------------------------------------------------------------
 # 9. Verify
 # --------------------------------------------------------------------------
+# check_registration confirms config.toml holds exactly one runner, that it
+# targets GITLAB_URL (the only instance this VM should serve), and that
+# GitLab did not reject its token. `gitlab-runner verify` exits non-zero
+# only when GitLab rejects a token (transport errors and unexpected HTTP
+# statuses are non-fatal), so a stale registration left behind by an
+# interrupted provisioning run fails here instead of as an idle runner. A
+# zero exit only counts when verify's output says the runner is valid; an
+# unconfirmed result (transport error, HTTP 503) is retried up to
+# VERIFY_ATTEMPTS times, VERIFY_RETRY_SEC apart, then treated as a failure.
+# Any failed check leaves gitlab-runner stopped.
+check_registration() {
+  local verify_out attempt=1
+  local attempts="${VERIFY_ATTEMPTS:-3}" retry_sec="${VERIFY_RETRY_SEC:-5}"
+  if ! check_registration_config; then
+    stop_runner_service || true
+    return 1
+  fi
+  while true; do
+    if ! verify_out=$(gitlab-runner verify --config "${CONFIG_TOML}" 2>&1); then
+      echo "  WARN: ${GITLAB_URL} rejected the runner token (gitlab-runner verify failed)"
+      stop_runner_service || true
+      return 1
+    fi
+    if printf '%s\n' "${verify_out}" | grep -qi 'is valid'; then
+      ok "runner registered with ${GITLAB_URL} (token verified)"
+      return 0
+    fi
+    if [ "${attempt}" -ge "${attempts}" ]; then
+      echo "  WARN: GitLab did not confirm the runner token is valid after ${attempt} attempt(s)"
+      stop_runner_service || true
+      return 1
+    fi
+    echo "  WARN: GitLab did not confirm the runner token (attempt ${attempt}/${attempts}) — retrying in ${retry_sec}s"
+    attempt=$((attempt + 1))
+    sleep "${retry_sec}"
+  done
+}
+
 verify() {
   info "Verifying setup"
 
@@ -929,6 +1064,10 @@ verify() {
     ok "custom executor configured"
   else
     echo "  WARN: custom executor not in config"; errors=$((errors + 1))
+  fi
+
+  if ! check_registration; then
+    errors=$((errors + 1))
   fi
 
   # Smoke-test internal CA injection: verify a container can reach the internal
