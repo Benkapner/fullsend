@@ -186,10 +186,14 @@ and the GitHub collaborator permission API:
 | `external` | — | Actor outside the repository (fork PR author, drive-by commenter) |
 
 Adapters populate `role` from the GitHub collaborator permission API for human
-actors. For **GitHub App bots**, adapters MUST use the provider's authoritative
-bot classification and the provider-backed optional `bot_role` lookup. The
-compatibility value `role: none` is retained for bots; a bot's forge
-installation permission is not copied into `actor.role`.
+actors. Current, pre-migration adapters may also populate a GitHub App bot's
+legacy forge permission in `actor.role`, and that representation remains valid
+in NormalizedEvent v1 during migration. After an adapter crosses the ADR 0107
+migration boundary, it MUST use the provider's authoritative bot
+classification, emit `role: none` for bots, and use the provider-backed
+optional `bot_role` lookup instead. Both representations are therefore
+intentional v1 compatibility forms; the migration boundary determines which
+one an adapter emits.
 
 `actor.role_verified` is an optional additive field. For humans, it is true
 only when `actor.role` is a trusted forge permission. For bots, it is true
