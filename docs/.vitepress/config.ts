@@ -262,8 +262,6 @@ export default defineConfig({
             { text: "Fix", link: "/agents/fix" },
             { text: "Retro", link: "/agents/retro" },
             { text: "Prioritize", link: "/agents/prioritize" },
-            { text: "Default vs. Custom", link: "/agents/topics/default-vs-custom" },
-            { text: "Escalation Ladder", link: "/agents/topics/escalation-ladder" },
           ],
         },
         {
@@ -288,6 +286,8 @@ export default defineConfig({
                   text: "Configuring Agent Behavior",
                   link: "/guides/user/customizing-agents",
                 },
+                { text: "Default vs. Custom", link: "/guides/user/default-vs-custom" },
+                { text: "Escalation Ladder", link: "/guides/user/escalation-ladder" },
                 { text: "Bring Your Own Agent", link: "/guides/user/bring-your-own-agent" },
                 {
                   text: "Custom Agent Identity",
