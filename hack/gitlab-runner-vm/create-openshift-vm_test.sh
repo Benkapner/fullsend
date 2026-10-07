@@ -73,9 +73,23 @@ case "${cmd}" in
       exit 1
     fi
     rm -f "${STUB_STATE}/packages_missing" ;;
+  *"sudo python3 -c"*"runners/verify"*)
+    # The VM-side token check (POST /runners/verify from the VM): prints the
+    # ID of the runner the configured token belongs to. The stub's token is
+    # glrt-new-<ID>, or the 'token_id' file for a token bound to another
+    # runner; a hand-written config.toml has no token, so 'token_id' decides.
+    [ ! -f "${STUB_STATE}/verify_fails" ] || exit 1
+    if [ -f "${STUB_STATE}/token_id" ]; then
+      cat "${STUB_STATE}/token_id"
+    elif [ -f "${STUB_STATE}/vm_config" ]; then
+      sed 's/.*-//' "${STUB_STATE}/vm_config"
+    else
+      exit 1
+    fi ;;
   *"sudo python3 -c"*"/etc/gitlab-runner/config.toml"*)
-    # The VM-side TOML probe: one runner ID per [[runners]] entry. The stub's
-    # registration records the token glrt-new-<ID>; vm_runner_id overrides it.
+    # The VM-side TOML probe: "<id> <url>" per [[runners]] entry. The stub's
+    # registration records the token glrt-new-<ID> and the requested
+    # GITLAB_URL; vm_runner_id and vm_runner_url override them.
     if [ -f "${STUB_STATE}/config.toml" ]; then
       # Run the script's real probe against a hand-written config.toml.
       real="${cmd#sudo }"
@@ -83,9 +97,14 @@ case "${cmd}" in
       exit $?
     elif [ -f "${STUB_STATE}/vm_config" ]; then
       if [ -f "${STUB_STATE}/vm_runner_id" ]; then
-        cat "${STUB_STATE}/vm_runner_id"
+        vm_id=$(cat "${STUB_STATE}/vm_runner_id")
       else
-        sed 's/.*-//' "${STUB_STATE}/vm_config"
+        vm_id=$(sed 's/.*-//' "${STUB_STATE}/vm_config")
+      fi
+      if [ -f "${STUB_STATE}/vm_runner_url" ]; then
+        echo "${vm_id} $(cat "${STUB_STATE}/vm_runner_url")"
+      else
+        echo "${vm_id} ${GITLAB_URL}"
       fi
     fi
     [ ! -f "${STUB_STATE}/probe_fails" ] ;;
@@ -392,7 +411,7 @@ fi
 
 posts_refused=$(post_count)
 deletes_refused=$(grep -c '^DELETE ' "${STATE}/curl.log")
-printf '[[runners]]\n  id = 99\n' > "${STATE}/config.toml"
+printf '[[runners]]\n  id = 99\n  url = "%s"\n' "${SELF_HOSTED}" > "${STATE}/config.toml"
 env_before=$(env_count)
 touch "${STATE}/service_active"
 run_create "${INDIVIDUAL[@]}" --resume 05
@@ -403,6 +422,47 @@ else
   fail "runner ID mismatch should be refused (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
 fi
 rm -f "${STATE}/config.toml"
+
+# Runner IDs are instance-local: a config registered on another GitLab
+# instance must be refused before any ID lookup, not judged stale because its
+# ID is unknown here (which would register a duplicate and delete the config).
+env_before=$(env_count)
+posts_foreign=$(post_count)
+curls_foreign=$(wc -l < "${STATE}/curl.log")
+rms_foreign=$(grep -c 'sudo rm -f /etc/gitlab-runner/config.toml' "${STATE}/virtctl.log" || true)
+printf '[[runners]]\n  id = 9999\n  url = "https://gitlab.other.example"\n' > "${STATE}/config.toml"
+touch "${STATE}/service_active"
+run_create "${INDIVIDUAL[@]}" --resume 05
+if [ "${RUN_RC}" -ne 0 ] && grep -Fq "configured for GitLab instance 'https://gitlab.other.example'" <<< "${RUN_OUT}" \
+  && [ "$(post_count)" -eq "${posts_foreign}" ] && [ "$(wc -l < "${STATE}/curl.log")" -eq "${curls_foreign}" ] \
+  && [ "$(env_count)" -eq "${env_before}" ] && [ ! -f "${STATE}/service_active" ] \
+  && [ -f "${STATE}/config.toml" ] \
+  && [ "$(grep -c 'sudo rm -f /etc/gitlab-runner/config.toml' "${STATE}/virtctl.log" || true)" -eq "${rms_foreign}" ]; then
+  pass "resume refuses a config registered on another GitLab instance before any ID lookup, keeping the config"
+else
+  fail "foreign-URL config should be refused before lookups (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
+fi
+rm -f "${STATE}/config.toml"
+
+# A config whose ID matches GitLab's runner but whose token authenticates a
+# different runner (or cannot be verified) is not this registration.
+for token_case in other-runner unverifiable; do
+  env_before=$(env_count)
+  touch "${STATE}/service_active"
+  if [ "${token_case}" = "other-runner" ]; then
+    echo 77 > "${STATE}/token_id"
+  else
+    touch "${STATE}/verify_fails"
+  fi
+  run_create "${INDIVIDUAL[@]}" --resume 05
+  rm -f "${STATE}/token_id" "${STATE}/verify_fails"
+  if [ "${RUN_RC}" -ne 0 ] && grep -Fq 'could not be confirmed as belonging to runner ID 2' <<< "${RUN_OUT}" \
+    && [ "$(env_count)" -eq "${env_before}" ] && [ ! -f "${STATE}/service_active" ]; then
+    pass "resume refuses a config whose token is ${token_case} and stops the running service"
+  else
+    fail "token bound to another runner (${token_case}) should be refused (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
+  fi
+done
 
 env_before=$(env_count)
 touch "${STATE}/service_active"
@@ -532,6 +592,21 @@ if [ "${RUN_RC}" -ne 0 ] && [ "$(post_count)" -eq 0 ] && [ "$(env_count)" -eq 0 
 else
   fail "incomplete runner scan should fail closed (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
 fi
+
+# A 2xx body that is not an array of runner objects with integer IDs is not
+# "no runners": resume must fail closed instead of registering a duplicate.
+for bad_body in '{}' '""' '[{"description": "runners/fullsend-gitlab-runner-05"}]'; do
+  new_state
+  touch "${STATE}/vm_exists"
+  printf '%s\n' "${bad_body}" > "${STATE}/runners.json"
+  run_create "${INDIVIDUAL[@]}" --resume 05
+  if [ "${RUN_RC}" -ne 0 ] && [ "$(post_count)" -eq 0 ] && [ "$(env_count)" -eq 0 ] \
+    && grep -Fq 'GitLab API lookup failed' <<< "${RUN_OUT}"; then
+    pass "resume fails closed on a malformed runner list (${bad_body})"
+  else
+    fail "malformed runner list ${bad_body} should fail closed (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
+  fi
+done
 
 # A VM config whose runner ID still exists in GitLab (under another
 # description) is not stale: replacing it would orphan that registration.

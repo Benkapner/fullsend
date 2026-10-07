@@ -280,11 +280,21 @@ install_gitlab_runner() {
   ok "gitlab-runner ${GITLAB_RUNNER_VERSION} installed"
 }
 
-# stop_runner_service — best-effort stop of the system gitlab-runner service,
-# used when a registration check fails so the VM does not keep polling a
-# GitLab instance it should not serve.
+# stop_runner_service — stop the system gitlab-runner service, used when a
+# registration check fails so the VM does not keep polling a GitLab instance
+# it should not serve. The stop is confirmed with `systemctl is-active`: when
+# it cannot be confirmed, an explicit containment-failure warning is printed
+# and the function returns 1. Either way it sets RUNNER_STOP_NOTE, the phrase
+# rejection messages use to say what actually happened to the service.
+RUNNER_STOP_NOTE="gitlab-runner left stopped"
 stop_runner_service() {
   sudo systemctl stop gitlab-runner 2>/dev/null || true
+  if systemctl is-active --quiet gitlab-runner; then
+    RUNNER_STOP_NOTE="CONTAINMENT FAILED: gitlab-runner is still running and polling — stop it now with: sudo systemctl stop gitlab-runner"
+    echo "  WARN: ${RUNNER_STOP_NOTE}"
+    return 1
+  fi
+  RUNNER_STOP_NOTE="gitlab-runner left stopped"
 }
 
 # read_config_runners — structural, offline read of config.toml. Prints the
@@ -363,16 +373,16 @@ register_runner() {
     # other GitLab instance: check the target before the service can start
     # or poll, and keep the service stopped if it is wrong.
     if ! check_registration_config; then
-      stop_runner_service
-      fail "existing runner config in ${CONFIG_TOML} is not a single registration with ${GITLAB_URL} — gitlab-runner left stopped; remove the config and re-run"
+      stop_runner_service || true
+      fail "existing runner config in ${CONFIG_TOML} is not a single registration with ${GITLAB_URL} — ${RUNNER_STOP_NOTE}; remove the config and re-run"
     fi
     # A supplied registration token (shared-pool mode) must be the one this
     # config already holds; otherwise the VM would keep serving another pool.
     # Without a token (GL_TOKEN reuse), the config is trusted as-is.
     if [ -n "${REGISTRATION_TOKEN:-}" ] && ! config_runner_token_matches; then
       echo "  WARN: the runner in ${CONFIG_TOML} holds a different runner token than the one supplied"
-      stop_runner_service
-      fail "existing runner config in ${CONFIG_TOML} does not match the supplied runner token — gitlab-runner left stopped; remove the config and re-run"
+      stop_runner_service || true
+      fail "existing runner config in ${CONFIG_TOML} does not match the supplied runner token — ${RUNNER_STOP_NOTE}; remove the config and re-run"
     fi
     ok "runner already registered"
     return
@@ -978,25 +988,36 @@ EOF
 # only when GitLab rejects a token (transport errors and unexpected HTTP
 # statuses are non-fatal), so a stale registration left behind by an
 # interrupted provisioning run fails here instead of as an idle runner. A
-# zero exit is reported as "verified" only when verify's output says the
-# runner is valid; otherwise the token was merely not rejected. A failed
-# check leaves gitlab-runner stopped.
+# zero exit only counts when verify's output says the runner is valid; an
+# unconfirmed result (transport error, HTTP 503) is retried up to
+# VERIFY_ATTEMPTS times, VERIFY_RETRY_SEC apart, then treated as a failure.
+# Any failed check leaves gitlab-runner stopped.
 check_registration() {
-  local verify_out
+  local verify_out attempt=1
+  local attempts="${VERIFY_ATTEMPTS:-3}" retry_sec="${VERIFY_RETRY_SEC:-5}"
   if ! check_registration_config; then
-    stop_runner_service
+    stop_runner_service || true
     return 1
   fi
-  if ! verify_out=$(gitlab-runner verify --config "${CONFIG_TOML}" 2>&1); then
-    echo "  WARN: ${GITLAB_URL} rejected the runner token (gitlab-runner verify failed)"
-    stop_runner_service
-    return 1
-  fi
-  if printf '%s\n' "${verify_out}" | grep -qi 'is valid'; then
-    ok "runner registered with ${GITLAB_URL} (token verified)"
-  else
-    ok "runner registered with ${GITLAB_URL} (token not rejected; GitLab did not confirm it is valid)"
-  fi
+  while true; do
+    if ! verify_out=$(gitlab-runner verify --config "${CONFIG_TOML}" 2>&1); then
+      echo "  WARN: ${GITLAB_URL} rejected the runner token (gitlab-runner verify failed)"
+      stop_runner_service || true
+      return 1
+    fi
+    if printf '%s\n' "${verify_out}" | grep -qi 'is valid'; then
+      ok "runner registered with ${GITLAB_URL} (token verified)"
+      return 0
+    fi
+    if [ "${attempt}" -ge "${attempts}" ]; then
+      echo "  WARN: GitLab did not confirm the runner token is valid after ${attempt} attempt(s)"
+      stop_runner_service || true
+      return 1
+    fi
+    echo "  WARN: GitLab did not confirm the runner token (attempt ${attempt}/${attempts}) — retrying in ${retry_sec}s"
+    attempt=$((attempt + 1))
+    sleep "${retry_sec}"
+  done
 }
 
 verify() {

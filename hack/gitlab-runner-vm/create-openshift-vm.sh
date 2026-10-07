@@ -448,25 +448,39 @@ stop_vm_runner() {
 }
 if [ "${resume}" = "true" ] && ! uses_runner_token; then
   echo "==> Checking for a runner already registered for ${vm_name}"
-  if ! existing_ids=$(find_runner_ids "${NAMESPACE}/${vm_name}"); then
-    echo "ERROR: GitLab API lookup failed — refusing to resume without knowing whether ${vm_name} already has a runner" >&2
-    echo "  Hint: check GL_TOKEN scopes (needs api + manage_runner) and network connectivity" >&2
-    cleanup_vm
-    exit 1
-  fi
   # Read the VM's runner config as TOML (as setup.sh does), so every valid
-  # spelling of [[runners]] counts. Prints one ID per runner entry (0 when the
-  # entry records none) and nothing when there is no config.
+  # spelling of [[runners]] counts. Prints "<id> <url>" per runner entry (id 0
+  # when the entry records none, url "-" when it records none) and nothing
+  # when there is no config. Read first: the URL check below must run before
+  # any runner ID is looked up at GITLAB_URL, since IDs are instance-local.
   vm_probe_py='import os, tomllib
 p = "/etc/gitlab-runner/config.toml"
 if os.path.exists(p):
     with open(p, "rb") as f:
         for r in tomllib.load(f).get("runners", []):
-            print(r.get("id", 0))'
-  if ! vm_runner_ids=$(virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
+            print(r.get("id", 0), r.get("url", "") or "-")'
+  if ! vm_probe_out=$(virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
     -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
     -c "sudo python3 -c '${vm_probe_py}'"); then
     echo "ERROR: could not read the runner config on ${vm_name} — refusing to resume without knowing whether it already has a runner" >&2
+    cleanup_vm
+    exit 1
+  fi
+  vm_runner_ids=$(printf '%s\n' "${vm_probe_out}" | cut -d' ' -f1)
+  # A config registered on another GitLab instance must never be judged by
+  # looking its IDs up here (they would 404 and look stale, so resume would
+  # orphan that registration and delete the config): refuse before any lookup.
+  for vm_runner_url in $(printf '%s\n' "${vm_probe_out}" | cut -d' ' -f2); do
+    if [ "${vm_runner_url%/}" != "${GITLAB_URL%/}" ]; then
+      echo "ERROR: ${vm_name} is configured for GitLab instance '${vm_runner_url}', not ${GITLAB_URL} — refusing to resume; recreate the VM instead: ./delete-openshift-vm.sh ${vm_name}, then re-run create" >&2
+      stop_vm_runner
+      cleanup_vm
+      exit 1
+    fi
+  done
+  if ! existing_ids=$(find_runner_ids "${NAMESPACE}/${vm_name}"); then
+    echo "ERROR: GitLab API lookup failed — refusing to resume without knowing whether ${vm_name} already has a runner" >&2
+    echo "  Hint: check GL_TOKEN scopes (needs api + manage_runner) and network connectivity" >&2
     cleanup_vm
     exit 1
   fi
@@ -495,6 +509,25 @@ if os.path.exists(p):
     # access level — otherwise reuse would silently keep a wrong registration.
     if [ "${vm_runner_ids}" != "${existing_ids}" ]; then
       echo "ERROR: ${vm_name} is configured with runner ID '$(printf '%s' "${vm_runner_ids}" | tr '\n' ' ')' but GitLab's runner for it is ID ${existing_ids} — recreate the VM instead: ./delete-openshift-vm.sh ${vm_name} (deregisters it), then re-run create" >&2
+      stop_vm_runner
+      cleanup_vm
+      exit 1
+    fi
+    # The configured token must belong to that runner: an ID in config.toml
+    # alone proves nothing. Ask GitLab (from the VM, so the token never leaves
+    # it) which runner the token authenticates and require the same ID.
+    vm_verify_py='import json, tomllib, urllib.parse, urllib.request
+with open("/etc/gitlab-runner/config.toml", "rb") as f:
+    r = tomllib.load(f)["runners"][0]
+data = urllib.parse.urlencode({"token": r["token"]}).encode()
+with urllib.request.urlopen(r["url"].rstrip("/") + "/api/v4/runners/verify", data, timeout=30) as resp:
+    print(json.load(resp)["id"])'
+    vm_token_id=""
+    if ! vm_token_id=$(virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
+      -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
+      -c "sudo python3 -c '${vm_verify_py}'" 2>/dev/null) \
+      || [ "${vm_token_id}" != "${existing_ids}" ]; then
+      echo "ERROR: the runner token configured on ${vm_name} could not be confirmed as belonging to runner ID ${existing_ids} at ${GITLAB_URL} (GitLab says: '${vm_token_id:-no answer}') — recreate the VM instead: ./delete-openshift-vm.sh ${vm_name} (deregisters it), then re-run create" >&2
       stop_vm_runner
       cleanup_vm
       exit 1

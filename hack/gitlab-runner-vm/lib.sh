@@ -74,8 +74,9 @@ validate_runner_scope() {
 # separately by check_runner_registration. Uses /runners (user-scoped) rather
 # than /runners/all (admin-only). Scans at most 50 pages of 100.
 #
-# Returns 1 when a GitLab API request fails or returns unparseable JSON, or
-# when page 50 is still full (the scan is incomplete), so callers can fail
+# Returns 1 when a GitLab API request fails, returns unparseable JSON or a
+# body that is not an array of runner objects with integer IDs, or when
+# page 50 is still full (the scan is incomplete), so callers can fail
 # closed instead of mistaking an outage or a partial scan for "no runner".
 # Requires: GL_TOKEN, GITLAB_URL
 find_runner_ids() {
@@ -84,9 +85,18 @@ find_runner_ids() {
   while [ "${page}" -le 50 ]; do
     page_json=$(gl_curl \
       "${GITLAB_URL}/api/v4/runners?per_page=100&page=${page}" 2>/dev/null) || return 1
+    # Anything but a JSON array of runner objects with integer IDs (e.g. a
+    # 2xx body of {} or "") is not "no runners": exit non-zero so the caller
+    # fails closed instead of treating the VM as unregistered.
     ids=$(printf '%s' "${page_json}" | python3 -c "
 import sys, json
-for r in json.load(sys.stdin):
+data = json.load(sys.stdin)
+if not isinstance(data, list):
+    sys.exit(1)
+for r in data:
+    if not isinstance(r, dict) or type(r.get('id')) is not int:
+        sys.exit(1)
+for r in data:
     if r.get('description', '') == sys.argv[1]:
         print(r['id'])
 " "${description}" 2>/dev/null) || return 1

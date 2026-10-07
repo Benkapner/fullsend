@@ -698,13 +698,33 @@ rm -rf "${CA_ROOT}"
 printf '#!/bin/sh\necho "$@" >> "%s"\nexit 0\n' "${SUDO_LOG}" > "${SHIM_DIR}/sudo"
 
 echo "== check_registration =="
-# gitlab-runner verify shim: logs its args, exits with the code in
+# gitlab-runner shim: logs its args. `verify` exits with the code in
 # GITLAB_RUNNER_VERIFY_RC (0 = GitLab did not reject the token) after printing
-# GITLAB_RUNNER_VERIFY_OUT (real verify prints "is valid" only on success).
+# GITLAB_RUNNER_VERIFY_OUT (real verify prints "is valid" only on success);
+# from the GITLAB_RUNNER_VALID_AFTER-th call on it reports the runner valid
+# (a GitLab outage that clears). `register` exits with GITLAB_RUNNER_REGISTER_RC.
 GITLAB_RUNNER_LOG="${SHIM_DIR}/gitlab-runner.log"
-printf '#!/bin/sh\necho "$@" >> "%s"\necho "${GITLAB_RUNNER_VERIFY_OUT:-}"\nexit "${GITLAB_RUNNER_VERIFY_RC:-0}"\n' "${GITLAB_RUNNER_LOG}" > "${SHIM_DIR}/gitlab-runner"
+cat > "${SHIM_DIR}/gitlab-runner" <<STUB
+#!/bin/sh
+echo "\$@" >> "${GITLAB_RUNNER_LOG}"
+case "\$1" in
+  verify)
+    if [ -n "\${GITLAB_RUNNER_VALID_AFTER:-}" ] \\
+      && [ "\$(grep -c '^verify ' "${GITLAB_RUNNER_LOG}")" -ge "\${GITLAB_RUNNER_VALID_AFTER}" ]; then
+      echo "Verifying runner... is valid"
+      exit 0
+    fi
+    echo "\${GITLAB_RUNNER_VERIFY_OUT:-}"
+    exit "\${GITLAB_RUNNER_VERIFY_RC:-0}" ;;
+  register)
+    exit "\${GITLAB_RUNNER_REGISTER_RC:-0}" ;;
+esac
+STUB
 chmod +x "${SHIM_DIR}/gitlab-runner"
 export GITLAB_URL="https://gitlab.example.com"
+# Default: GitLab confirms the token. No real waiting between verify retries.
+export GITLAB_RUNNER_VERIFY_OUT="Verifying runner... is valid runner=abc"
+export VERIFY_RETRY_SEC=0
 
 write_custom_config
 rm -f "${GITLAB_RUNNER_LOG}"
@@ -723,13 +743,27 @@ else
 fi
 
 # A zero exit without a success message (GitLab unreachable, unexpected HTTP
-# status) is not proof of verification, so the message must not claim it.
+# status) is not proof of verification: retry a bounded number of times, then
+# fail with the service stopped.
+: > "${SUDO_LOG}"
+rm -f "${GITLAB_RUNNER_LOG}"
 GITLAB_RUNNER_VERIFY_OUT="WARNING: Checking for runner... failed status=503" run_setup check_registration
-if [ "${RUN_SETUP_RC}" -eq 0 ] && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq "token not rejected" \
-  && ! printf '%s' "${RUN_SETUP_OUT}" | grep -Fq "(token verified)"; then
-  pass "a zero verify exit without a success message is not reported as verified"
+if [ "${RUN_SETUP_RC}" -ne 0 ] && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq "did not confirm the runner token is valid" \
+  && ! printf '%s' "${RUN_SETUP_OUT}" | grep -Fq "(token verified)" \
+  && [ "$(grep -c '^verify ' "${GITLAB_RUNNER_LOG}")" -eq 3 ] \
+  && grep -qx 'systemctl stop gitlab-runner' "${SUDO_LOG}"; then
+  pass "an unconfirmed verify is retried 3 times, then fails with the service stopped"
 else
-  fail "unconfirmed verify should not claim verification (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+  fail "unconfirmed verify should fail after bounded retries (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
+rm -f "${GITLAB_RUNNER_LOG}"
+GITLAB_RUNNER_VERIFY_OUT="WARNING: failed status=503" GITLAB_RUNNER_VALID_AFTER=2 run_setup check_registration
+if [ "${RUN_SETUP_RC}" -eq 0 ] && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq "(token verified)" \
+  && [ "$(grep -c '^verify ' "${GITLAB_RUNNER_LOG}")" -eq 2 ]; then
+  pass "a transient GitLab outage that clears within the retries still verifies"
+else
+  fail "verify should succeed once GitLab confirms (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
 fi
 
 GITLAB_URL="https://gitlab.example.com/" run_setup check_registration
@@ -796,6 +830,47 @@ if [ "${RUN_SETUP_RC}" -ne 0 ] && grep -qx 'systemctl stop gitlab-runner' "${SUD
   pass "a failed registration check leaves gitlab-runner stopped"
 else
   fail "failed check should stop gitlab-runner (rc=${RUN_SETUP_RC}): $(tr '\n' '|' < "${SUDO_LOG}")"
+fi
+
+# Rejection paths claim "left stopped" only when the stop is confirmed with
+# `systemctl is-active`; a service that stays active is reported as such.
+write_systemctl_stub active
+: > "${SUDO_LOG}"
+GITLAB_URL="https://gitlab.com" run_setup check_registration
+if [ "${RUN_SETUP_RC}" -ne 0 ] && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq "CONTAINMENT FAILED"; then
+  pass "a failed registration check reports containment failure when the service stays active"
+else
+  fail "service that did not stop should be reported (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+GITLAB_URL="https://gitlab.com" run_setup register_runner
+if [ "${RUN_SETUP_RC}" -ne 0 ] && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq "CONTAINMENT FAILED" \
+  && ! printf '%s' "${RUN_SETUP_OUT}" | grep -Fq "gitlab-runner left stopped"; then
+  pass "a rejected existing config does not claim gitlab-runner was stopped when the stop failed"
+else
+  fail "rejection must not claim containment when the stop failed (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+write_systemctl_stub seeded
+
+echo "== register_runner first-time registration =="
+# No config.toml: the supplied self-hosted URL and token reach `gitlab-runner
+# register`, exactly once.
+rm -f "${CONFIG_TOML}" "${GITLAB_RUNNER_LOG}"
+GITLAB_URL="https://gitlab.selfhosted.example" REGISTRATION_TOKEN="glrt-selfhosted" run_setup register_runner
+if [ "${RUN_SETUP_RC}" -eq 0 ] && [ "$(grep -c '^register ' "${GITLAB_RUNNER_LOG}")" -eq 1 ] \
+  && grep '^register ' "${GITLAB_RUNNER_LOG}" | grep -Fq -- "--url https://gitlab.selfhosted.example " \
+  && grep '^register ' "${GITLAB_RUNNER_LOG}" | grep -Fq -- "--token glrt-selfhosted " \
+  && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq "runner registered with https://gitlab.selfhosted.example"; then
+  pass "first-time registration passes the supplied self-hosted --url and --token once"
+else
+  fail "first-time register should target the supplied GitLab (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT} / $(cat "${GITLAB_RUNNER_LOG}" 2>/dev/null)"
+fi
+
+rm -f "${CONFIG_TOML}" "${GITLAB_RUNNER_LOG}"
+GITLAB_URL="https://gitlab.selfhosted.example" REGISTRATION_TOKEN="" run_setup register_runner
+if [ "${RUN_SETUP_RC}" -ne 0 ] && [ ! -s "${GITLAB_RUNNER_LOG}" ]; then
+  pass "first-time registration without a token fails before calling register"
+else
+  fail "first-time register without a token should fail (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
 fi
 
 echo "== register_runner reusing an existing config =="
