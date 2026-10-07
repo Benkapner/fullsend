@@ -126,9 +126,14 @@ never creates a duplicate registration:
 - `RUNNER_TOKEN` (shared pool): no registration is created; `setup.sh` is
   re-run with the pool token.
 - `GL_TOKEN`: the runner registered for `NAMESPACE/vm-name` is reused if the VM
-  holds its config (the config's runner ID must be that runner's, and GitLab
-  must still report the requested scope, `RUNNER_ACCESS_LEVEL` and `RUNNER_TAG`
-  for it — otherwise `--resume` refuses and stops a running `gitlab-runner`).
+  holds its config (the config's runner ID must be that runner's, the VM's
+  token must verify as that runner using the system ID in
+  `/etc/gitlab-runner/.runner_system_id`, and GitLab must still report the
+  requested scope, `RUNNER_ACCESS_LEVEL` and `RUNNER_TAG` for it, with
+  `run_untagged` false and, for a project runner, locked to only the requested
+  project — otherwise `--resume` refuses and stops a running `gitlab-runner`,
+  as it also does when it cannot read the VM's runner config or look up the
+  registration).
   The runner is found by its `NAMESPACE/vm-name` description, not by tag, so
   edited tags never cause a duplicate. If none is registered (a failed run
   deregisters the runner it created), a new one is registered and any stale

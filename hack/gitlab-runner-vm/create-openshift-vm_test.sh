@@ -74,18 +74,26 @@ case "${cmd}" in
     fi
     rm -f "${STUB_STATE}/packages_missing" ;;
   *"sudo python3 -c"*"runners/verify"*)
-    # The VM-side token check (POST /runners/verify from the VM): prints the
-    # ID of the runner the configured token belongs to. The stub's token is
-    # glrt-new-<ID>, or the 'token_id' file for a token bound to another
-    # runner; a hand-written config.toml has no token, so 'token_id' decides.
-    [ ! -f "${STUB_STATE}/verify_fails" ] || exit 1
-    if [ -f "${STUB_STATE}/token_id" ]; then
-      cat "${STUB_STATE}/token_id"
+    # The VM-side token check: run the script's real Python against a VM root
+    # (config.toml + .runner_system_id under ${STUB_STATE}/vmroot), with
+    # urllib's urlopen replaced by the fake GitLab in pyshim/sitecustomize.py.
+    # The VM's token is glrt-new-<ID> (the stub's registration), or the
+    # hand-written config.toml's own token. The VM has a runner system ID
+    # unless 'no_system_id' says gitlab-runner never wrote one.
+    root="${STUB_STATE}/vmroot"
+    rm -rf "${root}"; mkdir -p "${root}"
+    if [ -f "${STUB_STATE}/config.toml" ]; then
+      cp "${STUB_STATE}/config.toml" "${root}/config.toml"
     elif [ -f "${STUB_STATE}/vm_config" ]; then
-      sed 's/.*-//' "${STUB_STATE}/vm_config"
+      printf '[[runners]]\n  id = %s\n  url = "%s"\n  token = "%s"\n' \
+        "$(sed 's/.*-//' "${STUB_STATE}/vm_config")" "${GITLAB_URL}" "$(cat "${STUB_STATE}/vm_config")" \
+        > "${root}/config.toml"
     else
       exit 1
-    fi ;;
+    fi
+    [ -f "${STUB_STATE}/no_system_id" ] || echo "r_vmsystem01" > "${root}/.runner_system_id"
+    real="${cmd#sudo }"
+    PYTHONPATH="$(dirname "$0")/pyshim" bash -c "${real//\/etc\/gitlab-runner/${root}}" ;;
   *"sudo python3 -c"*"/etc/gitlab-runner/config.toml"*)
     # The VM-side TOML probe: "<id> <url>" per [[runners]] entry. The stub's
     # registration records the token glrt-new-<ID> and the requested
@@ -164,7 +172,9 @@ if method == "POST" and path == "/api/v4/user/runners":
     entry = {"id": n, "description": desc,
              "tag_list": form.get("tag_list", "").split(","),
              "access_level": form.get("access_level"),
-             "runner_type": form.get("runner_type")}
+             "runner_type": form.get("runner_type"),
+             "run_untagged": form.get("run_untagged") == "true",
+             "locked": form.get("locked") == "true"}
     if "group_id" in form:
         entry["groups"] = [{"id": int(form["group_id"])}]
     if "project_id" in form:
@@ -196,6 +206,32 @@ elif method == "DELETE" and path.startswith("/api/v4/runners/"):
 else:
     sys.exit(22)
 json.dump(runners, open(db, "w"))
+EOF
+# --- urllib: the fake GitLab behind the VM-side POST /runners/verify --------
+# Replaces urlopen for the VM-side verify script only (via PYTHONPATH). Like
+# GitLab, it answers a glrt- token only when the request carries a system_id
+# (HTTP 400 otherwise), logs every request, and returns the ID of the runner
+# the token belongs to: glrt-new-<ID>, or the 'token_id' file for a token
+# bound to another runner. 'verify_fails' simulates an unreachable GitLab.
+mkdir -p "${SHIM_DIR}/pyshim"
+cat > "${SHIM_DIR}/pyshim/sitecustomize.py" <<'EOF'
+import io, json, os, urllib.error, urllib.parse, urllib.request
+
+def urlopen(url, data=None, timeout=None, *args, **kwargs):
+    state = os.environ["STUB_STATE"]
+    form = {k: v[0] for k, v in urllib.parse.parse_qs((data or b"").decode()).items()}
+    with open(os.path.join(state, "verify_requests.log"), "a") as f:
+        f.write(json.dumps({"url": url, "form": form}) + "\n")
+    if os.path.exists(os.path.join(state, "verify_fails")):
+        raise urllib.error.URLError("unreachable")
+    token = form.get("token", "")
+    if token.startswith("glrt-") and not form.get("system_id"):
+        raise urllib.error.HTTPError(url, 400, "system_id is missing", {}, io.BytesIO(b"{}"))
+    path = os.path.join(state, "token_id")
+    rid = int(open(path).read()) if os.path.exists(path) else int(token.rsplit("-", 1)[1])
+    return io.BytesIO(json.dumps({"id": rid}).encode())
+
+urllib.request.urlopen = urlopen
 EOF
 chmod +x "${SHIM_DIR}/oc" "${SHIM_DIR}/virtctl" "${SHIM_DIR}/curl"
 
@@ -401,12 +437,45 @@ fi
 
 # The VM-side probe parses config.toml, so a reformatted header still counts
 # as this VM's registration (the stub runs the script's real probe here).
-printf '  [[ runners ]]\n  id = 2\n  url = "%s"\n' "${SELF_HOSTED}" > "${STATE}/config.toml"
+printf '  [[ runners ]]\n  id = 2\n  url = "%s"\n  token = "glrt-new-2"\n' "${SELF_HOSTED}" > "${STATE}/config.toml"
+rm -f "${STATE}/verify_requests.log"
 run_create "${INDIVIDUAL[@]}" --resume 05
 if [ "${RUN_RC}" -eq 0 ] && grep -Fq 'reusing runner ID 2' <<< "${RUN_OUT}"; then
   pass "resume recognises a runner config with an indented, spaced [[ runners ]] header"
 else
   fail "indented [[ runners ]] header should count as registered (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
+fi
+# The verify request the VM sends must carry the configured token and the
+# runner manager's system ID from /etc/gitlab-runner/.runner_system_id
+# (GitLab rejects a glrt- token without it).
+if [ "$(wc -l < "${STATE}/verify_requests.log")" -eq 1 ] \
+  && python3 - "${STATE}/verify_requests.log" "${SELF_HOSTED}" <<'PY'
+import json, sys
+req = json.loads(open(sys.argv[1]).readline())
+assert req["url"] == sys.argv[2] + "/api/v4/runners/verify", req
+assert req["form"] == {"token": "glrt-new-2", "system_id": "r_vmsystem01"}, req
+PY
+then
+  pass "VM-side verify posts the configured token and the VM's runner system ID"
+else
+  fail "verify request lacks token/system_id: $(cat "${STATE}/verify_requests.log" 2>/dev/null)"
+fi
+rm -f "${STATE}/config.toml"
+
+# No system ID on the VM (gitlab-runner never wrote one): the token check
+# cannot run, so resume fails explicitly and stops the running service.
+printf '[[runners]]\n  id = 2\n  url = "%s"\n  token = "glrt-new-2"\n' "${SELF_HOSTED}" > "${STATE}/config.toml"
+touch "${STATE}/no_system_id" "${STATE}/service_active"
+env_before=$(env_count)
+rm -f "${STATE}/verify_requests.log"
+run_create "${INDIVIDUAL[@]}" --resume 05
+rm -f "${STATE}/no_system_id"
+if [ "${RUN_RC}" -ne 0 ] && grep -Fq 'could not be confirmed as belonging to runner ID 2' <<< "${RUN_OUT}" \
+  && grep -Fq '.runner_system_id' <<< "${RUN_OUT}" && [ ! -e "${STATE}/verify_requests.log" ] \
+  && [ "$(env_count)" -eq "${env_before}" ] && [ ! -f "${STATE}/service_active" ]; then
+  pass "resume fails explicitly and stops the service when the VM has no runner system ID"
+else
+  fail "missing system ID should be refused (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
 fi
 
 posts_refused=$(post_count)
@@ -553,6 +622,70 @@ else
 fi
 printf '%s\n' "${runners_backup}" > "${STATE}/runners.json"
 
+# patch_runners JSON — merge JSON into every runner in the stub's GitLab
+# (a null value deletes the key).
+patch_runners() {
+  python3 - "${STATE}/runners.json" "$1" <<'PY'
+import json, sys
+path, patch = sys.argv[1], json.loads(sys.argv[2])
+runners = json.load(open(path))
+for r in runners:
+    for k, v in patch.items():
+        if v is None:
+            r.pop(k, None)
+        else:
+            r[k] = v
+json.dump(runners, open(path, "w"))
+PY
+}
+# expect_resume_refused DESC EXPECTED_REASON [create args] — resume must be
+# refused for the reason, without running setup.sh, and stop the service.
+expect_resume_refused() {
+  local desc="$1" reason="$2" env_before
+  shift 2
+  env_before=$(env_count)
+  touch "${STATE}/service_active"
+  run_create "$@" --resume 05
+  if [ "${RUN_RC}" -ne 0 ] && grep -Fq 'no longer matches' <<< "${RUN_OUT}" \
+    && grep -Fq -- "${reason}" <<< "${RUN_OUT}" && [ "$(env_count)" -eq "${env_before}" ] \
+    && [ ! -f "${STATE}/service_active" ]; then
+    pass "resume refuses ${desc} and stops the running service"
+  else
+    fail "${desc} should be refused (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
+  fi
+}
+
+# A group runner that now runs untagged jobs (or has no run_untagged value at
+# all) is not the registration fresh provisioning created.
+patch_runners '{"run_untagged": true}'
+expect_resume_refused "a group runner that runs untagged jobs" "run_untagged is True" "${INDIVIDUAL[@]}"
+patch_runners '{"run_untagged": null}'
+expect_resume_refused "a group runner with no run_untagged value" "run_untagged is None" "${INDIVIDUAL[@]}"
+patch_runners '{"run_untagged": "false"}'
+expect_resume_refused "a group runner with a malformed run_untagged value" "run_untagged is 'false'" "${INDIVIDUAL[@]}"
+printf '%s\n' "${runners_backup}" > "${STATE}/runners.json"
+
+# Project runners must also stay locked to exactly the requested project.
+PROJECT_RUNNER=(GL_TOKEN=glpat-test PROJECT_ID=5 "GITLAB_URL=${SELF_HOSTED}")
+patch_runners '{"runner_type": "project_type", "groups": null, "projects": [{"id": 5}], "locked": true}'
+env_before=$(env_count)
+run_create "${PROJECT_RUNNER[@]}" --resume 05
+if [ "${RUN_RC}" -eq 0 ] && grep -Fq 'reusing runner ID 2' <<< "${RUN_OUT}" \
+  && [ "$(env_count)" -eq $((env_before + 1)) ]; then
+  pass "resume reuses a locked project runner assigned to exactly the requested project"
+else
+  fail "a matching locked project runner should be reused (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
+fi
+patch_runners '{"projects": [{"id": 5}, {"id": 6}]}'
+expect_resume_refused "a project runner assigned to an additional project" "requested only 5" "${PROJECT_RUNNER[@]}"
+patch_runners '{"projects": [{"id": 5}], "locked": false}'
+expect_resume_refused "an unlocked project runner" "locked is False" "${PROJECT_RUNNER[@]}"
+patch_runners '{"locked": null}'
+expect_resume_refused "a project runner with no locked value" "locked is None" "${PROJECT_RUNNER[@]}"
+patch_runners '{"locked": "true"}'
+expect_resume_refused "a project runner with a malformed locked value" "locked is 'true'" "${PROJECT_RUNNER[@]}"
+printf '%s\n' "${runners_backup}" > "${STATE}/runners.json"
+
 if [ "$(runner_count)" -eq 1 ] && [ "$(post_count)" -eq "${posts_refused}" ] \
   && [ "$(grep -c '^DELETE ' "${STATE}/curl.log")" -eq "${deletes_refused}" ]; then
   pass "refused reuse neither registers nor deregisters anything"
@@ -560,12 +693,12 @@ else
   fail "refused reuse changed registrations: $(tr '\n' '|' < "${STATE}/curl.log")"
 fi
 
-touch "${STATE}/probe_fails"
+touch "${STATE}/probe_fails" "${STATE}/service_active"
 run_create "${INDIVIDUAL[@]}" --resume 05
 rm -f "${STATE}/probe_fails"
 if [ "${RUN_RC}" -ne 0 ] && grep -Fq 'could not read the runner config' <<< "${RUN_OUT}" \
-  && [ "$(runner_count)" -eq 1 ]; then
-  pass "resume fails closed when the VM's runner config cannot be read"
+  && [ "$(runner_count)" -eq 1 ] && [ ! -f "${STATE}/service_active" ]; then
+  pass "resume fails closed and stops the service when the VM's runner config cannot be read"
 else
   fail "unreadable VM config should be refused (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
 fi
@@ -597,12 +730,12 @@ fi
 # "no runners": resume must fail closed instead of registering a duplicate.
 for bad_body in '{}' '""' '[{"description": "runners/fullsend-gitlab-runner-05"}]'; do
   new_state
-  touch "${STATE}/vm_exists"
+  touch "${STATE}/vm_exists" "${STATE}/service_active"
   printf '%s\n' "${bad_body}" > "${STATE}/runners.json"
   run_create "${INDIVIDUAL[@]}" --resume 05
   if [ "${RUN_RC}" -ne 0 ] && [ "$(post_count)" -eq 0 ] && [ "$(env_count)" -eq 0 ] \
-    && grep -Fq 'GitLab API lookup failed' <<< "${RUN_OUT}"; then
-    pass "resume fails closed on a malformed runner list (${bad_body})"
+    && grep -Fq 'GitLab API lookup failed' <<< "${RUN_OUT}" && [ ! -f "${STATE}/service_active" ]; then
+    pass "resume fails closed and stops the service on a malformed runner list (${bad_body})"
   else
     fail "malformed runner list ${bad_body} should fail closed (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
   fi

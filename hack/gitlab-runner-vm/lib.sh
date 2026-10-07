@@ -137,10 +137,12 @@ runner_exists() {
 # Confirm the registration <runner_id> still matches the requested scope,
 # access level and tag before a --resume reuses it. Returns 1 and prints the
 # reason on stderr when GitLab reports a different access_level, runner type,
-# or project/group, when RUNNER_TAG is not among the runner's tags, and when
-# the runner cannot be fetched (fail closed). Positive
-# evidence of membership is required: details without a non-empty
-# groups/projects list matching SCOPE_ID are refused.
+# or project/group, when RUNNER_TAG is not among the runner's tags, when
+# run_untagged is not explicitly false, for a project runner that is not
+# locked or is assigned to any project besides SCOPE_ID, and when the runner
+# cannot be fetched (fail closed). Positive evidence of membership is
+# required: details without a non-empty groups/projects list matching
+# SCOPE_ID are refused, as are missing or malformed run_untagged/locked values.
 # Requires: GL_TOKEN, GITLAB_URL, RUNNER_SCOPE, SCOPE_ID, RUNNER_ACCESS_LEVEL,
 #           RUNNER_TAG
 check_runner_registration() {
@@ -164,8 +166,18 @@ key = scope + 's'
 members = r.get(key)
 if not isinstance(members, list) or not members:
     sys.exit('runner details list no %s, cannot confirm it belongs to %s %d' % (key, scope, scope_id))
-if scope_id not in [x.get('id') for x in members if isinstance(x, dict)]:
+ids = [x.get('id') for x in members if isinstance(x, dict)]
+if scope_id not in ids:
     sys.exit('runner does not belong to %s %d' % (scope, scope_id))
+# Fresh provisioning registers run_untagged=false, and project runners are
+# locked to the one project: a widened registration must not be resumed.
+if r.get('run_untagged') is not False:
+    sys.exit('run_untagged is %r, requested False' % (r.get('run_untagged'),))
+if scope == 'project':
+    if ids != [scope_id]:
+        sys.exit('runner is assigned to projects %r, requested only %d' % (ids, scope_id))
+    if r.get('locked') is not True:
+        sys.exit('locked is %r, requested True' % (r.get('locked'),))
 " "${RUNNER_SCOPE}" "${SCOPE_ID}" "${RUNNER_ACCESS_LEVEL}" "${RUNNER_TAG}" >&2
 }
 

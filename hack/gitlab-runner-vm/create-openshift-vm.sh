@@ -463,6 +463,7 @@ if os.path.exists(p):
     -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
     -c "sudo python3 -c '${vm_probe_py}'"); then
     echo "ERROR: could not read the runner config on ${vm_name} — refusing to resume without knowing whether it already has a runner" >&2
+    stop_vm_runner
     cleanup_vm
     exit 1
   fi
@@ -481,6 +482,7 @@ if os.path.exists(p):
   if ! existing_ids=$(find_runner_ids "${NAMESPACE}/${vm_name}"); then
     echo "ERROR: GitLab API lookup failed — refusing to resume without knowing whether ${vm_name} already has a runner" >&2
     echo "  Hint: check GL_TOKEN scopes (needs api + manage_runner) and network connectivity" >&2
+    stop_vm_runner
     cleanup_vm
     exit 1
   fi
@@ -516,10 +518,17 @@ if os.path.exists(p):
     # The configured token must belong to that runner: an ID in config.toml
     # alone proves nothing. Ask GitLab (from the VM, so the token never leaves
     # it) which runner the token authenticates and require the same ID.
+    # GitLab requires the runner manager's system_id with a glrt- token, so it
+    # is read from the file gitlab-runner keeps next to config.toml; without
+    # it the check cannot run and the script exits non-zero.
     vm_verify_py='import json, tomllib, urllib.parse, urllib.request
 with open("/etc/gitlab-runner/config.toml", "rb") as f:
     r = tomllib.load(f)["runners"][0]
-data = urllib.parse.urlencode({"token": r["token"]}).encode()
+with open("/etc/gitlab-runner/.runner_system_id") as f:
+    system_id = f.read().strip()
+if not system_id:
+    raise SystemExit("empty /etc/gitlab-runner/.runner_system_id")
+data = urllib.parse.urlencode({"token": r["token"], "system_id": system_id}).encode()
 with urllib.request.urlopen(r["url"].rstrip("/") + "/api/v4/runners/verify", data, timeout=30) as resp:
     print(json.load(resp)["id"])'
     vm_token_id=""
@@ -527,7 +536,7 @@ with urllib.request.urlopen(r["url"].rstrip("/") + "/api/v4/runners/verify", dat
       -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
       -c "sudo python3 -c '${vm_verify_py}'" 2>/dev/null) \
       || [ "${vm_token_id}" != "${existing_ids}" ]; then
-      echo "ERROR: the runner token configured on ${vm_name} could not be confirmed as belonging to runner ID ${existing_ids} at ${GITLAB_URL} (GitLab says: '${vm_token_id:-no answer}') — recreate the VM instead: ./delete-openshift-vm.sh ${vm_name} (deregisters it), then re-run create" >&2
+      echo "ERROR: the runner token configured on ${vm_name} could not be confirmed as belonging to runner ID ${existing_ids} at ${GITLAB_URL} (GitLab says: '${vm_token_id:-no answer}'; the VM must also hold /etc/gitlab-runner/.runner_system_id) — recreate the VM instead: ./delete-openshift-vm.sh ${vm_name} (deregisters it), then re-run create" >&2
       stop_vm_runner
       cleanup_vm
       exit 1
