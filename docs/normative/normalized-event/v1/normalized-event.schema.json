@@ -316,7 +316,7 @@
             "none",
             "external"
           ],
-          "description": "Effective repository permission level (ADR 0054); ADR 0107 target producers use `none` for bots, while legacy bot permission values remain valid in v1."
+          "description": "Effective repository permission level (ADR 0054); post-migration ADR 0107 producers use `none` for bots, while legacy bot permission values remain valid in v1 during migration."
         },
         "bot_role": {
           "type": ["string", "null"],

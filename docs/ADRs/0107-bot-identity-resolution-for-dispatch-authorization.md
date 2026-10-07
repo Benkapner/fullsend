@@ -27,7 +27,9 @@ fields are additive, and existing compatibility behavior remains authoritative
 until each adapter crosses its migration boundary. The migration does not
 require a normalized-event schema version change or expand the supported bot
 population; it replaces legacy permission handling with registered identity
-handling for supported bots.
+handling for supported bots. The affected contracts are
+[Authorization v1](../normative/authorization/v1/) and
+[NormalizedEvent v1](../normative/normalized-event/v1/).
 
 ## Context
 

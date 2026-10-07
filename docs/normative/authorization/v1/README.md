@@ -107,7 +107,8 @@ The adapter/provider MUST classify the verified actor using authoritative
 source-system metadata before authorization. This may include a provider actor
 name when that forge gives it bot-specific semantics, such as GitHub's `[bot]`
 logins; labels, review types, and arbitrary event-content strings are not bot
-identity signals. For `actor.kind: bot`, `actor.role` MUST be `none`, and
+identity signals. For post-migration producers with `actor.kind: bot`,
+`actor.role` MUST be `none`, and
 `actor.role_verified` is true exactly when the provider completes the bot-role
 lookup, including a successful no-match result; it is false when resolution
 fails. For `actor.kind: human`, `actor.bot_role` MUST be absent or `null`, and
@@ -120,15 +121,16 @@ applicable source and target, and a transition supported by the selected
 harness. CEL may further restrict routing but cannot create or broaden bot
 identity authorization.
 
-For humans, `role_verified: false` denies the event regardless of the role
-string. A missing `role_verified` on a trusted pre-migration event is treated
-as legacy input and retains the current human authorization behavior; new
-adapters MUST emit the field, and their false value MUST fail closed. Legacy
-status is determined by the adapter's migration/configuration boundary, not by
-guessing from this field's absence. The permanent GitHub label exception below
-does not require bot-role lookup, so `role_verified` is not an authorization
-input on that path; omission means that lookup is not applicable, not that it
-failed.
+For humans on non-label paths, `role_verified: false` denies the event
+regardless of the role string. A missing `role_verified` on a trusted
+pre-migration event is treated as legacy input and retains the current human
+authorization behavior; new adapters MUST emit the field, and their false
+value MUST fail closed. Legacy status is determined by the
+adapter's migration/configuration boundary, not by guessing from this field's
+absence. On the permanent label exception, `role_verified` is not an
+authorization input: an accepted forge label mutation authorizes a human, and
+a bot additionally requires positive provider bot classification. For bots,
+omission means that bot-role lookup is not applicable, not that it failed.
 
 ## Default thresholds
 
