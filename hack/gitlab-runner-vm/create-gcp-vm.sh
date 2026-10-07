@@ -7,7 +7,9 @@
 #   2. Creates a GCE VM via gcloud compute instances create
 #      with --no-service-account --no-scopes (the VM needs no Compute
 #      SA; the default editor SA would expose a stealable metadata token)
-#   3. Waits for SSH readiness, then installs packages via dnf
+#   3. Waits for SSH readiness, installs packages via dnf, then grows the
+#      root partition and Btrfs filesystem to fill the 30 GiB boot disk and
+#      verifies disk/partition/filesystem capacity (grow-root-fs.sh)
 #   4. Registers a new runner via the GitLab API, or joins an existing
 #      runner pool when RUNNER_TOKEN is set (runner-hub)
 #   5. Copies setup files and runs setup.sh to configure the custom
@@ -133,6 +135,9 @@ fi
 # Fallback only when the pin file is absent; keep in step with openshell-version.sh.
 OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.1.2}"
 PREFIX="fullsend-gitlab-runner"
+# Boot disk size in GiB (gcloud "GB" is GiB). Matches the ~30 GiB guest disks
+# of the OpenShift runner fleet (#8163).
+BOOT_DISK_GB=30
 
 # Validate GCP_USE_IAP early — it controls flag construction below, so an
 # invalid value (e.g. "yes") must not silently skip --tunnel-through-iap.
@@ -290,7 +295,7 @@ for tool in gcloud python3 curl timeout sha256sum; do
     _missing=1
   fi
 done
-for _f in setup.sh create-gcp-vm.sh gitlab-runner-version.sh podman-prune.sh \
+for _f in setup.sh create-gcp-vm.sh gitlab-runner-version.sh podman-prune.sh grow-root-fs.sh \
   executor/job_id.sh executor/prepare.sh executor/run.sh executor/cleanup.sh executor/gateway.sh; do
   if [ ! -f "${SCRIPT_DIR}/${_f}" ]; then
     echo "ERROR: required file not found: ${SCRIPT_DIR}/${_f}" >&2
@@ -377,7 +382,7 @@ gcloud compute instances create "${vm_name}" \
   --no-scopes \
   --image-family="${GCP_IMAGE_FAMILY}" \
   --image-project="${GCP_IMAGE_PROJECT}" \
-  --boot-disk-size="20GB" \
+  --boot-disk-size="${BOOT_DISK_GB}GB" \
   --boot-disk-type="pd-balanced" \
   --quiet
 cleanup_vm() {
@@ -427,6 +432,39 @@ if ! with_backoff install_packages; then
   exit 1
 fi
 echo "  OK: packages installed"
+
+# Grow the root partition and Btrfs filesystem to fill the boot disk, then
+# verify disk, partition, and filesystem capacity. The Fedora image's own
+# first-boot growth was observed not to run on GCE, leaving an ~8 GiB root on
+# a 20 GiB disk (#8163). grow-root-fs.sh is idempotent and ends with its main
+# call, so a dropped stream runs nothing and a retry is safe. Done before
+# runner registration so a failure needs no deregistration.
+echo "==> Growing root filesystem to fill the ${BOOT_DISK_GB} GiB boot disk..."
+#
+# A stream cut at a command boundary makes `bash -s` exit 0 without running
+# main, so success also requires the completion marker that grow-root-fs.sh
+# prints only after verification passes.
+GROW_ROOT_FS_OK_MARKER="OK: root filesystem spans the disk"
+grow_root_fs() {
+  local out rc=0
+  out=$(timeout 600 gcloud compute ssh "${vm_name}" \
+    --project="${GCP_PROJECT}" \
+    --zone="${GCP_ZONE}" \
+    "${GCE_SSH_FLAGS[@]}" \
+    -- "sudo env MIN_DISK_GIB=${BOOT_DISK_GB} bash -s" < "${SCRIPT_DIR}/grow-root-fs.sh" 2>&1) || rc=$?
+  printf '%s\n' "${out}"
+  [ "${rc}" -eq 0 ] || return "${rc}"
+  if ! grep -Fq "==> ${GROW_ROOT_FS_OK_MARKER}" <<<"${out}"; then
+    echo "  ERROR: grow-root-fs.sh exited 0 without its completion marker (truncated stream?)" >&2
+    return 1
+  fi
+}
+if ! with_backoff grow_root_fs; then
+  echo "ERROR: root filesystem growth or capacity verification failed — see grow-root-fs.sh output above" >&2
+  cleanup_vm
+  exit 1
+fi
+echo "  OK: root filesystem spans the boot disk"
 
 # ----------------------------------------------------------------------
 # 4. Register a runner via the GitLab API, or join an existing pool

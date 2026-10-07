@@ -154,6 +154,8 @@ the compliance path for a VM that was configured and served jobs.
 > configured — without it, VMs created with `--no-address` cannot reach
 > package mirrors or container registries and `dnf install` will fail.
 > Set `GCP_USE_IAP=false` to create the VM with an external IP and SSH directly.
+> VMs get a 30 GiB boot disk whose root filesystem is grown and verified
+> during provisioning — see [GCE boot disk size and repair](#gce-boot-disk-size-and-repair).
 
 ```bash
 # 1. Create and provision a VM — group-scoped runner (recommended):
@@ -254,6 +256,8 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 - `create-openshift-vm_test.sh` — end-to-end tests for create-openshift-vm.sh against stubbed `oc`/`virtctl`/GitLab API (shared-token path, cloud-init package repair, `--resume`)
 - `podman-prune.sh` — reclaims unused rootless Podman containers and images; installed as a user systemd timer by setup.sh and invoked from prepare/cleanup
 - `podman-prune_test.sh` — unit tests for the prune script and timer install
+- `grow-root-fs.sh` — grows the root partition and Btrfs filesystem to fill the disk and verifies capacity; run by create-gcp-vm.sh and used to repair existing GCE runners (see [GCE boot disk size and repair](#gce-boot-disk-size-and-repair))
+- `grow-root-fs_test.sh` — unit tests for grow-root-fs.sh (unexpanded, already-expanded, failed growth, unsupported layouts)
 - `gitlab-runner-version.sh` — central pin for the gitlab-runner version
 - `vm.yaml` — KubeVirt VirtualMachine template (OpenShift only)
 - `vm_test.sh` — tests that vm.yaml's `bootcmd` leaves Fedora repo files usable before cloud-init installs packages
@@ -321,6 +325,68 @@ first timer tick:
 ```bash
 systemctl --user start fullsend-podman-prune.service
 ```
+
+## GCE boot disk size and repair
+
+`create-gcp-vm.sh` creates a **30 GiB** `pd-balanced` boot disk, matching
+the ~30 GiB guest disks of the OpenShift runners. A bigger virtual disk is
+not enough on its own: the Fedora Cloud image's own first-boot growth was
+observed not to run on GCE, leaving an ~8 GiB root Btrfs partition on a
+20 GiB disk (#8163). After installing packages and before registering the
+runner, `create-gcp-vm.sh` therefore streams
+[`grow-root-fs.sh`](grow-root-fs.sh) to the VM and runs it as root. The
+script:
+
+1. Checks the layout first: `/` must be Btrfs on a single-device filesystem
+   on a partition of a whole disk, and `/home` and `/var` must be on the
+   same filesystem (Fedora Cloud subvolumes). Any other layout fails with
+   `ERROR: ... no changes made` before any device is modified.
+2. Installs `cloud-utils-growpart` / `btrfs-progs` with `dnf` if they are
+   missing, then runs `growpart` on the root partition (`NOCHANGE` counts
+   as success) and `btrfs filesystem resize <devid>:max /` for the
+   filesystem's sole device.
+3. Verifies capacity: the disk is at least `MIN_DISK_GIB` (30 when run by
+   `create-gcp-vm.sh`), the root partition reaches the end of the disk, and
+   the Btrfs device size matches the partition. If any check fails,
+   provisioning stops and prints the cleanup hint. `create-gcp-vm.sh` also
+   requires the script's `OK: root filesystem spans the disk` line in the
+   SSH output, so a truncated stream cannot pass as success.
+
+Expected usable capacity: roughly **27–28 GiB** for `/`, `/home`, and
+`/var` together (they share one Btrfs filesystem) on a 30 GiB disk, about
+17–18 GiB on a 20 GiB disk. The difference goes to the EFI and `/boot`
+partitions (~2 GiB) and filesystem overhead. Check with:
+
+```bash
+lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINTS
+df -h / /home /var
+```
+
+### Repairing existing runners
+
+The script is idempotent and grows the disk online. It does not recreate
+the VM and leaves the runner registration, images, and workspace data in
+place. Run it from the repo root on your workstation (drop
+`--tunnel-through-iap` for VMs with an external IP):
+
+```bash
+vm=fullsend-gitlab-runner-01
+
+# Optional: grow the GCE disk to 30 GiB first. The boot disk is named after
+# the VM; the resize is online and only increases size. Skip this step to
+# just reclaim the unused space on a current 20 GiB disk.
+gcloud compute disks resize "${vm}" --size=30GB \
+  --project="${GCP_PROJECT}" --zone="${GCP_ZONE}"
+
+# Grow the root partition and Btrfs filesystem, then verify. Set
+# MIN_DISK_GIB to the disk size you expect (30 after the resize, 20 without).
+gcloud compute ssh "${vm}" --project="${GCP_PROJECT}" --zone="${GCP_ZONE}" \
+  --tunnel-through-iap \
+  -- "sudo env MIN_DISK_GIB=30 bash -s" < hack/gitlab-runner-vm/grow-root-fs.sh
+```
+
+If you re-run the script on a runner that is already expanded, it changes
+nothing and still runs the verification.
 
 ## Security notes
 
