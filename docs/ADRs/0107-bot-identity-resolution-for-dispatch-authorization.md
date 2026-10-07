@@ -20,10 +20,14 @@ Date: 2026-09-27
 Accepted
 
 Extends [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)
-and defines the bot behavior to be added to the existing v1 contracts. The
-authorization-contract version boundary remains an open migration question;
-the additive normalized-event fields do not by themselves require a schema
-version change.
+and defines the bot behavior to be added to the existing v1 contracts. This ADR
+explicitly permits the deferred migration from legacy bot exceptions to
+provider-backed bot identity within authorization v1: the normalized-event
+fields are additive, and existing compatibility behavior remains authoritative
+until each adapter crosses its migration boundary. The migration does not
+require a normalized-event schema version change or expand the supported bot
+population; it replaces legacy permission handling with registered identity
+handling for supported bots.
 
 ## Context
 

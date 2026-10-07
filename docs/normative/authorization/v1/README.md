@@ -381,6 +381,16 @@ This is a living normative document under
 [ADR 0015](../../../ADRs/0015-normative-specifications-directory.md).
 Breaking changes require `docs/normative/authorization/v2/`.
 
+**ADR 0107 migration exception:** The deferred migration from legacy bot
+authorization exceptions to provider-backed bot identity is permitted within
+v1. It is a policy tightening, not a new supported actor population: existing
+compatibility behavior remains authoritative until an adapter crosses its
+explicit migration boundary; after migration, registered bots use
+`actor.bot_role` and unregistered non-label bots are denied. The normalized
+event fields used to carry this distinction are additive, and the permanent
+label-added exception is preserved. This exception does not alter the general
+v2 rule for unrelated authorization changes.
+
 | Change | v1 impact |
 |--------|-----------|
 | **Breaking** (requires v2): remove a role from the hierarchy, raise a default threshold, remove a documented exception, change fail-closed to fail-open | Dispatch implementations must migrate |
