@@ -4,7 +4,7 @@
 #
 # Source this file at the top of any script that needs gl_curl(),
 # validate_runner_scope(), build_scope_args(), uses_runner_token(),
-# or drain_runner_vm().
+# find_runner_ids(), or drain_runner_vm().
 
 # uses_runner_token reports whether RUNNER_TOKEN is set, selecting the
 # join-existing-pool (runner-hub) path over GitLab API registration.
@@ -61,6 +61,77 @@ validate_runner_scope() {
     # shellcheck disable=SC2034  # consumed by callers
     SCOPE_ID="${GROUP_ID}"
   fi
+}
+
+# find_runner_ids <description> <tag>
+#
+# Print the IDs of runners visible to GL_TOKEN whose description is exactly
+# <description> (create-openshift-vm.sh registers each VM as
+# "<namespace>/<vm-name>"), one per line. Results are narrowed server-side
+# by tag_list=<tag> and use /runners (user-scoped) rather than /runners/all
+# (admin-only). Scans at most 50 pages of 100.
+#
+# Returns 1 when a GitLab API request fails or returns unparseable JSON, or
+# when page 50 is still full (the scan is incomplete), so callers can fail
+# closed instead of mistaking an outage or a partial scan for "no runner".
+# Requires: GL_TOKEN, GITLAB_URL
+find_runner_ids() {
+  local description="$1" tag="$2" encoded_tag page page_json ids count complete=false
+  encoded_tag=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "${tag}") || return 1
+  page=1
+  while [ "${page}" -le 50 ]; do
+    page_json=$(gl_curl \
+      "${GITLAB_URL}/api/v4/runners?per_page=100&page=${page}&tag_list=${encoded_tag}" 2>/dev/null) || return 1
+    ids=$(printf '%s' "${page_json}" | python3 -c "
+import sys, json
+for r in json.load(sys.stdin):
+    if r.get('description', '') == sys.argv[1]:
+        print(r['id'])
+" "${description}" 2>/dev/null) || return 1
+    if [ -n "${ids}" ]; then
+      printf '%s\n' "${ids}"
+    fi
+    count=$(printf '%s' "${page_json}" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null) || return 1
+    if [ "${count}" -lt 100 ]; then
+      complete=true
+      break
+    fi
+    page=$((page + 1))
+  done
+  [ "${complete}" = "true" ]
+}
+
+# check_runner_registration <runner_id>
+#
+# Confirm the registration <runner_id> still matches the requested scope and
+# access level before a --resume reuses it. Returns 1 and prints the reason on
+# stderr when GitLab reports a different access_level, runner type, or
+# project/group, and when the runner cannot be fetched (fail closed). Positive
+# evidence of membership is required: details without a non-empty
+# groups/projects list matching SCOPE_ID are refused.
+# Requires: GL_TOKEN, GITLAB_URL, RUNNER_SCOPE, SCOPE_ID, RUNNER_ACCESS_LEVEL
+check_runner_registration() {
+  local runner_id="$1" runner_json
+  if ! runner_json=$(gl_curl "${GITLAB_URL}/api/v4/runners/${runner_id}" 2>/dev/null); then
+    echo "  could not fetch runner ${runner_id} from ${GITLAB_URL}" >&2
+    return 1
+  fi
+  printf '%s' "${runner_json}" | python3 -c "
+import sys, json
+scope, scope_id, level = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+r = json.load(sys.stdin)
+if r.get('access_level') != level:
+    sys.exit('access_level is %r, requested %r' % (r.get('access_level'), level))
+want = scope + '_type'
+if r.get('runner_type') != want:
+    sys.exit('runner_type is %r, requested %r' % (r.get('runner_type'), want))
+key = scope + 's'
+members = r.get(key)
+if not isinstance(members, list) or not members:
+    sys.exit('runner details list no %s, cannot confirm it belongs to %s %d' % (key, scope, scope_id))
+if scope_id not in [x.get('id') for x in members if isinstance(x, dict)]:
+    sys.exit('runner does not belong to %s %d' % (scope, scope_id))
+" "${RUNNER_SCOPE}" "${SCOPE_ID}" "${RUNNER_ACCESS_LEVEL}" >&2
 }
 
 # Build scope-specific curl arguments for the GitLab runner registration API.
