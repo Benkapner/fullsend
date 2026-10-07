@@ -801,12 +801,10 @@ func decodeJSON(resp *http.Response, v any) error {
 
 // ListOrgRepos returns non-archived, non-fork repositories for an org.
 //
-// When includePrivate is false, private repos are also excluded. This
-// is the appropriate setting for per-org mode because the .fullsend
-// config repo is public and agent workflow logs are visible to anyone.
+// When includePrivate is false, private repos are also excluded.
 //
 // When includePrivate is true, private repos are included. This is
-// appropriate for per-repo mode where agents run on the target repo
+// appropriate for per-repo installs where agents run on the target repo
 // itself and logs are not publicly exposed.
 //
 // Forks are excluded because fullsend's trust model assumes org-owned repos

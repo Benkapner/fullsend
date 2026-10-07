@@ -18,8 +18,8 @@ import (
 // configuration repository. See ADR-0003.
 const ConfigRepoName = ".fullsend"
 
-// PerRepoGuardVar is the repo variable set by per-repo install to prevent
-// per-org enrollment from overriding a per-repo installation.
+// PerRepoGuardVar is the repo variable set by per-repo install to mark the
+// repository as installed.
 const PerRepoGuardVar = "FULLSEND_PER_REPO_INSTALL"
 
 // ChangesRequestedMarker is the hidden HTML comment the GitLab review
@@ -603,14 +603,9 @@ type Client interface {
 	// It excludes archived repos (no active development) and forks.
 	//
 	// When includePrivate is false, private repos are also excluded.
-	// This is the appropriate setting for per-org mode because the
-	// default .fullsend config repo is public and agent workflows
-	// dispatched to it run with public logs. Enrolling a private repo
-	// would expose its code in those logs when agents check out and
-	// process the repo content.
 	//
 	// When includePrivate is true, private repos are included in the
-	// result. This is appropriate for per-repo mode where agents run
+	// result. This is appropriate for per-repo installs where agents run
 	// on the target repo itself, so public log exposure does not apply.
 	//
 	// Forks are excluded because fullsend's trust model is org-centric:

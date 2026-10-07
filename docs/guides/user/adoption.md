@@ -14,7 +14,7 @@ Each stage below describes what to enable, what to observe, and soft signals tha
 
 Before enabling any agents, you need to get fullsend running in your environment:
 
-1. [Enroll](../getting-started/) your org or repo in a token mint
+1. [Enroll](../getting-started/) your repo in a token mint
 2. [Provision inference access](../getting-started/getting-inference.md)
 3. [Configure GitHub](../getting-started/configuring-github.md) — Apps, permissions, webhooks
 
