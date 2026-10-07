@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # setup_test.sh — Tests for setup.sh idempotency hygiene (patch_config backup,
-# configure_per_job_gateway seed-start skip, setup_runner_user UID drop-in)
-# and the OpenShell 0.1 upgrade path (configure_gateway, install_openshell).
+# configure_per_job_gateway seed-start skip, setup_runner_user UID drop-in),
+# the OpenShell 0.1 upgrade path (configure_gateway, install_openshell), and
+# CA hook permissions for rootless Podman (install_ca_hook).
 #
 # Run from the repo root:
 #   bash hack/gitlab-runner-vm/setup_test.sh
@@ -30,6 +31,9 @@ run_setup() {
   local test_cache_dir="${CACHE_DIR}"
   local test_executor_dir="${EXECUTOR_DIR}"
   local test_override_dir="${GITLAB_RUNNER_OVERRIDE_DIR}"
+  local test_host_ca_bundle="${HOST_CA_BUNDLE}"
+  local test_ca_hook_script="${CA_HOOK_SCRIPT}"
+  local test_oci_hooks_dir="${OCI_HOOKS_DIR}"
   # Not an && / || list: bash ignores errexit inside one, so a failing
   # command in setup.sh (e.g. the installer) would not stop the function.
   set +e
@@ -43,6 +47,9 @@ run_setup() {
     CACHE_DIR="${test_cache_dir}"
     EXECUTOR_DIR="${test_executor_dir}"
     GITLAB_RUNNER_OVERRIDE_DIR="${test_override_dir}"
+    HOST_CA_BUNDLE="${test_host_ca_bundle}"
+    CA_HOOK_SCRIPT="${test_ca_hook_script}"
+    OCI_HOOKS_DIR="${test_oci_hooks_dir}"
     export RUNNER_USER="testuser"
     "${fn}"
   )
@@ -60,6 +67,10 @@ BUILDS_DIR="${FAKE_HOME}/builds"
 CACHE_DIR="${FAKE_HOME}/cache"
 EXECUTOR_DIR="${FAKE_HOME}/gitlab-runner-executor"
 GITLAB_RUNNER_OVERRIDE_DIR="${WORK_DIR}/systemd-override"
+CA_ROOT="${WORK_DIR}/ca-root"
+HOST_CA_BUNDLE="${CA_ROOT}/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+CA_HOOK_SCRIPT="${CA_ROOT}/usr/local/bin/inject-ca-certs.sh"
+OCI_HOOKS_DIR="${CA_ROOT}/etc/containers/oci/hooks.d"
 SYSTEMCTL_LOG="${SHIM_DIR}/systemctl.log"
 OPENSHELL_LOG="${SHIM_DIR}/openshell.log"
 SUDO_LOG="${SHIM_DIR}/sudo.log"
@@ -599,6 +610,92 @@ fi
 rm -rf "${FAKE_HOME}/.local/state/openshell" "${FAKE_HOME}/.config/openshell"
 printf '#!/bin/sh\necho "$@" >> "%s"\nexit 0\n' "${OPENSHELL_LOG}" > "${SHIM_DIR}/openshell"
 rm -f "${SHIM_DIR}/curl" "${SHIM_DIR}/podman"
+
+echo "== install_ca_hook: hook resources readable by rootless Podman =="
+# sudo runs the command as the test user, so files are created under the
+# caller's umask exactly as root's would be on the VM.
+cat > "${SHIM_DIR}/sudo" <<STUB
+#!/bin/sh
+echo "\$@" >> "${SUDO_LOG}"
+exec "\$@"
+STUB
+chmod +x "${SHIM_DIR}/sudo"
+: > "${SUDO_LOG}"
+write_systemctl_stub seeded
+
+file_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
+# Prints a description of every hook resource whose mode is wrong.
+ca_hook_mode_errors() {
+  local oci_dir path want got
+  oci_dir="$(dirname "${OCI_HOOKS_DIR}")"
+  for spec in \
+    "${CA_HOOK_SCRIPT}:755" \
+    "${oci_dir}:755" \
+    "${OCI_HOOKS_DIR}:755" \
+    "${OCI_HOOKS_DIR}/inject-ca-certs.json:644"; do
+    path="${spec%:*}"
+    want="${spec##*:}"
+    got="$(file_mode "${path}" 2>/dev/null || echo missing)"
+    if [ "${got}" != "${want}" ]; then
+      printf '%s=%s (want %s) ' "${path#"${CA_ROOT}"}" "${got}" "${want}"
+    fi
+  done
+}
+
+install_ca_hook_umask077() {
+  umask 077
+  install_ca_hook
+}
+
+rm -rf "${CA_ROOT}"
+# Pre-existing system directories on a provisioned VM.
+mkdir -p "${CA_ROOT}/usr/local/bin" "${CA_ROOT}/etc/containers" \
+  "$(dirname "${HOST_CA_BUNDLE}")"
+echo "fake CA" > "${HOST_CA_BUNDLE}"
+
+# Fresh install under a restrictive umask.
+run_setup install_ca_hook_umask077
+mode_errors="$(ca_hook_mode_errors)"
+if [ "${RUN_SETUP_RC}" -ne 0 ]; then
+  fail "install_ca_hook under umask 077 should succeed (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+elif [ -n "${mode_errors}" ]; then
+  fail "install_ca_hook under umask 077 left hook resources unreadable: ${mode_errors}"
+elif ! grep -Fq "\"path\": \"${CA_HOOK_SCRIPT}\"" "${OCI_HOOKS_DIR}/inject-ca-certs.json"; then
+  fail "hook JSON does not point at the hook script: $(tr '\n' ' ' < "${OCI_HOOKS_DIR}/inject-ca-certs.json")"
+else
+  pass "install_ca_hook under umask 077 writes 0755 script/dirs and 0644 hook JSON"
+fi
+
+# Existing root-only installation: re-run must repair the modes.
+chmod 0700 "$(dirname "${OCI_HOOKS_DIR}")" "${OCI_HOOKS_DIR}"
+chmod 0600 "${CA_HOOK_SCRIPT}" "${OCI_HOOKS_DIR}/inject-ca-certs.json"
+run_setup install_ca_hook_umask077
+mode_errors="$(ca_hook_mode_errors)"
+if [ "${RUN_SETUP_RC}" -ne 0 ]; then
+  fail "install_ca_hook repair should succeed (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+elif [ -n "${mode_errors}" ]; then
+  fail "install_ca_hook did not repair root-only hook resources: ${mode_errors}"
+else
+  pass "install_ca_hook re-run repairs root-only hook dirs and files"
+fi
+
+# Idempotent: a third run leaves identical files and modes.
+cp "${OCI_HOOKS_DIR}/inject-ca-certs.json" "${WORK_DIR}/hook.json.before"
+cp "${CA_HOOK_SCRIPT}" "${WORK_DIR}/hook.sh.before"
+run_setup install_ca_hook_umask077
+mode_errors="$(ca_hook_mode_errors)"
+if [ "${RUN_SETUP_RC}" -eq 0 ] && [ -z "${mode_errors}" ] \
+  && cmp -s "${WORK_DIR}/hook.json.before" "${OCI_HOOKS_DIR}/inject-ca-certs.json" \
+  && cmp -s "${WORK_DIR}/hook.sh.before" "${CA_HOOK_SCRIPT}"; then
+  pass "install_ca_hook re-run is idempotent"
+else
+  fail "install_ca_hook re-run changed hook files or modes (rc=${RUN_SETUP_RC}): ${mode_errors}"
+fi
+rm -rf "${CA_ROOT}"
+printf '#!/bin/sh\necho "$@" >> "%s"\nexit 0\n' "${SUDO_LOG}" > "${SHIM_DIR}/sudo"
 
 if [ "${FAILURES}" -ne 0 ]; then
   echo "${FAILURES} case(s) failed" >&2

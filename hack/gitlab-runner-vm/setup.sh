@@ -76,6 +76,10 @@ CONFIG_TOML="/etc/gitlab-runner/config.toml"
 RUNNER_USER="${USER:-$(whoami)}"
 # Overridable so setup_test.sh can point the drop-in at a temp dir.
 GITLAB_RUNNER_OVERRIDE_DIR="/etc/systemd/system/gitlab-runner.service.d"
+# Overridable so setup_test.sh can install the CA hook into a temp root.
+HOST_CA_BUNDLE="/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+CA_HOOK_SCRIPT="/usr/local/bin/inject-ca-certs.sh"
+OCI_HOOKS_DIR="/etc/containers/oci/hooks.d"
 
 # Source the central gitlab-runner version pin.
 _runner_version_sh="${SCRIPT_DIR}/gitlab-runner-version.sh"
@@ -476,13 +480,13 @@ install_ca_hook() {
 
   # Stage the host CA bundle in a user-writable location.
   mkdir -p "${HOME}/.local/share/ca-trust"
-  cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem \
+  cp "${HOST_CA_BUNDLE}" \
      "${HOME}/.local/share/ca-trust/ca-bundle.pem"
   chmod 644 "${HOME}/.local/share/ca-trust/ca-bundle.pem"
 
   # Install the hook script ($HOME expands at install time via unquoted heredoc).
   local ca_src="${HOME}/.local/share/ca-trust/ca-bundle.pem"
-  sudo tee /usr/local/bin/inject-ca-certs.sh > /dev/null <<HOOKSCRIPT
+  sudo tee "${CA_HOOK_SCRIPT}" > /dev/null <<HOOKSCRIPT
 #!/bin/bash
 STATE=\$(cat)
 # Resolve rootfs from OCI hook state. Primary: bundle + config.json (OCI spec).
@@ -586,15 +590,25 @@ done
 echo "inject-ca-certs: no writable CA bundle path found in rootfs" >&2
 exit 0
 HOOKSCRIPT
-  sudo chmod +x /usr/local/bin/inject-ca-certs.sh
+  # Rootless Podman reads the hook JSON and execs the script as the runner
+  # user, so both must be world-readable and every directory on the path
+  # traversable. sudo tee creates new files under root's umask and keeps
+  # the mode of existing ones, so set explicit modes on every run: a
+  # restrictive umask (or an earlier root-only install) otherwise fails
+  # every job with "setting up OCI Hooks: ... permission denied" (#8153).
+  # These files hold hook config and public CA trust, not credentials.
+  sudo chmod 0755 "${CA_HOOK_SCRIPT}"
 
   # Install the hook JSON.
-  sudo mkdir -p /etc/containers/oci/hooks.d
-  sudo tee /etc/containers/oci/hooks.d/inject-ca-certs.json > /dev/null <<'HOOKJSON'
+  local oci_dir
+  oci_dir="$(dirname "${OCI_HOOKS_DIR}")"
+  sudo mkdir -p "${OCI_HOOKS_DIR}"
+  sudo chmod 0755 "${oci_dir}" "${OCI_HOOKS_DIR}"
+  sudo tee "${OCI_HOOKS_DIR}/inject-ca-certs.json" > /dev/null <<HOOKJSON
 {
   "version": "1.0.0",
   "hook": {
-    "path": "/usr/local/bin/inject-ca-certs.sh"
+    "path": "${CA_HOOK_SCRIPT}"
   },
   "when": {
     "always": true
@@ -602,6 +616,7 @@ HOOKSCRIPT
   "stages": ["createRuntime"]
 }
 HOOKJSON
+  sudo chmod 0644 "${OCI_HOOKS_DIR}/inject-ca-certs.json"
 
   # Tell Podman where to find hooks (required for rootless mode).
   mkdir -p "${HOME}/.config/containers"
