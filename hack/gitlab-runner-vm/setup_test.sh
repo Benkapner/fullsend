@@ -611,6 +611,21 @@ else
   fail "patch_config accepted or mishandled mixed-indentation runners (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
 fi
 
+# A multiline TOML string for a managed key cannot be edited line by line: the
+# rewrite must be refused and config.toml (and any .bak) left untouched.
+write_custom_config /home/fedora
+awk '/^    prepare_exec = / { print "    prepare_exec = \"\"\""; print "/home/fedora/gitlab-runner-executor/prepare.sh"; print "\"\"\""; next } { print }' "${CONFIG_TOML}" > "${WORK_DIR}/multiline.toml"
+cp "${WORK_DIR}/multiline.toml" "${CONFIG_TOML}"
+rm -f "${CONFIG_TOML}.bak"
+run_setup patch_config_with_stderr
+if [ "${RUN_SETUP_RC}" -ne 0 ] && cmp -s "${WORK_DIR}/multiline.toml" "${CONFIG_TOML}" \
+  && [ ! -e "${CONFIG_TOML}.bak" ] \
+  && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq 'is not valid TOML'; then
+  pass "patch_config refuses a multiline managed value without modifying config.toml"
+else
+  fail "patch_config installed or mishandled a multiline managed value (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
 # No [[runners]] block at all reaches the diagnostic instead of aborting on
 # grep -c's exit status.
 printf 'concurrent = 1\n' > "${CONFIG_TOML}"

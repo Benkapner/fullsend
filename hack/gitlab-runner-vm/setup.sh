@@ -970,6 +970,13 @@ reconcile_custom_executor_paths() {
     return
   fi
 
+  # The line-based writer cannot edit every valid TOML form (e.g. a multiline
+  # string value would be left half-rewritten). Never install a rewrite that
+  # does not parse; the EXIT trap removes the temp copy.
+  if ! python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "${tmp}" 2>/dev/null; then
+    fail "rewritten config.toml is not valid TOML (multiline or otherwise unsupported managed value?) — ${CONFIG_TOML} left unchanged; patch manually"
+  fi
+
   for key in builds_dir cache_dir prepare_exec run_exec cleanup_exec; do
     old=$(printf '%s\n' "${current}" | sed -n "s/^${key}=//p")
     new=$(printf '%s\n' "${wanted}" | sed -n "s/^${key}=//p")
