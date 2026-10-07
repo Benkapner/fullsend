@@ -377,7 +377,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   event paths map source-system roles to dispatch authorization roles (`read`,
   `write`, `admin`) using source-native role resolution, with no cross-system
   identity verification. Bot actors are migrating to provider-backed exact role
-  resolution: adapters classify actors from source-native metadata, recognized bots receive a
+  resolution: adapters classify actors from source-native metadata; recognized bots receive a
   canonical `actor.bot_role` such as `review`, and bot actors retain
   `actor.role: none` with `actor.role_verified` reflecting completion of the
   bot-role lookup; unknown or unresolved bots fail closed on non-label paths.

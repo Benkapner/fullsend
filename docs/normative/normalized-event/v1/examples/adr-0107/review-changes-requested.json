@@ -16,6 +16,8 @@
     "id": "fullsend-ai-review[bot]",
     "kind": "bot",
     "role": "none",
+    "bot_role": "review",
+    "role_verified": true,
     "is_entity_author": false
   },
   "state": {

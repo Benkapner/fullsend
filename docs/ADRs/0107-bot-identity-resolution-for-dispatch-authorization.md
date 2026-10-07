@@ -68,7 +68,7 @@ equivalent trusted lookup.
 
 For a bot, the normalized representation keeps `actor.role` as `none` and
 places a recognized canonical role, such as `review`, in `actor.bot_role`. For
-a human, `actor.bot_role` is absent or null and `actor.role` contains the
+a human, `actor.bot_role` is absent and `actor.role` contains the
 verified forge permission. `bot_role` identifies the registered agent; it does
 not make the bot's content trustworthy.
 
@@ -94,11 +94,13 @@ The platform authorization rules are:
    transition provenance, is the platform authorization evidence. At the time
    of this ADR, the exception is implemented only for GitHub; other adapters
    MUST provide equivalent forge-authoritative evidence before enabling the
-   target behavior. For a bot actor, the adapter MUST positively classify it
-   using provider-controlled metadata, but `bot_role` resolution is not
-   required. The platform gate MUST NOT inspect label names or maintain an
-   agent-role label allowlist; harness/CEL routing owns that agent-specific
-   mapping.
+   target behavior. That evidence MUST establish that the label mutation is
+   controlled at or above the minimum platform authority for the stage that
+   the label can trigger; absent or unverifiable evidence denies the event.
+   For a bot actor, the adapter MUST positively classify it using provider-
+   controlled metadata, but `bot_role` resolution is not required. The
+   platform gate MUST NOT inspect label names or maintain an agent-role label
+   allowlist; harness/CEL routing owns that agent-specific mapping.
 3. A bot with no recognized role, or a bot whose lookup fails, is denied on
    non-label paths before CEL evaluation. The label exception is the explicit
    exception to this rule. Human actors continue to use ADR 0054's permission
@@ -113,6 +115,11 @@ The platform authorization rules are:
 
 The mint's installation permission map remains a credential-scoping check. It
 is not converted into `actor.role`, `bot_role`, or a bot event threshold.
+Recognized bot registration is intentionally a separate platform dispatch
+grant: it MUST be scoped to the exact provider identity and target, and the
+resolver MUST honor registration removal or lookup failure before dispatch.
+It does not elevate forge permissions or token capabilities, and CEL remains a
+narrowing filter rather than an additional authorization grant.
 
 ## Consequences
 
@@ -127,5 +134,10 @@ is not converted into `actor.role`, `bot_role`, or a bot event threshold.
 - Existing CEL rules that route reviews from non-Fullsend bots will no longer
   match after non-label bot resolution is deployed unless the provider
   recognizes those bots; this is an intentional migration consequence.
+- A registered bot can be admitted to a mutation harness without a
+  `write`-valued `actor.role`; that is an intentional platform dispatch grant
+  recorded by registration, not an inference from forge permissions. The
+  registration must therefore be reviewed, scoped, and revocable like any
+  other platform authorization input.
 - Non-mint providers, including the GitLab path, must supply equivalent bot-role
   lookup for non-label bot dispatch; bot classification alone is insufficient.

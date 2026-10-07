@@ -16,6 +16,8 @@
     "id": "fullsend-ai-triage[bot]",
     "kind": "bot",
     "role": "none",
+    "bot_role": "triage",
+    "role_verified": true,
     "is_entity_author": false
   },
   "state": {

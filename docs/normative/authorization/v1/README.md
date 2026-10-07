@@ -6,8 +6,8 @@ This document is the single living contract for authorization policy.
 The historical decision and rationale are recorded in
 [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).
 The [NormalizedEvent v1](../../normalized-event/v1/) specification defines the
-`actor.role`, `actor.kind`, `actor.role_verified`, and `actor.bot_role` fields consumed by this
-contract. Bot identity and role resolution are specified by
+`actor.role`, `actor.kind`, `actor.role_verified`, and `actor.bot_role` fields
+consumed by this contract. Bot identity and role resolution are specified by
 [ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
 
 > **ADR 0107 target contract — not yet implemented:** The bot identity fields,
@@ -177,8 +177,8 @@ migration is complete.
 |-----------|---------|
 | Collaborator API returns a custom `role_name` with no effective permission signal | Mapped to `none`; denied |
 | Collaborator API returns an error or times out | Denied (function returns failure) |
-| Bot-role lookup returns no registered identity on a non-label path | `actor.role` remains `none`; `actor.role_verified` is true; `actor.bot_role` is absent/null; denied |
-| Bot-role lookup fails or is unverifiable on a non-label path | `actor.role` remains `none`; `actor.role_verified` is false; `actor.bot_role` is absent/null; denied, with the failure retained in resolver/audit diagnostics |
+| Bot-role lookup returns no registered identity on a non-label path | `actor.role` remains `none`; `actor.role_verified` is true; `actor.bot_role` is absent; denied |
+| Bot-role lookup fails or is unverifiable on a non-label path | `actor.role` remains `none`; `actor.role_verified` is false; `actor.bot_role` is absent; denied, with the failure retained in resolver/audit diagnostics |
 | Collaborator API response is not valid JSON or does not match the expected shape | Denied |
 | `actor.role` is empty or missing | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | `actor.role_verified` is false for a human | Denied regardless of `actor.role` |
@@ -218,10 +218,13 @@ accepted forge label mutation and authoritative actor-to-transition provenance.
 The forge's own permission model is therefore the **implicit authorization
 gate**. At the time of this ADR, this target exception is implemented only for
 GitHub; other adapters MUST provide equivalent forge-authoritative evidence
-before enabling it. For a bot actor, the adapter MUST positively classify it
-using provider-controlled metadata, but `actor.bot_role` lookup is not
-required. The platform gate MUST NOT inspect the label name or maintain an
-agent-role label allowlist; harness/CEL routing owns that mapping.
+before enabling it. That evidence MUST establish that the label mutation is
+controlled at or above the minimum platform authority for the stage that the
+label can trigger; absent or unverifiable evidence denies the event. For a bot
+actor, the adapter MUST positively classify it using provider-controlled
+metadata, but `actor.bot_role` lookup is not required. The platform gate MUST
+NOT inspect the label name or maintain an agent-role label allowlist;
+harness/CEL routing owns that mapping.
 
 ### Bot-submitted reviews (GitHub)
 
@@ -396,12 +399,17 @@ authorization exceptions to provider-backed bot identity is permitted within
 v1. It is a policy tightening, not a new supported actor population: existing
 compatibility behavior remains authoritative until an adapter crosses its
 explicit migration boundary; after migration, registered bots use
-`actor.bot_role` and unregistered non-label bots are denied. The normalized
-event fields used to carry this distinction are additive, and the permanent
-label-added exception is preserved. This exception does not alter the general
-v2 rule for unrelated authorization changes.
+`actor.bot_role` and unregistered non-label bots are denied. An adapter MUST
+announce that boundary in its release notes and identify it with an explicit
+resolved-authorization configuration or deployment marker. The announcement
+MUST provide at least one release of deprecation notice for CEL authors before
+enforcement begins. The normalized-event fields used to carry this distinction
+are additive, and the permanent label-added exception is preserved. This
+exception does not alter the general v2 rule for unrelated authorization
+changes.
 
 | Change | v1 impact |
 |--------|-----------|
 | **Breaking** (requires v2): remove a role from the hierarchy, raise a default threshold, remove a documented exception, change fail-closed to fail-open | Dispatch implementations must migrate |
+| **Deferred bot-identity migration** (allowed in v1): enable the explicitly announced resolved-authorization mode for an adapter | Existing compatibility behavior applies before the adapter boundary; after it, registered bots use `actor.bot_role` and unregistered non-label bots are denied |
 | **Non-breaking** (allowed in v1): add a role, lower a default threshold, add a new exception, add forge mappings, clarify documentation | Existing dispatch behavior is preserved or relaxed |

@@ -67,6 +67,14 @@ Breaking changes require `docs/normative/normalized-event/v2/`.
 | **Breaking** (requires v2): remove or rename fields, change field types, remove enum values, add new required top-level fields, tighten patterns that reject previously valid documents | Consumers must migrate |
 | **Non-breaking** (allowed in v1.x schema/README): add optional fields, add new enum values, relax validation, clarify documentation | Existing fixtures and triggers keep working |
 
+The new optional actor fields are additive, but consumers that vendor this
+schema with `additionalProperties: false` must refresh their copy before an
+adapter emits `bot_role` or `role_verified`; otherwise their local validator
+may reject an otherwise valid v1 event. The JSON Schema's cross-field rules are
+currently stricter than the Go `normevent.Validate()` implementation. The
+adapter migration MUST bring the Go validator to parity before emitting the
+new fields; until then the schema remains the normative stricter check.
+
 Adding a new `transition.kind` is **non-breaking** — CEL triggers use boolean
 expressions, not exhaustive enum matching.
 
@@ -187,7 +195,7 @@ installation permission is not copied into `actor.role`.
 only when `actor.role` is a trusted forge permission. For bots, it is true
 when the bot-role lookup completed, whether it found a role or not. A
 recognized bot has `role_verified: true` and a provider-resolved `bot_role`; an
-unknown bot has `role_verified: true` and an absent/null `bot_role`; failed
+unknown bot has `role_verified: true` and an absent or null `bot_role`; failed
 resolution has `role_verified: false` and no `bot_role`.
 
 For a label-added event, the permanent label authorization exception does not
@@ -286,11 +294,16 @@ event.entity.kind == "conversation"
   && event.state.conversation.category.slug == "vouch-request"
 ```
 
-See [`examples/`](examples/) for matching `NormalizedEvent` fixtures.
+See [`examples/`](examples/) for matching `NormalizedEvent` fixtures. The
+existing top-level fixtures retain the legacy v1 representation; target
+fixtures for ADR 0107 are under
+[`examples/adr-0107/`](examples/adr-0107/).
 
 ## Examples
 
-See [`examples/`](examples/).
+See [`examples/`](examples/). The `examples/adr-0107/` subdirectory contains
+target representations and is not emitted until the adapter migration crosses
+its explicit boundary.
 
 ## Execution ref projection
 
