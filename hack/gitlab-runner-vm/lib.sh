@@ -4,7 +4,8 @@
 #
 # Source this file at the top of any script that needs gl_curl(),
 # validate_runner_scope(), build_scope_args(), uses_runner_token(),
-# find_runner_ids(), or drain_runner_vm().
+# find_runner_ids(), runner_exists(), check_runner_registration(), or
+# drain_runner_vm().
 
 # uses_runner_token reports whether RUNNER_TOKEN is set, selecting the
 # join-existing-pool (runner-hub) path over GitLab API registration.
@@ -63,25 +64,26 @@ validate_runner_scope() {
   fi
 }
 
-# find_runner_ids <description> <tag>
+# find_runner_ids <description>
 #
 # Print the IDs of runners visible to GL_TOKEN whose description is exactly
 # <description> (create-openshift-vm.sh registers each VM as
-# "<namespace>/<vm-name>"), one per line. Results are narrowed server-side
-# by tag_list=<tag> and use /runners (user-scoped) rather than /runners/all
-# (admin-only). Scans at most 50 pages of 100.
+# "<namespace>/<vm-name>"), one per line. The lookup is by VM identity only:
+# it deliberately does not filter on tags, which are mutable in GitLab, so a
+# runner whose tags were edited is still found. Tag compatibility is checked
+# separately by check_runner_registration. Uses /runners (user-scoped) rather
+# than /runners/all (admin-only). Scans at most 50 pages of 100.
 #
 # Returns 1 when a GitLab API request fails or returns unparseable JSON, or
 # when page 50 is still full (the scan is incomplete), so callers can fail
 # closed instead of mistaking an outage or a partial scan for "no runner".
 # Requires: GL_TOKEN, GITLAB_URL
 find_runner_ids() {
-  local description="$1" tag="$2" encoded_tag page page_json ids count complete=false
-  encoded_tag=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "${tag}") || return 1
+  local description="$1" page page_json ids count complete=false
   page=1
   while [ "${page}" -le 50 ]; do
     page_json=$(gl_curl \
-      "${GITLAB_URL}/api/v4/runners?per_page=100&page=${page}&tag_list=${encoded_tag}" 2>/dev/null) || return 1
+      "${GITLAB_URL}/api/v4/runners?per_page=100&page=${page}" 2>/dev/null) || return 1
     ids=$(printf '%s' "${page_json}" | python3 -c "
 import sys, json
 for r in json.load(sys.stdin):
@@ -101,15 +103,36 @@ for r in json.load(sys.stdin):
   [ "${complete}" = "true" ]
 }
 
+# runner_exists <runner_id>
+#
+# Ask GitLab whether runner <runner_id> still exists. Returns 0 when it does
+# (HTTP 200), 1 when GitLab positively reports it gone (HTTP 404), and 2 when
+# the answer is unknown (outage, auth failure, any other status), so callers
+# can fail closed instead of mistaking an outage for a deleted runner.
+# Requires: GL_TOKEN, GITLAB_URL
+runner_exists() {
+  local code
+  code=$(gl_curl -o /dev/null -w '%{http_code}' \
+    "${GITLAB_URL}/api/v4/runners/$1" 2>/dev/null) || true
+  if [ "${code}" = "200" ]; then
+    return 0
+  elif [ "${code}" = "404" ]; then
+    return 1
+  fi
+  return 2
+}
+
 # check_runner_registration <runner_id>
 #
-# Confirm the registration <runner_id> still matches the requested scope and
-# access level before a --resume reuses it. Returns 1 and prints the reason on
-# stderr when GitLab reports a different access_level, runner type, or
-# project/group, and when the runner cannot be fetched (fail closed). Positive
+# Confirm the registration <runner_id> still matches the requested scope,
+# access level and tag before a --resume reuses it. Returns 1 and prints the
+# reason on stderr when GitLab reports a different access_level, runner type,
+# or project/group, when RUNNER_TAG is not among the runner's tags, and when
+# the runner cannot be fetched (fail closed). Positive
 # evidence of membership is required: details without a non-empty
 # groups/projects list matching SCOPE_ID are refused.
-# Requires: GL_TOKEN, GITLAB_URL, RUNNER_SCOPE, SCOPE_ID, RUNNER_ACCESS_LEVEL
+# Requires: GL_TOKEN, GITLAB_URL, RUNNER_SCOPE, SCOPE_ID, RUNNER_ACCESS_LEVEL,
+#           RUNNER_TAG
 check_runner_registration() {
   local runner_id="$1" runner_json
   if ! runner_json=$(gl_curl "${GITLAB_URL}/api/v4/runners/${runner_id}" 2>/dev/null); then
@@ -118,10 +141,12 @@ check_runner_registration() {
   fi
   printf '%s' "${runner_json}" | python3 -c "
 import sys, json
-scope, scope_id, level = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+scope, scope_id, level, tag = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
 r = json.load(sys.stdin)
 if r.get('access_level') != level:
     sys.exit('access_level is %r, requested %r' % (r.get('access_level'), level))
+if tag not in (r.get('tag_list') or []):
+    sys.exit('tag %r is not among the runner tags %r' % (tag, r.get('tag_list')))
 want = scope + '_type'
 if r.get('runner_type') != want:
     sys.exit('runner_type is %r, requested %r' % (r.get('runner_type'), want))
@@ -131,7 +156,7 @@ if not isinstance(members, list) or not members:
     sys.exit('runner details list no %s, cannot confirm it belongs to %s %d' % (key, scope, scope_id))
 if scope_id not in [x.get('id') for x in members if isinstance(x, dict)]:
     sys.exit('runner does not belong to %s %d' % (scope, scope_id))
-" "${RUNNER_SCOPE}" "${SCOPE_ID}" "${RUNNER_ACCESS_LEVEL}" >&2
+" "${RUNNER_SCOPE}" "${SCOPE_ID}" "${RUNNER_ACCESS_LEVEL}" "${RUNNER_TAG}" >&2
 }
 
 # Build scope-specific curl arguments for the GitLab runner registration API.

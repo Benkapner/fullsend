@@ -974,21 +974,29 @@ EOF
 # --------------------------------------------------------------------------
 # check_registration confirms config.toml holds exactly one runner, that it
 # targets GITLAB_URL (the only instance this VM should serve), and that
-# GitLab still accepts its token. `gitlab-runner verify` exits non-zero
-# only when GitLab rejects a token, so a stale registration left behind by
-# an interrupted provisioning run fails here instead of as an idle runner.
-# A failed check leaves gitlab-runner stopped.
+# GitLab did not reject its token. `gitlab-runner verify` exits non-zero
+# only when GitLab rejects a token (transport errors and unexpected HTTP
+# statuses are non-fatal), so a stale registration left behind by an
+# interrupted provisioning run fails here instead of as an idle runner. A
+# zero exit is reported as "verified" only when verify's output says the
+# runner is valid; otherwise the token was merely not rejected. A failed
+# check leaves gitlab-runner stopped.
 check_registration() {
+  local verify_out
   if ! check_registration_config; then
     stop_runner_service
     return 1
   fi
-  if ! gitlab-runner verify --config "${CONFIG_TOML}" >/dev/null 2>&1; then
+  if ! verify_out=$(gitlab-runner verify --config "${CONFIG_TOML}" 2>&1); then
     echo "  WARN: ${GITLAB_URL} rejected the runner token (gitlab-runner verify failed)"
     stop_runner_service
     return 1
   fi
-  ok "runner registered with ${GITLAB_URL} (token verified)"
+  if printf '%s\n' "${verify_out}" | grep -qi 'is valid'; then
+    ok "runner registered with ${GITLAB_URL} (token verified)"
+  else
+    ok "runner registered with ${GITLAB_URL} (token not rejected; GitLab did not confirm it is valid)"
+  fi
 }
 
 verify() {

@@ -26,7 +26,7 @@ fail() {
 }
 
 SHIM_DIR=$(mktemp -d)
-STATE=""
+STATE=$(mktemp -d)
 trap 'rm -rf "${SHIM_DIR}" "${STATE}"' EXIT
 
 # --- oc: VM existence and creation -----------------------------------------
@@ -89,6 +89,8 @@ case "${cmd}" in
       fi
     fi
     [ ! -f "${STUB_STATE}/probe_fails" ] ;;
+  "sudo systemctl stop gitlab-runner; ! systemctl is-active --quiet gitlab-runner")
+    rm -f "${STUB_STATE}/service_active" ;;
   "sudo rm -f /etc/gitlab-runner/config.toml")
     rm -f "${STUB_STATE}/vm_config" ;;
   *"cat > ~/gitlab-runner-vm/.env"*)
@@ -112,13 +114,17 @@ cat > "${SHIM_DIR}/curl" <<'EOF'
 import json, os, sys, urllib.parse
 state = os.environ["STUB_STATE"]
 args = sys.argv[1:]
-method, url, desc = "GET", "", ""
+method, url, desc, write_out = "GET", "", "", ""
 form = {}
 i = 0
 while i < len(args):
     a = args[i]
     if a == "-X":
         method = args[i + 1]; i += 1
+    elif a == "-w":
+        write_out = args[i + 1]; i += 1
+    elif a == "-o":
+        i += 1
     elif a == "--data-urlencode":
         k, _, v = args[i + 1].partition("=")
         form[k] = v
@@ -137,6 +143,7 @@ if method == "POST" and path == "/api/v4/user/runners":
     n = 1 + max([r["id"] for r in runners] + [int(open(os.path.join(state, "last_id")).read()) if os.path.exists(os.path.join(state, "last_id")) else 0])
     open(os.path.join(state, "last_id"), "w").write(str(n))
     entry = {"id": n, "description": desc,
+             "tag_list": form.get("tag_list", "").split(","),
              "access_level": form.get("access_level"),
              "runner_type": form.get("runner_type")}
     if "group_id" in form:
@@ -146,10 +153,20 @@ if method == "POST" and path == "/api/v4/user/runners":
     runners.append(entry)
     print(json.dumps({"id": n, "token": f"glrt-new-{n}"}))
 elif method == "GET" and path == "/api/v4/runners":
+    # Honor the tag_list filter like GitLab does, so a lookup that filters on
+    # a mutable tag misses a runner whose tags were edited.
+    want_tags = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("tag_list")
+    if want_tags:
+        wanted = want_tags[0].split(",")
+        runners = [r for r in runners if set(wanted) <= set(r.get("tag_list") or [])]
     print(json.dumps(runners))
+    sys.exit(0)
 elif method == "GET" and path.startswith("/api/v4/runners/"):
     rid = int(path.rsplit("/", 1)[1])
     match = [r for r in runners if r["id"] == rid]
+    if write_out:
+        print("200" if match else "404", end="")
+        sys.exit(0 if match else 22)
     if not match:
         sys.exit(22)
     print(json.dumps(match[0]))
@@ -377,32 +394,62 @@ posts_refused=$(post_count)
 deletes_refused=$(grep -c '^DELETE ' "${STATE}/curl.log")
 printf '[[runners]]\n  id = 99\n' > "${STATE}/config.toml"
 env_before=$(env_count)
+touch "${STATE}/service_active"
 run_create "${INDIVIDUAL[@]}" --resume 05
 if [ "${RUN_RC}" -ne 0 ] && grep -Fq 'is configured with runner ID' <<< "${RUN_OUT}" \
-  && [ "$(env_count)" -eq "${env_before}" ]; then
-  pass "resume refuses a VM configured with a different runner than GitLab's"
+  && [ "$(env_count)" -eq "${env_before}" ] && [ ! -f "${STATE}/service_active" ]; then
+  pass "resume refuses a VM configured with a different runner than GitLab's and stops the running service"
 else
   fail "runner ID mismatch should be refused (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
 fi
 rm -f "${STATE}/config.toml"
 
 env_before=$(env_count)
+touch "${STATE}/service_active"
 run_create "${INDIVIDUAL[@]}" RUNNER_ACCESS_LEVEL=ref_protected --resume 05
 if [ "${RUN_RC}" -ne 0 ] && grep -Fq 'no longer matches' <<< "${RUN_OUT}" \
-  && grep -Fq 'access_level' <<< "${RUN_OUT}" && [ "$(env_count)" -eq "${env_before}" ]; then
-  pass "resume refuses a runner registered with a different access level"
+  && grep -Fq 'access_level' <<< "${RUN_OUT}" && [ "$(env_count)" -eq "${env_before}" ] \
+  && [ ! -f "${STATE}/service_active" ]; then
+  pass "resume refuses a runner registered with a different access level and stops the running service"
 else
   fail "access-level mismatch should be refused (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
 fi
 
 env_before=$(env_count)
+touch "${STATE}/service_active"
 run_create GL_TOKEN=glpat-test GROUP_ID=43 "GITLAB_URL=${SELF_HOSTED}" --resume 05
 if [ "${RUN_RC}" -ne 0 ] && grep -Fq 'no longer matches' <<< "${RUN_OUT}" \
-  && grep -Fq 'does not belong to group 43' <<< "${RUN_OUT}" && [ "$(env_count)" -eq "${env_before}" ]; then
-  pass "resume refuses a runner registered for a different group"
+  && grep -Fq 'does not belong to group 43' <<< "${RUN_OUT}" && [ "$(env_count)" -eq "${env_before}" ] \
+  && [ ! -f "${STATE}/service_active" ]; then
+  pass "resume refuses a runner registered for a different group and stops the running service"
 else
   fail "scope mismatch should be refused (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
 fi
+# Tags are mutable in GitLab: a runner whose tags were edited is still found
+# by its description (no duplicate registration), and reuse is refused because
+# the requested tag is no longer among its tags.
+runners_tagged=$(cat "${STATE}/runners.json")
+python3 - "${STATE}/runners.json" <<'PY'
+import json, sys
+runners = json.load(open(sys.argv[1]))
+for r in runners:
+    r["tag_list"] = ["edited-tag"]
+json.dump(runners, open(sys.argv[1], "w"))
+PY
+env_before=$(env_count)
+posts_tags=$(post_count)
+touch "${STATE}/service_active"
+run_create "${INDIVIDUAL[@]}" --resume 05
+if [ "${RUN_RC}" -ne 0 ] && grep -Fq 'no longer matches' <<< "${RUN_OUT}" \
+  && grep -Fq 'is not among the runner tags' <<< "${RUN_OUT}" \
+  && [ "$(post_count)" -eq "${posts_tags}" ] && [ "$(runner_count)" -eq 1 ] \
+  && [ "$(env_count)" -eq "${env_before}" ] && [ ! -f "${STATE}/service_active" ]; then
+  pass "resume finds a runner whose tags were edited, registers no duplicate, and refuses reuse"
+else
+  fail "edited-tag runner should be found and refused, not duplicated (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
+fi
+printf '%s\n' "${runners_tagged}" > "${STATE}/runners.json"
+
 # Runner details that omit (or empty) the membership list give no positive
 # evidence of scope, so reuse is refused for both group and project runners.
 runners_backup=$(cat "${STATE}/runners.json")
@@ -484,6 +531,22 @@ if [ "${RUN_RC}" -ne 0 ] && [ "$(post_count)" -eq 0 ] && [ "$(env_count)" -eq 0 
   pass "resume fails closed when the runner lookup hits its page cap"
 else
   fail "incomplete runner scan should fail closed (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
+fi
+
+# A VM config whose runner ID still exists in GitLab (under another
+# description) is not stale: replacing it would orphan that registration.
+new_state
+touch "${STATE}/vm_exists" "${STATE}/service_active"
+printf '[[runners]]\n  id = 2\n  url = "%s"\n' "${SELF_HOSTED}" > "${STATE}/config.toml"
+echo '[{"id": 2, "description": "someone/else", "tag_list": ["fullsend-gitlab-runner"]}]' > "${STATE}/runners.json"
+run_create "${INDIVIDUAL[@]}" --resume 05
+if [ "${RUN_RC}" -ne 0 ] && [ "$(post_count)" -eq 0 ] && [ "$(env_count)" -eq 0 ] \
+  && grep -Fq 'could not be confirmed deleted' <<< "${RUN_OUT}" \
+  && ! grep -Fq 'sudo rm -f /etc/gitlab-runner/config.toml' "${STATE}/virtctl.log" \
+  && [ ! -f "${STATE}/service_active" ]; then
+  pass "resume does not replace a config whose runner still exists in GitLab"
+else
+  fail "config with a live runner must not be treated as stale (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
 fi
 
 new_state

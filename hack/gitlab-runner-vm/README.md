@@ -127,10 +127,13 @@ never creates a duplicate registration:
   re-run with the pool token.
 - `GL_TOKEN`: the runner registered for `NAMESPACE/vm-name` is reused if the VM
   holds its config (the config's runner ID must be that runner's, and GitLab
-  must still report the requested scope and `RUNNER_ACCESS_LEVEL` for it —
-  otherwise `--resume` refuses). If none is registered (a failed run deregisters the runner
-  it created), a new one is registered and any stale config on the VM is
-  replaced. If several are registered, or one is registered but the VM never
+  must still report the requested scope, `RUNNER_ACCESS_LEVEL` and `RUNNER_TAG`
+  for it — otherwise `--resume` refuses and stops a running `gitlab-runner`).
+  The runner is found by its `NAMESPACE/vm-name` description, not by tag, so
+  edited tags never cause a duplicate. If none is registered (a failed run
+  deregisters the runner it created), a new one is registered and any stale
+  config on the VM is replaced — but only when GitLab confirms the config's
+  runner ID is gone. If several are registered, or one is registered but the VM never
   received its token, `--resume` refuses — delete the VM with
   `./delete-openshift-vm.sh` (which deregisters it) and create it again.
 

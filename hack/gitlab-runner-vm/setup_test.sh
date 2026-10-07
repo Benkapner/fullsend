@@ -699,9 +699,10 @@ printf '#!/bin/sh\necho "$@" >> "%s"\nexit 0\n' "${SUDO_LOG}" > "${SHIM_DIR}/sud
 
 echo "== check_registration =="
 # gitlab-runner verify shim: logs its args, exits with the code in
-# GITLAB_RUNNER_VERIFY_RC (0 = GitLab accepted the token).
+# GITLAB_RUNNER_VERIFY_RC (0 = GitLab did not reject the token) after printing
+# GITLAB_RUNNER_VERIFY_OUT (real verify prints "is valid" only on success).
 GITLAB_RUNNER_LOG="${SHIM_DIR}/gitlab-runner.log"
-printf '#!/bin/sh\necho "$@" >> "%s"\nexit "${GITLAB_RUNNER_VERIFY_RC:-0}"\n' "${GITLAB_RUNNER_LOG}" > "${SHIM_DIR}/gitlab-runner"
+printf '#!/bin/sh\necho "$@" >> "%s"\necho "${GITLAB_RUNNER_VERIFY_OUT:-}"\nexit "${GITLAB_RUNNER_VERIFY_RC:-0}"\n' "${GITLAB_RUNNER_LOG}" > "${SHIM_DIR}/gitlab-runner"
 chmod +x "${SHIM_DIR}/gitlab-runner"
 export GITLAB_URL="https://gitlab.example.com"
 
@@ -712,6 +713,23 @@ if [ "${RUN_SETUP_RC}" -eq 0 ] && grep -qx "verify --config ${CONFIG_TOML}" "${G
   pass "one runner on GITLAB_URL with an accepted token verifies"
 else
   fail "valid registration should verify (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
+GITLAB_RUNNER_VERIFY_OUT="Verifying runner... is valid runner=abc" run_setup check_registration
+if [ "${RUN_SETUP_RC}" -eq 0 ] && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq "(token verified)"; then
+  pass "a verify run that reports the runner valid is called verified"
+else
+  fail "valid verify output should say verified (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+
+# A zero exit without a success message (GitLab unreachable, unexpected HTTP
+# status) is not proof of verification, so the message must not claim it.
+GITLAB_RUNNER_VERIFY_OUT="WARNING: Checking for runner... failed status=503" run_setup check_registration
+if [ "${RUN_SETUP_RC}" -eq 0 ] && printf '%s' "${RUN_SETUP_OUT}" | grep -Fq "token not rejected" \
+  && ! printf '%s' "${RUN_SETUP_OUT}" | grep -Fq "(token verified)"; then
+  pass "a zero verify exit without a success message is not reported as verified"
+else
+  fail "unconfirmed verify should not claim verification (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
 fi
 
 GITLAB_URL="https://gitlab.example.com/" run_setup check_registration
