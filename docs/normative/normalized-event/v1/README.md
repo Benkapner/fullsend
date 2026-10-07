@@ -186,14 +186,14 @@ and the GitHub collaborator permission API:
 | `external` | — | Actor outside the repository (fork PR author, drive-by commenter) |
 
 Adapters populate `role` from the GitHub collaborator permission API for human
-actors. Current, pre-migration adapters may also populate a GitHub App bot's
-legacy forge permission in `actor.role`, and that representation remains valid
-in NormalizedEvent v1 during migration. After an adapter crosses the ADR 0107
-migration boundary, it MUST use the provider's authoritative bot
+actors. Current adapters may also populate a GitHub App bot's legacy forge
+permission in `actor.role`, and that representation remains valid in
+NormalizedEvent v1 while the adapter has not adopted ADR 0107. Once an adapter
+adopts ADR 0107, it MUST use the provider's authoritative bot
 classification, emit `role: none` for bots, and use the provider-backed
 optional `bot_role` lookup instead. Both representations are therefore
-intentional v1 compatibility forms; the migration boundary determines which
-one an adapter emits.
+intentional v1 compatibility forms; the adapter implementation determines
+which one it emits.
 
 `actor.role_verified` is an optional additive field. For humans, it is true
 only when `actor.role` is a trusted forge permission. For bots, it is true
@@ -209,8 +209,8 @@ absent `role_verified` field means that bot-role lookup was not applicable. At
 the time of this ADR, GitHub is the only production adapter implementing this
 exception; other source adapters must provide equivalent authoritative label
 and actor-transition evidence before enabling the target behavior.
-Whether an event is pre-migration legacy input is determined by the adapter's
-migration/configuration boundary, not inferred from field omission alone.
+Whether an event uses the legacy representation is determined by the adapter's
+implementation contract, not inferred from field omission alone.
 
 This is the ADR 0107 target representation; it is not yet emitted by the
 production adapters or available as a runtime CEL field.

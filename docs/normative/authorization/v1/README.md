@@ -125,9 +125,9 @@ For humans on non-label paths, `role_verified: false` denies the event
 regardless of the role string. A missing `role_verified` on a trusted
 pre-migration event is treated as legacy input and retains the current human
 authorization behavior; new adapters MUST emit the field, and their false
-value MUST fail closed. Legacy status is determined by the
-adapter's migration/configuration boundary, not by guessing from this field's
-absence. On the permanent label exception, `role_verified` is not an
+value MUST fail closed. Legacy status is determined by the adapter
+implementation contract, not by guessing from this field's absence. On the
+permanent label exception, `role_verified` is not an
 authorization input: an accepted forge label mutation authorizes a human, and
 a bot additionally requires positive provider bot classification. For bots,
 omission means that bot-role lookup is not applicable, not that it failed.
@@ -393,22 +393,21 @@ This is a living normative document under
 [ADR 0015](../../../ADRs/0015-normative-specifications-directory.md).
 Breaking changes require `docs/normative/authorization/v2/`.
 
-**ADR 0107 migration exception:** The deferred migration from legacy bot
-authorization exceptions to provider-backed bot identity is permitted within
-v1. It is a policy tightening, not a new supported actor population: existing
-compatibility behavior remains authoritative until an adapter crosses its
-explicit migration boundary; after migration, registered bots use
-`actor.bot_role` and unregistered non-label bots are denied. An adapter MUST
-announce that boundary in its release notes and identify it with an explicit
-resolved-authorization configuration or deployment marker. The announcement
-MUST provide at least one release of deprecation notice for CEL authors before
-enforcement begins. The normalized-event fields used to carry this distinction
-are additive, and the permanent label-added exception is preserved. This
-exception does not alter the general v2 rule for unrelated authorization
-changes.
+**ADR 0107 migration exception:** The migration from legacy bot authorization
+exceptions to provider-backed bot identity is permitted within v1. It is a
+policy tightening, not a new supported actor population: existing
+compatibility behavior remains authoritative until an adapter implementation is
+updated; once updated, registered bots use `actor.bot_role` and unregistered
+non-label bots are denied. The adapter implementation itself is the migration
+boundary; no per-event mode marker or separate deprecation window is required.
+An updated adapter MUST enforce the target behavior and MUST NOT silently fall
+back to legacy bot authorization when its resolver fails. The normalized-event
+fields used to carry this distinction are additive, and the permanent
+label-added exception is preserved. This exception does not alter the general
+v2 rule for unrelated authorization changes.
 
 | Change | v1 impact |
 |--------|-----------|
 | **Breaking** (requires v2): remove a role from the hierarchy, raise a default threshold, remove a documented exception, change fail-closed to fail-open | Dispatch implementations must migrate |
-| **Deferred bot-identity migration** (allowed in v1): enable the explicitly announced resolved-authorization mode for an adapter | Existing compatibility behavior applies before the adapter boundary; after it, registered bots use `actor.bot_role` and unregistered non-label bots are denied |
+| **Adapter bot-identity migration** (allowed in v1): update an adapter to emit and enforce the ADR 0107 target representation | The adapter's existing compatibility behavior applies until that implementation update; afterward, registered bots use `actor.bot_role` and unregistered non-label bots are denied |
 | **Non-breaking** (allowed in v1): add a role, lower a default threshold, add a new exception, add forge mappings, clarify documentation | Existing dispatch behavior is preserved or relaxed |

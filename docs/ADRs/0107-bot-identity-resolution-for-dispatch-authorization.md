@@ -24,7 +24,7 @@ and defines the bot behavior to be added to the existing v1 contracts. This ADR
 explicitly permits the deferred migration from legacy bot exceptions to
 provider-backed bot identity within authorization v1: the normalized-event
 fields are additive, and existing compatibility behavior remains authoritative
-until each adapter crosses its migration boundary. The migration does not
+until each adapter is updated. The migration does not
 require a normalized-event schema version change or expand the supported bot
 population; it replaces legacy permission handling with registered identity
 handling for supported bots. The affected contracts are
