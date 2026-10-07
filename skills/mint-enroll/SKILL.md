@@ -96,7 +96,7 @@ The fullsend-ai org maintains public GitHub Apps shared across orgs.
 PEM keys and app IDs are tied to the role, not the org. Secrets use role-only naming
 (`fullsend-{role}-app-pem`) — one secret per role, shared across orgs on the
 mint. `ROLE_APP_IDS` uses the same model: one GitHub App ID per role (e.g.,
-`coder` → `123456`), shared by all enrolled orgs. PEMs and app IDs must already
+`coder` → `123456`), shared by all enrolled repos. PEMs and app IDs must already
 exist (from `mint deploy --pem-dir` or `go run ./cmd/fullsend admin install <owner/repo>`); enrollment
 does not create, copy, or modify PEM secrets or app ID mappings.
 
@@ -118,7 +118,7 @@ Validate the target is a valid `owner/repo` name before proceeding.
 
 ### 2. Pre-check current state
 
-Run `mint status --project` to see the current mint state, enrolled orgs,
+Run `mint status --project` to see the current mint state, enrolled repos,
 Cloud Run revision info, and PEM health — this is the enrollment/admin
 pre-check step and must be run with `--project`, since only GCP-based mode
 reports PEM health, Cloud Run revision info, and template divergence. If

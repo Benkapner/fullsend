@@ -13,7 +13,7 @@ This guide covers deploying and managing the fullsend token mint. The mint is th
 | `mint workflow-host add` | Add a repo to the workflow-host allow-list |
 | `mint workflow-host remove` | Remove a repo from the workflow-host allow-list |
 | `mint workflow-host list` | List the workflow-host allow-list |
-| `mint status` | Inspect mint health, enrolled orgs, and PEM secrets |
+| `mint status` | Inspect mint health, enrolled repos, and PEM secrets |
 | `mint token` | Exchange a GitHub Actions OIDC token for an installation token |
 
 > **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint. If you are an end user setting up fullsend for your organization, see [Getting Started](../getting-started/) instead — the mint is typically deployed once by a platform operator, and repositories are enrolled as needed.
@@ -413,7 +413,7 @@ mint state directly from GCP infrastructure. This requires GCP viewer IAM
 roles (see the [IAM table above](#prerequisites)).
 
 ```bash
-# Overview of all enrolled orgs
+# Overview of all enrolled repos
 fullsend mint status --mint-url= --project="$GCP_PROJECT"
 
 # Drill into a specific org's PEM status
@@ -458,8 +458,8 @@ The status command reports overall health as one of:
 
 | Health | Condition |
 |--------|-----------|
-| `healthy` | At least one org enrolled, template matches traffic revision |
-| `degraded` | No enrolled orgs, OR template diverges from traffic-serving revision |
+| `healthy` | At least one repo in `PER_REPO_WIF_REPOS` (or public mode), traffic-serving revision readable, template matches traffic revision |
+| `degraded` | No enrolled repos, OR the traffic-serving revision is unreadable (enrollment unverified), OR template diverges from traffic-serving revision |
 | `not-installed` | Mint function not found in the specified project/region |
 
 ## Minting tokens at runtime

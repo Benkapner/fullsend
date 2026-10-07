@@ -4022,6 +4022,32 @@ func TestRunMintStatus_TemplateFallbackEnvTrafficReadFails(t *testing.T) {
 	assert.Contains(t, out.String(), "enrollment unverified")
 }
 
+func TestRunMintStatus_RevisionInfoFailsKeepsEnrollmentUnverified(t *testing.T) {
+	// When GetServiceRevisionInfo fails, the direct traffic read can return
+	// service-template env vars with a nil error, so it must not be treated
+	// as verified enrollment.
+	templateEnv := map[string]string{
+		"ROLE_APP_IDS":       `{"coder":"100"}`,
+		"ALLOWED_ORGS":       gcf.PlaceholderOrg,
+		"PER_REPO_WIF_REPOS": "template/only",
+	}
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: templateEnv,
+		}),
+		gcf.WithFakeTrafficEnvVars(templateEnv),
+		gcf.WithFakeErrors(map[string]error{"GetServiceRevisionInfo": errors.New("boom")}),
+	))
+	out := &strings.Builder{}
+	err := runMintStatus(context.Background(), ui.New(out), "my-project", "us-central1", "")
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "Health: degraded")
+	assert.Contains(t, out.String(), "Enrolled repos: unverified")
+	assert.Contains(t, out.String(), "enrollment unverified")
+	assert.NotContains(t, out.String(), "Enrolled repos: 1")
+}
+
 func TestRunMintStatusAPI_Success(t *testing.T) {
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")

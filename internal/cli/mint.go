@@ -1594,7 +1594,7 @@ func newMintStatusCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "status [org]",
-		Short: "Show mint state, enrolled orgs, and PEM health (honors FULLSEND_MINT_URL)",
+		Short: "Show mint state, enrolled repos, and PEM health (honors FULLSEND_MINT_URL)",
 		Long: `Read-only health check of the token mint infrastructure.
 
 Two modes of operation:
@@ -1621,7 +1621,7 @@ is set, the API-based path is used unless --project is also provided,
 in which case the command returns an error to prevent silent mode
 ambiguity.
 
-Shows function info, enrolled orgs, role-app-id mappings, per-repo WIF
+Shows function info, enrolled repos, role-app-id mappings, per-repo WIF
 repos, and overall health status. If an org argument is provided in
 --project mode, drills into that org's PEM secret status.
 
@@ -1810,9 +1810,12 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	// GetServiceRevisionInfo can return partial info (no resolved traffic
 	// revision, no fallback flag), so do not depend on the fallback flag.
 	noServingRevision := revErr == nil && revInfo != nil && revInfo.TrafficRevisionShort == ""
+	// When the revision query itself failed, the direct read cannot tell
+	// whether it resolved a serving revision or fell back to the service
+	// template (with a nil error), so leave enrollment unverified.
 	if revErr == nil && revInfo != nil && revInfo.TrafficEnvVars != nil && !revInfo.TrafficEnvVarsFromTemplate {
 		trafficEnv = revInfo.TrafficEnvVars
-	} else if !noServingRevision {
+	} else if revErr == nil && !noServingRevision {
 		var envErr error
 		trafficEnv, envErr = provisioner.GetServiceTrafficEnvVars(ctx)
 		if envErr != nil {
