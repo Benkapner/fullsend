@@ -340,7 +340,6 @@
           },
           "then": {
             "properties": {
-              "role": { "type": "string" },
               "bot_role": { "const": null }
             }
           }

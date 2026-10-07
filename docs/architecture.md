@@ -381,13 +381,14 @@ The existing design principle is that [the repo is the coordinator](problems/age
   canonical `actor.bot_role` such as `review`, and bot actors retain
   `actor.role: none` with `actor.role_verified` reflecting completion of the
   bot-role lookup; unknown or unresolved bots fail closed on non-label paths.
-  The existing GitHub label-added exception remains permanent: provider-positive
-  bot classification is required, but the forge-authorized label mutation is
-  sufficient platform evidence and label-to-agent mapping remains harness/CEL
-  routing. CEL may further restrict recognized bot roles but cannot authorize an
-  unknown bot on non-label paths
-  ([ADR 0107](ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md)).
-  ([Authorization Contract v1](normative/authorization/v1/);
+  The label-added exception remains permanent across source systems: provider-
+  positive bot classification is required, but the forge-authorized label
+  mutation and authoritative actor-to-transition provenance are sufficient
+  platform evidence; label-to-agent mapping remains harness/CEL routing. At the
+  time of ADR 0107, GitHub is the only production implementation. CEL may
+  further restrict recognized bot roles but cannot authorize an unknown bot on
+  non-label paths ([ADR 0107](ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md);
+  [Authorization Contract v1](normative/authorization/v1/);
   [ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
 - Poll entity-discovery authorization: `fullsend poll` has no prompting event
   actor; verified, non-user-assertable Fullsend invocation provenance authorizes

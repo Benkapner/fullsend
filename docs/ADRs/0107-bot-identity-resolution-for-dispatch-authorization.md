@@ -20,8 +20,10 @@ Date: 2026-09-27
 Accepted
 
 Extends [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)
-and defines the bot behavior to be added to the existing v1 contracts. It does
-not require a future normalized-event or authorization version.
+and defines the bot behavior to be added to the existing v1 contracts. The
+authorization-contract version boundary remains an open migration question;
+the additive normalized-event fields do not by themselves require a schema
+version change.
 
 ## Context
 
@@ -38,9 +40,9 @@ and deployments without the hosted mint need an equivalent trusted provider.
 The historical drift and contract gap are tracked in
 [#7764](https://github.com/fullsend-ai/fullsend/issues/7764).
 
-This is a target contract; it does not yet modify the Go runtime, adapters,
-resolver, or dispatch authorization. Existing compatibility behavior remains
-authoritative until those components migrate.
+At the time of this ADR, this is a target contract; the Go runtime, adapters,
+resolver, and dispatch authorization have not yet migrated. Existing
+compatibility behavior remains authoritative until those components migrate.
 
 ## Decision
 
@@ -80,13 +82,17 @@ The platform authorization rules are:
    the event as a trigger. Supporting selected third-party bots beyond the
    registered provider identities will require a future ADR defining a
    provider-backed allowlist, including its scope, ownership, and revocation.
-2. GitHub's label-added exception is preserved as current and target behavior;
-   this ADR does not introduce it or make it temporary. The forge's accepted
-   label mutation is the platform authorization evidence. For a bot actor, the
-   adapter MUST positively classify it using provider-controlled metadata, but
-   `bot_role` resolution is not required. The platform gate MUST NOT inspect
-   label names or maintain an agent-role label allowlist; harness/CEL routing
-   owns that agent-specific mapping.
+2. The label-added exception is preserved as current and target behavior across
+   source systems; this ADR does not introduce it or make it temporary. The
+   source forge's accepted label mutation, with authoritative actor-to-
+   transition provenance, is the platform authorization evidence. At the time
+   of this ADR, the exception is implemented only for GitHub; other adapters
+   MUST provide equivalent forge-authoritative evidence before enabling the
+   target behavior. For a bot actor, the adapter MUST positively classify it
+   using provider-controlled metadata, but `bot_role` resolution is not
+   required. The platform gate MUST NOT inspect label names or maintain an
+   agent-role label allowlist; harness/CEL routing owns that agent-specific
+   mapping.
 3. A bot with no recognized role, or a bot whose lookup fails, is denied on
    non-label paths before CEL evaluation. The label exception is the explicit
    exception to this rule. Human actors continue to use ADR 0054's permission

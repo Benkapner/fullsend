@@ -108,12 +108,14 @@ not emit events with a missing or synthetic entity.
 [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md))
 treats schedule and manual dispatch as **trusted operator actions**, not
 end-user webhook events.
-Adapters set `actor.id` to the configured service identity (e.g. the GitHub App
-bot or workflow `GITHUB_ACTOR`) and classify it as `actor.kind: bot` using the
-provider's authoritative actor metadata. Under [ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md),
-the provider may resolve `actor.bot_role`; `actor.role` remains `none` for v1
-compatibility. Authorization comes from the recognized bot identity rather than
-the forge permission role.
+Adapters set `actor.id` to the configured operator or service identity (e.g. a
+GitHub App bot or workflow `GITHUB_ACTOR`) and classify `actor.kind` as either
+`human` or `bot` using authoritative provider metadata. Under [ADR
+0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md),
+human identities use verified forge permissions, while bot identities may
+resolve `actor.bot_role` and retain `actor.role: none` for v1 compatibility.
+Authorization therefore follows the identity kind: human permission thresholds
+for humans, and recognized bot identity for bots.
 `fullsend dispatch` applies the same identity lookup as webhook paths.
 If that lookup returns no recognized role or fails/unverifiable, authorization
 is denied. These lookup and denial rules are ADR 0107 target behavior and are
@@ -188,10 +190,13 @@ recognized bot has `role_verified: true` and a provider-resolved `bot_role`; an
 unknown bot has `role_verified: true` and an absent/null `bot_role`; failed
 resolution has `role_verified: false` and no `bot_role`.
 
-For a GitHub label-added event, the permanent label authorization exception
-does not require bot-role lookup. On that path, the provider's positive bot
+For a label-added event, the permanent label authorization exception does not
+require bot-role lookup. On that path, the provider's positive bot
 classification and the forge-authorized label mutation are sufficient; an
-absent `role_verified` field means that bot-role lookup was not applicable.
+absent `role_verified` field means that bot-role lookup was not applicable. At
+the time of this ADR, GitHub is the only production adapter implementing this
+exception; other source adapters must provide equivalent authoritative label
+and actor-transition evidence before enabling the target behavior.
 Whether an event is pre-migration legacy input is determined by the adapter's
 migration/configuration boundary, not inferred from field omission alone.
 

@@ -193,21 +193,25 @@ Certain transitions are authorized without requiring a `write` or
 `triage` role from the acting user. Each exception is documented with its
 rationale.
 
-### Label application (GitHub)
+### Label application
 
-When `source.system` is `github`, `transition.kind` is `label_changed`,
-and `label.action` is `added`, the event is authorized regardless of
-`actor.role`. This is a permanent current-and-target behavior preserved from
-ADR 0054, not a new exception introduced by ADR 0107. GitHub's own permission
-model requires at least `triage` access to apply a label, so label application
-is an **implicit authorization gate**. For a bot actor, the adapter MUST
-positively classify it using provider-controlled metadata, such as GitHub's
-`sender.type == "Bot"` or provider-controlled `[bot]` login semantics, but
-`actor.bot_role` lookup is not required. The platform gate MUST NOT inspect
-the label name or maintain an agent-role label allowlist; harness/CEL routing
-owns that mapping. This preserves bot-to-bot handoffs such as adding
-`ready-to-code` after triage completes, including handoffs from provider bots
-that are not Fullsend-registered.
+**Current compatibility behavior:** GitHub authorizes an added-label event
+without applying the ordinary `actor.role` threshold. This existing behavior
+preserves bot-to-bot handoffs such as adding `ready-to-code` after triage
+completes, including handoffs from provider bots that are not Fullsend-
+registered.
+
+**ADR 0107 target behavior:** For every source system, when
+`transition.kind` is `label_changed` and `label.action` is `added`, the event
+is authorized regardless of `actor.role` once the adapter has established an
+accepted forge label mutation and authoritative actor-to-transition provenance.
+The forge's own permission model is therefore the **implicit authorization
+gate**. At the time of this ADR, this target exception is implemented only for
+GitHub; other adapters MUST provide equivalent forge-authoritative evidence
+before enabling it. For a bot actor, the adapter MUST positively classify it
+using provider-controlled metadata, but `actor.bot_role` lookup is not
+required. The platform gate MUST NOT inspect the label name or maintain an
+agent-role label allowlist; harness/CEL routing owns that mapping.
 
 ### Bot-submitted reviews (GitHub)
 
@@ -233,12 +237,13 @@ handling for closed transitions and applies the standard `write+` gate.
 
 ### Schedule and manual dispatch
 
-When `source.system` is `schedule` or `manual`, the actor is the
-configured service identity (GitHub App bot or workflow `GITHUB_ACTOR`).
-Adapters set `actor.kind` to `bot`, resolve the configured identity through the
-provider, set `actor.bot_role` when recognized, and leave `actor.role` as
-`none`. The standard identity authorization gate applies; an unrecognized or
-unresolved service identity is denied.
+When `source.system` is `schedule` or `manual`, the actor is the configured
+operator or service identity (for example, a GitHub App bot or workflow
+`GITHUB_ACTOR`). Adapters MUST classify that identity from authoritative
+provider metadata. Human identities use verified forge permissions and the
+human thresholds; bot identities use provider-backed `actor.bot_role`
+resolution and retain `actor.role` as `none`. An unrecognized or unresolved
+bot identity is denied.
 
 **Current compatibility behavior:** Until provider-backed bot-role resolution
 is wired into the adapters and dispatch path, adapters set `actor.role` to the
