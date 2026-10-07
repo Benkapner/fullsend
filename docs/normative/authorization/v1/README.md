@@ -114,7 +114,7 @@ fails. For `actor.kind: human`, `actor.bot_role` MUST be absent or `null`, and
 `actor.role` contains the forge permission role when `actor.role_verified` is
 true. For non-label dispatch, only a non-null, provider-resolved
 `actor.bot_role` can pass the bot gate. Once that gate succeeds, the
-actor.role-keyed observation and mutation thresholds below do not apply to the
+`actor.role`-keyed observation and mutation thresholds below do not apply to the
 bot; platform authorization instead requires a valid normalized event, an
 applicable source and target, and a transition supported by the selected
 harness. CEL may further restrict routing but cannot create or broaden bot
@@ -177,7 +177,6 @@ migration is complete.
 | Collaborator API returns an error or times out | Denied (function returns failure) |
 | Bot-role lookup returns no registered identity on a non-label path | `actor.role` remains `none`; `actor.role_verified` is true; `actor.bot_role` is absent/null; denied |
 | Bot-role lookup fails or is unverifiable on a non-label path | `actor.role` remains `none`; `actor.role_verified` is false; `actor.bot_role` is absent/null; denied, with the failure retained in resolver/audit diagnostics |
-| Custom repository roles (GitHub) | Mapped to `none`; denied until custom roles are handled platform-wide |
 | Collaborator API response is not valid JSON or does not match the expected shape | Denied |
 | `actor.role` is empty or missing | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | `actor.role_verified` is false for a human | Denied regardless of `actor.role` |
