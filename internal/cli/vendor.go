@@ -18,6 +18,10 @@ import (
 
 const vendorArch = binary.DefaultArch
 
+// vendorPathPrefix is the in-repo directory that holds vendored assets in a
+// per-repo install.
+const vendorPathPrefix = ".fullsend/"
+
 // Vendor install flags replaced the removed --vendor-fullsend-binary flag (binary-only
 // upload). A hidden --vendor-fullsend-binary alias sets --vendor and prints a deprecation
 // warning for external automation still using the old flag.
@@ -211,10 +215,6 @@ func appendStaleVendoredDeletes(ctx context.Context, client forge.Client, printe
 	printer.StepInfo(fmt.Sprintf("Pruning %d vendored file(s) no longer shipped: %s", len(stale), strings.Join(stale, ", ")))
 	return files, nil
 }
-
-// vendorPathPrefix is the in-repo directory that holds vendored assets in a
-// per-repo install.
-const vendorPathPrefix = ".fullsend/"
 
 func removeStaleVendoredAssets(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string) error {
 	return layers.RemoveStaleVendoredAssets(ctx, client, printer, owner, repo, vendorPathPrefix, layers.VendoredBinaryPathPerRepo)
