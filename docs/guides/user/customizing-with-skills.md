@@ -1,4 +1,4 @@
-# Customizing Agents with Skills
+# Configuring Agents with Skills
 
 Fullsend agents use [agent skills](https://agentskills.io/) — self-contained
 markdown documents that teach an agent how to perform a specific task. Each
@@ -60,6 +60,12 @@ Instructions the agent follows when this skill is invoked.
 Skills can reference companion scripts and data files in the same directory,
 giving agents the ability to dynamically gather information at runtime.
 
+This repository also includes workflow-oriented skills exposed as portable
+slash commands. For example, [`/nextwork`](../../../skills/nextwork/SKILL.md)
+builds a readiness queue, while
+[`/adr-corner`](../../../skills/adr-corner/SKILL.md) inventories open pull
+requests that change Architecture Decision Records.
+
 ## Adding skills to your repository
 
 Place skills in `.agents/skills/` in your target repository and symlink
@@ -87,8 +93,9 @@ architecture constraints — without modifying any fullsend configuration.
 
 Repo skills **extend** the agent's skill set. They do not replace built-in
 skills. If a repo skill has the same name as a built-in skill, the built-in
-version takes precedence and the repo version is silently ignored. Use a
-unique name to ensure your skill is discoverable.
+version takes precedence and the repo version is ignored. Fullsend warns about
+the collision before the agent starts. Use a unique name to extend the agent,
+or intentionally replace it through [`base:` harness composition](#overriding-built-in-skills).
 
 ### Skill precedence
 
@@ -104,7 +111,8 @@ Personal (CLAUDE_CONFIG_DIR/skills/)  >  Project (.claude/skills/)
 
 A repo skill with a novel name (no collision) is always available. A repo
 skill with a name matching a built-in skill is shadowed — the agent never
-sees it.
+sees it. Fullsend logs a warning naming the shadowed skill and the supported
+extension and override paths.
 
 ### Extension points
 
@@ -116,30 +124,19 @@ when available.
 
 ## Overriding built-in skills
 
-> **Deprecated:** The `customized/` overlay described below is deprecated per
-> [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
-> Use `base:` composition and config-driven agent registration instead.
+To intentionally **replace** a built-in skill with your own version, use
+`base:` composition and config-driven agent registration. Register the
+agent in `config.yaml` with a harness that uses `base:` to inherit from the
+upstream harness, and include your replacement skill in the `skills:` list.
+The directory name must match the built-in skill name exactly.
 
-To intentionally **replace** a built-in skill with your own version, use the
-`customized/` overlay ([ADR 0035](../../ADRs/0035-layered-content-resolution.md)).
-This replaces the skill at the config layer before the agent starts — the
-built-in version is never uploaded to the sandbox.
-
-Create the override in your `.fullsend` config repo (per-org mode) or in
-`.fullsend/customized/` in the target repo (per-repo mode). The directory
-name must match the built-in skill name exactly:
-
-```
-customized/skills/code-review/SKILL.md    # replaces the built-in code-review
-```
-
-This is an org-sanctioned operation — it goes through the content overlay
-engine, not through project-level skill discovery.
+See [Bring Your Own Agent](bring-your-own-agent.md) for the full
+composition model and config-driven registration.
 
 ### Built-in skills
 
-These skills ship with fullsend and can be overridden via `customized/skills/`
-(deprecated per ADR-0064 — use config-driven agent registration instead):
+These skills ship with fullsend and can be overridden via config-driven
+agent registration:
 
 | Agent | Skill | Purpose |
 |-------|-------|---------|
@@ -153,19 +150,57 @@ These skills ship with fullsend and can be overridden via `customized/skills/`
 ## When to use skills vs. AGENTS.md
 
 Use **skills** when you need to change how a specific agent performs a specific
-task — especially when the customization involves domain knowledge, helper
+task — especially when the configuration involves domain knowledge, helper
 scripts, or external data sources that only one agent needs.
 
 Use **[AGENTS.md](customizing-with-agents-md.md)** for broad instructions that
 apply to all agents and human contributors alike.
 
+## Authoring skills that augment defaults
+
+Adding a skill is easy; writing one that **works beside** shipped defaults is
+harder. Defaults often use specific language and own concrete output fields.
+A soft "prefer concise" skill will lose that contest.
+
+When you are tuning a built-in agent (triage, retro, review, …):
+
+1. Discover what the agent already loads (harness `skills:`, agent markdown,
+   result schema, post-script human surfaces).
+2. Choose the right artifact: unique-named **augmentation skill**,
+   **sub-agent** under an orchestrator, or whole-skill override — not a
+   same-named drop-in that gets shadowed.
+3. Prefer hard limits and field ownership over soft preferences.
+4. Re-check current docs for the lightest shipping path (repo skill, harness
+   pin, file-level override when available, or upstream contribution).
+
+For the full procedure, use the contributor skill
+[`author-fullsend-augmentations`](../../../skills/author-fullsend-augmentations/SKILL.md)
+(local checkout of this repo, or any environment that loads
+`skills/author-fullsend-augmentations/`).
+
+Bring Your Own Agent covers the same decision frame in
+[Tuning agents with augmentation skills](customizing-agents.md#tuning-agents-with-augmentation-skills).
+
+> **Planned:** Per-file overrides inside skill directories
+> ([#6158](https://github.com/fullsend-ai/fullsend/issues/6158)) will make
+> single sub-agent customization lighter than forking a whole skill tree.
+
 ## What not to do
 
 - **Don't duplicate AGENTS.md content in skills.** If an instruction applies
   to all agents, put it in `AGENTS.md`. Skills are for agent-specific behavior.
+- **Don't reuse a built-in skill directory name** unless you intend a
+  supported whole-skill override path — same-named project skills are
+  shadowed by built-ins (see [Skill precedence](#skill-precedence)).
 
 ## See also
 
-- [Bring Your Own Agent](bring-your-own-agent.md) — building and registering custom agents
-- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
+- [`fullsend agent new`](../../cli/agent.md#agent-new) — generate a custom agent that can then mount these skills
+
+- [Customizing Agents](customizing-overview.md) — overview of all customization approaches
+- [Bring Your Own Agent](bring-your-own-agent.md) — building, registering, and
+  [tuning existing agents](customizing-agents.md#tuning-agents-with-augmentation-skills)
+- [`author-fullsend-augmentations`](../../../skills/author-fullsend-augmentations/SKILL.md)
+  — discovery-driven authoring procedure for augmentations and sub-agents
+- [Default, derived, and custom agents](default-vs-custom.md)
   — adding skills keeps you in "configured default agent" territory

@@ -62,3 +62,58 @@ fi
 **When writing workflow steps:** If a step gates dispatch, skips execution, or controls conditional logic, ensure its error path surfaces the failure (e.g., via `::warning::`) rather than swallowing it silently — capture stderr to a variable and emit a warning on failure, instead of `2>/dev/null`. Whether to then fail closed (`exit 1`) or deliberately proceed depends on the gate's purpose: authorization/security gates must fail closed (see `scripts/check-e2e-authorization.sh`, which traps errors and sets `authorized=false`), while feature/agent-enablement gates may deliberately warn-and-proceed (availability over strictness — an operator would rather a stage run than block on a transient parse error). The DANGEROUS/SAFER examples above illustrate the difference between silent and surfaced failure, not a universal mandate for `exit 1`.
 
 **When reviewing PRs:** Flag `2>/dev/null || echo ""` (or `|| true`) in workflow steps that gate dispatch or skip execution as a medium-severity or higher finding — unless the fallback value is verified to be restrictive (narrows what's allowed) rather than permissive (widens what's allowed) downstream. Silent failure in a permissive-fallback gate means the gate is non-functional; the same pattern feeding a restrictive fallback is comparatively safe (it fails toward "allow nothing" rather than "allow everything"). Judge severity by what the fallback value actually does downstream, not by the presence of `2>/dev/null || echo ""`/`|| true` alone.
+
+## Stdout contamination in command substitution
+
+When a shell function is called inside `$(...)` command substitution, **everything the function writes to stdout becomes part of the captured variable**. If the function also writes diagnostic output (log messages, retry warnings, `::error::`/`::warning::` annotations) to stdout, that output is concatenated with the intended return value, silently corrupting it.
+
+This is a common source of bugs in shell scripts that use helper functions with retry logic or error reporting. The captured variable may contain a mix of JSON and diagnostic text, causing downstream `jq`/`yq` parsing to fail silently or produce wrong results.
+
+```bash
+# WRONG — echo writes to stdout, contaminating the captured variable
+retry_curl() {
+  local attempt=1 max=3 delay=5
+  while true; do
+    if curl "$@"; then return 0; fi
+    if (( attempt >= max )); then
+      echo "::error::Request failed after ${max} attempts"
+      return 1
+    fi
+    echo "::warning::Attempt ${attempt}/${max} failed, retrying in ${delay}s..."
+    sleep "${delay}"
+    (( attempt++ ))
+  done
+}
+
+# resp now contains "::warning::Attempt 1/3 failed, retrying in 5s...\n{json}"
+# jq parsing will fail or produce wrong results
+resp=$(retry_curl -fsSL "https://api.example.com/data")
+tag=$(echo "${resp}" | jq -r '.tag_name')
+```
+
+**Direct all non-value output to stderr** using `>&2`:
+
+```bash
+# CORRECT — diagnostic output goes to stderr, only curl's stdout is captured
+retry_curl() {
+  local attempt=1 max=3 delay=5
+  while true; do
+    if curl "$@"; then return 0; fi
+    if (( attempt >= max )); then
+      echo "::error::Request failed after ${max} attempts" >&2
+      return 1
+    fi
+    echo "::warning::Attempt ${attempt}/${max} failed, retrying in ${delay}s..." >&2
+    sleep "${delay}"
+    (( attempt++ ))
+  done
+}
+
+# resp contains only the curl response — jq parsing works correctly
+resp=$(retry_curl -fsSL "https://api.example.com/data")
+tag=$(echo "${resp}" | jq -r '.tag_name')
+```
+
+The same rule applies to any function output that is not the intended return value: progress messages, debug logging, `echo "Retrying..."`, and GitHub Actions annotations (`::warning::`, `::error::`, `::notice::`). If the function might be called inside `$(...)`, all of these must use `>&2`.
+
+**When reviewing PRs:** If a shell function is used inside `$(...)` or backtick command substitution, verify that all non-value output (log messages, warnings, `::error::`/`::warning::` annotations, retry diagnostics) is directed to stderr. Flag stdout contamination as medium-severity when the captured value is used in conditional logic or parsed by `jq`/`yq`, and as high-severity when it feeds into security-sensitive operations (token handling, authorization checks, cryptographic verification).

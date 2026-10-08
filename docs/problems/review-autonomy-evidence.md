@@ -153,7 +153,7 @@ This pattern is consistent across different change types (new CLI features, comp
 
 ## Relationship to the protected-path mechanism
 
-The existing protected-path downgrade in [`post-review.sh`](../../internal/scaffold/fullsend-repo/scripts/post-review.sh) prevents autonomous approval for PRs touching sensitive file paths. This is a path-based autonomy gate.
+The existing protected-path downgrade in `post-review.sh` (now in [`fullsend-ai/agents`](https://github.com/fullsend-ai/agents)) prevents autonomous approval for PRs touching sensitive file paths. This is a path-based autonomy gate.
 
 The evidence in this document suggests two complementary gate types:
 

@@ -75,11 +75,18 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 		r.printer.ToolProgress(msg)
 	case TokensEvent:
 		r.endBlock()
-		total := e.InputTokens + e.OutputTokens + e.CacheRead + e.CacheWrite
-		r.printer.StepInfo(fmt.Sprintf(
-			"TOKENS in=%d out=%d cache_r=%d cache_w=%d total=%d",
-			e.InputTokens, e.OutputTokens, e.CacheRead, e.CacheWrite, total,
-		))
+		total := e.InputTokens + e.OutputTokens + e.ReasoningTokens + e.CacheRead + e.CacheWrite
+		if e.ReasoningTokens > 0 {
+			r.printer.StepInfo(fmt.Sprintf(
+				"TOKENS in=%d out=%d reasoning=%d cache_r=%d cache_w=%d total=%d",
+				e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.CacheRead, e.CacheWrite, total,
+			))
+		} else {
+			r.printer.StepInfo(fmt.Sprintf(
+				"TOKENS in=%d out=%d cache_r=%d cache_w=%d total=%d",
+				e.InputTokens, e.OutputTokens, e.CacheRead, e.CacheWrite, total,
+			))
+		}
 	case ResultEvent:
 		r.endBlock()
 		subtype := sanitizeOutput(e.Subtype)
@@ -96,11 +103,19 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 		r.printer.Header(label)
 		r.printer.KeyValue("Turns", fmt.Sprintf("%d", e.NumTurns))
 		r.printer.KeyValue("Cost", fmt.Sprintf("$%.4f", e.TotalCostUSD))
-		r.printer.KeyValue("Tokens", fmt.Sprintf(
-			"in=%d out=%d cache_create=%d cache_read=%d",
-			e.InputTokens, e.OutputTokens,
-			e.CacheCreationInputTokens, e.CacheReadInputTokens,
-		))
+		if e.ReasoningTokens > 0 {
+			r.printer.KeyValue("Tokens", fmt.Sprintf(
+				"in=%d out=%d reasoning=%d cache_create=%d cache_read=%d",
+				e.InputTokens, e.OutputTokens, e.ReasoningTokens,
+				e.CacheCreationInputTokens, e.CacheReadInputTokens,
+			))
+		} else {
+			r.printer.KeyValue("Tokens", fmt.Sprintf(
+				"in=%d out=%d cache_create=%d cache_read=%d",
+				e.InputTokens, e.OutputTokens,
+				e.CacheCreationInputTokens, e.CacheReadInputTokens,
+			))
+		}
 		if e.IsError && e.ErrorMessage != "" {
 			r.printer.StepFail(sanitizeOutput(e.ErrorMessage))
 		}
@@ -112,7 +127,31 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 		r.endBlock()
 		r.printer.StepWarn(fmt.Sprintf("Retry %d/%d: %s (delay %dms)",
 			e.Attempt, e.MaxRetries, sanitizeOutput(e.Error), e.DelayMs))
+	case PluginErrorEvent:
+		r.endBlock()
+		r.printer.StepWarn(pluginErrorMessage(e))
 	}
+}
+
+// pluginErrorMessage formats a plugin load failure as one warning line. The
+// whole line is sanitized once, since plugin names, paths and messages come
+// from the sandbox.
+func pluginErrorMessage(e PluginErrorEvent) string {
+	name := e.Plugin
+	if name == "" {
+		name = "(unnamed)"
+	}
+	msg := "Plugin " + name + " failed to load"
+	if e.Path != "" {
+		msg += " from " + e.Path
+	}
+	if e.Type != "" {
+		msg += " (" + e.Type + ")"
+	}
+	if e.Message != "" {
+		msg += ": " + e.Message
+	}
+	return sanitizeOutput(msg)
 }
 
 // endBlock closes any open text or thinking block.

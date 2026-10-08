@@ -27,7 +27,7 @@ Accepted (extends [ADR 0025](0025-provider-credential-delivery-for-sandboxed-age
 
 ### The push robustness problem
 
-The current code agent relies on a non-agentic post-script (`post-code.sh`) to push code after the sandbox is destroyed. This is the credential delivery tier 1 (prefetch + post-process) model: the agent never touches push credentials, and the post-script handles branch validation, secret scanning, pre-commit hooks, and the actual `git push`. This model is robust for security but has two limitations:
+The current code agent relies on a non-agentic post-script (`post-code.sh`, now in `fullsend-ai/agents`) to push code after the sandbox is destroyed. This is the credential delivery tier 1 (prefetch + post-process) model: the agent never touches push credentials, and the post-script handles branch validation, secret scanning, pre-commit hooks, and the actual `git push`. This model is robust for security but has two limitations:
 
 1. **The agent has no control over the push flow.** The post-script is a fixed script — the agent cannot choose between force-push and regular push, retry on conflict, or adapt to diverged branches. Making the script more complex to handle edge cases increases fragility.
 

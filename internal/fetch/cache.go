@@ -4,14 +4,30 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 )
 
 var errInvalidHash = errors.New("cache: hash must be exactly 64 lowercase hex characters")
+
+// atomicWriteTmpRe matches the temporary files os.CreateTemp produces for
+// atomicWrite's "<name>.tmp.*" pattern before they are renamed into place.
+var atomicWriteTmpRe = regexp.MustCompile(`\.tmp\.\d+$`)
+
+// skipVanished maps fs.ErrNotExist to nil so a cache-tree walk tolerates
+// entries that a concurrent writer renamed away between the directory read
+// and the stat/read of the entry. All other errors pass through unchanged.
+func skipVanished(err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
 
 // CacheEntry is metadata for a cached remote resource.
 type CacheEntry struct {
@@ -309,12 +325,22 @@ func CacheGetDir(workspaceRoot, hash string) (string, *DirCacheEntry, error) {
 	}
 
 	// Re-verify integrity: walk the tree directory and recompute the tree hash.
+	// Concurrent writers materialize files via atomicWrite, which creates
+	// "<name>.tmp.<rand>" entries inside the tree before renaming them into
+	// place. Skip those temp entries (a crashed writer's leftover would
+	// otherwise poison the tree hash forever) and tolerate entries vanishing
+	// mid-walk (a concurrent writer renaming its temp file away). The tree-hash
+	// comparison below backstops both tolerances: skipping or losing a
+	// legitimate file still fails the integrity check.
 	files := make(map[string][]byte)
 	err = filepath.Walk(treeDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			return skipVanished(err)
 		}
 		if info.IsDir() {
+			return nil
+		}
+		if atomicWriteTmpRe.MatchString(filepath.Base(path)) {
 			return nil
 		}
 		relPath, err := filepath.Rel(treeDir, path)
@@ -323,7 +349,7 @@ func CacheGetDir(workspaceRoot, hash string) (string, *DirCacheEntry, error) {
 		}
 		content, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			return skipVanished(err)
 		}
 		files[relPath] = content
 		return nil

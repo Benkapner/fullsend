@@ -17,7 +17,7 @@ Most users should use the **managed** model — the [Getting Started guides](../
 
 When a platform operator has already deployed the mint and shared `fullsend-ai-*` apps, installation follows the standard [Getting Started](../getting-started/) flow — you only need a GCP project for inference. Before running the installer, confirm with your platform operator that:
 
-- Your organization is registered in the mint's `ALLOWED_ORGS`
+- Your repository is enrolled in the mint's `PER_REPO_WIF_REPOS` (or the mint explicitly runs in public mode with `PER_REPO_WIF_REPOS=*`)
 - The shared GitHub Apps are installed on your repository (or org)
 - Mint-side WIF is configured to accept OIDC tokens from your organization
 
@@ -25,9 +25,21 @@ Then follow [Getting Inference](../getting-started/getting-inference.md) and [Co
 
 If the platform operator also provides a pre-existing WIF provider, skip `inference provision` and pass `--inference-wif-provider` directly to `github setup`.
 
-If you have IAM access to the platform operator's GCP project, pass `--mint-project` and `--mint-region` to `github setup` to enable auto-discovery of shared app IDs and automatic validation of mint configuration. This requires `roles/cloudfunctions.developer` on the platform mint project.
+If the platform operator distributes a vendor preset (a curated `config.base.yaml`), you can install it via `--config`. Persistent setup flags may still be passed; they override matching preset values in the overlay without changing the committed preset:
 
-> This section documents the **SaaS installation profile** defined in [ADR 0033 §6](../../ADRs/0033-per-repo-installation-mode.md#6-credential-models). See the [CLI reference](../../cli/github.md#flags) for the full flag list.
+```bash
+fullsend github setup <owner/repo> \
+  --inference-project "<GCP_PROJECT>" \
+  --inference-wif-provider "<WIF_PROVIDER>" \
+  --config "<preset-path-or-url>" \
+  --config-hash "<sha256-hex>"
+```
+
+See [Configuring GitHub — Using a vendor preset](../getting-started/configuring-github.md#using-a-vendor-preset) for details. Fleet installs declare the same source in `repos.yaml` (`defaults.config_base` / per-repo `config_base`) and converge it with `fullsend repos install`; see [Repo Management — Configuration presets](../getting-started/repo-management.md#configuration-presets).
+
+If you have IAM access to the platform operator's GCP project, pass `--mint-project` and `--mint-region` to `admin install` to enable auto-discovery of shared app IDs and automatic validation of mint configuration. This requires `roles/cloudfunctions.developer` on the platform mint project.
+
+> This section documents the **SaaS installation profile** — the default variant of the Managed model, where a platform operator pre-provisions the shared GitHub Apps and mint for you. See the [CLI reference](../../cli/github.md#flags) for the full flag list.
 
 ## OAuth scope reference
 
@@ -35,10 +47,9 @@ If you have IAM access to the platform operator's GCP project, pass `--mint-proj
 |-------|-------------|-----|
 | `repo` | install, analyze | Read/write repository contents, manage repo-level secrets and variables |
 | `workflow` | install | Create and update GitHub Actions workflow files in `.github/workflows/` |
-| `admin:org` | install (per-org), uninstall, analyze | Manage organization-level Actions variables and app installations |
-| `delete_repo` | uninstall | Delete the `.fullsend` config repository |
+| `admin:org` | install (creating new GitHub Apps) | Create GitHub Apps and manage their organization installations |
 
-> **Per-repo scope note:** Per-repo install only requires `repo` and `workflow` scopes when reusing existing GitHub Apps. Creating new apps requires `admin:org`.
+> **Scope note:** Per-repo install only requires `repo` and `workflow` scopes when reusing existing GitHub Apps. Creating new apps requires `admin:org`.
 
 > **Note on scope breadth:** `gh auth` scopes apply to *every* organization your account belongs to — GitHub does not support per-org scoping for classic OAuth tokens. If that is a concern, create a [fine-grained personal access token](https://github.com/settings/tokens?type=beta) scoped to the target organization and export it as `GH_TOKEN` before running the installer.
 
@@ -60,10 +71,10 @@ fullsend mint deploy --project "$GCP_PROJECT"
 
 See [Mint service administration](mint-administration.md) for deployment details, PEM management, and role configuration.
 
-**2. Enroll the org or repo in the mint** (GCP Admin):
+**2. Enroll the repo in the mint** (GCP Admin):
 
 ```bash
-fullsend mint enroll "$ORG_NAME" --project "$GCP_PROJECT"
+fullsend mint enroll "$ORG_NAME/$REPO_NAME" --project "$GCP_PROJECT"
 ```
 
 **3. Provision WIF for inference** (GCP Admin):
@@ -94,7 +105,7 @@ By default, the installer creates GitHub Apps with the `fullsend-ai` prefix (e.g
 #### Creating a custom app set
 
 ```bash
-fullsend github setup "$ORG_NAME" \
+fullsend github setup "$ORG_NAME/$REPO_NAME" \
   --mint-url "$MINT_URL" \
   --inference-project "$GCP_PROJECT" \
   --inference-wif-provider "$WIF_PROVIDER" \
@@ -108,7 +119,7 @@ This creates apps named `{org}-fullsend`, `{org}-coder`, `{org}-review`, etc. Th
 When a mint already has public apps registered under a custom app set (e.g., `fullsend-ai-fullsend`, `fullsend-ai-coder`), additional orgs installing those apps must pass the same `--app-set` so the CLI resolves the correct slugs:
 
 ```bash
-fullsend github setup "$NEW_ORG" \
+fullsend github setup "$NEW_ORG/$REPO_NAME" \
   --mint-url "$MINT_URL" \
   --inference-project "$GCP_PROJECT" \
   --inference-wif-provider "$WIF_PROVIDER" \
@@ -119,14 +130,6 @@ The setup command detects that the public apps are already installed in the org 
 
 > **Migration note:** Prior to this change, the default app set was `fullsend`, producing slugs like `fullsend-coder`. The default is now `fullsend-ai`, producing `fullsend-ai-coder`. Existing installations that used the old default should pass `--app-set fullsend` explicitly to continue matching their existing GitHub App slugs, or re-install with the new default.
 
-#### Uninstalling a custom app set
-
-When uninstalling an org that used a custom app set, pass the same `--app-set` value so the CLI generates the correct fallback slugs if the config repo is unavailable:
-
-```bash
-fullsend github uninstall "$ORG_NAME" --app-set "$ORG_NAME"
-```
-
 #### Constraints
 
 - App set names must be lowercase alphanumeric with optional hyphens (no leading/trailing hyphens, no consecutive hyphens), max 23 characters (GitHub App names are limited to 34 characters, and the role suffix is appended)
@@ -136,11 +139,14 @@ fullsend github uninstall "$ORG_NAME" --app-set "$ORG_NAME"
 
 For most cases, `fullsend inference provision` auto-provisions the inference WIF pool and prints the provider resource name to pass to `github setup --inference-wif-provider`. Use manual configuration only when you need custom pool names, attribute conditions, or want to share an inference WIF provider across multiple tools:
 
+> **GitLab:** The recipe below is GitHub-specific — it uses GitHub's OIDC issuer and `assertion.repository`/`assertion.repository_owner` claims, which GitLab `id_token`s don't have. It cannot be copied as-is for GitLab. See [Configuring GitLab § Inference Setup](../getting-started/configuring-gitlab.md#inference-setup) for the GitLab-specific provider, claims, issuer, and audience configuration.
+
 **Create a Workload Identity Pool and OIDC Provider:**
 
 ```bash
 export GCP_PROJECT="<gcp-project>"
 export ORG_NAME="<org-name>"
+export REPO_NAME="<repo-name>"
 
 gcloud iam workload-identity-pools create fullsend-inference \
   --location=global \
@@ -168,16 +174,16 @@ gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
   --condition=None
 ```
 
-> **Warning — broad WIF scope:** The `attribute.repository_owner` condition above grants WIF access to _all_ repositories in the organization, not just `.fullsend`. This is required for orgs using per-repo mode (where multiple repos need to authenticate to GCP independently), but it significantly widens the trust boundary compared to per-org-only setups. Note that `fullsend inference provision <owner/repo>` auto-provisions a **per-repo** WIF provider scoped to a single repository — the org-wide condition here is broader than what the automated path creates.
+> **Warning — broad WIF scope:** The `attribute.repository_owner` condition above grants WIF access to _all_ repositories in the organization. This lets one provider serve many repos, but it significantly widens the trust boundary. Note that `fullsend inference provision <owner/repo>` auto-provisions a **per-repo** WIF provider scoped to a single repository — the org-wide condition here is broader than what the automated path creates.
 >
-> **For per-org-only setups**, use the tighter `assertion.repository == '$ORG_NAME/.fullsend'` condition instead, and scope the WIF principal to `attribute.repository/$ORG_NAME/.fullsend`. See [Google Cloud WIF documentation](https://cloud.google.com/iam/docs/workload-identity-federation) for condition syntax.
+> **To limit access to a single repository**, use the tighter `assertion.repository == '$ORG_NAME/$REPO_NAME'` condition instead, and scope the WIF principal to `attribute.repository/$ORG_NAME/$REPO_NAME`. See [Google Cloud WIF documentation](https://cloud.google.com/iam/docs/workload-identity-federation) for condition syntax.
 
 **Pass the provider to the installer:**
 
 ```bash
 export WIF_PROVIDER="projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc"
 
-fullsend github setup "$ORG_NAME" \
+fullsend github setup "$ORG_NAME/$REPO_NAME" \
   --inference-project "$GCP_PROJECT" \
   --inference-wif-provider "$WIF_PROVIDER" \
   --mint-url "$MINT_URL"
@@ -187,7 +193,7 @@ fullsend github setup "$ORG_NAME" \
 
 ## Deprecated: all-in-one admin install
 
-> **Deprecated.** The `fullsend admin install` all-in-one command that provisions GCP mint, inference, and GitHub in a single invocation is deprecated. Use the [standalone commands](../getting-started/operations.md#standalone-commands) instead: `fullsend inference provision` + `fullsend github setup` for per-repo, or `fullsend mint deploy` + `fullsend mint enroll` + `fullsend github setup` for per-org. See [Getting Started](../getting-started/configuring-github.md) for the recommended per-repo flow.
+> **Deprecated.** The `fullsend admin install` all-in-one command that provisions GCP mint, inference, and GitHub in a single invocation is deprecated. Use the [standalone commands](../getting-started/operations.md#standalone-commands) instead: `fullsend inference provision` + `fullsend github setup <owner/repo>`. Per-org installation has been removed, so `fullsend admin install` and `fullsend github setup` accept only `owner/repo` targets. See [Getting Started](../getting-started/configuring-github.md) for the recommended per-repo flow.
 
 ## See Also
 

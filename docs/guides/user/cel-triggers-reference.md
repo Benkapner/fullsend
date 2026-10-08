@@ -8,17 +8,17 @@ When you register a custom agent and give it a `trigger` expression, fullsend ha
 
 ### The dispatch flow
 
-1. **Event arrives.** A GitHub webhook fires (issue opened, label added, comment posted, PR submitted, etc.). The installed shim workflow forwards the event to the centralized dispatch workflow in `.fullsend/`.
+1. **Event arrives.** A GitHub webhook fires (issue opened, label added, comment posted, PR submitted, etc.). The repository's installed shim workflow calls the upstream `reusable-dispatch.yml` workflow.
 
 2. **Normalize.** The `gha-event` input driver converts the raw GitHub event into a [`NormalizedEvent`](../../normative/normalized-event/v1/) — a forge-neutral struct with fields like `event.entity.kind`, `event.transition.kind`, and `event.actor.role`.
 
-3. **Authorize.** `fullsend dispatch` enforces the platform authorization gate ([ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)) before any agent is considered. Authorization is a platform-level decision — your CEL trigger does not need to implement permission checks (though you can add guards like `event.actor.role` if your agent has stricter requirements).
+3. **Authorize.** `fullsend dispatch` enforces the platform authorization gate before any agent is considered. Authorization is a platform-level decision — your CEL trigger does not need to implement permission checks (though you can add guards like `event.actor.role` if your agent has stricter requirements).
 
-4. **Enumerate.** Dispatch loads all registered agents from the merged config (`agents:` list in org and per-repo `config.yaml`, plus scaffold discovery from [ADR 0058](../../ADRs/0058-agent-registration.md)). Each harness with a non-empty `trigger` field is a candidate.
+4. **Enumerate.** Dispatch loads all registered agents from the merged repository-local config (the `agents:` list in `.fullsend/config.yaml`, optionally layered over `.fullsend/config.base.yaml`, plus scaffold discovery). Each harness with a non-empty `trigger` field is a candidate. If a registered agent's harness cannot be resolved or loaded, dispatch logs a GitHub Actions `::error::` annotation and skips that agent so other agents can still run. If every registered agent fails to load, `fullsend dispatch` exits non-zero instead of emitting an empty matrix — a fully unreadable harness set is a configuration error, not a "no trigger matched" result.
 
 5. **Evaluate.** Each candidate's CEL `trigger` expression is evaluated with `event` bound to the `NormalizedEvent`. Every harness whose trigger returns `true` is selected. Multiple agents can match the same event (parallel fan-out).
 
-6. **Launch.** Matched agents are launched via `fullsend run` using the existing sandbox and execution infrastructure. The dispatch workflow passes the event payload, source repo, and any trigger-specific metadata to the agent workflow.
+6. **Launch.** Matched agents are launched via `fullsend run` in the inline `harness-run` job of `reusable-dispatch.yml`, using the existing sandbox and execution infrastructure. The dispatch workflow passes the event payload, source repo, and any trigger-specific metadata to that job.
 
 ### What you configure vs. what dispatch handles
 
@@ -48,19 +48,33 @@ The `event` variable has the following top-level fields:
 | Field | Type | Description |
 |---|---|---|
 | `event.repo` | string | Repository path (`owner/repo`) |
-| `event.entity.kind` | string | `"work_item"` (issue) or `"change_proposal"` (PR) |
-| `event.entity.id` | int | Issue or PR number |
+| `event.entity.kind` | string | `"work_item"` (issue), `"change_proposal"` (PR), or `"conversation"` (Discussion / Slack channel; [ADR 0086](../../ADRs/0086-conversation-surface-for-agent-participation.md)) |
+| `event.entity.id` | int | Issue, PR, or conversation number |
 | `event.transition.kind` | string | What happened — see [transition kinds](#transition-kinds) |
 | `event.transition.label` | object | Present only when `kind == "label_changed"` |
-| `event.transition.comment` | object | Present only when `kind == "comment_added"` |
+| `event.transition.comment` | object | Present only when `kind == "comment_added"` (conversation comments carry `id` and `parent_id`, with `parent_id == id` for thread roots; [ADR 0086](../../ADRs/0086-conversation-surface-for-agent-participation.md)) |
 | `event.transition.review` | object | Present only when `kind == "review_submitted"` |
 | `event.actor.id` | string | Forge login of the user or bot that triggered the event |
 | `event.actor.kind` | string | `"human"` or `"bot"` |
-| `event.actor.role` | string | Repository permission: `admin`, `maintain`, `write`, `triage`, `read`, `none`, `external` |
-| `event.actor.is_entity_author` | boolean | True when the actor is the author of the work item or change proposal |
+| `event.actor.role` | string | Human repository permission: `admin`, `maintain`, `write`, `triage`, `read`, `none`, `external`. Current adapters may populate a bot's forge/project permission when lookup succeeds, or `none` when it is unavailable; ADR 0107 target behavior is `none` for bots. |
+| `event.actor.bot_role` | string or null | Optional provider-resolved canonical bot role such as `review`; absent/null for humans and unrecognized bots |
+| `event.actor.role_verified` | boolean | Optional lookup status. For humans, true means `actor.role` is a trusted forge permission; for bots, true means bot-role lookup completed, including a successful no-match result |
+| `event.actor.is_entity_author` | boolean | True when the actor is the author of the work item, change proposal, or conversation |
 | `event.state.labels` | list | Label names on the entity at event time |
 | `event.state.change_proposal` | object | Present when a change proposal is involved (includes `is_fork`, `head_ref`, `base_ref`) |
+| `event.state.conversation` | object | Required when `entity.kind == "conversation"` (includes `category.name`; optional `category.id` / `slug` / `format`) |
 | `event.source.system` | string | `"github"`, `"gitlab"`, `"jira"`, `"manual"`, or `"schedule"` |
+
+> `actor.bot_role` and `actor.role_verified` are ADR 0107 target fields and
+> are not yet emitted by the production runtime. The target contract uses
+> `actor.role: "none"` for bots, but current adapters may still populate a
+> forge/project permission there during migration. `role_verified` is not
+> authorization evidence by itself: for bots it only indicates lookup
+> completion, not recognition. The permanent label-added exception
+> does not require bot-role lookup; its provider-positive bot classification
+> and forge-authorized label mutation remain sufficient platform evidence.
+> CEL filters selecting a bot role must use `has(event.actor.bot_role)` and
+> compare the resolved role.
 
 This table covers the most common trigger fields. For the complete field list — including `event.entity.url`, `event.entity.key`, `event.source.raw_type`, and all `event.state.change_proposal` sub-fields — see the [NormalizedEvent v1 schema](../../normative/normalized-event/v1/normalized-event.schema.json).
 
@@ -97,16 +111,31 @@ trigger: >
     && event.transition.label.action == "added"
 ```
 
-**Run on a slash command (on a PR, non-fork):**
+**Run on a slash command (issues and non-fork PRs):**
 ```yaml
 trigger: >
   event.transition.kind == "comment_added"
+    && event.entity.kind == "work_item"
     && has(event.transition.comment.command)
     && event.transition.comment.command == "/my-command"
-    && event.entity.kind == "work_item"
-    && event.state.change_proposal != null
-    && !event.state.change_proposal.is_fork
+    && (!has(event.state.change_proposal) || !event.state.change_proposal.is_fork)
 ```
+
+This is exactly what [`fullsend agent new --on command:/my-command`](../../cli/agent.md#agent-new)
+emits, so a generated trigger and a hand-written one stay the same expression.
+
+`event.entity.kind == "work_item"` restricts this to issues and pull requests.
+A comment on a GitHub Discussion arrives with `entity.kind` of `conversation`,
+so without that clause the agent also fires on discussions.
+
+Use `!has(...)` rather than `!= null` for the fork guard. `state.change_proposal`
+is **absent** on a comment posted to a plain issue, not present-and-null — the
+[NormalizedEvent schema](../../normative/normalized-event/v1/normalized-event.schema.json)
+requires only `labels` under `state`. Comparing an absent key against `null`
+raises a missing-key error, and dispatch reports that as
+`::error:: harness dispatch: skipping agent <name>: trigger eval failed` on
+**every** issue comment in the repository, so the agent looks permanently
+broken. The `!has(...)` form evaluates cleanly on both surfaces.
 
 **Run when a PR is opened or updated (non-fork):**
 ```yaml

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,19 +25,14 @@ func TestGivenFork_SetsWorldState(t *testing.T) {
 	assert.Equal(t, "repo-fork", w.ForkRepo)
 }
 
-func TestGivenFork_AutoFillsRepoFromInstall(t *testing.T) {
+func TestGivenFork_ErrorsWhenNoRepoConfigured(t *testing.T) {
 	w := &world.World{
-		Org:     "auto-org",
-		Install: &fakeInstallState{testRepo: "auto-repo"},
-		SCM:     &fakeForkSCM{forkRepo: "auto-repo-fork"},
+		Org: "auto-org",
+		SCM: &fakeForkSCM{forkRepo: "auto-repo-fork"},
 	}
 	err := givenFork(w, "auto-repo-fork")
-	require.NoError(t, err)
-	assert.Equal(t, "auto-org", w.RepoOwner)
-	assert.Equal(t, "auto-repo", w.RepoName)
-	assert.Equal(t, "auto-org/auto-repo", w.RepoFull)
-	assert.Equal(t, "auto-org", w.ForkOwner)
-	assert.Equal(t, "auto-repo-fork", w.ForkRepo)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
 }
 
 func TestGivenFork_CreateForkError(t *testing.T) {
@@ -253,20 +249,348 @@ func TestGivenFork_LeasedRepoResolvesForkName(t *testing.T) {
 	assert.Equal(t, "test-repo-07-fork", w.ForkRepo)
 }
 
-// fakeInstallState implements install.State for fork step unit tests.
-type fakeInstallState struct {
-	testRepo string
+// --- awaitForkReady unit tests ---
+//
+// awaitForkReady has two phases:
+//   1. Resolve the default branch name via GetDefaultBranch (repo metadata).
+//   2. Poll GetBranchRef until the git ref is readable (returns a SHA).
+//
+// Phase 2 is the actual readiness signal — CreateBranch needs the
+// default-branch git ref to exist, and repo metadata can report a
+// default_branch name before the ref has been replicated.
+
+func TestGivenFork_PollsBranchRef(t *testing.T) {
+	// GetDefaultBranch succeeds immediately (repo metadata ready),
+	// but GetBranchRef fails once (git ref not yet replicated),
+	// then succeeds on the 2nd call. awaitForkReady should retry
+	// the ref poll and ultimately succeed.
+	//
+	// Calls awaitForkReady directly with poll=0 to avoid the 2s
+	// real sleep from the production forkReadyPoll constant; the
+	// givenFork → awaitForkReady wiring is proven by
+	// TestGivenFork_BranchRefImmediateSuccess.
+	scmDriver := &fakeForkSCM{
+		getBranchRefFailures: 1,
+	}
+	w := &world.World{
+		SCM: scmDriver,
+	}
+	err := awaitForkReady(context.Background(), w, "org", "repo-fork", 10, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 1, scmDriver.getDefaultBranchCalls,
+		"GetDefaultBranch should be called once to resolve the branch name")
+	assert.Equal(t, 2, scmDriver.getBranchRefCalls,
+		"GetBranchRef should be called 1 failure + 1 success = 2 times")
 }
 
-func (f *fakeInstallState) Mode() string               { return "per-org" }
-func (f *fakeInstallState) TestRepo() string           { return f.testRepo }
-func (f *fakeInstallState) ConfigOwner() string        { return "" }
-func (f *fakeInstallState) ConfigRepo() string         { return "" }
-func (f *fakeInstallState) ConfigPathPrefix() string   { return "" }
-func (f *fakeInstallState) TriageWorkflowRepo() string { return "" }
-func (f *fakeInstallState) TriageWorkflowFile() string { return "" }
-func (f *fakeInstallState) AgentWorkflowFile() string  { return "" }
-func (f *fakeInstallState) AgentArtifactName() string  { return "" }
+func TestGivenFork_BranchRefImmediateSuccess(t *testing.T) {
+	// Both GetDefaultBranch and GetBranchRef succeed on the first
+	// call — no replication delay. givenFork should return
+	// immediately without retries.
+	scmDriver := &fakeForkSCM{
+		forkRepo: "repo-fork",
+	}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		SCM:       scmDriver,
+	}
+	err := givenFork(w, "repo-fork")
+	require.NoError(t, err)
+	assert.Equal(t, 1, scmDriver.getDefaultBranchCalls,
+		"GetDefaultBranch should be called exactly once")
+	assert.Equal(t, 1, scmDriver.getBranchRefCalls,
+		"GetBranchRef should be called exactly once on immediate success")
+}
+
+func TestAwaitForkReady_RefPollExhausted(t *testing.T) {
+	// GetDefaultBranch succeeds (repo metadata ready) but
+	// GetBranchRef always fails — simulates a fork whose git ref
+	// is never replicated. awaitForkReady should return a clear
+	// timeout error after exhausting all attempts.
+	scmDriver := &fakeForkSCM{
+		getBranchRefFailures: -1, // always fail
+	}
+	w := &world.World{
+		SCM: scmDriver,
+	}
+	err := awaitForkReady(context.Background(), w, "org", "repo-fork", 5, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not readable after 5 attempts")
+	assert.Equal(t, 1, scmDriver.getDefaultBranchCalls,
+		"GetDefaultBranch should be called once to resolve branch name")
+	assert.Equal(t, 5, scmDriver.getBranchRefCalls,
+		"GetBranchRef should be called exactly maxAttempts times")
+}
+
+func TestAwaitForkReady_DefaultBranchPollExhausted(t *testing.T) {
+	// GetDefaultBranch always fails — repo metadata not available.
+	// awaitForkReady should fail in the first phase before reaching
+	// the ref poll.
+	scmDriver := &fakeForkSCM{
+		getDefaultBranchFailures: -1, // always fail
+	}
+	w := &world.World{
+		SCM: scmDriver,
+	}
+	err := awaitForkReady(context.Background(), w, "org", "repo-fork", 5, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "default branch name not available after 5 attempts")
+	assert.Equal(t, 5, scmDriver.getDefaultBranchCalls)
+	assert.Equal(t, 0, scmDriver.getBranchRefCalls,
+		"GetBranchRef should not be called if branch name resolution fails")
+}
+
+func TestAwaitForkReady_RefRetriesThenSucceeds(t *testing.T) {
+	// GetDefaultBranch succeeds immediately; GetBranchRef fails
+	// twice then succeeds on the 3rd call.
+	scmDriver := &fakeForkSCM{
+		getBranchRefFailures: 2,
+	}
+	w := &world.World{
+		SCM: scmDriver,
+	}
+	err := awaitForkReady(context.Background(), w, "org", "repo-fork", 10, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 1, scmDriver.getDefaultBranchCalls,
+		"GetDefaultBranch should be called once")
+	assert.Equal(t, 3, scmDriver.getBranchRefCalls,
+		"GetBranchRef should be called 2 failures + 1 success = 3 times")
+}
+
+func TestAwaitForkReady_ContextCancelledDuringRefPoll(t *testing.T) {
+	// Verify that awaitForkReady respects context cancellation
+	// during the ref-polling phase and does not block indefinitely.
+	scmDriver := &fakeForkSCM{
+		getBranchRefFailures: -1, // always fail
+	}
+	w := &world.World{
+		SCM: scmDriver,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+	err := awaitForkReady(ctx, w, "org", "repo-fork", 30, 2*time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+}
+
+func TestAwaitForkReady_ContextCancelledDuringBranchNamePoll(t *testing.T) {
+	// Verify that awaitForkReady respects context cancellation
+	// during the branch-name resolution phase.
+	scmDriver := &fakeForkSCM{
+		getDefaultBranchFailures: -1, // always fail
+	}
+	w := &world.World{
+		SCM: scmDriver,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+	err := awaitForkReady(ctx, w, "org", "repo-fork", 30, 2*time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+}
+
+// --- isReplicationError unit tests ---
+
+func TestIsReplicationError_409(t *testing.T) {
+	err := fmt.Errorf("get ref for default branch: github api: 409 Git Repository is empty")
+	assert.True(t, isReplicationError(err))
+}
+
+func TestIsReplicationError_422ObjectDoesNotExist(t *testing.T) {
+	err := fmt.Errorf("create branch: github api: 422 Object does not exist")
+	assert.True(t, isReplicationError(err))
+}
+
+func TestIsReplicationError_422TreeSHADoesNotExist(t *testing.T) {
+	err := fmt.Errorf("create tree: github api: 422 Tree SHA does not exist")
+	assert.True(t, isReplicationError(err))
+}
+
+func TestIsReplicationError_NilError(t *testing.T) {
+	assert.False(t, isReplicationError(nil))
+}
+
+func TestIsReplicationError_NonReplicationError(t *testing.T) {
+	err := fmt.Errorf("permission denied")
+	assert.False(t, isReplicationError(err))
+}
+
+func TestIsReplicationError_422WithoutObjectMessage(t *testing.T) {
+	// 422 without "does not exist" or "empty" is not replication.
+	err := fmt.Errorf("github api: 422 Validation Failed (field=sha, code=invalid)")
+	assert.False(t, isReplicationError(err))
+}
+
+// --- createForkBranch unit tests ---
+
+func TestCreateForkBranch_ImmediateSuccess(t *testing.T) {
+	scmDriver := &fakeForkSCM{}
+	w := &world.World{SCM: scmDriver}
+	err := createForkBranch(context.Background(), w, "org", "repo-fork", "test-branch", 5, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 1, scmDriver.createBranchCalls)
+}
+
+func TestCreateForkBranch_RetriesThenSucceeds(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createBranchFailures:   2,
+		createBranchReplicaErr: fmt.Errorf("get ref for default branch: github api: 409 Git Repository is empty"),
+	}
+	w := &world.World{SCM: scmDriver}
+	err := createForkBranch(context.Background(), w, "org", "repo-fork", "test-branch", 5, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 3, scmDriver.createBranchCalls,
+		"CreateBranch should be called 2 failures + 1 success = 3 times")
+}
+
+func TestCreateForkBranch_ExhaustsRetries(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createBranchFailures:   -1,
+		createBranchReplicaErr: fmt.Errorf("get ref for default branch: github api: 409 Git Repository is empty"),
+	}
+	w := &world.World{SCM: scmDriver}
+	err := createForkBranch(context.Background(), w, "org", "repo-fork", "test-branch", 3, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "branch creation failed after 3 attempts")
+	assert.Contains(t, err.Error(), "409")
+	assert.Equal(t, 3, scmDriver.createBranchCalls)
+}
+
+func TestCreateForkBranch_NonReplicationErrorNotRetried(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createBranchErr: fmt.Errorf("permission denied"),
+	}
+	w := &world.World{SCM: scmDriver}
+	err := createForkBranch(context.Background(), w, "org", "repo-fork", "test-branch", 5, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+	assert.Equal(t, 1, scmDriver.createBranchCalls,
+		"non-replication errors should not be retried")
+}
+
+func TestCreateForkBranch_ContextCancelled(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createBranchFailures:   -1,
+		createBranchReplicaErr: fmt.Errorf("github api: 409 Git Repository is empty"),
+	}
+	w := &world.World{SCM: scmDriver}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := createForkBranch(ctx, w, "org", "repo-fork", "test-branch", 30, 2*time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+}
+
+// --- isNameCollisionError / createFork unit tests ---
+
+func TestIsNameCollisionError_403(t *testing.T) {
+	err := fmt.Errorf("create fork of org/repo in org org: github api: 403 Name already exists on this account")
+	assert.True(t, isNameCollisionError(err))
+}
+
+func TestIsNameCollisionError_422Detail(t *testing.T) {
+	err := fmt.Errorf("create fork of org/repo in org org: github api: 422 Validation Failed (name already exists on this account)")
+	assert.True(t, isNameCollisionError(err))
+}
+
+func TestIsNameCollisionError_NilError(t *testing.T) {
+	assert.False(t, isNameCollisionError(nil))
+}
+
+func TestIsNameCollisionError_NotFork(t *testing.T) {
+	// ErrNotFork is a real collision with a different repo and must
+	// not be retried. Its message contains "already exists" but not
+	// "name already exists".
+	err := fmt.Errorf("repo org/repo-fork already exists and is not a fork: %w", forge.ErrNotFork)
+	assert.False(t, isNameCollisionError(err))
+}
+
+func TestIsNameCollisionError_NotForkWithNameSuffix(t *testing.T) {
+	// If forkName itself ends in "name" (e.g. "foo-name"), the wrapped
+	// ErrNotFork message ("repo org/foo-name already exists and is not
+	// a fork") contains the substring "name already exists". This must
+	// still be classified as a permanent, non-retryable collision.
+	err := fmt.Errorf("repo org/foo-name already exists and is not a fork: %w", forge.ErrNotFork)
+	assert.False(t, isNameCollisionError(err))
+}
+
+func TestIsNameCollisionError_Unrelated(t *testing.T) {
+	assert.False(t, isNameCollisionError(fmt.Errorf("permission denied")))
+}
+
+func TestCreateFork_ImmediateSuccess(t *testing.T) {
+	scmDriver := &fakeForkSCM{forkRepo: "repo-fork"}
+	w := &world.World{SCM: scmDriver}
+	got, err := createFork(context.Background(), w, "org", "repo", "repo-fork", 5, 0)
+	require.NoError(t, err)
+	assert.Equal(t, "repo-fork", got)
+	assert.Equal(t, 1, scmDriver.createForkCalls)
+}
+
+func TestCreateFork_RetriesThenSucceeds(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		forkRepo:               "repo-fork",
+		createForkFailures:     2,
+		createForkCollisionErr: fmt.Errorf("github api: 403 Name already exists on this account"),
+	}
+	w := &world.World{SCM: scmDriver}
+	got, err := createFork(context.Background(), w, "org", "repo", "repo-fork", 5, 0)
+	require.NoError(t, err)
+	assert.Equal(t, "repo-fork", got)
+	assert.Equal(t, 3, scmDriver.createForkCalls,
+		"CreateFork should be called 2 failures + 1 success = 3 times")
+}
+
+func TestCreateFork_ExhaustsRetries(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createForkFailures:     -1,
+		createForkCollisionErr: fmt.Errorf("github api: 403 Name already exists on this account"),
+	}
+	w := &world.World{SCM: scmDriver}
+	_, err := createFork(context.Background(), w, "org", "repo", "repo-fork", 3, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creation failed after 3 attempts")
+	assert.Contains(t, err.Error(), "Name already exists")
+	assert.Equal(t, 3, scmDriver.createForkCalls)
+}
+
+func TestCreateFork_NonCollisionErrorNotRetried(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createForkErr: fmt.Errorf("permission denied"),
+	}
+	w := &world.World{SCM: scmDriver}
+	_, err := createFork(context.Background(), w, "org", "repo", "repo-fork", 5, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+	assert.Equal(t, 1, scmDriver.createForkCalls,
+		"non-collision errors should not be retried")
+}
+
+func TestCreateFork_NotForkNotRetried(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createForkErr: fmt.Errorf("repo org/repo-fork already exists and is not a fork: %w", forge.ErrNotFork),
+	}
+	w := &world.World{SCM: scmDriver}
+	_, err := createFork(context.Background(), w, "org", "repo", "repo-fork", 5, 0)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrNotFork)
+	assert.Equal(t, 1, scmDriver.createForkCalls,
+		"ErrNotFork is a real collision and must not be retried")
+}
+
+func TestCreateFork_ContextCancelled(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createForkFailures:     -1,
+		createForkCollisionErr: fmt.Errorf("github api: 403 Name already exists on this account"),
+	}
+	w := &world.World{SCM: scmDriver}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := createFork(ctx, w, "org", "repo", "repo-fork", 30, 2*time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+}
 
 // fakeForkSCM implements scm.Driver for fork step unit tests.
 type fakeForkSCM struct {
@@ -274,6 +598,7 @@ type fakeForkSCM struct {
 	prNumber           int
 	createForkCalled   bool
 	createForkName     string // records the forkName arg passed to CreateFork
+	createForkCalls    int
 	createBranchCalled bool
 	commitToForkCalled bool
 	createForkPRCalled bool
@@ -283,6 +608,36 @@ type fakeForkSCM struct {
 	createForkPRErr    error
 	addedLabels        []addedLabelRecord
 	addIssueLabelsErr  error
+
+	// getDefaultBranchFailures controls how many times GetDefaultBranch
+	// returns an error before succeeding. Each call decrements the
+	// counter; when it reaches 0, GetDefaultBranch returns success.
+	// A value of -1 means GetDefaultBranch always fails.
+	getDefaultBranchFailures int
+	getDefaultBranchCalls    int
+
+	// getBranchRefFailures controls how many times GetBranchRef returns
+	// an error before succeeding. Works the same way as
+	// getDefaultBranchFailures: each call decrements the counter;
+	// when it reaches 0, GetBranchRef returns a SHA. A value of -1
+	// means GetBranchRef always fails.
+	getBranchRefFailures int
+	getBranchRefCalls    int
+
+	// createBranchFailures controls how many times CreateBranch
+	// returns a replication error before succeeding. Each call
+	// decrements the counter; when it reaches 0, CreateBranch
+	// returns success. A value of -1 means CreateBranch always fails.
+	createBranchFailures   int
+	createBranchCalls      int
+	createBranchReplicaErr error // error to return on replication failures
+
+	// createForkFailures controls how many times CreateFork returns
+	// a name-collision error before succeeding. Each call decrements
+	// the counter; when it reaches 0, CreateFork returns success. A
+	// value of -1 means CreateFork always fails with the collision.
+	createForkFailures     int
+	createForkCollisionErr error // error to return on name-collision failures
 }
 
 type addedLabelRecord struct {
@@ -295,8 +650,19 @@ type addedLabelRecord struct {
 func (f *fakeForkSCM) CreateFork(_ context.Context, _, _, forkName string) (string, error) {
 	f.createForkCalled = true
 	f.createForkName = forkName
+	f.createForkCalls++
 	if f.createForkErr != nil {
 		return "", f.createForkErr
+	}
+	// Support counted name-collision failures for retry tests.
+	if f.createForkCollisionErr != nil {
+		if f.createForkFailures == -1 {
+			return "", f.createForkCollisionErr
+		}
+		if f.createForkFailures > 0 {
+			f.createForkFailures--
+			return "", f.createForkCollisionErr
+		}
 	}
 	if f.forkRepo != "" {
 		return f.forkRepo, nil
@@ -318,6 +684,14 @@ func (f *fakeForkSCM) CreateForkChangeProposal(_ context.Context, _, _, _, _, _,
 		return nil, f.createForkPRErr
 	}
 	return &forge.ChangeProposal{Number: f.prNumber, Head: "test-branch"}, nil
+}
+
+func (f *fakeForkSCM) ListPullRequestCommits(context.Context, string, string, int) ([]string, error) {
+	return nil, nil
+}
+
+func (f *fakeForkSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
+	return nil, nil
 }
 
 // Unused scm.Driver methods -- required for interface satisfaction.
@@ -348,14 +722,29 @@ func (f *fakeForkSCM) GetFileContent(context.Context, string, string, string) ([
 	return nil, nil
 }
 
+func (f *fakeForkSCM) GetFileContentAtRef(context.Context, string, string, string, string) ([]byte, error) {
+	return nil, nil
+}
+
 func (f *fakeForkSCM) CommitFile(context.Context, string, string, string, string, []byte) error {
 	return nil
 }
 
 func (f *fakeForkSCM) CreateBranch(_ context.Context, _, _, _ string) error {
 	f.createBranchCalled = true
+	f.createBranchCalls++
 	if f.createBranchErr != nil {
 		return f.createBranchErr
+	}
+	// Support counted replication failures for retry tests.
+	if f.createBranchReplicaErr != nil {
+		if f.createBranchFailures == -1 {
+			return f.createBranchReplicaErr
+		}
+		if f.createBranchFailures > 0 {
+			f.createBranchFailures--
+			return f.createBranchReplicaErr
+		}
 	}
 	return nil
 }
@@ -382,4 +771,47 @@ func (f *fakeForkSCM) DeleteBranch(context.Context, string, string, string) erro
 
 func (f *fakeForkSCM) DeleteRepo(context.Context, string, string) error {
 	return nil
+}
+
+func (f *fakeForkSCM) CreateRepo(context.Context, string, string, string) error {
+	return nil
+}
+
+func (f *fakeForkSCM) ListOpenChangeProposals(context.Context, string, string) ([]forge.ChangeProposal, error) {
+	return nil, nil
+}
+
+func (f *fakeForkSCM) ListComments(context.Context, string, string, int) ([]forge.IssueComment, error) {
+	return nil, nil
+}
+
+func (f *fakeForkSCM) EnsureRepoPublic(context.Context, string, string) error {
+	return nil
+}
+
+func (f *fakeForkSCM) GetDefaultBranch(context.Context, string, string) (string, error) {
+	f.getDefaultBranchCalls++
+	if f.getDefaultBranchFailures == -1 {
+		return "", fmt.Errorf("github api: 409 Git Repository is empty")
+	}
+	if f.getDefaultBranchFailures > 0 {
+		f.getDefaultBranchFailures--
+		return "", fmt.Errorf("github api: 409 Git Repository is empty")
+	}
+	return "main", nil
+}
+
+func (f *fakeForkSCM) GetBranchRef(context.Context, string, string, string) (string, error) {
+	f.getBranchRefCalls++
+	if f.getBranchRefFailures == -1 {
+		return "", fmt.Errorf("github api: 409 Git Repository is empty")
+	}
+	if f.getBranchRefFailures > 0 {
+		f.getBranchRefFailures--
+		return "", fmt.Errorf("github api: 409 Git Repository is empty")
+	}
+	return "abc123", nil
+}
+func (f *fakeForkSCM) ListIssueReactions(context.Context, string, string, int) ([]forge.Reaction, error) {
+	return nil, nil
 }

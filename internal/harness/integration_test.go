@@ -90,7 +90,7 @@ forge:
 		"base-skill-1", "base-skill-2", // from base top-level
 		"child-skill-1",  // from child top-level
 		"gh-forge-skill", // from forge.github
-	}, h.Skills)
+	}, SkillSources(h.Skills))
 
 	// RunnerEnv = base env merged with forge env (forge keys win).
 	// Note: child top-level has no runner_env, so base runner_env is inherited,
@@ -144,16 +144,17 @@ forge:
 	})
 	require.NoError(t, err)
 
-	// Order: base-top + child-top + merged-forge (base-forge + child-forge).
-	// The forge blocks are merged first (base-forge + child-forge via mergeForgeBlocks),
-	// then ResolveForge appends the merged forge skills to the already-concatenated
-	// top-level skills (base-top + child-top).
+	// Order: resolved-base-top + child-top + child-forge.
+	// Base forge is resolved into base top-level before merge (#6798),
+	// so base skills become [base-s1, base-forge-s1]. Then
+	// mergeBaseIntoChild concatenates base + child top-level. Finally,
+	// ResolveForge on the child appends child's own forge skills.
 	assert.Equal(t, []string{
 		"base-s1",        // base top-level
+		"base-forge-s1",  // base forge.github (resolved into base top-level before merge)
 		"child-s1",       // child top-level
-		"base-forge-s1",  // base forge.github (merged into child forge)
-		"child-forge-s1", // child forge.github
-	}, h.Skills)
+		"child-forge-s1", // child forge.github (resolved on child)
+	}, SkillSources(h.Skills))
 }
 
 // TestLoadWithBase_EnvMergesThroughFullPipeline exercises the full load pipeline
@@ -258,7 +259,7 @@ forge:
 	// Compare field by field for clarity on failures.
 	assert.Equal(t, hOpts.Agent, hBase.Agent)
 	assert.Equal(t, hOpts.Model, hBase.Model)
-	assert.Equal(t, hOpts.Skills, hBase.Skills)
+	assert.Equal(t, SkillSources(hOpts.Skills), SkillSources(hBase.Skills))
 	assert.Equal(t, hOpts.RunnerEnv, hBase.RunnerEnv)
 	assert.Equal(t, hOpts.TimeoutMinutes, hBase.TimeoutMinutes)
 	assert.Equal(t, hOpts.PreScript, hBase.PreScript)

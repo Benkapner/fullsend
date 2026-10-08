@@ -25,10 +25,11 @@ enabled = true
 #
 # [vars]
 # ROLE_APP_IDS = ""          # JSON map: role → GitHub App ID
-# ALLOWED_ORGS = ""          # Comma-separated org names
-# OIDC_AUDIENCE = ""         # Expected OIDC audience claim
+# ALLOWED_ORGS = ""          # Legacy org list; ignored by the mint
 # ALLOWED_ROLES = ""         # Comma-separated role names
 # ALLOWED_WORKFLOW_FILES = "" # Comma-separated workflow file patterns (unset = fail-closed)
+# Note: OIDC audience is a compile-time constant (mintconsts.OIDCAudience)
+# and is no longer read from the environment.
 
 # Role PEM keys are stored as Worker secrets (encrypted at rest).
 # Secret names follow the convention: <ROLE>_APP_PEM
@@ -44,6 +45,17 @@ enabled = true
 # src/index.ts (not via [wasm_modules], which is incompatible with ES
 # module format). The binary is compiled from cmd/mint-wasm with
 # GOOS=js GOARCH=wasm and staged into this directory by `make wasm-stage`.
+# Native rate limits (Wrangler ≥ 4.36). namespace_id must be a string of a
+# positive integer (Cloudflare docs). Limits are per key per Cloudflare
+# location. Keys are hostname + path + IP, so preview aliases (which produce
+# distinct hostnames) get isolated counters without extra namespace patching.
+[[ratelimits]]
+name = "MINT_TOKEN_RATE_LIMITER"
+namespace_id = "582401"
+  [ratelimits.simple]
+  limit = 60
+  period = 60
+
 [[rules]]
 type = "CompiledWasm"
 globs = ["**/*.wasm"]

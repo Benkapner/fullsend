@@ -12,7 +12,7 @@ const (
 
 // ForeignVariableName returns the org variable name for cross-org allowlist policy.
 func ForeignVariableName(role string) string {
-	return foreignVarPrefix + strings.ToUpper(role) + foreignVarSuffix
+	return foreignVarPrefix + RoleIdentifier(role) + foreignVarSuffix
 }
 
 // ParseForeignAllowlist splits a comma-separated FOREIGN variable value into entries.
@@ -47,6 +47,12 @@ func CallerAllowed(allowlist []string, repository, repositoryOwner string) bool 
 // foreignCacheKey builds a cache key for target org + role policy lookups.
 func foreignCacheKey(targetOrg, role string) string {
 	return strings.ToLower(targetOrg) + "/" + strings.ToLower(role)
+}
+
+// repoForeignCacheKey builds a cache key for repo-level policy lookups
+// (target org + repo + role), distinct from the org-level foreignCacheKey.
+func repoForeignCacheKey(targetOrg, targetRepo, role string) string {
+	return strings.ToLower(targetOrg) + "/" + strings.ToLower(targetRepo) + "/" + strings.ToLower(role)
 }
 
 // validateTargetOrg checks target_org when cross-org mint is requested.

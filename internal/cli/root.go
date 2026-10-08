@@ -2,12 +2,19 @@ package cli
 
 import (
 	"context"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
 
 var version = "dev"
 var commitSHA = "dev"
+
+// upstreamRefOverride pins scaffold workflow refs to one fullsend-ai/fullsend
+// commit. It is set only through -ldflags: the e2e build stamps the commit
+// under test so e2e runs that commit's scaffold scripts, not main's (#7622).
+// Release and dev builds leave it empty.
+var upstreamRefOverride = ""
 
 // Version returns the CLI version string set at build time.
 func Version() string {
@@ -19,15 +26,33 @@ func CommitSHA() string {
 	return commitSHA
 }
 
-// resolveUpstreamRef returns the SHA and version tag for pinning scaffold
-// workflow refs. Release builds (commitSHA is a real SHA) return the SHA
-// and the corresponding version tag. Dev builds return empty strings,
-// causing the render layer to fall back to config.DefaultUpstreamRef.
-func resolveUpstreamRef() (ref, tag string) {
+// resolveBuildVersion returns the commit SHA and normalized version tag
+// from build-time ldflags. Release builds (commitSHA is a real SHA)
+// return ("abc123def", "v0.42.0"). Dev builds return ("", "").
+// This is the single source of truth for CLI version resolution — both
+// scaffold pinning (resolveUpstreamRef) and agents-repo pinning
+// (resolveAgentsRef) derive their values from it.
+func resolveBuildVersion() (sha, tag string) {
 	if commitSHA != "" && commitSHA != "dev" {
-		return commitSHA, "v" + version
+		v := strings.TrimPrefix(version, "v")
+		if v == "" || v == "dev" {
+			return "", ""
+		}
+		return commitSHA, "v" + v
 	}
 	return "", ""
+}
+
+// resolveUpstreamRef returns the SHA and version tag for pinning scaffold
+// workflow refs. A build-time upstreamRefOverride wins, with no tag;
+// otherwise it delegates to resolveBuildVersion, and dev builds return empty
+// strings, causing the render layer to fall back to config.DefaultUpstreamRef.
+// The override does not affect resolveAgentsRef.
+func resolveUpstreamRef() (ref, tag string) {
+	if upstreamRefOverride != "" {
+		return upstreamRefOverride, ""
+	}
+	return resolveBuildVersion()
 }
 
 func newRootCmd() *cobra.Command {
@@ -51,9 +76,13 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newScanCmd())
 	cmd.AddCommand(newReposCmd())
 	cmd.AddCommand(newPostReviewCmd())
+	cmd.AddCommand(newIssuesCmd())
 	cmd.AddCommand(newPostCommentCmd())
 	cmd.AddCommand(newReconcileStatusCmd())
 	cmd.AddCommand(newPollCmd())
+	cmd.AddCommand(newEvalMeasureCmd())
+	cmd.AddCommand(newResolveMRSourceCmd())
+	cmd.AddCommand(newCheckProtectedBranchCmd())
 	return cmd
 }
 

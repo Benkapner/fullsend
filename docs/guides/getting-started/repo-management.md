@@ -7,93 +7,338 @@ sidebar_position: 5
 Manage per-repo fullsend installations at scale using a declarative
 `repos.yaml` manifest. The `fullsend repos` command group provides bulk
 install, status checking, drift detection, configuration sync, and
-version upgrades across multiple repos and GitHub orgs.
+version upgrades across multiple repos, GitHub orgs, and GitLab groups.
 
 **Target audience:** Platform administrators (SRE/DevOps) managing
-fullsend across an organization. Individual repo owners should use
-`fullsend github setup` for single-repo installation (see
-[Configuring GitHub](configuring-github.md)).
+fullsend across an organization. For a single repository, GitHub owners
+should use `fullsend github setup` (see [Configuring GitHub](configuring-github.md));
+GitLab project owners should use `fullsend repos install --forge gitlab`
+(see [Configuring GitLab](configuring-gitlab.md)).
 
 ## Prerequisites
 
 - **fullsend CLI** installed (see [releases](https://github.com/fullsend-ai/fullsend/releases))
+
+The remaining prerequisites are forge-specific:
+
+**GitHub:**
+
 - **GitHub access** — admin or write access to the target repositories
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
-- **GCP access** — for WIF provisioning and mint operations (see [Mint administration](../infrastructure/mint-administration.md))
-- **Mint enrollment** — your orgs or repos must be enrolled in a fullsend token mint service (see [Getting Started](README.md))
+- **Vertex prerequisites** — if any agent will use Vertex, complete GCP WIF provisioning (`fullsend inference provision`) separately. For self-managed mints, mint enrollment (`fullsend mint enroll`) is also required. The hosted community mint needs no enrollment — install the shared Apps and use the CLI defaults. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
+
+An OpenAI-only repository can be installed without GCP inference inputs. Each
+agent's provider is selected when it runs; see
+[OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
+
+**GitLab:**
+
+GitLab does not use `gh`, `fullsend inference provision`, or mint
+enrollment. See [Configuring GitLab § Prerequisites](configuring-gitlab.md#prerequisites)
+for the GitLab token and runner requirements. A GCP inference project is
+needed only for Vertex agents.
 
 ## Getting started
 
-### Creating a manifest
+### Creating a manifest from scratch
 
-Generate a `repos.yaml` manifest by discovering existing installations:
-
-```bash
-fullsend repos init <org> --all \
-  --mint-project <GCP_PROJECT> \
-  --inference-project <GCP_PROJECT>
-```
-
-For a single repo:
+`repos install` can bootstrap a new manifest for you. Pass repo names
+as positional arguments with `--forge` and `--inference-auth`:
 
 ```bash
-fullsend repos init <owner/repo> --mint-project <GCP_PROJECT>
+fullsend repos install acme/api acme/web --forge github --inference-auth vertex-wif --direct
 ```
 
-Instead of `--all`, specify a subset of repos with `--repos`:
-
-```bash
-fullsend repos init acme --repos acme/api,acme/web \
-  --mint-project <GCP_PROJECT>
-```
-
-`--repos` and `--all` are mutually exclusive.
-
-If a `repos.yaml` file already exists, pass `--force` to overwrite it:
-
-```bash
-fullsend repos init <org> --all --force --mint-project <GCP_PROJECT>
-```
-
-The command discovers per-repo and per-org installations, extracts
-current configuration (WIF provider, workflow ref, mint URL), and writes
-a manifest. Default values for `fullsend_ref` and `inference_region` are
-computed using the mode (most common value) across discovered repos.
+This creates `repos.yaml` (or the path given by `-f`) with
+`version: 1`, adds the specified repos with `inference.auth` pinned on
+each entry, and runs the install. The `--forge` and `--inference-auth`
+flags are required when no manifest exists.
 
 ### Multi-forge manifests
 
-Every repo entry in the manifest must declare its forge (`github` or
-`gitlab`). Set `defaults.forge` to avoid repeating the forge on every
-entry. Per-repo overrides are supported for mixed-forge manifests:
+Each platform (`github`, `gitlab`) is a top-level key containing its
+infrastructure config and repos list. Repos are grouped under their
+platform — no per-entry forge selector is needed:
 
 ```yaml
 version: 1
-mint:
-  url: https://mint.example.com
-  project: my-project
-  region: us-central1
 defaults:
-  forge: github
+  inference:
+    auth: vertex-wif
+github:
+  mint_url: https://mint.example.com
   fullsend_ref: v2.5.0
-repos:
-  - acme/api-server            # inherits forge: github from defaults
-  - acme/web-frontend
-  - repo: gitlab-group/project # per-entry override
-    forge: gitlab
+  repos:
+    - name: acme/api-server
+    - name: acme/web-frontend
+
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v2.5.0
+  repos:
+    - name: gitlab-group/project
+    - name: gitlab-group/subgroup/nested-project
 ```
 
+GitHub repos use a token mint for authentication. The
+`github.mint_mode` field controls the default mint URL:
+`public` (default) uses `https://mint.fullsend.sh` when no explicit
+`mint_url` is set; `private` requires an explicit `mint_url`. Both
+`mint_mode` and `mint_url` can be overridden per-repo.
+
+`github.app_set` names the GitHub App set (apps named `{app-set}-{role}`)
+and is persisted as the `FULLSEND_APP_SET` repository variable, mirroring
+`fullsend github setup --app-set`. It is GitHub-only: setting `app_set`
+under `gitlab` or on a GitLab repo entry is a validation error. The value
+must be lowercase alphanumeric with optional hyphens (max 23 characters).
+When omitted, repos get the built-in default `fullsend-ai`. Like other
+scalar fields it can be set at the platform level and overridden per-repo;
+`--app-set` on `repos install` applies to every selected GitHub repo and is
+persisted as a per-repo `app_set` override in the manifest. Reruns and
+convergence preserve an existing custom `FULLSEND_APP_SET`
+rather than reverting it to the built-in default, and repair the variable
+when it has drifted (when `app_set` is declared) or is missing (older
+installs). The implementation does not weaken exact bot-identity matching.
+
 For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
-`--gitlab-token` to `fullsend repos` subcommands. For self-hosted GitLab
-instances, set `GITLAB_API_URL` to the API base URL (e.g.
-`https://gitlab.example.com/api/v4`).
+`--gitlab-token` to `fullsend repos` subcommands. Manifest-driven commands
+(`repos install` and `repos status`) require `gitlab.url` whenever GitLab
+repos are present, including gitlab.com; there is no manifest default. Pass
+`--gitlab-url` to `fullsend repos install` to set it (this also implies
+`--forge=gitlab` when no forge is specified), or set it later with
+`fullsend repos set-default gitlab.url <url>`. The env-var fallback chain
+(`FULLSEND_GITLAB_URL` → `GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to
+gitlab.com) applies only to call paths without a manifest URL; it does
+not override manifest validation. Self-hosted
+instances that use a private CA need runner `tls-ca-file` plus separate
+sandbox-host trust — see [Private CA (self-hosted GitLab)](operations.md#private-ca-self-hosted-gitlab).
 
-> **Note:** Mixed-forge manifests currently require that all repos share the
-> same forge as `defaults.forge`. Per-entry client switching (connecting to
-> both GitHub and GitLab APIs in a single run) is planned but not yet
-> implemented.
+Per-repo fields inherit from the platform-level default when omitted.
+To explicitly stop a field from inheriting, set it to the literal value
+`none`. For example, `fullsend_ref: none` prevents the repo from
+inheriting the platform-level `fullsend_ref`:
 
-See `fullsend repos init --help` or the [CLI reference](../../cli/repos.md)
-for all flags.
+```yaml
+github:
+  fullsend_ref: v2.5.0
+  repos:
+    - name: acme/api
+    - name: acme/legacy
+      fullsend_ref: none  # does not inherit v2.5.0
+```
+
+The `none` sentinel works for string fields (`fullsend_ref`,
+`mint_url`, `mint_mode`, `config_base.source`, `config_base.sha256`). List fields like
+`allowed_remote_resources` are managed at the `defaults` level and
+cannot be cleared per-repo. For `app_set`, `none` resets the effective
+value to the built-in default `fullsend-ai` rather than disabling the
+field (an app set is always required to resolve App slugs).
+
+### Inference authentication
+
+Every repo must resolve an explicit inference authentication method,
+`inference.auth`: either `vertex-wif` (Vertex AI through GCP Workload
+Identity Federation) or `openai-api-key`. There is no implicit default. A
+repo with no selection is reported as a configuration error by
+`repos install` and `repos status`, before any forge change is made for
+that repo. Uninstall does not need the setting: it removes every
+Fullsend-managed inference credential whether `inference.auth` is set,
+valid, or missing.
+
+The selection can be set under `defaults`, in each forge section, and on
+repo or glob entries. It resolves entry → forge section → `defaults`
+using the normal entry matching rules (an explicit entry wins over a glob),
+so a repo-level value never affects its siblings:
+
+```yaml
+version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+github:
+  repos:
+    - name: acme/api
+    - name: acme/openai-*
+      inference:
+        auth: openai-api-key
+gitlab:
+  url: https://gitlab.example.com
+  inference:
+    auth: openai-api-key
+  repos:
+    - name: group/project
+```
+
+Only the selection is stored. Credentials and GCP values are still
+supplied separately on the command line (`--vertex-project` for
+`vertex-wif`, `--openai-api-key` for `openai-api-key`), and `none` is not
+a valid value. `repos install` provisions only the credentials of each
+repo's selected method; see
+[Inference credentials](../../cli/repos.md#inference-credentials).
+
+`fullsend repos install <repo> --inference-auth <value>` persists the
+selection as `inference.auth` on each selected manifest entry, for repos
+added by the command and for existing entries alike. It never changes
+`defaults`, forge sections, or unselected repos, so later `status` and
+`install` runs resolve the same value without the flag. To set the
+forge-wide or global selection, use `repos set-default`
+(`defaults.inference.auth`, `github.inference.auth`,
+`gitlab.inference.auth`). See
+[fullsend repos § Inference authentication selection](../../cli/repos.md#inference-authentication-selection)
+for the full precedence rules.
+
+**Upgrading:** manifests written before `inference.auth` existed are not
+treated as Vertex. Add the selection your repos actually use before
+upgrading. For example, to keep the previous Vertex WIF behaviour
+everywhere:
+
+```bash
+fullsend repos set-default defaults.inference.auth vertex-wif
+```
+
+**Shared manifests:** older CLI versions reject unknown manifest fields, so
+a `repos.yaml` that contains `inference.auth` cannot be parsed by a CLI
+that predates the key. When several people or pipelines share one
+manifest, upgrade every consumer's CLI before committing the manifest edit
+that adds `inference.auth`.
+
+### Configuration presets
+
+`repos.yaml` can declare a configuration preset so fleet installs
+reproduce `github setup --config`. The preset is a local file or HTTPS
+URL written byte-for-byte as `.fullsend/config.base.yaml`.
+`.fullsend/config.yaml` remains the repository-local overlay and is not
+merged with the preset.
+
+```yaml
+version: 1
+defaults:
+  config_base:
+    source: https://example.com/presets/org.yaml
+    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+github:
+  repos:
+    - name: acme/api          # inherits the fleet preset
+    - name: acme/special
+      config_base:
+        source: ./special.yaml  # per-repo override (path is relative to repos.yaml's directory)
+        sha256: none            # do not apply the fleet hash to this source
+    - name: acme/legacy
+      config_base:
+        source: none            # disable inheritance; existing base is preserved
+```
+
+`config_base.sha256` is optional. When set, it must be a 64-character SHA-256
+hex digest of the fetched content, matching `github setup --config-hash`.
+A per-repo `config_base.source` override still inherits
+`defaults.config_base.sha256` unless you set `config_base.sha256` on that
+entry (`none` skips validation). A hash mismatch or invalid source fails
+before any files are written. Remote presets without a hash are accepted,
+but content integrity is not verified. Local preset paths are resolved
+relative to the directory containing `repos.yaml`, not the process working
+directory, and must stay within that directory (`../` paths that escape it
+are rejected). A manifest loaded from an HTTPS URL must declare preset
+sources as HTTPS URLs; local preset paths are not allowed in that case.
+
+Changing the declared preset replaces the complete base file. Repeated
+installs are idempotent when the desired bytes already match. If no
+preset is declared, an existing `.fullsend/config.base.yaml` is left
+alone and is not compared. `repos status` reports base-file drift only
+when a preset is declared. The same path applies to GitHub and GitLab.
+
+On a fresh install of a repo with a declared preset, `--roles` is left
+unset in the written overlay unless `--roles` was explicitly passed on
+the `repos install` command line — so the preset's own roles (rather
+than the fleet-wide `--roles` default) take effect through the layered
+config.
+
+### Managed configuration
+
+`repos.yaml` can also declare a sparse managed `.fullsend/config.yaml`
+([ADR 0122](../../ADRs/0122-declarative-repo-configuration.md)). The
+block uses the same schema as per-repo `config.yaml` except `runtime`
+and `allowed_remote_resources`, which stay on their existing manifest
+shorthands.
+
+```yaml
+version: 1
+defaults:
+  runtime: pi
+  config:
+    kill_switch: false
+    inference:
+      region: us-east1
+github:
+  repos:
+    - name: acme/api              # opted in by defaults.config
+    - name: acme/special
+      config:
+        kill_switch: true         # repository values win
+    - name: acme/unmanaged        # would be unmanaged without defaults.config
+```
+
+`defaults.config` opts every repository into managed configuration. A
+repository `config` block (including `config: {}`) opts in only that
+repository. A repository with neither declaration is not config-managed.
+Resolution is code defaults, then `config_base`, then `defaults.config`,
+then the repository `config`; more specific values win and unspecified
+keys inherit. The managed configuration contains only explicitly supplied
+values (plus the `runtime` / `allowed_remote_resources` shorthands) —
+code defaults and `config.base.yaml` are not baked into the file.
+Unknown fields and the forbidden shorthand keys fail manifest validation
+with field-specific errors. `config` is the managed overlay (written to
+`.fullsend/config.yaml`); `config_base` is a separate preset copied to
+`.fullsend/config.base.yaml`.
+
+Do not put `runtime` or `allowed_remote_resources` inside `config` — those
+paths stay on the sibling manifest fields:
+
+```yaml
+# Invalid — rejected at manifest load
+defaults:
+  config:
+    runtime: pi
+    allowed_remote_resources: []
+```
+
+Every managed `.fullsend/config.yaml` begins with a stable ownership
+marker and otherwise contains only the declared values:
+
+```yaml
+# This file is managed by 'fullsend repos': repos-config-v1
+# Do not edit this file directly; changes will be overwritten.
+kill_switch: true
+runtime: pi
+inference:
+  region: us-east1
+```
+
+If a config-managed repository already has an existing
+`.fullsend/config.yaml` without that marker, `repos status` reports it as
+`managed configuration (adoption required)` rather than ordinary drift,
+and `repos install`/convergence leave the file untouched until it is
+manually adopted (edited to carry the marker, or replaced with the
+rendered managed body). Once a file carries the marker, `repos install`
+writes the canonical sparse `.fullsend/config.yaml`, `repos status`
+reports any whole-file difference (including a single-key change) as
+drift, and convergence rewrites the file deterministically — unless the
+candidate would become less restrictive than the current effective
+configuration without an explicit manifest declaration. That pre-write
+safety gate compares `kill_switch`, `roles`, `allowed_remote_resources`,
+agent `enabled: false` suppressions, and `create_issues.allow_targets`
+through the full overlay → base → code-defaults accessor chain. Omitted
+keys fall through rather than being treated as unset; an explicit empty
+`allowed_remote_resources: []` remains deny-all. Status and install output
+identify the affected keys. A blanket adoption acknowledgement is not
+enough. Repositories with neither declaration keep their existing
+configuration and are excluded from managed-configuration drift checks.
+`.fullsend/config.base.yaml` handling stays independent.
+
+```bash
+fullsend repos status -f repos.yaml --json   # whole-file managed drift
+fullsend repos install -f repos.yaml --dry-run
+fullsend repos install -f repos.yaml         # rewrite the managed file
+```
 
 ### Manifest paths and URLs
 
@@ -113,50 +358,53 @@ number of parallel API calls or operations. Defaults vary by command
 (typically 4 for write operations, 8 for read-only operations). See the
 [CLI reference](../../cli/repos.md) for per-command defaults and limits.
 
-### Installing repos
+### Installing and converging repos
 
-Install fullsend on repos defined in the manifest that are not yet
-installed:
+Install and converge repos defined in the manifest:
 
 ```bash
 fullsend repos install -f repos.yaml
 ```
 
-Install runs in three phases:
+Install runs in two phases:
 
-1. **Parallel discovery** — check which repos are already installed by
-   verifying the guard variable and all installation components
-   (workflow file, variables, and secrets). Repos with a guard
-   variable set but other components missing are flagged for
-   partial-installation repair (see below).
-2. **Sequential WIF** — register each unique org in the token mint
-   (`EnsureOrgInMint`), then provision per-repo WIF infrastructure
-   (`ProvisionWIF` + `RegisterPerRepoWIF`). These operations modify
-   shared GCP state and are not concurrent-safe.
-3. **Parallel scaffold** — commit scaffold files and write
-   variables/secrets
+1. **Manifest add** — repos specified as positional arguments that are
+   not already in the manifest are added (requires `--forge`).
+2. **Convergence** — every repo flows through a single probe → diff →
+   apply pipeline. Repos whose shim workflow is not yet on the default
+   branch are treated as new and fully provisioned (scaffold files,
+   variables, secrets) onto the initialization branch. That includes a
+   re-run while the initialization PR/MR is still open: variables and
+   secrets may already exist from the first run, but the installer
+   still updates the same initialization PR/MR rather than opening a
+   separate upgrade PR. Repos whose workflow is already on the default
+   branch are checked for component drift (workflow, thin callers,
+   variables, secrets, pipeline schedules, GitLab poller protected-ref
+   pipeline access, GitLab pipeline-variable override-role inspection —
+   typed dispatch activation fails closed without `no_one_allowed`;
+   runnable typed templates require that setting to be verified before
+   delivery, even when enforcement is requested; legacy variable-based
+   wrappers are exempt), scaffold content drift, managed `.fullsend/config.yaml`
+   drift, scaffold ref drift, and declared configuration-preset drift against
+   `.fullsend/config.base.yaml`. Missing or drifted components are repaired
+   automatically; ref updates are committed as PRs (or direct pushes with
+   `--direct`).
 
-> **Partial installation repair:** If a previous install was interrupted
-> (guard variable set but workflow, variables, or secrets missing),
-> `repos install` detects the incomplete state and repairs it
-> automatically. No manual cleanup is needed — re-running install
-> resumes where the previous run left off.
+> **GitHub prerequisite:** GCP WIF provisioning
+> (`fullsend inference provision`) must be completed before running install.
+> For self-managed mints, also run `fullsend mint enroll`. The hosted
+> community mint needs no enrollment. For GitLab prerequisites and inference
+> setup, see [Configuring GitLab](configuring-gitlab.md#prerequisites).
 
 > **Note:** When your token does not have direct push access to a target
 > repository, the install command creates a fork and submits the scaffold
 > PR from the fork. To avoid fork-based delivery, ensure you have write
 > (or admin) access to the target repositories before running install.
 
-Preview what would be installed without making changes:
+Preview what would change without making modifications:
 
 ```bash
 fullsend repos install -f repos.yaml --dry-run
-```
-
-Install specific repos (when orgs are already registered in the mint):
-
-```bash
-fullsend repos install acme/api acme/web --skip-mint-check
 ```
 
 Glob patterns are supported:
@@ -164,6 +412,12 @@ Glob patterns are supported:
 ```bash
 fullsend repos install "acme/*" --direct --concurrency 8
 ```
+
+A filtered install requires credentials only for the selected
+repositories' forges. With both GitHub and GitLab entries in the
+manifest, `fullsend repos install gallen/integration-service` needs
+`GITLAB_TOKEN` but not `GH_TOKEN`. Installing the whole manifest still
+requires credentials for every forge that has repos.
 
 Install a subset of agent roles (defaults to
 `triage,coder,review,fix,retro,prioritize`):
@@ -192,133 +446,169 @@ The command reports per-repo status (installed, not installed, error) and
 any configuration drift. Returns a non-zero exit code when drift or
 errors exist, making it suitable for CI checks.
 
+Inference credentials are checked against each repo's own
+`inference.auth`. A missing credential of the selected method and a
+leftover Fullsend-managed secret of the other method are both reported as
+drift, by name only. See
+[`repos status` output](../../cli/repos.md#output).
+
 Use `--json` for machine-readable output:
 
 ```bash
 fullsend repos status -f repos.yaml --json
 ```
 
-### Detecting configuration drift
+### Detecting and reconciling configuration drift
 
-Show configuration differences between the manifest and actual forge
-state:
-
-```bash
-fullsend repos diff -f repos.yaml
-```
-
-The `diff` command checks **variables and managed secrets only** — it
-compares `FULLSEND_MINT_URL` and `FULLSEND_GCP_REGION` variables against
-the manifest and checks that `FULLSEND_GCP_PROJECT_ID` (the only managed
-secret) exists. Because GitHub secrets are not readable, diff can only
-detect missing secrets — it cannot detect value mismatches. The WIF
-provider secret (`FULLSEND_GCP_WIF_PROVIDER`) is write-once at install
-time and is not managed by diff/sync. Diff does not check the scaffold
-workflow ref (`@ref`). To detect ref drift, use `repos status` (which
-includes the ref in its output) or run `repos upgrade --dry-run` to
-preview which repos would be upgraded.
-
-Use `--json` for machine-readable output:
+Run `repos install` to detect and fix component drift (workflow, thin
+callers, variables, secrets, pipeline schedules, GitLab poller
+protected-ref pipeline access, the GitLab webhook fast path — a pipeline
+trigger token, webhook secret, and project webhook, deferred until the
+dispatcher and the scripts it sources, transitively, are on the default branch, the
+default branch is protected, and `no_one_allowed` is verified —
+GitLab pipeline-variable override-role
+inspection — typed dispatch activation fails closed without
+`no_one_allowed` before runnable template delivery, even when enforcement
+is requested; legacy upgrades need maintenance-window preparation and legacy variable-based wrappers are
+exempt), scaffold ref drift,
+scaffold content drift, declared configuration-preset drift, and managed
+`.fullsend/config.yaml` drift across all manifest repos:
 
 ```bash
-fullsend repos diff --json
+fullsend repos install -f repos.yaml
 ```
 
-Returns a non-zero exit code when drift exists.
-
-### Reconciling drift
-
-Apply manifest values to repos where drift was detected:
+Preview what would change without modifying anything:
 
 ```bash
-fullsend repos sync -f repos.yaml
+fullsend repos install -f repos.yaml --dry-run
 ```
 
-Preview changes first:
+The convergence phase checks all components (workflow, thin callers,
+variables, secrets, pipeline schedules, GitLab poller protected-ref
+pipeline access, GitLab webhook fast-path provisioning and repair (the
+trigger token, webhook secret, and project webhook are created or repaired
+only once the readiness gates are met, otherwise deferred without changes;
+a trigger token owned above Developer, or whose owner cannot be verified, is
+revoked with its webhook and the fast path stays disabled — install-time
+Maintainer access is never kept as a runtime credential; hooks Fullsend
+does not own are left untouched) — a disabled GitLab schedule is
+reported as drift and reactivated only when `--reactivate-schedules` is
+passed; GitLab pipeline-variable override-role inspection — typed
+dispatch activation fails closed without `no_one_allowed`;
+runnable typed templates require the setting to be verified before delivery,
+even when enforcement is requested; legacy variable-based wrappers are exempt), scaffold content drift (including structural rewrites of
+`.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref, and
+removal of a leftover `.gitlab/ci/fullsend-dispatch.yml` from installs
+predating #7707),
+declared configuration-preset drift, managed `.fullsend/config.yaml` drift,
+and scaffold workflow refs against the manifest. Missing or drifted
+components are repaired automatically (disabled pipeline schedules are the
+exception — see above); a changed preset replaces only
+`.fullsend/config.base.yaml` and leaves the managed configuration intact. A
+drifted managed configuration file is rewritten wholesale, unless the
+existing file predates managed-configuration adoption (missing the
+ownership marker) — that case is reported as adoption required and left
+untouched instead of rewritten; unmanaged files are left intact. Ref
+updates are committed as PRs (or direct pushes with `--direct`).
+
+Use `repos status` for a read-only drift report (no changes applied). For
+GitLab repos, status also reports `protected-ref-pipeline` drift when the
+poller loses merge access to create pipelines on the protected default
+branch:
 
 ```bash
-fullsend repos sync --dry-run
+fullsend repos status -f repos.yaml --json
 ```
-
-Use `--json` for machine-readable output:
-
-```bash
-fullsend repos sync -f repos.yaml --json
-```
-
-Sync reconciles variables and secrets. It does **not** touch the scaffold
-shim version (`@ref`) — use `repos upgrade` for that.
 
 ### Adding repos
 
-Add repos to the manifest and optionally install them:
+Add a new repo to the manifest and install it in one step:
 
 ```bash
-fullsend repos add acme/new-api acme/new-web
-fullsend repos add acme/new-api --install --direct
+fullsend repos install acme/new-api --forge github --direct
+```
+
+This requires an inherited `inference.auth` selection (forge section or
+`defaults`). Otherwise pass `--inference-auth`, which also pins the value on
+the new entry:
+
+```bash
+fullsend repos install acme/new-api --forge github --inference-auth openai-api-key
+```
+
+Add multiple repos:
+
+```bash
+fullsend repos install acme/new-api acme/new-web --forge github
 ```
 
 Preview what would be added:
 
 ```bash
-fullsend repos add acme/new-api --dry-run
+fullsend repos install acme/new-api --forge github --dry-run
 ```
 
 Specify which agent roles to install (defaults to
 `triage,coder,review,fix,retro,prioritize`):
 
 ```bash
-fullsend repos add acme/new-api --install --roles triage,coder,review
+fullsend repos install acme/new-api --forge github --roles triage,coder,review
 ```
+
+Per-repo overrides can be specified with `--fullsend-ref`, `--mint-url`,
+`--app-set`, `--allowed-remote-resources`, `--inference-auth`, and
+`--vendor`. The
+`--vertex-region` flag is install-time only and is not stored in the
+manifest.
 
 ### Removing repos
 
-Remove repos from the manifest:
+Remove a repo from the manifest and tear down its installation. File deletions open a PR by default (variables and secrets are deleted immediately via the API). For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches, deletes the Fullsend-owned webhook fast-path project webhook, revokes its managed pipeline trigger token, and deletes the `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables; if that cleanup fails, the scaffold is not removed and the manifest entry is kept for retry. Pass `--direct` to push file deletions to the default branch:
 
 ```bash
-fullsend repos remove acme/old-api
+fullsend repos uninstall acme/old-api
+fullsend repos uninstall acme/old-api --direct
 ```
 
 When targeting multiple repos (via globs or bulk lists), the command
 prompts for confirmation:
 
 ```bash
-fullsend repos remove "acme/*"
+fullsend repos uninstall "acme/*"
 ```
 
 In non-interactive environments (CI, piped stdin), pass `--yes` to skip
 the confirmation prompt:
 
 ```bash
-fullsend repos remove "acme/*" --yes
+fullsend repos uninstall "acme/*" --yes
 ```
 
-To also tear down fullsend from the repos (delete workflow, variables,
-secrets, and WIF) before removing them from the manifest:
+Remove from manifest only (skip teardown — useful when the repo is
+already deleted):
 
 ```bash
-fullsend repos remove acme/old-api --uninstall
-fullsend repos remove acme/old-api --uninstall --skip-wif-cleanup
+fullsend repos uninstall acme/old-api --manifest-only
+```
+
+Tear down without removing from manifest (temporary teardown):
+
+```bash
+fullsend repos uninstall acme/old-api --uninstall-only
 ```
 
 ### Rolling out a new fullsend version
 
 To upgrade the scaffold workflow ref across all manifest repos:
 
-1. Update the `fullsend_ref` in `repos.yaml` to the new version.
+1. Update `github.fullsend_ref` (or `gitlab.fullsend_ref` for
+   GitLab repos) in `repos.yaml` to the new version.
 
-2. Run the upgrade:
-
-   ```bash
-   fullsend repos upgrade -f repos.yaml
-   ```
-
-   Mint verification runs automatically as a pre-flight step. If the
-   mint deployment URL does not match the manifest, the upgrade fails
-   with a clear error. Pass `--skip-mint-check` to bypass:
+2. Run install to converge:
 
    ```bash
-   fullsend repos upgrade -f repos.yaml --skip-mint-check
+   fullsend repos install -f repos.yaml
    ```
 
 3. Review and merge the scaffold PRs in each repo.
@@ -326,116 +616,114 @@ To upgrade the scaffold workflow ref across all manifest repos:
 Preview what would change without modifying repos:
 
 ```bash
-fullsend repos upgrade --dry-run
-```
-
-Override the manifest ref for a one-off upgrade:
-
-```bash
-fullsend repos upgrade --ref v2.4.0
-```
-
-Upgrade specific repos:
-
-```bash
-fullsend repos upgrade acme/api acme/web
+fullsend repos install -f repos.yaml --dry-run
 ```
 
 Push the upgrade directly to the default branch instead of creating a PR:
 
 ```bash
-fullsend repos upgrade -f repos.yaml --direct
+fullsend repos install -f repos.yaml --direct
 ```
 
-Floating refs (`latest`, `main`, `v0`) are skipped. Downgrades are
-blocked unless `--force` is set.
+Repos that are already SHA-pinned (`@<sha> # <ref>`) preserve their
+pinning style during upgrades when the target ref is a semver tag — the
+tag is resolved to a commit SHA and written as `@<sha> # <ref>`. When
+the target ref is a branch name (e.g., `main`), the branch name is
+written directly (`@main`) to ensure idempotent convergence. Non-SHA-pinned
+repos keep their string ref format (e.g., `@v2.3.0`).
 
-### Verifying mint configuration
+Downgrades are blocked unless `--force` is set. When both the current
+and target refs are semver tags, the guard uses version comparison. When
+either ref is a SHA (or a mix of SHA and tag), the guard resolves both
+to commit SHAs and uses git ancestry checking via the forge API to
+detect downgrades. If the ancestry check fails (e.g., API error), the
+upgrade proceeds rather than blocking — graceful degradation.
 
-The standalone `repos upgrade-mint` command verifies the token mint
-deployment matches the manifest without triggering an upgrade:
+## Troubleshooting
 
-```bash
-fullsend repos upgrade-mint -f repos.yaml
+### Unknown field errors in repos.yaml
+
+The manifest parser strictly validates field names in all sections
+(`defaults`, `github`, `gitlab`, and top-level).
+Unrecognized fields are rejected with an error naming the offending key:
+
+```
+parsing manifest YAML: line 8: field fullsend_ref not found in type repos.Defaults
 ```
 
-Since `repos upgrade` now runs this verification automatically, this
-command is primarily useful for one-off checks.
+Common causes:
 
-## Migrating from per-org mode to manifest management
+- **Typos** — e.g., `mint_ulr` instead of `mint_url`.
+- **Deprecated or unsupported fields** — fields that were never part of the
+  manifest schema (such as the legacy `mint:` key) are rejected.
+- **Wrong nesting level** — e.g., placing `fullsend_ref` under `defaults`
+  instead of under `github` or `gitlab`.
+- **Renamed fields** — the old flat `config` / `config_hash` *preset*
+  keys (a scalar URL or path) were replaced by a nested `config_base`
+  object; a scalar `config:` value now fails with "must be a YAML
+  mapping" rather than an unknown-field error. Rewrite `config:` as
+  `config_base: {source: <value>}` and `config_hash:` as
+  `config_base: {sha256: <value>}`, for both `defaults` and per-repo
+  entries. A mapping-shaped `config:` block is separate and still
+  valid — that is the [managed configuration](#managed-configuration)
+  syntax (ADR 0122), not the old preset key:
 
-Organizations migrating from per-org mode
-([ADR 0044](../../ADRs/0044-deprecate-per-org-installation-mode.md)) to
-per-repo manifest management can use the following workflow.
+  ```yaml
+  # Before
+  defaults:
+    config: presets/base.yaml
+    config_hash: <sha256>
 
-### Step 1: Generate a manifest from existing installations
+  # After
+  defaults:
+    config_base:
+      source: presets/base.yaml
+      sha256: <sha256>
+  ```
 
-```bash
-fullsend repos init <org> --all \
-  --mint-project <GCP_PROJECT> \
-  --inference-project <GCP_PROJECT>
+To fix, correct the field name or remove the unrecognized entry and re-run
+the command.
+
+### No inference authentication selected
+
+```
+no inference authentication selected for acme/api: set inference.auth (vertex-wif or openai-api-key) on the repository entry, in the github section, or under defaults in repos.yaml, or pass --inference-auth to repos install
 ```
 
-This discovers all enrolled repos and writes `repos.yaml`.
+The repo resolves no `inference.auth` from its entry, its forge section,
+or `defaults`. This is expected after upgrading from a release without
+the setting. Add the selection at the appropriate level (see
+[Inference authentication](#inference-authentication)) and re-run.
+`fullsend repos set-default defaults.inference.auth vertex-wif` restores
+the previous Vertex WIF behaviour for every repo. An unrecognised value
+(for example `vertex`) fails manifest validation and names the offending
+key.
 
-### Step 2: Install per-repo infrastructure
+### Partial secret state
 
-```bash
-fullsend repos install -f repos.yaml
-```
-
-Each repo gets its own WIF provider, variables, secrets, and scaffold
-workflow.
-
-### Step 3: Verify per-repo installations
-
-```bash
-fullsend repos status -f repos.yaml
-```
-
-Confirm all repos show `installed` status with no drift.
-
-### Step 4: Uninstall the per-org configuration
-
-```bash
-fullsend github uninstall "$ORG_NAME"
-```
-
-This removes the `.fullsend` config repo, org-level variables, and org
-secrets. It also lists any installed GitHub Apps and provides links for
-manual deletion.
-
-> **Warning:** Do **not** delete the GitHub Apps listed by the uninstall
-> command if you are migrating to per-repo mode. The agents still need
-> these apps to function. The apps are shared between per-org and
-> per-repo installations — only delete them if you are fully removing
-> fullsend from the organization.
-
-In non-interactive environments, pass `--yolo` to skip the confirmation
-prompt:
-
-```bash
-fullsend github uninstall "$ORG_NAME" --yolo
-```
-
-> **Note:** `fullsend github unenroll` is only needed when keeping some
-> repos on per-org mode while migrating others to per-repo. When
-> migrating all repos, skip unenroll and go directly to uninstall.
+Both GCP inference secrets may be absent. If only one exists, `repos status`
+reports drift. Supply the complete GCP inference flags to `repos install`
+to write the missing secret, or add it manually; until then a Vertex run
+fails its early credential check. An OpenAI run does not use the GCP pair.
 
 ## Tearing down
 
 ### Removing individual repos
 
-Remove a repo from the manifest and tear down its fullsend installation:
-
-```bash
-fullsend repos remove acme/old-api --uninstall
-```
-
-Or tear down without modifying the manifest:
+Remove a repo from the manifest and tear down its fullsend installation.
+Scaffold file deletions open a PR by default (repository variables and
+secrets are still removed immediately via the API). Pass `--direct` to push
+file deletions to the default branch instead:
 
 ```bash
 fullsend repos uninstall acme/old-api
+fullsend repos uninstall acme/old-api --direct
+```
+
+Tear down without modifying the manifest (temporary teardown):
+
+```bash
+fullsend repos uninstall acme/old-api --uninstall-only
 ```
 
 When targeting multiple repos, a confirmation prompt appears. In
@@ -452,9 +740,9 @@ infrastructure, coordinate between roles:
 
 | Step | Role | Command |
 |------|------|---------|
-| 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` |
-| 2 | GCP Admin (Inference) | `fullsend inference deprovision <org>` |
-| 3 | GCP Admin (Mint) | `fullsend mint unenroll <org>` |
+| 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` (forge-side cleanup + manifest removal) |
+| 2 | GCP Admin (Inference) | GitHub: `fullsend inference deprovision <org>` (WIF cleanup). GitLab: `inference deprovision` does not cover the shared `gitlab-oidc` provider — see [Operations § Per-repo teardown](operations.md#per-repo-teardown) step 6 to revoke each repo's WIF trust instead. |
+| 3 | GCP Admin (Mint) | `fullsend mint unenroll <owner/repo>` for each enrolled repository, adding `--delete-provider` to permanently delete its dedicated WIF provider (self-hosted mints only; not needed for the hosted community mint). Bare-org `mint unenroll <org>` is optional legacy cleanup of `ALLOWED_ORGS` and the shared WIF condition; it does not remove `PER_REPO_WIF_REPOS` entries or repo providers. |
 
 Each `fullsend` command that prompts for confirmation accepts a skip
 flag: `--yes` for `repos` commands, `--yolo` for `github` and `mint`
@@ -462,8 +750,7 @@ commands.
 
 ## See also
 
+- [Configuring GitLab](configuring-gitlab.md) — GitLab-specific getting-started guide
 - [Operations](operations.md) — Day-2 per-repo administration and standalone commands
-- [Per-Org Mode](org-mode.md) — Organization-mode installation (planned deprecation)
 - [CLI Reference: fullsend repos](../../cli/repos.md) — Full flag and subcommand reference
 - [Mint administration](../infrastructure/mint-administration.md) — Token mint deployment and management
-- [ADR 0057](../../ADRs/0057-repos-management.md) — Design decision for repos management

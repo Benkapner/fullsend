@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -27,8 +26,9 @@ type foreignCacheEntry struct {
 // mintRequest is the JSON body sent by .fullsend agent workflows.
 type mintRequest struct {
 	Role      string   `json:"role"`
+	Level     string   `json:"level,omitempty"`
 	TargetOrg string   `json:"target_org,omitempty"`
-	Repos     []string `json:"repos,omitempty"`
+	Repos     []string `json:"repos"`
 }
 
 // mintResponse is returned on success.
@@ -41,16 +41,19 @@ type mintResponse struct {
 }
 
 // statusResponse is returned by the /v1/status diagnostic endpoint.
+// When authenticated via OIDC, Org is set to the caller's org.
+// When authenticated via an optional validator (e.g. GitHub user
+// token), Org is omitted.
 type statusResponse struct {
-	Org     string   `json:"org"`
-	Roles   []string `json:"roles"`
-	Version string   `json:"version,omitempty"`
-	Commit  string   `json:"commit,omitempty"`
+	Org               string   `json:"org,omitempty"`
+	Roles             []string `json:"roles"`
+	WorkflowHostRepos []string `json:"workflow_host_repos,omitempty"`
+	Version           string   `json:"version,omitempty"`
+	Commit            string   `json:"commit,omitempty"`
 }
 
 // Handler holds dependencies for the token mint HTTP server.
 type Handler struct {
-	httpClient   HTTPDoer
 	pemAccessor  PEMAccessor
 	oidcVerifier OIDCVerifier
 
@@ -64,6 +67,17 @@ type Handler struct {
 	foreignInflight map[string]*foreignInflight
 	foreignCacheTTL time.Duration
 	foreignCacheMu  sync.Mutex
+
+	// perRepoWIFRepos is the set of repositories enrolled for per-repo
+	// mint access. "*" enrolls every repository (public mint mode).
+	perRepoWIFRepos map[string]bool
+
+	// allowedWorkflowFiles lists the workflow basenames permitted to call the mint.
+	allowedWorkflowFiles []string
+
+	// workflowHostRepos lists the repos whose workflows are trusted to
+	// call the mint. Defaults to fullsend-ai/fullsend.
+	workflowHostRepos map[string]bool
 }
 
 type foreignInflight struct {
@@ -73,25 +87,69 @@ type foreignInflight struct {
 }
 
 // NewHandler creates a Handler with the given dependencies.
-// Environment variables for handler-level config (ROLE_APP_IDS, ALLOWED_ROLES)
-// are read once at construction time. The OIDCVerifier is injected by the caller
-// so different verification strategies can be used (STSVerifier for the Cloud
-// Function, JWKSVerifier for devmint). Org validation is the OIDCVerifier's
-// responsibility.
+// Configuration variables (ROLE_APP_IDS, ALLOWED_ROLES,
+// ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS)
+// are read once at construction time via the package-internal mintEnv
+// accessor. On native platforms mintEnv delegates to os.Getenv; on WASM
+// the CF Worker calls RegisterEnv before constructing the handler.
+//
+// The HTTP client for GitHub API calls is obtained from the
+// package-internal mintHTTP accessor. On native platforms this is a
+// cached *http.Client; on WASM the Worker calls RegisterHTTP first.
+//
+// The OIDC audience is the compile-time constant
+// mintconsts.OIDCAudience — it is not read from the environment.
+//
+// Load sites construct the appropriate OIDCVerifier (STSVerifier for
+// the Cloud Function, JWKSVerifier for devmint/standalone/Worker) and
+// pass it in. The handler only performs authorization (per-repo
+// enrollment, workflow-ref) after the verifier authenticates the token.
 func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, error) {
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-
-	h := &Handler{
-		httpClient:      httpClient,
-		pemAccessor:     pemAccessor,
-		oidcVerifier:    oidcVerifier,
-		githubBaseURL:   "https://api.github.com",
-		foreignCache:    make(map[string]foreignCacheEntry),
-		foreignInflight: make(map[string]*foreignInflight),
-		foreignCacheTTL: defaultForeignCacheTTL,
+	if oidcVerifier == nil {
+		return nil, errors.New("oidcVerifier must not be nil")
 	}
 
-	if raw := os.Getenv("ROLE_APP_IDS"); raw != "" {
+	// Register custom role permissions before processing ALLOWED_ROLES
+	// so that HasRole sees them during validation. Supports both flat
+	// format (role → permissions, stored under both read and write levels)
+	// and multi-level format (role → {"levels": {level → permissions}}).
+	// See ADR 0073.
+	if raw := mintEnv("CUSTOM_ROLE_PERMISSIONS"); raw != "" {
+		levels, err := ParseCustomRolePermissions(raw)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse CUSTOM_ROLE_PERMISSIONS: %w", err)
+		}
+		if err := RegisterCustomRoleLevels(levels); err != nil {
+			return nil, fmt.Errorf("registering custom role permissions: %w", err)
+		}
+	}
+
+	perRepoWIFRepos := make(map[string]bool)
+	for _, entry := range SplitCSV(mintEnv("PER_REPO_WIF_REPOS")) {
+		perRepoWIFRepos[strings.ToLower(entry)] = true
+	}
+
+	workflowHostRepos := make(map[string]bool)
+	for _, entry := range SplitCSV(mintEnv("WORKFLOW_HOST_REPOS")) {
+		workflowHostRepos[strings.ToLower(entry)] = true
+	}
+	if len(workflowHostRepos) == 0 {
+		workflowHostRepos["fullsend-ai/fullsend"] = true
+	}
+
+	h := &Handler{
+		pemAccessor:          pemAccessor,
+		oidcVerifier:         oidcVerifier,
+		githubBaseURL:        "https://api.github.com",
+		foreignCache:         make(map[string]foreignCacheEntry),
+		foreignInflight:      make(map[string]*foreignInflight),
+		foreignCacheTTL:      defaultForeignCacheTTL,
+		perRepoWIFRepos:      perRepoWIFRepos,
+		allowedWorkflowFiles: SplitCSV(mintEnv("ALLOWED_WORKFLOW_FILES")),
+		workflowHostRepos:    workflowHostRepos,
+	}
+
+	if raw := mintEnv("ROLE_APP_IDS"); raw != "" {
 		var ids map[string]string
 		if err := json.Unmarshal([]byte(raw), &ids); err != nil {
 			return nil, fmt.Errorf("failed to parse ROLE_APP_IDS: %w", err)
@@ -105,7 +163,7 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		roleSet[role] = true
 	}
 
-	if raw := os.Getenv("ALLOWED_ROLES"); raw != "" {
+	if raw := mintEnv("ALLOWED_ROLES"); raw != "" {
 		for _, entry := range strings.Split(raw, ",") {
 			if trimmed := strings.TrimSpace(entry); trimmed != "" {
 				if !RolePattern.MatchString(trimmed) {
@@ -154,21 +212,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authHeader := r.Header.Get("Authorization")
-	if !strings.HasPrefix(authHeader, "Bearer ") {
-		writeError(w, http.StatusUnauthorized, "missing or invalid Authorization header")
-		return
-	}
-	oidcToken := strings.TrimPrefix(authHeader, "Bearer ")
-
+	// --- /v1/status auth pipeline ---
 	if r.URL.Path == "/v1/status" {
-		claims, err := h.oidcVerifier.Verify(r.Context(), oidcToken)
+		auth, err := h.authenticateStatus(r.Context(), r)
 		if err != nil {
-			log.Printf("OIDC verification failed for /v1/status: %v", err)
 			writeError(w, http.StatusUnauthorized, "authentication failed")
 			return
 		}
-		h.handleStatus(w, claims)
+		h.handleStatusWithAuth(w, auth)
+		return
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		writeError(w, http.StatusUnauthorized, "missing or invalid Authorization header")
 		return
 	}
 
@@ -200,6 +257,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Default level to write when omitted — temporary compatibility default
+	// so existing HTTP clients that do not send a level field keep receiving
+	// write-level tokens. A future PR will migrate the default to read once
+	// all callers have been updated. See ADR 0073.
+	if req.Level == "" {
+		req.Level = LevelWrite
+	}
+
+	if err := ValidateLevelName(req.Level); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid level format")
+		return
+	}
+
+	if len(req.Repos) == 0 {
+		writeError(w, http.StatusBadRequest, "repos is required")
+		return
+	}
+
+	req.Repos = normalizeMintRepos(req.Repos)
+
 	if len(req.Repos) > maxRepos {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many repos (max %d)", maxRepos))
 		return
@@ -218,12 +295,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// --- /v1/token auth: OIDC only (shared helper) ---
+	claims, oidcErr := h.verifyOIDCRequest(r.Context(), r)
+	if oidcErr != nil {
+		log.Printf("authentication failed: %v", oidcErr)
+		writeError(w, http.StatusUnauthorized, "authentication failed")
+		return
+	}
+
 	ctx := r.Context()
 
-	claims, err := h.oidcVerifier.Verify(ctx, oidcToken)
-	if err != nil {
-		log.Printf("OIDC verification failed: %v", err)
-		writeError(w, http.StatusUnauthorized, "authentication failed")
+	// Validate level after authentication so unauthenticated callers
+	// cannot probe which role+level combinations exist (defense-in-depth).
+	if _, err := RolePermissionsForLevel(req.Role, req.Level); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -233,24 +318,58 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		targetOrg = callerOrg
 	}
 
+	isTargetForeign := !strings.EqualFold(targetOrg, callerOrg)
+	shape, scopeErr := validateReposScope(isTargetForeign, claims.Repository, req.Repos)
+	if scopeErr != nil && !isTargetForeign {
+		// Same-org scope denied. For callers requesting repos beyond
+		// their own (specific per-repo denial), check repo-level
+		// FOREIGN grants. Only override the per-repo cross-repo denial;
+		// other denial reasons (empty repos) must not be overridden.
+		if len(req.Repos) > 0 && errors.Is(scopeErr, errPerRepoCrossRepo) {
+			if fErr := h.checkRepoForeignGrants(ctx, claims, callerOrg, req.Role, req.Repos); fErr == nil {
+				log.Printf("intra-org repo-level foreign grant: caller=%s target_org=%s repos=%v role=%s",
+					claims.Repository, callerOrg, req.Repos, req.Role)
+				scopeErr = nil
+			} else {
+				log.Printf("intra-org repo-level foreign grant check failed: %v", fErr)
+			}
+		}
+	}
+	if scopeErr != nil {
+		writeError(w, http.StatusForbidden, scopeErr.Error())
+		return
+	}
+	if shape != "" {
+		log.Printf("repos scope shape=%s requested_repos=%v source_repo=%s target_org=%s role=%s",
+			shape, req.Repos, claims.Repository, targetOrg, req.Role)
+	}
+
 	if len(req.Repos) == 0 {
-		log.Printf("WARNING: mint request omitted repos; issuing installation-wide token for target_org=%s role=%s caller_org=%s source_repo=%s",
+		log.Printf("WARNING: repos=[\"*\"] normalized to installation-wide token for target_org=%s role=%s caller_org=%s source_repo=%s",
 			targetOrg, req.Role, callerOrg, claims.Repository)
 	}
 
 	var token, expiresAt string
 	var granted *GrantedScope
 
-	if strings.EqualFold(targetOrg, callerOrg) {
-		token, expiresAt, granted, err = h.mintToken(ctx, callerOrg, req.Role, req.Repos)
+	if !isTargetForeign {
+		token, expiresAt, granted, err = h.mintToken(ctx, callerOrg, req.Role, req.Level, req.Repos)
 	} else {
-		token, expiresAt, granted, err = h.mintTokenCrossOrg(ctx, claims, targetOrg, req.Role, req.Repos)
+		token, expiresAt, granted, err = h.mintTokenCrossOrg(ctx, claims, targetOrg, req.Role, req.Level, req.Repos)
 	}
 	if err != nil {
 		log.Printf("failed to mint token: org=%s target_org=%s role=%s err=%v", callerOrg, targetOrg, req.Role, err)
 		var me *mintError
 		if errors.As(err, &me) {
-			writeError(w, me.status, "mint failed")
+			msg := "mint failed"
+			// Surface the user-facing message when the error explicitly
+			// provides one. Only errors that set userMsg opt into this;
+			// all others keep the generic message to avoid leaking
+			// internal details.
+			if me.userMsg != "" {
+				msg = me.userMsg
+			}
+			writeError(w, me.status, msg)
 		} else {
 			writeError(w, http.StatusInternalServerError, "internal error")
 		}
@@ -258,27 +377,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if granted != nil {
-		log.Printf("minted: org=%s target_org=%s role=%s app_id=%s installation_id=%d requested_repos=%v source_repo=%s workflow_ref=%s",
-			callerOrg, targetOrg, req.Role, granted.AppID, granted.InstallationID, req.Repos, claims.Repository, claims.JobWorkflowRef)
+		log.Printf("minted: org=%s target_org=%s role=%s level=%s app_id=%s installation_id=%d requested_repos=%v source_repo=%s workflow_ref=%s",
+			callerOrg, targetOrg, req.Role, req.Level, granted.AppID, granted.InstallationID, req.Repos, claims.Repository, claims.JobWorkflowRef)
 		log.Printf("granted scope: repos=%v permissions=%v repo_selection=%s",
 			granted.Repos, granted.Permissions, granted.RepoSelection)
 		if len(req.Repos) == 0 {
-			log.Printf("WARNING: installation-wide token granted for target_org=%s role=%s repo_selection=%s",
+			log.Printf("WARNING: repos=[\"*\"] installation-wide token granted for target_org=%s role=%s repo_selection=%s",
 				targetOrg, req.Role, granted.RepoSelection)
 		} else if granted.RepoSelection == "all" {
 			log.Printf("WARNING: token granted with repository_selection=all (requested specific repos: %v)", req.Repos)
 		}
-		requested := RolePermissionsFor(req.Role)
-		for perm, level := range granted.Permissions {
-			if reqLevel, ok := requested[perm]; !ok {
-				log.Printf("WARNING: extra permission granted: %s=%s (not requested)", perm, level)
-			} else if level != reqLevel {
-				log.Printf("WARNING: permission level mismatch: %s requested=%s granted=%s", perm, reqLevel, level)
+		requested, reqErr := RolePermissionsForLevel(req.Role, req.Level)
+		if reqErr != nil {
+			log.Printf("WARNING: failed to load requested permissions for audit: role=%s level=%s err=%v", req.Role, req.Level, reqErr)
+		} else {
+			for perm, level := range granted.Permissions {
+				if reqLevel, ok := requested[perm]; !ok {
+					log.Printf("WARNING: extra permission granted: %s=%s (not requested)", perm, level)
+				} else if level != reqLevel {
+					log.Printf("WARNING: permission level mismatch: %s requested=%s granted=%s", perm, reqLevel, level)
+				}
 			}
-		}
-		for perm, reqLevel := range requested {
-			if _, ok := granted.Permissions[perm]; !ok {
-				log.Printf("WARNING: requested permission not granted: %s=%s", perm, reqLevel)
+			for perm, reqLevel := range requested {
+				if _, ok := granted.Permissions[perm]; !ok {
+					log.Printf("WARNING: requested permission not granted: %s=%s", perm, reqLevel)
+				}
 			}
 		}
 	}
@@ -320,24 +443,14 @@ func (h *Handler) handleHealth(w http.ResponseWriter) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// handleStatus is a legacy wrapper for OIDC-only status auth. It
+// delegates to handleStatusWithAuth with an OIDC result. Retained for
+// backward compatibility with tests that call it directly.
 func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
-	org := strings.ToLower(claims.RepositoryOwner)
-	roles := append([]string(nil), h.allowedRoles...)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(statusResponse{
-		Org:     org,
-		Roles:   roles,
-		Version: Version,
-		Commit:  Commit,
-	}); err != nil {
-		log.Printf("encoding status response: %v", err)
-	}
+	h.handleStatusWithAuth(w, &statusAuthResult{oidcClaims: claims})
 }
 
-func (h *Handler) mintToken(ctx context.Context, org, role string, repos []string) (string, string, *GrantedScope, error) {
+func (h *Handler) mintToken(ctx context.Context, org, role, level string, repos []string) (string, string, *GrantedScope, error) {
 	appID, err := h.lookupRoleAppID(role)
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusForbidden, msg: fmt.Sprintf("looking up app ID for role %s: %v", role, err)}
@@ -358,18 +471,72 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		return "", "", nil, &mintError{status: http.StatusInternalServerError, msg: fmt.Sprintf("generating app JWT: %v", err)}
 	}
 
-	var installationID int64
+	var installation installationResponse
 	if len(repos) == 0 {
-		installationID, err = FindOrgInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org)
+		installation, err = findOrgInstallationDetails(ctx, h.githubBaseURL, jwt, org)
 	} else {
-		installationID, err = FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repos[0])
+		installation, err = findInstallationDetails(ctx, h.githubBaseURL, jwt, org, repos[0])
 	}
 	if err != nil {
+		// A 404 from FindInstallation means the repo is not covered by
+		// the GitHub App installation. Surface a clear 422 so callers
+		// can diagnose misconfigured installations. Transient errors
+		// (500, 503, 429, network) propagate as 502.
+		if len(repos) > 0 && errors.Is(err, ErrInstallationNotFound) {
+			umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repos[0])
+			return "", "", nil, &mintError{
+				status:  http.StatusUnprocessableEntity,
+				msg:     umsg,
+				userMsg: umsg,
+			}
+		}
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
 	}
+	installationID := installation.ID
 
-	token, expiresAt, granted, err := CreateInstallationToken(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, role, repos)
+	// Verify all requested repos are covered by the same installation.
+	// If the GitHub App uses selected-repository installation mode,
+	// repos not in the selection return 404 from the installation
+	// lookup. Detecting this upfront produces a clear error instead
+	// of a confusing 422 from CreateInstallationToken.
+	//
+	// Only 404 responses indicate a genuinely uncovered repo (→ 422).
+	// Transient failures (500, 503, 429, network errors) are propagated
+	// as 502, matching the repos[0] error path above.
+	if len(repos) > 1 {
+		for _, repo := range repos[1:] {
+			otherID, otherErr := FindInstallation(ctx, h.githubBaseURL, jwt, org, repo)
+			if otherErr != nil {
+				if errors.Is(otherErr, ErrInstallationNotFound) {
+					umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repo)
+					return "", "", nil, &mintError{
+						status:  http.StatusUnprocessableEntity,
+						msg:     umsg,
+						userMsg: umsg,
+					}
+				}
+				return "", "", nil, &mintError{status: http.StatusBadGateway, msg: otherErr.Error()}
+			}
+			if otherID != installationID {
+				umsg := fmt.Sprintf("repository %s/%s uses a different GitHub App installation than %s", org, repo, repos[0])
+				return "", "", nil, &mintError{
+					status:  http.StatusUnprocessableEntity,
+					msg:     umsg,
+					userMsg: umsg,
+				}
+			}
+		}
+	}
+
+	token, expiresAt, granted, err := CreateInstallationTokenWithGrantedPermissions(ctx, h.githubBaseURL, jwt, installationID, org, role, level, repos, installation.Permissions)
 	if err != nil {
+		if errors.Is(err, ErrRequiredPermissionsMissing) {
+			return "", "", nil, &mintError{
+				status:  http.StatusUnprocessableEntity,
+				msg:     err.Error(),
+				userMsg: err.Error(),
+			}
+		}
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
 	}
 
@@ -381,19 +548,30 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 	return token, expiresAt, granted, nil
 }
 
-func (h *Handler) mintTokenCrossOrg(ctx context.Context, claims *Claims, targetOrg, role string, repos []string) (string, string, *GrantedScope, error) {
+func (h *Handler) mintTokenCrossOrg(ctx context.Context, claims *Claims, targetOrg, role, level string, repos []string) (string, string, *GrantedScope, error) {
+	// Specific repos requested → authorize exclusively via per-repo
+	// FOREIGN grants. Org-level FOREIGN is not consulted for repo-scoped
+	// requests; it authorizes only installation-wide tokens.
+	if len(repos) > 0 {
+		if err := h.checkRepoForeignGrants(ctx, claims, targetOrg, role, repos); err != nil {
+			log.Printf("repo-level foreign grant check failed: %v", err)
+			return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target repos"}
+		}
+		log.Printf("repo-level foreign grant: caller=%s target_org=%s repos=%v role=%s",
+			claims.Repository, targetOrg, repos, role)
+		return h.mintToken(ctx, targetOrg, role, level, repos)
+	}
+
+	// Installation-wide (empty repos) → org-level FOREIGN check only.
 	allowlist, err := h.loadForeignAllowlist(ctx, targetOrg, role)
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
 	}
-	if len(allowlist) == 0 {
-		return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target org"}
-	}
-	if !CallerAllowed(allowlist, claims.Repository, claims.RepositoryOwner) {
-		return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target org"}
+	if CallerAllowed(allowlist, claims.Repository, claims.RepositoryOwner) {
+		return h.mintToken(ctx, targetOrg, role, level, repos)
 	}
 
-	return h.mintToken(ctx, targetOrg, role, repos)
+	return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target org"}
 }
 
 func (h *Handler) loadForeignAllowlist(ctx context.Context, targetOrg, role string) ([]string, error) {
@@ -460,12 +638,116 @@ func (h *Handler) fetchForeignAllowlist(ctx context.Context, targetOrg, role str
 		return nil, fmt.Errorf("generating app JWT: %v", err)
 	}
 
-	installationID, err := FindOrgInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, targetOrg)
+	installationID, err := FindOrgInstallation(ctx, h.githubBaseURL, jwt, targetOrg)
 	if err != nil {
 		return nil, fmt.Errorf("finding org installation on %s: %v", targetOrg, err)
 	}
 
-	allowlist, err := ReadForeignAllowlist(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, targetOrg, role)
+	allowlist, err := ReadForeignAllowlist(ctx, h.githubBaseURL, jwt, installationID, targetOrg, role)
+	if err != nil {
+		return nil, err
+	}
+
+	return allowlist, nil
+}
+
+// checkRepoForeignGrants verifies that every repo in repos has a repo-level
+// FULLSEND_FOREIGN_<role>_REPOS variable that authorizes the caller.
+//
+// This function serves two distinct authorization paths:
+//   - Cross-org primary authorization: called from mintTokenCrossOrg when
+//     a foreign request carries specific repos (repo-scoped FOREIGN grant).
+//   - Intra-org fallback: called from the main handler when a per-repo
+//     caller requests repos beyond its own repository within the same org
+//     (errPerRepoCrossRepo), allowing cross-repo access via repo-level grants.
+func (h *Handler) checkRepoForeignGrants(ctx context.Context, claims *Claims, targetOrg, role string, repos []string) error {
+	for _, repo := range repos {
+		allowlist, err := h.loadRepoForeignAllowlist(ctx, targetOrg, repo, role)
+		if err != nil {
+			return fmt.Errorf("checking repo-level foreign grant on %s/%s: %v", targetOrg, repo, err)
+		}
+		if !CallerAllowed(allowlist, claims.Repository, claims.RepositoryOwner) {
+			return fmt.Errorf("caller %s not authorized by repo-level foreign grant on %s/%s", claims.Repository, targetOrg, repo)
+		}
+	}
+	return nil
+}
+
+// loadRepoForeignAllowlist loads the repo-level FOREIGN allowlist for a
+// specific target repo, with in-memory caching and inflight dedup (same
+// pattern as loadForeignAllowlist for org-level).
+func (h *Handler) loadRepoForeignAllowlist(ctx context.Context, targetOrg, targetRepo, role string) ([]string, error) {
+	key := repoForeignCacheKey(targetOrg, targetRepo, role)
+
+	h.foreignCacheMu.Lock()
+	if entry, ok := h.foreignCache[key]; ok && time.Since(entry.fetchedAt) < h.foreignCacheTTL {
+		allowlist := append([]string(nil), entry.allowlist...)
+		h.foreignCacheMu.Unlock()
+		return allowlist, nil
+	}
+	if inflight, ok := h.foreignInflight[key]; ok {
+		h.foreignCacheMu.Unlock()
+		inflight.wg.Wait()
+		if inflight.err != nil {
+			return nil, inflight.err
+		}
+		return append([]string(nil), inflight.allowlist...), nil
+	}
+	inflight := &foreignInflight{}
+	inflight.wg.Add(1)
+	h.foreignInflight[key] = inflight
+	h.foreignCacheMu.Unlock()
+
+	allowlist, err := h.fetchRepoForeignAllowlist(ctx, targetOrg, targetRepo, role)
+
+	h.foreignCacheMu.Lock()
+	delete(h.foreignInflight, key)
+	if err == nil {
+		h.foreignCache[key] = foreignCacheEntry{
+			allowlist: append([]string(nil), allowlist...),
+			fetchedAt: time.Now(),
+		}
+	}
+	inflight.allowlist = allowlist
+	inflight.err = err
+	inflight.wg.Done()
+	h.foreignCacheMu.Unlock()
+
+	if err != nil {
+		return nil, err
+	}
+	return allowlist, nil
+}
+
+// fetchRepoForeignAllowlist reads FULLSEND_FOREIGN_<role>_REPOS from a
+// specific target repo's repo-level Actions variables.
+func (h *Handler) fetchRepoForeignAllowlist(ctx context.Context, targetOrg, targetRepo, role string) ([]string, error) {
+	appID, err := h.lookupRoleAppID(role)
+	if err != nil {
+		return nil, fmt.Errorf("looking up app ID for role %s: %v", role, err)
+	}
+
+	pemData, err := h.pemAccessor.AccessPEM(ctx, role)
+	if err != nil {
+		return nil, fmt.Errorf("reading PEM secret for role %s: %v", role, err)
+	}
+	defer func() {
+		for i := range pemData {
+			pemData[i] = 0
+		}
+	}()
+
+	jwt, err := GenerateAppJWT(appID, pemData)
+	if err != nil {
+		return nil, fmt.Errorf("generating app JWT: %v", err)
+	}
+
+	installationID, err := FindInstallation(ctx, h.githubBaseURL, jwt, targetOrg, targetRepo)
+	if err != nil {
+		return nil, fmt.Errorf("finding repo installation on %s/%s: %v", targetOrg, targetRepo, err)
+	}
+
+	allowlist, err := ReadForeignAllowlistFromRepo(ctx, h.githubBaseURL, jwt, installationID, targetOrg, targetRepo, role)
 	if err != nil {
 		return nil, err
 	}
@@ -538,9 +820,14 @@ func (h *Handler) lookupRoleAppID(role string) (string, error) {
 }
 
 // mintError is an HTTP-aware error carrying a status code for the response.
+// userMsg, when non-empty, is a client-safe message that the response
+// boundary surfaces instead of the generic "mint failed". Errors that
+// do not set userMsg keep the generic message, preventing accidental
+// disclosure of internal details.
 type mintError struct {
-	status int
-	msg    string
+	status  int
+	msg     string
+	userMsg string
 }
 
 func (e *mintError) Error() string { return e.msg }

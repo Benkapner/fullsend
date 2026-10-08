@@ -1,6 +1,6 @@
 ---
 title: "45. Forge-portable harness schema"
-status: Accepted
+status: Superseded
 relates_to:
   - agent-architecture
   - agent-infrastructure
@@ -17,7 +17,21 @@ Date: 2026-05-27
 
 ## Status
 
-Accepted
+Superseded by [ADR-0088](0088-cel-guarded-overlays.md) (CEL-guarded overlays)
+
+> **Living reference:** The field classification tables, `ForgeConfig` struct
+> definition, and merge rules in this ADR reflect the state at the time of
+> acceptance. For the current authoritative version, see
+> [Harness Field Reference](../contributing/harness-fields.md).
+>
+> **Note:** `validation_loop` later changed from whole-struct replacement to
+> field-level merge (child/forge non-zero values win; omitted fields inherit).
+> See the living reference above.
+
+> **Note:** The `forge:` section introduced by this ADR is deprecated in favor
+> of CEL-guarded `overlays:` — see [ADR 0088](0088-cel-guarded-overlays.md).
+> The rest of this ADR (role, slug, base composition, merge rules) remains
+> current.
 
 ## Context
 
@@ -190,6 +204,8 @@ resolved as follows:
 | `skills`         | Merged with deduplication by basename (forge overrides top-level) | Absent (nil) = inherit; `skills: []` = no forge-specific additions (top-level skills still apply) |
 | `runner_env`     | Top-level map merged with forge map; forge keys win  | Absent (nil) = inherit; `runner_env: {}` = no forge-specific keys (top-level env still inherited) |
 | `validation_loop`| Forge value replaces top-level value entirely        | Absent (nil) = inherit from top level; explicit empty struct = intended to mean "no validation" but requires implementation changes (see note¹) |
+| `providers`      | Top-level + forge (concatenated)                     | Absent (nil) = inherit; `providers: []` = no forge-specific additions (top-level providers still apply) |
+| `openshell`      | `profiles` concatenated (top-level + forge)          | Absent (nil) = inherit; empty `profiles: []` = no forge-specific additions |
 
 ¹ An explicit empty `validation_loop: {}` currently conflicts with
 `Validate()`, which requires `Script` when `ValidationLoop` is non-nil.
@@ -249,6 +265,9 @@ compatibility.
 | `skills`           | Some skills wrap forge-specific APIs               |
 | `runner_env`       | Token names and event URLs differ per forge        |
 | `validation_loop`  | Validation scripts may call forge-specific tools   |
+| `policy`           | Sandbox policies may need forge-specific filesystem or process rules; network access is managed via providers (ADR-0065) but non-network policy sections can still differ per forge |
+| `providers`        | Providers may need forge-specific entries (e.g., different API endpoints per platform); concatenated (top-level + forge) |
+| `openshell`        | OpenShell profiles may need forge-specific configuration; `profiles` concatenated (top-level + forge) |
 
 #### Fields that stay at top level only (platform-neutral)
 
@@ -257,11 +276,9 @@ compatibility.
 | `agent`            | Agent definitions are forge-agnostic               |
 | `model`            | Model selection is independent of forge             |
 | `image`            | Container images are platform-neutral              |
-| `policy`           | Sandbox policies describe capabilities, not forges |
-| `host_files`       | File delivery is a runner concern, not forge        |
-| `providers`        | OpenShell providers are forge-agnostic             |
+| `host_files`       | File delivery is a runner concern, not forge (note: forge-specific `host_files` added in #5917) |
 | `api_servers`      | REST proxies abstract forge details                |
-| `plugins`          | MCP plugins are forge-agnostic                     |
+| `plugins`          | MCP plugins are forge-agnostic; can be local paths or URLs (ADR-0038) |
 | `agent_input`      | Agent prompt input is forge-agnostic               |
 | `timeout_minutes`  | Timeouts are operational, not forge-specific        |
 | `sandbox_timeout_seconds` | Sandbox-level timeout, not forge-specific   |
@@ -364,7 +381,9 @@ The same inheritance table applies to base→child merging:
 - **`validation_loop`**: child replaces base entirely (if non-nil)
 - **`host_files`**: concatenated (base + child); if both declare the same
   `dest` path, the child entry wins (last-writer-wins deduplication)
-- **`plugins`, `providers`, `api_servers`**: concatenated (base + child)
+- **`providers`**: concatenated (base + child); applies at both top level and per-forge
+- **`openshell`**: `profiles` concatenated (base + child); applies at both top level and per-forge
+- **`plugins`, `api_servers`**: concatenated (base + child)
 - **`security`**: child replaces base entirely (if non-nil)
 - **`forge` blocks**: child's `forge:` map merges key-by-key with base's
   `forge:` map. For each platform key present in both, the per-platform
@@ -375,7 +394,7 @@ The same inheritance table applies to base→child merging:
 `base` can be a URL, reusing ADR 0038's infrastructure:
 
 ```yaml
-base: https://raw.githubusercontent.com/fullsend-ai/fullsend/<sha>/internal/scaffold/fullsend-repo/harness/triage.yaml#sha256=abc123...
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/triage.yaml#sha256=abc123...
 ```
 
 URL-referenced bases follow the same rules as other URL resources:
@@ -410,7 +429,7 @@ or agents-repo at runtime)*:
 
 ```yaml
 # .fullsend/harness/triage.yaml
-base: https://raw.githubusercontent.com/fullsend-ai/fullsend/<sha>/internal/scaffold/fullsend-repo/harness/triage.yaml#sha256=...
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/triage.yaml#sha256=...
 ```
 
 An org that needs to customize:
@@ -465,13 +484,17 @@ operational config file.
 ```go
 // ForgeConfig holds platform-specific harness configuration.
 // This is purely declarative YAML config — it selects which
-// scripts, skills, and env vars to use per platform. It is
+// scripts, skills, host files, and env vars to use per platform. It is
 // distinct from the forge.Client interface (internal/forge/),
 // which is the runtime abstraction for forge API operations.
 type ForgeConfig struct {
     PreScript      string            `yaml:"pre_script,omitempty"`
     PostScript     string            `yaml:"post_script,omitempty"`
-    Skills         []string          `yaml:"skills,omitempty"`
+    Policy         string            `yaml:"policy,omitempty"`
+    Skills         []SkillEntry      `yaml:"skills,omitempty"` // updated from []string in #6159
+    Providers      []string          `yaml:"providers,omitempty"`
+    OpenShell      *OpenShellConfig  `yaml:"openshell,omitempty"`
+    HostFiles      []HostFile        `yaml:"host_files,omitempty"` // added in #5917
     ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
     RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
 }
@@ -591,10 +614,10 @@ forge-specific artifact. The harness and agent definition are portable.
   removing an agent is deleting a file, adding one is creating a thin
   wrapper with `base:`.
 
-- **Bidirectional composition.** The `base:` merge semantics have an
-  inverse (`DiffHarness`) used by [ADR 0064](0064-deprecate-customized-directory-overlay.md)'s
-  `migrate-customizations` command. Changes to merge rules must be
-  reflected in both directions.
+- **Bidirectional composition.** The `base:` merge semantics had an
+  inverse (`DiffHarness`, removed with the scaffold agent extraction)
+  formerly used by [ADR 0064](0064-deprecate-customized-directory-overlay.md)'s
+  `migrate-customizations` command *(now removed)*.
 
 - **Default URL allowlist for `base` composition.** `fullsend install`
   sets `allowed_remote_resources` in `config.yaml` to include the
@@ -704,9 +727,8 @@ forge-specific artifact. The harness and agent definition are portable.
   key in existing config files, so v1 compatibility is preserved.
   Phase 3 (PR 6) added `omitempty` as a deprecation step; Phase 4
   completed the removal. No v2 schema bump was needed.
-  *Note: Phase 3 PR 6 added `omitempty` to the `Agents` field. The
-  Phase 4 plan (`docs/plans/adr-0045-forge-portable-harness-phase4.md`)
-  recommends staying on v1 — removal is backward-compatible since
+  *Note: Phase 3 PR 6 added `omitempty` to the `Agents` field.
+  Staying on v1 is safe — removal is backward-compatible since
   `yaml.Unmarshal` silently ignores unknown keys.*
 
 - **config.yaml agents: block removal timeline.** The `agents:` block is
@@ -753,3 +775,4 @@ forge-specific artifact. The harness and agent definition are portable.
 - [Issue #322](https://github.com/fullsend-ai/fullsend/issues/322): Platform-specific component identification
 - [Issue #1986](https://github.com/fullsend-ai/fullsend/issues/1986): Default agents should use the same delivery mechanism as custom agents
 - [ADR 0058](0058-agent-registration.md): Agent registration — re-adds `agents` config key with URL/path semantics (supersedes the role/name/slug schema removed in Phase 4)
+- [ADR 0088](0088-cel-guarded-overlays.md): CEL-guarded overlays — deprecates the `forge:` section in favor of `overlays:` with CEL `when` expressions

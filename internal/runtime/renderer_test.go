@@ -55,6 +55,19 @@ func TestRendererToolUseEvent(t *testing.T) {
 	}
 }
 
+func TestRendererToolResultEventIgnored(t *testing.T) {
+	// Tool results feed the Level 3 content collector, not the console:
+	// the renderer intentionally produces no output for them.
+	var buf bytes.Buffer
+	r := newTestRenderer(&buf)
+
+	r.Handle(ToolResultEvent{ID: "toolu_01abc", Result: "output text"})
+
+	if output := buf.String(); output != "" {
+		t.Errorf("expected no output for ToolResultEvent, got: %s", output)
+	}
+}
+
 func TestRendererToolUseEventCI(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "true")
 
@@ -195,6 +208,39 @@ func TestRendererRetryEvent(t *testing.T) {
 	}
 }
 
+func TestRendererPluginErrorEvent(t *testing.T) {
+	tests := []struct {
+		name string
+		evt  PluginErrorEvent
+		want string
+	}{
+		{
+			name: "with path",
+			evt:  PluginErrorEvent{Plugin: "demo@inline", Type: "path-not-found", Path: "/plugins/demo", Message: "not found"},
+			want: "Plugin demo@inline failed to load from /plugins/demo (path-not-found): not found",
+		},
+		{
+			name: "without path",
+			evt:  PluginErrorEvent{Plugin: "demo@inline", Type: "generic-error", Message: "boom"},
+			want: "Plugin demo@inline failed to load (generic-error): boom",
+		},
+		{
+			name: "unnamed, path only",
+			evt:  PluginErrorEvent{Path: "/plugins/x"},
+			want: "Plugin (unnamed) failed to load from /plugins/x",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			newTestRenderer(&buf).Handle(tt.evt)
+			if got := buf.String(); !strings.Contains(got, tt.want) {
+				t.Errorf("got %q, want it to contain %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRendererTokensEvent(t *testing.T) {
 	var buf bytes.Buffer
 	r := newTestRenderer(&buf)
@@ -207,5 +253,59 @@ func TestRendererTokensEvent(t *testing.T) {
 	}
 	if !strings.Contains(output, "in=4000") {
 		t.Errorf("expected input token count, got: %s", output)
+	}
+	if strings.Contains(output, "reasoning=") {
+		t.Errorf("reasoning should not appear when zero, got: %s", output)
+	}
+}
+
+func TestRendererTokensEventWithReasoning(t *testing.T) {
+	var buf bytes.Buffer
+	r := newTestRenderer(&buf)
+
+	r.Handle(TokensEvent{InputTokens: 200, OutputTokens: 100, ReasoningTokens: 50, CacheRead: 80, CacheWrite: 20})
+
+	output := buf.String()
+	if !strings.Contains(output, "reasoning=50") {
+		t.Errorf("expected reasoning=50 in output, got: %s", output)
+	}
+}
+
+func TestRendererResultEventWithReasoning(t *testing.T) {
+	var buf bytes.Buffer
+	r := newTestRenderer(&buf)
+
+	r.Handle(ResultEvent{
+		NumTurns:                 3,
+		TotalCostUSD:             0.20,
+		InputTokens:              1000,
+		OutputTokens:             500,
+		ReasoningTokens:          200,
+		CacheCreationInputTokens: 300,
+		CacheReadInputTokens:     400,
+	})
+
+	output := buf.String()
+	if !strings.Contains(output, "reasoning=200") {
+		t.Errorf("expected reasoning=200 in result tokens, got: %s", output)
+	}
+}
+
+func TestRendererResultEventWithoutReasoning(t *testing.T) {
+	var buf bytes.Buffer
+	r := newTestRenderer(&buf)
+
+	r.Handle(ResultEvent{
+		NumTurns:                 3,
+		TotalCostUSD:             0.20,
+		InputTokens:              1000,
+		OutputTokens:             500,
+		CacheCreationInputTokens: 300,
+		CacheReadInputTokens:     400,
+	})
+
+	output := buf.String()
+	if strings.Contains(output, "reasoning=") {
+		t.Errorf("reasoning should not appear when zero, got: %s", output)
 	}
 }

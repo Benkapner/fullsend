@@ -25,7 +25,7 @@ func thenHarnessDispatchedExactly(w *world.World, agent string, expected int) er
 		return fmt.Errorf("no workflow trigger time recorded")
 	}
 	ctx := context.Background()
-	actual, err := w.CI.CountHarnessDispatches(ctx, w.Org, w.Install.TriageWorkflowRepo(), agent, w.ScenarioStart)
+	actual, err := w.CI.CountHarnessDispatches(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
 	if err != nil {
 		return fmt.Errorf("counting harness dispatches: %w", err)
 	}

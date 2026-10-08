@@ -1,8 +1,10 @@
 // Binary mint-wasm is the Cloudflare Worker WASM host for mintcore.
 // It registers two global JavaScript functions:
 //
-//   - mintcoreInitMint(configJSON, fetchCallback, pemCallback) — initializes
-//     the mint handler from explicit Worker binding config (not os.Getenv).
+//   - mintcoreInitMint(getEnvCallback, fetchCallback, pemCallback) — initializes
+//     the mint handler using a JS callback for environment lookups (same
+//     pattern as PEM/fetch callbacks). Native entrypoints pass os.Getenv;
+//     the Worker passes a callback that reads CF Worker bindings by name.
 //
 //   - mintcoreHandleFetch(method, url, headersJSON, body) — maps a Fetch API
 //     request into an http.Request, calls Handler.ServeHTTP with a buffered
@@ -16,15 +18,25 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"syscall/js"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
+
+// requestTimeout is the per-request context deadline applied by the
+// WASM handler. It must be shorter than the JS-side
+// HANDLE_FETCH_TIMEOUT_MS (25 s) so that slow GitHub API calls surface
+// as clean Go-side errors (HTTP 502/504) before the JS timeout fires
+// and triggers the isolate recovery path. The 5 s margin accounts for
+// goroutine scheduling and Promise settlement overhead.
+const requestTimeout = 20 * time.Second
 
 var handler *mintcore.Handler
 
@@ -37,24 +49,27 @@ func main() {
 }
 
 // initMint initializes the mint handler from Worker bindings.
-// JS signature: mintcoreInitMint(configJSON, fetchCallback, pemCallback) => string
+// JS signature: mintcoreInitMint(getEnvCallback, fetchCallback, pemCallback) => string
 // Returns "" on success or an error message string on failure.
+//
+// getEnvCallback is a synchronous JS function: (key: string) => string.
+// The Worker passes a callback that looks up CF Worker bindings by name,
+// matching the os.Getenv contract used by native entrypoints. Mintcore
+// decides which keys to read — the JS side does not serialize a config map.
 func initMint(_ js.Value, args []js.Value) interface{} {
 	if len(args) < 3 {
-		return "mintcoreInitMint requires 3 arguments: configJSON, fetchCallback, pemCallback"
+		return "mintcoreInitMint requires 3 arguments: getEnvCallback, fetchCallback, pemCallback"
 	}
 
-	configJSON := args[0].String()
+	getEnvFn := args[0]
 	fetchFn := args[1]
 	pemFn := args[2]
 
-	var cfg mintcore.WorkerConfig
-	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
-		return fmt.Sprintf("failed to parse config: %v", err)
+	if err := mintcore.RegisterEnv(getEnvFn); err != nil {
+		return fmt.Sprintf("invalid env callback: %v", err)
 	}
 
-	fetchDoer, err := mintcore.NewHostFetchDoer(fetchFn)
-	if err != nil {
+	if err := mintcore.RegisterHTTP(fetchFn); err != nil {
 		return fmt.Sprintf("invalid fetch callback: %v", err)
 	}
 
@@ -63,24 +78,14 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 		return fmt.Sprintf("invalid PEM callback: %v", err)
 	}
 
-	allowedOrgs := mintcore.SplitCSV(cfg.AllowedOrgs)
-	allowedWorkflows := mintcore.SplitCSV(cfg.AllowedWorkflowFiles)
-
-	perRepoWIFRepos := make(map[string]bool)
-	for _, entry := range mintcore.SplitCSV(cfg.PerRepoWIFRepos) {
-		perRepoWIFRepos[strings.ToLower(entry)] = true
+	verifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
+		IssuerURL: "https://token.actions.githubusercontent.com",
+	})
+	if err != nil {
+		return fmt.Sprintf("creating OIDC verifier: %v", err)
 	}
 
-	verifier := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL:            "https://token.actions.githubusercontent.com",
-		Audience:             cfg.OIDCAudience,
-		HTTPClient:           fetchDoer,
-		AllowedOrgs:          allowedOrgs,
-		AllowedWorkflowFiles: allowedWorkflows,
-		PerRepoWIFRepos:      perRepoWIFRepos,
-	})
-
-	h, err := mintcore.ParseWorkerConfig(cfg, pemAccessor, verifier, fetchDoer)
+	h, err := mintcore.NewHandler(pemAccessor, verifier)
 	if err != nil {
 		return fmt.Sprintf("failed to initialize handler: %v", err)
 	}
@@ -95,6 +100,17 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 // headersJSON must include Authorization when authentication is required.
 // The Worker JS side converts Fetch Request → these arguments, and converts
 // the returned {status, headers, body} back into a Response.
+//
+// CRITICAL: ServeHTTP must NOT run synchronously inside this js.FuncOf
+// callback. js.FuncOf callbacks block the JavaScript event loop while
+// they execute. ServeHTTP calls HostFetchDoer.Do / HostPEMAccessor.AccessPEM,
+// which call awaitPromise() to wait on JS Promises (host fetch, PEM lookup).
+// Those Promises cannot settle while the event loop is blocked by this
+// callback — causing a fatal deadlock ("all goroutines are asleep").
+//
+// The fix: return a JS Promise immediately and run ServeHTTP on a separate
+// goroutine. The js.FuncOf callback returns, freeing the event loop, and
+// the goroutine's awaitPromise calls can settle normally.
 func handleFetch(_ js.Value, args []js.Value) interface{} {
 	if handler == nil {
 		return newPromiseReject("mint not initialized; call mintcoreInitMint first")
@@ -103,58 +119,92 @@ func handleFetch(_ js.Value, args []js.Value) interface{} {
 		return newPromiseReject("mintcoreHandleFetch requires 4 arguments: method, url, headersJSON, body")
 	}
 
+	// Capture JS values as Go strings before returning from the callback.
+	// js.Value references are only valid on the calling goroutine's stack
+	// during the js.FuncOf callback; the goroutine below must use copies.
 	method := args[0].String()
 	reqURL := args[1].String()
 	headersJSON := args[2].String()
 	body := args[3].String()
 
-	// Build an http.Request from the Fetch arguments.
-	var bodyReader *bytes.Reader
-	if body != "" {
-		bodyReader = bytes.NewReader([]byte(body))
-	} else {
-		bodyReader = bytes.NewReader(nil)
-	}
-
-	req, err := http.NewRequest(method, reqURL, bodyReader)
-	if err != nil {
-		return newPromiseReject(fmt.Sprintf("failed to create request: %v", err))
-	}
-
-	// Parse request headers.
-	if headersJSON != "" && headersJSON != "{}" {
-		var headers map[string]string
-		if err := json.Unmarshal([]byte(headersJSON), &headers); err != nil {
-			return newPromiseReject(fmt.Sprintf("failed to parse headersJSON: %v", err))
-		}
-		for k, v := range headers {
-			req.Header.Set(k, v)
-		}
-	}
-
-	// Use httptest.ResponseRecorder as a buffered ResponseWriter.
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	// Build response headers JSON.
-	respHeaders := make(map[string]string, len(rec.Header()))
-	for k, v := range rec.Header() {
-		respHeaders[k] = strings.Join(v, ", ")
-	}
-	respHeadersBytes, _ := json.Marshal(respHeaders)
-
-	// Return a resolved Promise with {status, headers, body}.
-	return newPromiseResolve(map[string]interface{}{
-		"status":  rec.Code,
-		"headers": string(respHeadersBytes),
-		"body":    rec.Body.String(),
+	// Create a JS Promise whose executor captures resolve/reject, then
+	// launch a goroutine to run ServeHTTP asynchronously. The executor
+	// itself is synchronous (called by the Promise constructor), so we
+	// release its js.FuncOf immediately after Promise.new returns.
+	var resolve, reject js.Value
+	executor := js.FuncOf(func(_ js.Value, promiseArgs []js.Value) interface{} {
+		resolve = promiseArgs[0]
+		reject = promiseArgs[1]
+		return nil
 	})
-}
+	promise := js.Global().Get("Promise").New(executor)
+	executor.Release()
 
-// newPromiseResolve creates a JS Promise that resolves with the given value.
-func newPromiseResolve(val map[string]interface{}) js.Value {
-	promiseConstructor := js.Global().Get("Promise")
-	return promiseConstructor.Call("resolve", mapToJSObject(val))
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				reject.Invoke(js.Global().Get("Error").New(
+					fmt.Sprintf("panic in ServeHTTP: %v", r)))
+			}
+		}()
+
+		// Apply a per-request context deadline so that slow outbound
+		// GitHub API calls (FindInstallation, CreateInstallationToken)
+		// return a clean Go-side error before the JS-side
+		// HANDLE_FETCH_TIMEOUT_MS (25 s) fires. Without this, a single
+		// slow API call blocks the GoWasm singleton until the JS-side
+		// timeout triggers recovery.
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+
+		// Build an http.Request from the Fetch arguments.
+		var bodyReader *bytes.Reader
+		if body != "" {
+			bodyReader = bytes.NewReader([]byte(body))
+		} else {
+			bodyReader = bytes.NewReader(nil)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, reqURL, bodyReader)
+		if err != nil {
+			reject.Invoke(js.Global().Get("Error").New(
+				fmt.Sprintf("failed to create request: %v", err)))
+			return
+		}
+
+		// Parse request headers.
+		if headersJSON != "" && headersJSON != "{}" {
+			var headers map[string]string
+			if err := json.Unmarshal([]byte(headersJSON), &headers); err != nil {
+				reject.Invoke(js.Global().Get("Error").New(
+					fmt.Sprintf("failed to parse headersJSON: %v", err)))
+				return
+			}
+			for k, v := range headers {
+				req.Header.Set(k, v)
+			}
+		}
+
+		// Use httptest.ResponseRecorder as a buffered ResponseWriter.
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		// Build response headers JSON.
+		respHeaders := make(map[string]string, len(rec.Header()))
+		for k, v := range rec.Header() {
+			respHeaders[k] = strings.Join(v, ", ")
+		}
+		respHeadersBytes, _ := json.Marshal(respHeaders)
+
+		// Resolve the Promise with {status, headers, body}.
+		resolve.Invoke(mapToJSObject(map[string]interface{}{
+			"status":  rec.Code,
+			"headers": string(respHeadersBytes),
+			"body":    rec.Body.String(),
+		}))
+	}()
+
+	return promise
 }
 
 // newPromiseReject creates a JS Promise that rejects with the given error message.

@@ -18,6 +18,7 @@ type AppPermissions struct {
 	// OrganizationActionsVariables is org-level Actions variables (distinct from
 	// repository actions_variables). Required to read FULLSEND_FOREIGN_* via the org API.
 	OrganizationActionsVariables string `json:"organization_actions_variables,omitempty"`
+	Packages                     string `json:"packages,omitempty"`
 	Secrets                      string `json:"secrets,omitempty"`
 }
 
@@ -96,6 +97,7 @@ func AgentAppConfig(org, role, appSet string) AppConfig {
 		base.Permissions = AppPermissions{
 			Issues:       "write",
 			Contents:     "write",
+			Packages:     "read",
 			PullRequests: "write",
 			Checks:       "read",
 		}
@@ -115,6 +117,7 @@ func AgentAppConfig(org, role, appSet string) AppConfig {
 		base.Description = fmt.Sprintf("Fullsend fix agent for %s", org)
 		base.Permissions = AppPermissions{
 			Contents:     "write",
+			Packages:     "read",
 			PullRequests: "write",
 			Issues:       "write",
 		}
@@ -142,6 +145,15 @@ func AgentAppConfig(org, role, appSet string) AppConfig {
 			Issues:       "write",
 		}
 		// No webhook events — triggered via workflow_dispatch from other agents.
+		base.Events = []string{}
+
+	case "scribe":
+		base.Description = fmt.Sprintf("Fullsend scribe agent for %s", org)
+		base.Permissions = AppPermissions{
+			Contents: "read",
+			Issues:   "write",
+		}
+		// No webhook events — schedule / workflow_dispatch only (like prioritize/retro).
 		base.Events = []string{}
 
 	case "e2e":

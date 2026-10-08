@@ -5,17 +5,18 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
 
 var (
 	validAgentName    = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-	validModelName    = regexp.MustCompile(`^[a-zA-Z0-9_.@-]+$`)
 	validPluginName   = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	validProviderName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	// validRoleName mirrors mintcore.RolePattern — duplicated to avoid coupling harness→mintcore.
@@ -23,6 +24,53 @@ var (
 	validSlugName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 	envVarRef     = regexp.MustCompile(`\$\{([^}]+)\}`)
 )
+
+// validEffortLevels are the reasoning effort levels accepted by the claude
+// CLI's --effort flag. The canonical list lives in config.ValidEffortLevels
+// so harness effort:, per-run --effort/FULLSEND_EFFORT and agents: entry
+// effort all validate identically.
+var validEffortLevels = config.ValidEffortLevels()
+
+// validEffortLevel reports whether level is a recognized reasoning effort level
+// for the claude CLI's --effort flag.
+func validEffortLevel(level string) bool {
+	return config.ValidEffort(level)
+}
+
+// ValidPluginBasename reports whether name matches the allowed plugin name pattern.
+func ValidPluginBasename(name string) bool {
+	return validPluginName.MatchString(name)
+}
+
+// ValidAgentBasename reports whether name is a safe agent name — the same
+// check Validate applies to the agent: basename (minus .md). Exported so a
+// caller that constructs a harness, rather than loading one, can reject an
+// unsafe name before writing it anywhere: the name reaches shell
+// interpolation, so this is a security check, not a style check.
+func ValidAgentBasename(name string) bool {
+	return validAgentName.MatchString(name)
+}
+
+// ValidSlug reports whether slug matches the allowed harness slug pattern.
+func ValidSlug(slug string) bool {
+	return validSlugName.MatchString(slug)
+}
+
+// ChmodPluginDir makes all files under dir executable (0755). It resolves
+// symlinks first so it operates on the real directory tree. Plugins may
+// contain scripts or MCP server binaries that need the execute bit.
+func ChmodPluginDir(dir string) error {
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	return filepath.Walk(resolved, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		return os.Chmod(path, 0o755)
+	})
+}
 
 // HostFile describes a file on the host that must be copied into the sandbox
 // during bootstrap. Src may contain ${VAR} references that are expanded from
@@ -48,6 +96,27 @@ type ProviderDef struct {
 	Type        string            `yaml:"type"`
 	Credentials map[string]string `yaml:"credentials"`      // KEY: VALUE or KEY: ${HOST_VAR}
 	Config      map[string]string `yaml:"config,omitempty"` // e.g. OPENAI_BASE_URL
+}
+
+// ParseProviderDef parses and validates one provider definition document.
+func ParseProviderDef(data []byte) (ProviderDef, error) {
+	var def ProviderDef
+	if err := yaml.Unmarshal(data, &def); err != nil {
+		return ProviderDef{}, fmt.Errorf("parsing provider definition: %w", err)
+	}
+	if def.Name == "" {
+		return ProviderDef{}, fmt.Errorf("name is required")
+	}
+	if !validProviderName.MatchString(def.Name) {
+		return ProviderDef{}, fmt.Errorf("name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", def.Name)
+	}
+	if def.Type == "" {
+		return ProviderDef{}, fmt.Errorf("type is required")
+	}
+	if !validProviderName.MatchString(def.Type) {
+		return ProviderDef{}, fmt.Errorf("type %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", def.Type)
+	}
+	return def, nil
 }
 
 // LoadProviderDefs reads YAML files from a providers/ directory and returns
@@ -76,21 +145,9 @@ func LoadProviderDefs(dir string, only ...map[string]struct{}) ([]ProviderDef, e
 		if err != nil {
 			return nil, fmt.Errorf("reading provider file %s: %w", e.Name(), err)
 		}
-		var def ProviderDef
-		if err := yaml.Unmarshal(data, &def); err != nil {
-			return nil, fmt.Errorf("parsing provider file %s: %w", e.Name(), err)
-		}
-		if def.Name == "" {
-			return nil, fmt.Errorf("provider file %s: name is required", e.Name())
-		}
-		if !validProviderName.MatchString(def.Name) {
-			return nil, fmt.Errorf("provider file %s: name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", e.Name(), def.Name)
-		}
-		if def.Type == "" {
-			return nil, fmt.Errorf("provider file %s: type is required", e.Name())
-		}
-		if !validProviderName.MatchString(def.Type) {
-			return nil, fmt.Errorf("provider file %s: type %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", e.Name(), def.Type)
+		def, err := ParseProviderDef(data)
+		if err != nil {
+			return nil, fmt.Errorf("provider file %s: %w", e.Name(), err)
 		}
 		if filter != nil {
 			if _, ok := filter[def.Name]; !ok {
@@ -124,9 +181,15 @@ type HostScanners struct {
 	LLMGuard          *LLMGuardConfig `yaml:"llm_guard,omitempty"`
 }
 
-// LLMGuardConfig configures the LLM Guard ML-based prompt injection scanner.
-// Runs in Path A (GHA workflow pre-step) and Path B (sandbox) when the base
-// sandbox image includes the pre-installed LLM Guard and DeBERTa-v3 model.
+// LLMGuardConfig configures the ML-based prompt injection scanner. As of
+// #6522 the scanner ships enabled only in the runner image; the release
+// binaries are built CGO_ENABLED=0 with no -tags ORT, so it is compiled out
+// of those. Neither Path A (scanRepoContextFiles) nor Path B (fullsend scan
+// context) ever called it; the sole call site is `fullsend scan input`.
+//
+// These fields are validated but never read: the scanner is constructed with
+// zero values and hardcodes 0.92/sentence, and the call is gated on
+// MLScanAvailable() rather than on Enabled. See #6506.
 type LLMGuardConfig struct {
 	Enabled   *bool   `yaml:"enabled,omitempty"`    // default: true
 	Threshold float64 `yaml:"threshold,omitempty"`  // default: 0.92
@@ -138,6 +201,7 @@ type LLMGuardConfig struct {
 type SandboxHooks struct {
 	Tirith                  *TirithConfig        `yaml:"tirith,omitempty"`
 	SSRFPreTool             *bool                `yaml:"ssrf_pretool,omitempty"`              // default: true
+	SSRFEgressAllowlist     string               `yaml:"ssrf_egress_allowlist,omitempty"`     // comma-separated host:port entries
 	SecretRedactPostTool    *bool                `yaml:"secret_redact_posttool,omitempty"`    // default: true
 	UnicodePostTool         *bool                `yaml:"unicode_posttool,omitempty"`          // default: true
 	ContextSuppressPostTool *bool                `yaml:"context_suppress_posttool,omitempty"` // default: true
@@ -211,6 +275,36 @@ type ValidationLoop struct {
 	PreflightCheck string `yaml:"preflight_check,omitempty"` // shell command to validate host deps before sandbox creation
 }
 
+// mergeValidationLoop merges base ValidationLoop fields into child.
+// Child non-zero values win; base fills gaps. If only one is non-nil,
+// returns it as-is (not a copy). If both are non-nil, returns a new
+// struct so neither input is mutated.
+func mergeValidationLoop(base, child *ValidationLoop) *ValidationLoop {
+	if child == nil {
+		return base
+	}
+	if base == nil {
+		return child
+	}
+	merged := *child
+	if merged.Script == "" {
+		merged.Script = base.Script
+	}
+	if merged.Schema == "" {
+		merged.Schema = base.Schema
+	}
+	if merged.MaxIterations == 0 {
+		merged.MaxIterations = base.MaxIterations
+	}
+	if merged.FeedbackMode == "" {
+		merged.FeedbackMode = base.FeedbackMode
+	}
+	if merged.PreflightCheck == "" {
+		merged.PreflightCheck = base.PreflightCheck
+	}
+	return &merged
+}
+
 // EnvConfig holds environment variable maps for runner and sandbox targets.
 // Replaces runner_env (ADR 0055). Values support ${VAR} expansion from the
 // host environment.
@@ -268,22 +362,24 @@ func (dst *EnvConfig) mergeEnvFrom(src *EnvConfig, srcWins bool) {
 // a sandbox and launch one agent. It follows the ADR-0017 schema.
 type Harness struct {
 	Agent                  string                  `yaml:"agent"`
-	Doc                    string                  `yaml:"doc,omitempty"` // source-repo-only; not resolved at runtime, used by lint-agent-docs
+	Doc                    string                  `yaml:"doc,omitempty"`
 	Description            string                  `yaml:"description,omitempty"`
 	Role                   string                  `yaml:"role,omitempty"`
 	Slug                   string                  `yaml:"slug,omitempty"`
 	Base                   string                  `yaml:"base,omitempty"`
 	Image                  string                  `yaml:"image,omitempty"`
 	Policy                 string                  `yaml:"policy,omitempty"`
-	Skills                 []string                `yaml:"skills,omitempty"`
-	Plugins                []string                `yaml:"plugins,omitempty"`
+	Skills                 []SkillEntry            `yaml:"skills,omitempty"`
+	Plugins                []PluginSpec            `yaml:"plugins,omitempty"` // runtime-scoped plugin directories (ADR 0094)
 	Providers              []string                `yaml:"providers,omitempty"`
 	OpenShell              *OpenShellConfig        `yaml:"openshell,omitempty"`
 	HostFiles              []HostFile              `yaml:"host_files,omitempty"`
 	APIServers             []APIServer             `yaml:"api_servers,omitempty"`
 	Model                  string                  `yaml:"model,omitempty"`
+	Effort                 string                  `yaml:"effort,omitempty"`
 	PreScript              string                  `yaml:"pre_script,omitempty"`
 	PostScript             string                  `yaml:"post_script,omitempty"`
+	PrivilegeLevels        map[string]string       `yaml:"privilege_levels,omitempty"` // run-stage → mint privilege level (ADR 0073)
 	AgentInput             string                  `yaml:"agent_input,omitempty"`
 	ValidationLoop         *ValidationLoop         `yaml:"validation_loop,omitempty"`
 	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
@@ -296,7 +392,11 @@ type Harness struct {
 	AllowRuntimeFetch      bool                    `yaml:"allow_runtime_fetch,omitempty"` // opt-in to runtime skill fetching (default: false)
 	MaxRuntimeFetches      *int                    `yaml:"max_runtime_fetches,omitempty"` // per-run fetch cap; nil = default (10), valid range 1-1000
 	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
-	Trigger                string                  `yaml:"trigger,omitempty"` // optional CEL boolean over normevent (ADR 0061)
+	Overlays               []OverlayEntry          `yaml:"overlays,omitempty"` // CEL-guarded conditional config (ADR 0088)
+	Trigger                string                  `yaml:"trigger,omitempty"`  // optional CEL boolean over normevent (ADR 0061)
+
+	// Runtime-only fields (not serialized to YAML)
+	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
@@ -318,9 +418,11 @@ func Load(path string) (*Harness, error) {
 	return &h, nil
 }
 
-// LoadOpts configures forge-aware harness loading.
+// LoadOpts configures forge-aware and overlay-aware harness loading.
 type LoadOpts struct {
 	ForgePlatform string
+	Event         map[string]any // event data for CEL overlay resolution (ADR 0088)
+	Config        map[string]any // per-repo config for CEL overlay resolution (ADR 0088)
 }
 
 // LoadWithOpts reads a harness YAML file and applies forge resolution before
@@ -338,8 +440,21 @@ func LoadWithOpts(path string, opts LoadOpts) (*Harness, error) {
 		return nil, fmt.Errorf("invalid harness: %w", err)
 	}
 
+	if err := h.validateOverlays(); err != nil {
+		return nil, fmt.Errorf("invalid harness: %w", err)
+	}
+
+	// Capture whether forge was present before ResolveForge nils it out,
+	// so Lint() can emit the deprecation warning even when the forge
+	// platform is set (which is always the case in CI).
+	h.hadForgeBeforeResolve = h.Forge != nil
+
 	if err := h.ResolveForge(opts.ForgePlatform); err != nil {
 		return nil, fmt.Errorf("resolving forge config: %w", err)
+	}
+
+	if err := h.ResolveOverlays(opts.Event, opts.ForgePlatform, opts.Config); err != nil {
+		return nil, fmt.Errorf("resolving overlays: %w", err)
 	}
 
 	if err := h.Validate(); err != nil {
@@ -392,8 +507,11 @@ func (h *Harness) Validate() error {
 			return fmt.Errorf("agent name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", agentBase)
 		}
 	}
-	if h.Model != "" && !validModelName.MatchString(h.Model) {
-		return fmt.Errorf("model %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -, ., @)", h.Model)
+	if h.Model != "" && !config.ValidModelRef(h.Model) {
+		return fmt.Errorf("model %q contains invalid characters (allowed: segments of a-z, A-Z, 0-9, _, -, ., @ joined by /)", h.Model)
+	}
+	if h.Effort != "" && !validEffortLevel(h.Effort) {
+		return fmt.Errorf("effort %q is not valid (allowed: %s)", h.Effort, strings.Join(validEffortLevels, ", "))
 	}
 	if h.Role == "" {
 		return fmt.Errorf("role field is required")
@@ -404,18 +522,18 @@ func (h *Harness) Validate() error {
 	if strings.Contains(h.Role, "--") {
 		return fmt.Errorf("role %q must not contain double hyphens", h.Role)
 	}
+	if err := h.validatePrivilegeLevels(); err != nil {
+		return err
+	}
 	if h.Slug != "" && !validSlugName.MatchString(h.Slug) {
 		return fmt.Errorf("slug %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -; must start with a letter or digit)", h.Slug)
 	}
-	for i, p := range h.Plugins {
-		pluginBase := filepath.Base(p)
-		if !validPluginName.MatchString(pluginBase) {
-			return fmt.Errorf("plugins[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, pluginBase)
-		}
+	if err := h.validatePlugins(); err != nil {
+		return err
 	}
 	for i, p := range h.Providers {
-		if IsURL(p) {
-			continue // validated by ValidateResourceTypes below
+		if IsURL(p) || filepath.IsAbs(p) || IsProviderPath(p) {
+			continue // validated downstream by ResolveHarness/parseProviderDef
 		}
 		if !validProviderName.MatchString(p) {
 			return fmt.Errorf("providers[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, p)
@@ -438,6 +556,14 @@ func (h *Harness) Validate() error {
 	if h.ValidationLoop != nil && h.ValidationLoop.Script == "" {
 		return fmt.Errorf("validation_loop.script is required when validation_loop is set")
 	}
+	if h.ValidationLoop != nil {
+		switch h.ValidationLoop.FeedbackMode {
+		case "", "none", "append":
+			// valid
+		default:
+			return fmt.Errorf("validation_loop.feedback_mode must be \"none\" or \"append\", got %q", h.ValidationLoop.FeedbackMode)
+		}
+	}
 	if err := h.validateSecurity(); err != nil {
 		return err
 	}
@@ -456,6 +582,9 @@ func (h *Harness) Validate() error {
 		}
 	}
 	if err := h.validateForge(); err != nil {
+		return err
+	}
+	if err := h.validateOverlays(); err != nil {
 		return err
 	}
 	if err := ValidateTriggerExpression(h.Trigger); err != nil {
@@ -545,12 +674,24 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 	}
 
 	for i := range h.Skills {
-		if h.Skills[i], err = resolve(fmt.Sprintf("skills[%d]", i), h.Skills[i]); err != nil {
-			return err
+		resolved, resolveErr := resolve(fmt.Sprintf("skills[%d]", i), h.Skills[i].Source)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		h.Skills[i].Source = resolved
+		for key, val := range h.Skills[i].Overrides {
+			if val == nil {
+				continue // null = removal, nothing to resolve
+			}
+			resolved, resolveErr := resolve(fmt.Sprintf("skills[%d].overrides[%s]", i, key), *val)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			*h.Skills[i].Overrides[key] = resolved
 		}
 	}
 	for i := range h.Plugins {
-		if h.Plugins[i], err = resolve(fmt.Sprintf("plugins[%d]", i), h.Plugins[i]); err != nil {
+		if h.Plugins[i].Path, err = resolve(fmt.Sprintf("plugins[%d]", i), h.Plugins[i].Path); err != nil {
 			return err
 		}
 	}
@@ -576,6 +717,21 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 			}
 		}
 	}
+	if h.OpenShell != nil {
+		for i := range h.OpenShell.Profiles {
+			if h.OpenShell.Profiles[i], err = resolve(fmt.Sprintf("openshell.profiles[%d]", i), h.OpenShell.Profiles[i]); err != nil {
+				return err
+			}
+		}
+	}
+	for i := range h.Providers {
+		p := h.Providers[i]
+		if IsProviderPath(p) {
+			if h.Providers[i], err = resolve(fmt.Sprintf("providers[%d]", i), p); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -584,58 +740,92 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 // environment using the provided lookup function. Variables set to an empty
 // string are allowed; only truly unset variables produce an error.
 func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) error {
-	checkVarRefs := func(source, value string) error {
+	references := make(map[string][]string)
+	checkVarRefs := func(source, value string) {
 		for _, match := range envVarRef.FindAllStringSubmatch(value, -1) {
 			varName := match[1]
 			if _, ok := lookup(varName); !ok {
-				return fmt.Errorf("%s: host variable %s is not set (referenced in %q)", source, varName, value)
+				references[varName] = append(references[varName], source)
 			}
 		}
-		return nil
 	}
 
 	for k, v := range h.RunnerEnv {
-		if err := checkVarRefs(fmt.Sprintf("runner_env[%s]", k), v); err != nil {
-			return err
-		}
+		checkVarRefs(fmt.Sprintf("runner_env[%s]", k), v)
 	}
 	for i, hf := range h.HostFiles {
 		if hf.Optional {
 			continue
 		}
-		if err := checkVarRefs(fmt.Sprintf("host_files[%d].src", i), hf.Src); err != nil {
-			return err
-		}
+		checkVarRefs(fmt.Sprintf("host_files[%d].src", i), hf.Src)
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
-		if err := checkVarRefs("validation_loop.schema", h.ValidationLoop.Schema); err != nil {
-			return err
-		}
+		checkVarRefs("validation_loop.schema", h.ValidationLoop.Schema)
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.PreflightCheck != "" {
-		if err := checkVarRefs("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck); err != nil {
-			return err
-		}
+		checkVarRefs("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck)
 	}
 	if h.Env != nil {
 		for k, v := range h.Env.Runner {
-			if err := checkVarRefs(fmt.Sprintf("env.runner[%s]", k), v); err != nil {
-				return err
-			}
+			checkVarRefs(fmt.Sprintf("env.runner[%s]", k), v)
 		}
 		for k, v := range h.Env.Sandbox {
-			if err := checkVarRefs(fmt.Sprintf("env.sandbox[%s]", k), v); err != nil {
-				return err
-			}
+			checkVarRefs(fmt.Sprintf("env.sandbox[%s]", k), v)
 		}
 	}
-	return nil
+	if len(references) == 0 {
+		return nil
+	}
+
+	lines := make([]string, 0, len(references))
+	for variable, refs := range references {
+		sort.Strings(refs)
+		lines = append(lines, fmt.Sprintf("%s is not set (referenced by %s)", variable, strings.Join(refs, ", ")))
+	}
+	sort.Strings(lines)
+	return fmt.Errorf("%d unresolved host variable(s):\n    %s", len(references), strings.Join(lines, "\n    "))
 }
 
 // ValidateRunnerEnv checks that all ${VAR} references in RunnerEnv and
 // HostFiles.Src are defined in the host environment.
 func (h *Harness) ValidateRunnerEnv() error {
 	return h.ValidateRunnerEnvWith(os.LookupEnv)
+}
+
+// ValidatePluginDirs runs the on-disk checks for every resolved plugins:
+// entry — the directory exists, one runtime format claims it, the entry's
+// env/pi options fit that format, and no two entries share a sandbox
+// basename. ValidateFilesExist calls it; fullsend lock calls it directly
+// after resolution, since Validate() is filesystem-blind and a URL entry's
+// format is unknown until it has been fetched. Entries still holding a URL
+// are skipped: an unresolved URL here is the caller's ordering bug.
+func (h *Harness) ValidatePluginDirs() error {
+	for i, e := range h.Plugins {
+		if e.Path == "" || IsURL(e.Path) {
+			continue
+		}
+		if err := h.validatePluginDir(fmt.Sprintf("plugins[%d]", i), e); err != nil {
+			return err
+		}
+	}
+	// Validate() checks basenames only for local entries (a URL's basename
+	// is not known until the forge path is parsed); by now URL plugins
+	// resolve to local directories, so re-check across every entry — the
+	// sandbox upload replaces its destination wholesale, and two entries
+	// sharing a basename would silently drop one.
+	pluginNames := make(map[string]int, len(h.Plugins))
+	for i, e := range h.Plugins {
+		if e.Path == "" || IsURL(e.Path) {
+			continue
+		}
+		if prev, ok := pluginNames[e.Name()]; ok && h.Plugins[prev].Path != e.Path {
+			return fmt.Errorf("plugins[%d]: %q and plugins[%d] %q both load as plugin %q; the second would replace the first in the sandbox", i, e.Path, prev, h.Plugins[prev].Path, e.Name())
+		}
+		if _, ok := pluginNames[e.Name()]; !ok {
+			pluginNames[e.Name()] = i
+		}
+	}
+	return nil
 }
 
 // ValidateFilesExist checks that all file paths referenced by the harness
@@ -658,7 +848,10 @@ func (h *Harness) ValidateFilesExist() error {
 		return err
 	}
 	if err := check("policy", h.Policy); err != nil {
-		return err
+		// CI layers no policy, so a relative path resolves only if the file is
+		// committed (#6834). Re-running `agent new` is no fix: it refuses on
+		// the existing agent's files before writing the policy.
+		return fmt.Errorf("%w (commit a copy of the fleet policy in fullsend-ai/agents at that path, or set policy: to its URL with a #sha256= hash under allowed_remote_resources; `fullsend agent new` only writes one when generating a new agent)", err)
 	}
 	if err := check("pre_script", h.PreScript); err != nil {
 		return err
@@ -670,14 +863,19 @@ func (h *Harness) ValidateFilesExist() error {
 		return err
 	}
 	for i, s := range h.Skills {
-		if err := check(fmt.Sprintf("skills[%d]", i), s); err != nil {
+		if err := check(fmt.Sprintf("skills[%d]", i), s.Source); err != nil {
 			return err
+		}
+		for key, val := range s.Overrides {
+			if val != nil {
+				if err := check(fmt.Sprintf("skills[%d].overrides[%s]", i, key), *val); err != nil {
+					return err
+				}
+			}
 		}
 	}
-	for i, p := range h.Plugins {
-		if err := check(fmt.Sprintf("plugins[%d]", i), p); err != nil {
-			return err
-		}
+	if err := h.ValidatePluginDirs(); err != nil {
+		return err
 	}
 	for i, hf := range h.HostFiles {
 		// Skip ${VAR} paths — they are expanded at bootstrap time.
@@ -693,6 +891,9 @@ func (h *Harness) ValidateFilesExist() error {
 			return err
 		}
 	}
+	// Profile and provider paths are not checked here — ResolveHarness
+	// reads them via os.ReadFile before this function runs, surfacing
+	// missing-file errors at that point.
 	if h.ValidationLoop != nil {
 		if err := check("validation_loop.script", h.ValidationLoop.Script); err != nil {
 			return err
@@ -771,8 +972,8 @@ func (h *Harness) ValidateAllowedRemoteResources(orgAllowlist []string) error {
 
 // ValidateResourceTypes checks that executable fields (pre_script, post_script,
 // validation_loop.script, host_files[].src, api_servers[].script) are local paths
-// and not URLs, and that declarative fields (agent, policy, skills[]) that are URLs
-// include an integrity hash (#sha256=...).
+// and not URLs, and that declarative fields (agent, policy, skills[], plugins[])
+// that are URLs include an integrity hash (#sha256=...).
 func (h *Harness) ValidateResourceTypes() error {
 	// Executable fields must be local paths, not URLs.
 	execFields := []struct {
@@ -827,11 +1028,11 @@ func (h *Harness) ValidateResourceTypes() error {
 		}
 	}
 	for i, s := range h.Skills {
-		if IsURL(s) {
-			if _, _, hasHash := ParseIntegrityHash(s); !hasHash {
+		if IsURL(s.Source) {
+			cleanURL, _, hasHash := ParseIntegrityHash(s.Source)
+			if !hasHash {
 				return fmt.Errorf("skills[%d] URL must include #sha256=... integrity hash", i)
 			}
-			cleanURL, _, _ := ParseIntegrityHash(s)
 			info, err := forge.ParseForgeURL(cleanURL)
 			if err != nil {
 				return fmt.Errorf("skills[%d] URL must be hosted on a supported forge (github.com): %w", i, err)
@@ -839,14 +1040,60 @@ func (h *Harness) ValidateResourceTypes() error {
 			if info.Forge != "github" {
 				return fmt.Errorf("skills[%d] forge %q is recognized but fetch support has not landed yet", i, info.Forge)
 			}
+			if info.PathType == "blob" {
+				return fmt.Errorf("skills[%d] URL must use /tree/ (directory), not /blob/ (single file) — skills are directories", i)
+			}
+			if info.Path == "" {
+				return fmt.Errorf("skills[%d] URL must point to a directory inside the repo, not the repo root", i)
+			}
+		}
+	}
+	for i, s := range h.Skills {
+		for key, val := range s.Overrides {
+			if val != nil && IsURL(*val) {
+				if _, _, hasHash := ParseIntegrityHash(*val); !hasHash {
+					return fmt.Errorf("skills[%d].overrides[%s] URL must include #sha256=... integrity hash", i, key)
+				}
+			}
+		}
+	}
+	if err := ValidateSkillOverrides(h.Skills); err != nil {
+		return err
+	}
+	for i, e := range h.Plugins {
+		if p := e.Path; IsURL(p) {
+			cleanURL, _, hasHash := ParseIntegrityHash(p)
+			if !hasHash {
+				return fmt.Errorf("plugins[%d] URL must include #sha256=... integrity hash", i)
+			}
+			info, err := forge.ParseForgeURL(cleanURL)
+			if err != nil {
+				return fmt.Errorf("plugins[%d] URL must be hosted on a supported forge (github.com): %w", i, err)
+			}
+			if info.Forge != "github" {
+				return fmt.Errorf("plugins[%d] forge %q is recognized but fetch support has not landed yet", i, info.Forge)
+			}
+			if info.PathType == "blob" {
+				return fmt.Errorf("plugins[%d] URL must use /tree/ (directory), not /blob/ (single file) — plugins are directories", i)
+			}
+			if info.Path == "" {
+				return fmt.Errorf("plugins[%d] URL must point to a directory inside the repo, not the repo root", i)
+			}
+			if base := filepath.Base(info.Path); !ValidPluginBasename(base) {
+				return fmt.Errorf("plugins[%d] URL path %q does not end in a valid plugin basename (allowed: a-z, A-Z, 0-9, _, -)", i, info.Path)
+			}
 		}
 	}
 	for i, p := range h.OpenShellProfiles() {
-		if !IsURL(p) {
-			return fmt.Errorf("openshell.profiles[%d] must be a URL (local profiles are not supported)", i)
-		}
-		if _, _, hasHash := ParseIntegrityHash(p); !hasHash {
-			return fmt.Errorf("openshell.profiles[%d] URL must include #sha256=... integrity hash", i)
+		if IsURL(p) {
+			if _, _, hasHash := ParseIntegrityHash(p); !hasHash {
+				return fmt.Errorf("openshell.profiles[%d] URL must include #sha256=... integrity hash", i)
+			}
+		} else if !filepath.IsAbs(p) {
+			ext := strings.ToLower(filepath.Ext(p))
+			if ext != ".yaml" && ext != ".yml" {
+				return fmt.Errorf("openshell.profiles[%d] %q must have a .yaml or .yml extension", i, p)
+			}
 		}
 	}
 	for i, p := range h.Providers {
@@ -871,11 +1118,16 @@ func (h *Harness) EffectiveMaxRuntimeFetches() int {
 	return *h.MaxRuntimeFetches
 }
 
-// HasURLSkills reports whether any skill field contains a URL. Used to determine
-// whether a forge client is needed for resolution.
-func (h *Harness) HasURLSkills() bool {
+// HasURLDirResources reports whether any skill or plugin field contains a
+// URL. Used to determine whether a forge client is needed for resolution.
+func (h *Harness) HasURLDirResources() bool {
 	for _, s := range h.Skills {
-		if IsURL(s) {
+		if IsURL(s.Source) {
+			return true
+		}
+	}
+	for _, p := range h.Plugins {
+		if IsURL(p.Path) {
 			return true
 		}
 	}
@@ -883,19 +1135,31 @@ func (h *Harness) HasURLSkills() bool {
 }
 
 // HasURLReferences reports whether any declarative field (agent, policy, skills,
-// profiles, providers) contains a URL reference. Used to skip remote resource
-// validation and resolution when the harness references only local paths.
+// plugins, profiles, providers) contains a URL reference. Used to skip remote
+// resource validation and resolution when the harness references only local paths.
 func (h *Harness) HasURLReferences() bool {
 	if IsURL(h.Agent) || IsURL(h.Policy) {
 		return true
 	}
 	for _, s := range h.Skills {
-		if IsURL(s) {
+		if IsURL(s.Source) {
+			return true
+		}
+		for _, val := range s.Overrides {
+			if val != nil && IsURL(*val) {
+				return true
+			}
+		}
+	}
+	for _, p := range h.Plugins {
+		if IsURL(p.Path) {
 			return true
 		}
 	}
-	if len(h.OpenShellProfiles()) > 0 { // profiles are always URLs (enforced by ValidateResourceTypes)
-		return true
+	for _, p := range h.OpenShellProfiles() {
+		if IsURL(p) {
+			return true
+		}
 	}
 	for _, p := range h.Providers {
 		if IsURL(p) {

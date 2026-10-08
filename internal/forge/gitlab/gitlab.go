@@ -22,16 +22,30 @@ import (
 
 // LiveClient implements forge.Client for the GitLab REST API v4.
 type LiveClient struct {
-	http    *http.Client
-	token   string
-	baseURL string
+	http       *http.Client
+	token      string
+	baseURL    string
+	noteTarget string // "issues" (default) or "merge_requests"
+	afterFunc  func(time.Duration) <-chan time.Time
 }
 
-// Compile-time interface check.
+// Compile-time interface checks.
 var _ forge.Client = (*LiveClient)(nil)
+var _ forge.GitLabExtensions = (*LiveClient)(nil)
 
 // Option configures the GitLab client.
 type Option func(*LiveClient)
+
+// WithNoteTarget configures which GitLab noteable type the comment methods
+// (CreateIssueComment, ListIssueComments, UpdateIssueComment, DeleteIssueComment)
+// operate on. Valid values are "issues" (default) and "merge_requests".
+// GitLab uses separate API endpoints for issue notes vs MR notes; this
+// option selects the correct one.
+func WithNoteTarget(target string) Option {
+	return func(c *LiveClient) {
+		c.noteTarget = target
+	}
+}
 
 // WithBaseURL sets a custom base URL for self-hosted GitLab instances.
 // Non-https schemes are only allowed for loopback addresses (localhost,
@@ -40,6 +54,14 @@ type Option func(*LiveClient)
 func WithBaseURL(rawURL string) Option {
 	return func(c *LiveClient) {
 		c.baseURL = strings.TrimRight(rawURL, "/")
+	}
+}
+
+// WithAfterFunc replaces the default time.After used for retry delays.
+// Tests can inject an immediate-return function to avoid real sleeps.
+func WithAfterFunc(f func(time.Duration) <-chan time.Time) Option {
+	return func(c *LiveClient) {
+		c.afterFunc = f
 	}
 }
 
@@ -84,8 +106,10 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 				return nil
 			},
 		},
-		token:   token,
-		baseURL: "https://gitlab.com",
+		token:      token,
+		baseURL:    "https://gitlab.com",
+		noteTarget: "issues",
+		afterFunc:  time.After,
 	}
 	for _, o := range opts {
 		o(c)
@@ -93,7 +117,18 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 	if err := validateBaseURL(c.baseURL); err != nil {
 		return nil, err
 	}
+	if c.noteTarget != "issues" && c.noteTarget != "merge_requests" {
+		return nil, fmt.Errorf("gitlab: invalid note target %q; must be %q or %q", c.noteTarget, "issues", "merge_requests")
+	}
+	if err := applyCIServerTLSCA(c.http); err != nil {
+		return nil, fmt.Errorf("gitlab: %w", err)
+	}
 	return c, nil
+}
+
+// BaseURL returns the configured base URL for the GitLab instance.
+func (c *LiveClient) BaseURL() string {
+	return c.baseURL
 }
 
 // APIError represents an error response from the GitLab API.
@@ -104,6 +139,15 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("gitlab api: %d %s", e.StatusCode, e.Message)
+}
+
+// IsTransient reports whether the API error represents a transient
+// failure that may succeed on retry: server errors (500–504) and
+// rate limits (429). This method satisfies the transientReporter
+// interface used by forge.IsTransient.
+func (e *APIError) IsTransient() bool {
+	return e.StatusCode == http.StatusTooManyRequests ||
+		(e.StatusCode >= 500 && e.StatusCode <= 504)
 }
 
 func (e *APIError) Unwrap() error {
@@ -164,7 +208,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 			if isTransientError(err) && isIdempotent(method) && attempt < maxRetries-1 {
 				delay := retryDelay(nil, attempt)
 				select {
-				case <-time.After(delay):
+				case <-c.afterFunc(delay):
 				case <-ctx.Done():
 					return nil, ctx.Err()
 				}
@@ -183,7 +227,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 				}
 			}
 			select {
-			case <-time.After(delay):
+			case <-c.afterFunc(delay):
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
@@ -330,6 +374,17 @@ func (c *LiveClient) post(ctx context.Context, path string, body any) (*http.Res
 
 func (c *LiveClient) put(ctx context.Context, path string, body any) (*http.Response, error) {
 	resp, err := c.do(ctx, http.MethodPut, path, body)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkStatus(resp, http.StatusOK, http.StatusCreated, http.StatusNoContent); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *LiveClient) patch(ctx context.Context, path string, body any) (*http.Response, error) {
+	resp, err := c.do(ctx, http.MethodPatch, path, body)
 	if err != nil {
 		return nil, err
 	}

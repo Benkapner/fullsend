@@ -11,7 +11,7 @@ When someone files a bug, fullsend's agent pipeline processes it through four st
 3. **Review** — multiple review agents evaluate the PR independently, a coordinator decides the outcome
 4. **Fix** — addresses review feedback automatically or on human command, then loops back to review
 
-Each stage is triggered by labels and can be restarted with slash commands. The pipeline uses GitHub's native primitives (issues, PRs, labels, branch protection) as its coordination layer — there is no central orchestrator. See [ADR 0002](../../ADRs/0002-initial-fullsend-design.md) for the full design.
+Each stage is triggered by labels and can be restarted with slash commands. The pipeline uses GitHub's native primitives (issues, PRs, labels, branch protection) as its coordination layer — there is no central orchestrator.
 
 ```
 Issue filed → Triage → ready-to-code → Code Agent → PR opened → Review → ready-for-merge → Merge
@@ -42,7 +42,7 @@ These labels track where an issue is in the pipeline:
 |-------|---------|-------------------|
 | `blocked` | Progress depends on another issue or PR | Triage comment links to the blocker; re-triage on edit checks if blocker is resolved |
 | `duplicate` | Same issue already tracked elsewhere | Issue closed, link to canonical issue |
-| `needs-info` | Missing information | Triage comment explains what's needed; add a comment or edit the issue body to fix |
+| `needs-info` | Missing information | Triage comment explains what's needed; add a comment with the requested details and use `/fs-triage` to re-trigger triage |
 | `feature` | Issue categorized as a feature request | Waits for human prioritization before coding |
 | `triaged` | Triage passed but not auto-promoted | Waits for human review (applies to features and uncategorized issues) |
 | `ready-to-code` | Triage passed (bug, docs, performance) | Code agent picks it up |
@@ -69,7 +69,10 @@ Authorization is verified via the collaborator permission API and is
 stage-dependent: `/fs-triage` and `/fs-review` accept triage-level
 permission or higher; `/fs-code`, `/fs-fix`, `/fs-retro`, and
 `/fs-fix-stop` require write-level permission or higher (admin,
-maintain, or write). Bot-to-bot agent handoffs are not affected because
+maintain, or write). In a repo that enables `owners_file`
+[authorization](../../reference/config-reference.md#authorization),
+`OWNERS` approvers can run every command and reviewers can run
+`/fs-triage` and `/fs-review`. Bot-to-bot agent handoffs are not affected because
 they use label-based triggers, not slash commands.
 
 ### What to expect from agent PRs
@@ -114,7 +117,7 @@ The triage agent:
 4. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
 5. **Hands off.** Labels `ready-to-code` with a summary comment.
 
-**If triage gets it wrong:** Add a comment with the missing information, or edit the issue body. Edits to the title or body trigger triage automatically. You can also use `/fs-triage` to force a fresh run — this clears previous triage labels and re-evaluates, building on any prior triage analysis rather than discarding it.
+**If triage gets it wrong:** Add a comment with the missing information, or edit the issue body. Edits to the title or body trigger triage automatically. You can also use `/fs-triage` to force a fresh run — this clears previous triage labels and re-evaluates, building on any prior triage analysis rather than discarding it. For `needs-info` issues, use `/fs-triage` after providing the requested clarification to re-trigger triage.
 
 ### Stage 2: Code
 
@@ -126,7 +129,7 @@ The code agent:
 2. **Branches and implements.** Creates a branch, writes the fix following repo conventions.
 3. **Tests iteratively.** Runs the test suite, incorporates triage-provided tests if present, writes new tests if needed. Iterates until tests pass.
 4. **Opens a PR.** Links the issue, describes the changes.
-5. **Handles CI failures.** Fetches failing check logs, fixes issues, pushes again. Repeats until all required checks pass (up to a configurable cap, default defined in `config.yaml` as `defaults.max_implementation_retries`).
+5. **Handles CI failures.** Fetches failing check logs, fixes issues, pushes again. Repeats until all required checks pass (up to a fixed retry cap).
 6. **Hands off to review.** The PR creation or push triggers review dispatch automatically via `pull_request_target`.
 
 ### Stage 3: Review
@@ -188,7 +191,6 @@ Fullsend does not lock you out. The labels are the state machine, and you have f
 
 ## Reference
 
-- [ADR 0002](../../ADRs/0002-initial-fullsend-design.md) — initial fullsend design (full workflow specification)
 - [Architecture overview](../../architecture.md) — component vocabulary and execution stack
 - [Installing fullsend](../getting-started/) — prerequisite: setup guide
 - [Security threat model](../../problems/security-threat-model.md) — how fullsend thinks about security

@@ -15,7 +15,7 @@ import (
 func TestVendorManifestRoundTrip(t *testing.T) {
 	m := NewVendorManifest("0.4.0", "/src/fullsend", "bin/fullsend", []string{
 		".defaults/action.yml",
-		".github/workflows/reusable-triage.yml",
+		".github/workflows/reusable-prioritize.yml",
 	})
 	data, err := m.MarshalYAML()
 	require.NoError(t, err)
@@ -57,12 +57,12 @@ func TestVendorManifestCleanupPathsRejectsUnsafePaths(t *testing.T) {
 		Paths: []string{
 			".defaults/action.yml",
 			"../../secret",
-			".github/workflows/reusable-triage.yml",
+			".github/workflows/reusable-prioritize.yml",
 		},
 	}
 	paths := m.CleanupPaths("")
 	assert.Contains(t, paths, ".defaults/action.yml")
-	assert.Contains(t, paths, ".github/workflows/reusable-triage.yml")
+	assert.Contains(t, paths, ".github/workflows/reusable-prioritize.yml")
 	assert.NotContains(t, paths, "../../../etc/passwd")
 	assert.NotContains(t, paths, "../../secret")
 }
@@ -87,13 +87,14 @@ func TestManagedVendoredContentPaths(t *testing.T) {
 	paths, err := ManagedVendoredContentPaths(".fullsend/")
 	require.NoError(t, err)
 	assert.Contains(t, paths, ".defaults/action.yml")
-	assert.Contains(t, paths, ".github/workflows/reusable-triage.yml")
+	assert.Contains(t, paths, ".github/workflows/reusable-prioritize.yml")
 }
 
 func TestLegacyFlatVendoredPaths(t *testing.T) {
 	paths, err := LegacyFlatVendoredPaths("")
 	require.NoError(t, err)
 	assert.Contains(t, paths, "action.yml")
+	assert.Contains(t, paths, ".github/workflows/reusable-prioritize.yml")
 	assert.Contains(t, paths, ".github/workflows/reusable-triage.yml")
 }
 
@@ -101,8 +102,9 @@ func TestLegacyFlatVendoredPaths_PerRepoPrefix(t *testing.T) {
 	paths, err := LegacyFlatVendoredPaths(".fullsend/")
 	require.NoError(t, err)
 	// New canonical location for reusable workflows.
-	assert.Contains(t, paths, ".github/workflows/reusable-triage.yml")
+	assert.Contains(t, paths, ".github/workflows/reusable-prioritize.yml")
 	// Legacy per-repo paths included for cleanup.
+	assert.Contains(t, paths, ".fullsend/.github/workflows/reusable-prioritize.yml")
 	assert.Contains(t, paths, ".fullsend/.github/workflows/reusable-triage.yml")
 	// Per-repo action.yml marker.
 	assert.Contains(t, paths, ".fullsend/action.yml")
@@ -164,8 +166,8 @@ func TestEnumerateVendoredPathsWithoutCheckout(t *testing.T) {
 	paths, err := enumerateVendoredPaths()
 	require.NoError(t, err)
 	assert.Contains(t, paths, ".defaults/action.yml")
-	assert.Contains(t, paths, ".github/workflows/reusable-triage.yml")
-	assert.Contains(t, paths, ".defaults/internal/scaffold/fullsend-repo/agents/triage.md")
+	assert.Contains(t, paths, ".github/workflows/reusable-prioritize.yml")
+	assert.Contains(t, paths, ".defaults/internal/scaffold/fullsend-repo/scripts/fullsend-check-output")
 }
 
 func TestEnumerateVendoredPathsMatchesCollectInCheckout(t *testing.T) {
@@ -243,10 +245,10 @@ func TestCollectVendoredAssetsUsesDefaultsMirror(t *testing.T) {
 	paths := PathsFromInstallFiles(files)
 	assert.Contains(t, paths, ".defaults/action.yml")
 	assert.Contains(t, paths, ".defaults/.github/actions/mint-token/action.yml")
-	assert.Contains(t, paths, ".defaults/internal/scaffold/fullsend-repo/agents/triage.md")
-	assert.Contains(t, paths, ".github/workflows/reusable-triage.yml")
+	assert.Contains(t, paths, ".defaults/internal/scaffold/fullsend-repo/scripts/fullsend-check-output")
+	assert.Contains(t, paths, ".github/workflows/reusable-prioritize.yml")
 	assert.NotContains(t, paths, "action.yml")
-	assert.NotContains(t, paths, "agents/triage.md")
+	assert.NotContains(t, paths, "scripts/fullsend-check-output")
 }
 
 func TestVendoredMarkerPath(t *testing.T) {
@@ -256,4 +258,26 @@ func TestVendoredMarkerPath(t *testing.T) {
 func TestVendorManifestPath(t *testing.T) {
 	assert.Equal(t, "vendor-manifest.yaml", VendorManifestPath(""))
 	assert.Equal(t, ".fullsend/vendor-manifest.yaml", VendorManifestPath(".fullsend/"))
+}
+
+func TestStaleVendoredPaths(t *testing.T) {
+	m := &VendorManifest{Paths: []string{
+		".defaults/.github/scripts/check-fix-eligibility.sh",
+		".defaults/.github/scripts/redact-behaviour-artifacts.sh",
+		".defaults/.github/scripts/redact-behaviour-artifacts-test.sh",
+		"../escape-attempt.sh",
+	}}
+	current := []string{
+		".defaults/.github/scripts/check-fix-eligibility.sh",
+		".defaults/action.yml",
+	}
+	stale := StaleVendoredPaths(m, current)
+	// De-listed files are pruned; unsafe paths are never returned.
+	assert.Equal(t, []string{
+		".defaults/.github/scripts/redact-behaviour-artifacts-test.sh",
+		".defaults/.github/scripts/redact-behaviour-artifacts.sh",
+	}, stale)
+
+	assert.Nil(t, StaleVendoredPaths(nil, current))
+	assert.Empty(t, StaleVendoredPaths(&VendorManifest{}, current))
 }

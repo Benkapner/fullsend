@@ -25,6 +25,13 @@ var envVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 var jsonPathPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$`)
 
+// branchNamePattern restricts checkout_branch to plain branch names: each
+// slash-separated segment starts with an alphanumeric and continues with
+// alphanumerics, dots, underscores, or dashes. Combined with the explicit
+// ".." rejection in executeBehaviourOp this forbids option injection
+// (leading dash), refspec tricks, and path traversal.
+var branchNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$`)
+
 type sandboxExecFunc func(sandboxName, cmd string, timeout time.Duration) (stdout, stderr string, exitCode int, err error)
 
 type sandboxUploadFunc func(sandboxName, localPath, remotePath string) error
@@ -98,9 +105,26 @@ func (DummyRuntime) EnvExports() []string { return nil }
 
 func (r DummyRuntime) Bootstrap(input BootstrapInput) error {
 	sandboxName := input.SandboxName()
+
+	// Mirror of ClaudeRuntime.Bootstrap: the dummy runtime runs scripted
+	// operations rather than an agent, so every declared plugin (ADR 0094)
+	// is named — with the format it is in — and skipped rather than
+	// silently dropped.
+	for _, e := range input.Plugins() {
+		if e.Path != "" {
+			fmt.Fprintf(os.Stderr, "Plugin %q (%s): skipped — the dummy runtime loads no plugins (see docs/runtimes.md)\n", e.SandboxName(), e.Kind)
+		}
+	}
+
 	mkdirCmd := fmt.Sprintf("mkdir -p %s/output %s/.dummy", sandbox.SandboxWorkspace, sandbox.SandboxWorkspace)
-	_, _, _, err := r.execFn()(sandboxName, mkdirCmd, 10*time.Second)
-	return err
+	_, stderr, exitCode, err := r.execFn()(sandboxName, mkdirCmd, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("bootstrap exec: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("bootstrap failed: %s", strings.TrimSpace(stderr))
+	}
+	return nil
 }
 
 func (r DummyRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, _ time.Time, _ *RunMetrics) (int, error) {
@@ -131,10 +155,20 @@ func (r DummyRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	return exitCode, nil
 }
 
+// ClearIterationArtifacts sweeps stray processes (the dummy runtime's ops run
+// in the real sandbox, so it gets the same between-iteration hygiene as the
+// agent runtimes), then removes the previous iteration's output.
 func (r DummyRuntime) ClearIterationArtifacts(sandboxName string) error {
+	clearStrayProcesses(r.execFn(), sandboxName, os.Stderr, "the previous iteration")
 	clearCmd := fmt.Sprintf("rm -rf %s/output/*", r.WorkspaceDir())
-	_, _, _, err := r.execFn()(sandboxName, clearCmd, 10*time.Second)
-	return err
+	_, stderr, exitCode, err := r.execFn()(sandboxName, clearCmd, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("clear iteration artifacts exec: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("clear iteration artifacts failed: %s", strings.TrimSpace(stderr))
+	}
+	return nil
 }
 
 func (DummyRuntime) ExtractTranscripts(_ string, _ string, _ string) error { return nil }
@@ -254,6 +288,23 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 			return fmt.Errorf("write_fixture upload: %w", err)
 		}
 		return nil
+	case "checkout_branch":
+		name := strings.TrimSpace(op.Args)
+		if name == "" {
+			return fmt.Errorf("checkout_branch requires a branch name")
+		}
+		if !branchNamePattern.MatchString(name) || strings.Contains(name, "..") {
+			return fmt.Errorf("checkout_branch invalid branch name %q", name)
+		}
+		cmd := checkoutBranchCommand(repoDir, name)
+		_, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 120*time.Second)
+		if err != nil {
+			return fmt.Errorf("checkout_branch exec: %w", err)
+		}
+		if exitCode != 0 {
+			return fmt.Errorf("checkout_branch %s failed: %s", name, strings.TrimSpace(stderr))
+		}
+		return nil
 	case "assert_env":
 		varName := strings.TrimSpace(op.Args)
 		if varName == "" {
@@ -315,6 +366,45 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 	default:
 		return fmt.Errorf("unknown op %q", op.Op)
 	}
+}
+
+// checkoutBranchCommand builds the shell command for the checkout_branch
+// op. The branch name must already be validated against branchNamePattern.
+//
+// Semantics (deliberately a single narrow capability, not a general
+// shell op):
+//   - Probe the remote for the ref with `git ls-remote --exit-code`.
+//     Exit 2 means the ref does not exist — base the branch off the
+//     current HEAD. Any other non-zero exit (network, auth) fails the
+//     op instead of being silently collapsed into the HEAD fallback,
+//     which would make scenarios pass or fail for the wrong reason.
+//   - When the ref exists, fetch it and base the branch on FETCH_HEAD
+//     so the branch carries the remote ref's commits.
+//   - Record one marker commit on the branch. This gives the applier
+//     post-script real content to push and — because the local tip now
+//     differs from every remote tip — makes a wrongful push move the
+//     target branch, so "branch ... is unchanged" assertions can
+//     actually detect it. The commit subject uses a conventional-commit
+//     prefix because post-code derives the applier's PR title from it.
+func checkoutBranchCommand(repoDir, name string) string {
+	quoted := shellQuote(name)
+	// Scoped to refs/heads/ throughout — the ls-remote probe already
+	// restricts to --heads, so the fetch must resolve the same ref
+	// rather than git's default disambiguation order (which would
+	// prefer a same-named tag over the branch).
+	refspec := shellQuote("refs/heads/" + name)
+	return fmt.Sprintf(
+		"cd %s"+
+			" && if git ls-remote --exit-code --heads origin %s >/dev/null 2>&1; then"+
+			" git fetch origin %s && git checkout -B %s FETCH_HEAD;"+
+			" else rc=$?; if [ \"$rc\" -ne 2 ]; then echo \"checkout_branch: ls-remote failed with $rc\" >&2; exit 1; fi;"+
+			" git checkout -B %s; fi"+
+			" && mkdir -p behaviour && echo %s > behaviour/marker.txt"+
+			" && git add behaviour/marker.txt"+
+			" && git -c user.name=fullsend-behaviour -c user.email=behaviour@fullsend.invalid commit -m %s",
+		shellQuote(repoDir), quoted, refspec, quoted, quoted,
+		shellQuote("scripted marker for "+name),
+		shellQuote("test: add scripted marker commit"))
 }
 
 func validateHTTPURL(raw string) error {

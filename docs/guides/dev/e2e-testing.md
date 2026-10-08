@@ -1,6 +1,6 @@
 # E2E Testing
 
-Guide for running and debugging fullsend admin e2e tests locally and in CI.
+Guide for running and debugging fullsend behaviour and playback tests locally and in CI.
 
 Related ADRs: [0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md) (org pool),
 [0060](../../ADRs/0060-cross-org-mint-authorization-via-org-variables.md) (cross-org mint),
@@ -16,18 +16,53 @@ Playwright or stored sessions.
 Before running e2e locally or in CI:
 
 1. **Pool orgs** (`halfsend-01` … `halfsend-12`) provisioned per [Pool org provisioning](#pool-org-provisioning) below
-2. **Mint** deployed with `e2e` role enrolled and `ALLOWED_ORGS` including `fullsend-ai`
+2. **Mint** deployed with `e2e` role enrolled and the requesting repository `fullsend-ai/fullsend` enrolled in `PER_REPO_WIF_REPOS` (or the mint explicitly in public mode, `PER_REPO_WIF_REPOS=*`)
 3. **CI only:** pool orgs with `FULLSEND_FOREIGN_E2E_REPOS` authorizing `fullsend-ai/fullsend`
 4. **Local only:** `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN`) with admin access on pool orgs
 
 ## Local runs
 
+The default local environment is `dev`. Both suites deploy a temporary
+Cloudflare preview mint; GitHub authentication alone is not sufficient.
+
 1. Authenticate as an admin on the pool orgs (`gh auth login --web`, or export `GH_TOKEN`).
-2. Run tests (uses `gh auth token`, `GH_TOKEN`, or `GITHUB_TOKEN`):
+2. Load the following environment variables from your approved secret store
+   before running either suite. Use test credentials, not production credentials;
+   never commit them or paste them into logs.
+
+   | Environment variables | Required values |
+   |-----------------------|-----------------|
+   | `TEST_FULLSEND_PEM`, `TEST_TRIAGE_PEM`, `TEST_CODER_PEM`, `TEST_REVIEW_PEM`, `TEST_RETRO_PEM`, `TEST_PRIORITIZE_PEM` | Private-key **contents**, not paths, for the installed test GitHub Apps. The driver materializes temporary PEM files for mint deployment and removes them afterward. |
+   | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | Test Cloudflare account and token authorized to deploy preview mint Workers. Locally use these names, not the CI secret names `TEST_CLOUDFLARE_*`. |
+   | `E2E_GCP_PROJECT_ID` | Test inference project. Authenticate locally with GCP permissions to inspect/provision inference WIF for the pool repos; see [inference setup](behaviour-testing.md#repo-allocation-via-unified-driver). |
+   | `TEST_ACTOR_WRITE_PAT`, `TEST_ACTOR_TRIAGE_PAT`, `TEST_ACTOR_OUTSIDER_PAT` | Human-like test-actor PATs used by SCM steps. Playback uses the triage PAT to create its tracking issue. |
+
+   The default app set is `fullsend-test`; the PEMs must match those installed
+   Apps. Set `BEHAVIOUR_APP_SET` only when using a different test app set.
+   Overriding `FULLSEND_MINT_URL` does **not** disable preview mint deployment.
+   If no PEMs are loaded, initialization fails with
+   `PEMDir is required (no PEMs materialized)`.
+
+3. Run tests (uses `gh auth token`, `GH_TOKEN`, or `GITHUB_TOKEN`):
 
 ```bash
-make e2e-test
+make behaviour-test   # Gherkin behaviour suite
+make playback-test    # @playback scenarios on the dummy-playback runtime
 ```
+
+The obsolete admin install/uninstall suite and `make e2e-test` target have
+been removed. CI keeps both the regular behaviour and playback suites.
+
+To run playback manually, select **E2E Tests → Run workflow**, choose the branch,
+and leave **Run the playback behaviour suite** enabled. From the CLI:
+
+```bash
+gh workflow run e2e.yml --repo fullsend-ai/fullsend \
+  --ref YOUR_BRANCH -f run_playback=true
+```
+
+Manual runs use the dev org pool and run playback only. Normal CI runs both
+suites, concurrently in dev and serialized against the single stage org.
 
 Optional environment variables:
 
@@ -38,19 +73,19 @@ Optional environment variables:
 | `E2E_LOCK_TIMEOUT` | Max wait for a free pool org (default 10m) |
 | `E2E_GCP_PROJECT_ID` | GCP project for inference setup (`github setup --inference-project`) |
 
-Behaviour tests use the same pool orgs but install via `fullsend github setup` (per-repo) instead of `fullsend admin install`. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
+Behaviour tests use the pool orgs (for `ENVIRONMENT=dev`) and install fullsend per-repo via `fullsend github setup`. When `ENVIRONMENT=stage`, the suite uses the `halfsend` org with a durable CF Worker mint instead of a pool org. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
 
 Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
-`halfsend-12`) — see [ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
+`halfsend-12` for DEV, or `halfsend` for STAGE) — see [ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
 
-Shared pool, CLI, and cleanup helpers used by both admin e2e and behaviour tests live in `pkg/e2etest/`. Admin-specific test logic remains in `e2e/admin/`.
+Shared pool, CLI, and cleanup helpers used by the behaviour and playback suites live in `internal/e2etest/`.
 
 ## CI runs
 
 In GitHub Actions, tests mint a cross-org installation token via the mint service:
 
 1. Workflow requests a GHA OIDC token (`id-token: write`)
-2. `mintclient.MintToken` POSTs to `{FULLSEND_MINT_URL or hosted default}/v1/token` with `{role: "e2e", target_org: "<pool org>"}` (repos omitted for installation-wide access)
+2. `mintclient.MintToken` POSTs to `{FULLSEND_MINT_URL or hosted default}/v1/token` with `{role: "e2e", level: "write", target_org: "<pool org>", repos: ["*"]}` (`repos: ["*"]` is required for installation-wide cross-org access; `level: "write"` requests full write permissions)
 3. Mint verifies the caller against `FULLSEND_FOREIGN_E2E_REPOS` on the target org ([ADR 0060](../../ADRs/0060-cross-org-mint-authorization-via-org-variables.md))
 
 Required repository secrets:
@@ -61,9 +96,22 @@ Required repository secrets:
 | `E2E_GCP_SERVICE_ACCOUNT` | GCP service account for WIF |
 | `E2E_GCP_PROJECT_ID` | GCP project ID for inference secrets (`github setup --inference-project`) |
 | `TEST_CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for CF mint behaviour-test deploys (mapped to env `CLOUDFLARE_ACCOUNT_ID` in the behaviour job) |
-| `TEST_CLOUDFLARE_API_TOKEN` | Test-only Cloudflare API token for Wrangler against Worker `mint-test` (mapped to env `CLOUDFLARE_API_TOKEN`; distinct from site-deploy `CLOUDFLARE_*`) |
+| `TEST_CLOUDFLARE_API_TOKEN` | Test-only Cloudflare API token for Wrangler against Worker `mint-test` (DEV) and `stage-mint` (STAGE) (mapped to env `CLOUDFLARE_API_TOKEN`; distinct from site-deploy `CLOUDFLARE_*`) |
+| `TEST_ACTOR_WRITE_PAT` | Classic PAT for the write-level human-like test actor (`fstest-write`); exposed to the behaviour job under the same env name |
+| `TEST_ACTOR_TRIAGE_PAT` | Classic PAT for the triage-level human-like test actor (`fstest-triage`); exposed to the behaviour job under the same env name |
+| `TEST_ACTOR_OUTSIDER_PAT` | Classic PAT for the outsider (no org write) human-like test actor (`fstest-outsider`); exposed to the behaviour job under the same env name |
 
 Mint URL uses the hosted public endpoint by default (same as `fullsend admin --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
+
+### Behaviour job GitHub Environments
+
+The behaviour job in `e2e.yml` binds to GitHub Environments `dev` (authorized pull requests and the merge queue) and `stage` (push to `main`). It skips `workflow_dispatch` and other triggers. The job sets `ENVIRONMENT` to the same value for the suite (`dev` or `stage`). GitHub auto-creates those environments on first use.
+
+After the environments exist, restrict `stage` to `main`:
+
+1. Open the repository **Settings → Environments → `stage`**.
+2. Under **Deployment branches and tags**, choose **Selected branches and tags**.
+3. Add a branch rule for `main`.
 
 ### Cloudflare Worker mint BT credentials
 
@@ -71,13 +119,15 @@ The behaviour job wires `TEST_CLOUDFLARE_*` into Wrangler’s standard `CLOUDFLA
 
 Prefer **`wrangler versions upload --name=mint-test --preview-alias=…`** so runs use preview URLs (`<alias>-mint-test.<subdomain>.workers.dev`) rather than inventing new Worker names or relying on the production `mint-test.…workers.dev` route (which may stay disabled). Cloudflare Account API tokens cannot currently attach Workers Scripts permissions under a Specified-Workers-only policy; operators use a dedicated Workers Edit token (for example `fullsend-ai/fullsend-mint-test`) that is separate from site-deploy credentials and intended only for this test path.
 
+**STAGE environment:** The STAGE driver (`NewRepoPoolCFMintStage`) deploys a separate durable Worker **`stage-mint`** at `stage-mint.fullsend.sh` instead of using preview aliases on `mint-test`. The `TEST_CLOUDFLARE_API_TOKEN` must have permissions to manage the `stage-mint` Worker in addition to `mint-test`. If the Cloudflare account uses a Specified-Workers-only token policy, operators need a distinct Workers Edit token (for example `fullsend-ai/fullsend-stage-mint`) that covers the `stage-mint` Worker.
+
 ### Behaviour tests and per-repo mint enrollment
 
 Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`). Triage workflows mint same-org `triage` tokens from vendored reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — pool org behaviour repos must be enrolled once by a GCP admin on the hosted mint project.
 
-Admin e2e uses the singular `halfsend-NN/test-repo` name. Behaviour tests lease numbered `halfsend-NN/test-repo-01` … `test-repo-12` names from a `RepoPool`; these repos are **lazily created and installed** on demand by `RepoEnsurer` (see [behaviour-testing.md](behaviour-testing.md#lazy-createinstall-repoensurer)). Pre-provisioning numbered repos in the pool org is no longer required — mint enrollment for those names is still pre-provisioned so it is not on the critical path. Enroll base names only — do **not** enroll `*-fork` names (forks are ephemeral PR sources and mint against the enrolled base repo). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
+Behaviour tests allocate numbered `halfsend-NN/test-repo-01` … `test-repo-12` names via the unified `install.Driver`; these repos are **lazily created and installed** on demand (see [behaviour-testing.md](behaviour-testing.md#repo-allocation-via-unified-driver)). Pre-provisioning numbered repos in the pool org is no longer required — mint enrollment for those names is still pre-provisioned so it is not on the critical path. Enroll base names only — do **not** enroll `*-fork` names (forks are ephemeral PR sources and mint against the enrolled base repo). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
 
-Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. The behaviour install driver runs `fullsend inference provision <org>/test-repo` using CI credentials on the inference project (same access model as admin e2e), then passes the repo-scoped WIF provider to `github setup`. `E2E_GCP_WIF_PROVIDER` authenticates the CI job itself; it is not written to pool org repos.
+Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. The behaviour install driver resolves the repo-scoped WIF provider using CI credentials on the inference project and passes it to `github setup`. It runs `fullsend inference status <org>/test-repo-NN` first and runs `fullsend inference provision` only when the provider is not healthy, one provision at a time. The provider is cached per repo name for the rest of the run. `E2E_GCP_WIF_PROVIDER` authenticates the CI job itself; it is not written to pool org repos.
 
 The CI service account needs inference-provision IAM on `E2E_GCP_PROJECT_ID`:
 
@@ -86,17 +136,27 @@ The CI service account needs inference-provision IAM on `E2E_GCP_PROJECT_ID`:
 | `roles/iam.workloadIdentityPoolAdmin` | Create/update repo-scoped inference WIF providers |
 | `roles/resourcemanager.projectIamAdmin` | Grant `roles/aiplatform.user` to repo WIF principals |
 
-One-time enrollment for all pool orgs (idempotent). Enroll the singular admin `test-repo` (used by the driver today) and the behaviour pool `test-repo-01` … `test-repo-12` (pre-provisioned for planned parallelization):
+One-time enrollment for all pool orgs (idempotent). Enroll the singular `test-repo` (used by the driver today) and the behaviour pool `test-repo-01` … `test-repo-12` (pre-provisioned for planned parallelization):
 
 ```bash
 export GCP_PROJECT=it-gcp-konflux-dev-fullsend
 for i in $(seq -w 1 12); do
-  fullsend mint enroll "halfsend-${i}/test-repo" \
+  go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo" \
     --project="$GCP_PROJECT" --region=us-central1
   for j in $(seq -w 1 12); do
-    fullsend mint enroll "halfsend-${i}/test-repo-${j}" \
+    go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo-${j}" \
       --project="$GCP_PROJECT" --region=us-central1
   done
+done
+```
+
+One-time enrollment for the STAGE org (`halfsend`). The STAGE driver uses the same repo pool pattern (`test-repo-01` … `test-repo-12`) within the `halfsend` org:
+
+```bash
+export GCP_PROJECT=it-gcp-konflux-dev-fullsend
+for j in $(seq -w 1 12); do
+  go run ./cmd/fullsend mint enroll "halfsend/test-repo-${j}" \
+    --project="$GCP_PROJECT" --region=us-central1
 done
 ```
 
@@ -108,28 +168,88 @@ Each pool org must be provisioned before e2e can use it:
 
 1. Org exists with `botsend` as owner
 2. `test-repo` and `e2e-lock` repos (lock created at runtime)
-3. All role apps installed, including `fullsend-ai-e2e` with **Repository → Variables: Read and write** (`actions_variables`) and **Organization → Variables: Read and write** (`organization_actions_variables`)
-4. `FULLSEND_FOREIGN_E2E_REPOS` includes `fullsend-ai/fullsend` with org-wide visibility (`visibility: all`)
-5. Mint enrolled: org in `ALLOWED_ORGS`, `${ORG}/e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled
+3. Test actor permissions granted (see [Test actor permissions](#test-actor-permissions) below)
+4. All role apps installed, including `fullsend-ai-e2e` with **Repository → Variables: Read and write** (`actions_variables`) and **Organization → Variables: Read and write** (`organization_actions_variables`)
+5. `FULLSEND_FOREIGN_E2E_REPOS` includes `fullsend-ai/fullsend` with org-wide visibility (`visibility: all`)
+6. Mint enrolled: requesting repository `fullsend-ai/fullsend` in `PER_REPO_WIF_REPOS` (or public mode), `e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled. The pool org is a foreign target, so its access is governed by the `FULLSEND_FOREIGN_E2E_REPOS` grant and App installation above rather than by requesting-repository enrollment
 
-Use the idempotent setup script:
+Use the idempotent setup script. Numeric arguments become `halfsend-NN`; a full org name (for example `halfsend` for STAGE) is used as-is:
 
 ```bash
 MINT_PROJECT=... MINT_FUNCTION=... hack/setup-new-e2e-org.sh 07
+MINT_PROJECT=... MINT_FUNCTION=... hack/setup-new-e2e-org.sh halfsend
 ```
 
 Verify foreign authorization:
 
 ```bash
-fullsend admin foreign list --org halfsend-01
+go run ./cmd/fullsend admin foreign list --org halfsend-01
 # expect e2e → fullsend-ai/fullsend
 ```
 
 Existing pool orgs (`halfsend-01` … `halfsend-12`) need a one-time operator pass: install the e2e app (if missing) and run:
 
 ```bash
-fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend
+go run ./cmd/fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend
 ```
+
+For repo-level grants (scoped to a specific target repo rather than the
+entire org), add `--repo`:
+
+```bash
+go run ./cmd/fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend --repo target-repo
+go run ./cmd/fullsend admin foreign list --org halfsend-NN --repo target-repo
+```
+
+See [ADR 0083](../../ADRs/0083-repo-level-foreign-allow-list.md) for details
+on repo-level foreign grants.
+
+### Test actor permissions
+
+Pool orgs grant three test actor accounts specific access levels for
+e2e testing of permission-sensitive behaviour:
+
+| Actor | Org membership | Organization role | Effective repo permission |
+|-------|----------------|-------------------|---------------------------|
+| `fstest-write` | member | all-repository write | write on every org repo |
+| `fstest-triage` | member | all-repository triage | triage on every org repo |
+| `fstest-outsider` | none | none | public read only |
+
+Elevated access uses **organization-level all-repository roles**, not
+per-repo collaborator grants or team membership. Direct collaborator
+grants vanish when the behaviour suite deletes and recreates a pool repo
+and re-adding them creates pending invitations. Org-level roles survive
+that delete/recreate cycle and apply to any future `test-repo*` name,
+including numbered pool slots that do not exist yet.
+
+The behaviour suite verifies org membership once per org at ensure time.
+It does **not** call `AddCollaborator`, and it does not re-verify the
+all-repository role itself at runtime — that would require the e2e App
+installation on every pool org to hold the `organization_custom_roles`
+permission solely to call the organization-roles API. The all-repository
+role is verified once, at setup time, by `hack/setup-new-e2e-org.sh`
+(which runs with an org-admin `gh` session, not the e2e App). Missing
+membership fails with a message to run `hack/setup-new-e2e-org.sh`. The
+outsider must remain outside the organization and must not receive an
+all-repository role.
+
+The setup script (`hack/setup-new-e2e-org.sh`) creates or verifies this
+model idempotently on `halfsend-NN` and on the STAGE org `halfsend`. To
+auto-accept org membership invitations, pass the actor PATs as
+environment variables:
+
+```bash
+TEST_ACTOR_WRITE_PAT=ghp_... TEST_ACTOR_TRIAGE_PAT=ghp_... \
+  MINT_PROJECT=... MINT_FUNCTION=... hack/setup-new-e2e-org.sh 07
+```
+
+Without the PAT variables, the script pauses for manual acceptance.
+
+Accounts and PATs are managed under
+[#6024](https://github.com/fullsend-ai/fullsend/issues/6024). PATs are
+stored as repository secrets `TEST_ACTOR_WRITE_PAT`,
+`TEST_ACTOR_TRIAGE_PAT`, and `TEST_ACTOR_OUTSIDER_PAT` on
+`fullsend-ai/fullsend`.
 
 ## CI authorization
 
@@ -151,9 +271,11 @@ see [ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths
 
 ### Who needs `ok-to-test`
 
-External contributors and fork PR authors must have a maintainer apply the
-**`ok-to-test`** label **after** the latest push. The label must be created once
-in GitHub repo settings (Settings → Labels).
+External contributors and fork PR authors must have a maintainer with write
+access apply the **`ok-to-test`** label **after** the latest push. A label from
+anyone else (for example a triage-role user) is removed and does not authorize
+the run. The label must be created once in GitHub repo settings (Settings →
+Labels).
 
 ### Stale labels
 
@@ -193,8 +315,9 @@ gate. Re-run the workflow or add/re-apply `ok-to-test` as appropriate.
    workflows call the same suites via `workflow_call` (fork / external path)
 3. **Gate** — authorize the PR author or a fresh `ok-to-test` label (base
    checkout only; never checks out PR head)
-4. **E2E** — checkout PR head SHA, authenticate to GCP via WIF, mint cross-org
-   tokens per pool org, `make e2e-test`
+4. **Behaviour / playback** — checkout PR head SHA, authenticate to GCP via
+   WIF, mint cross-org tokens per pool org, `make behaviour-test` (or
+   `make playback-test` for the playback job)
 
 Pushes to `main`, merge queue, and `workflow_dispatch` skip the gate and run e2e
 directly.
@@ -228,7 +351,7 @@ The `fix` role reuses the coder app (`fullsend-test-coder`) and
 ### Installation targets
 
 All six apps are installed with access to **all repositories** on
-`halfsend-01` through `halfsend-12`.
+`halfsend-01` through `halfsend-12` and on `halfsend` (used by the STAGE driver).
 
 ### App permission scopes
 
@@ -245,12 +368,25 @@ registration setting.
 |------|-------------|
 | fullsend | `actions:write`, `actions_variables:read`, `administration:write`, `checks:read`, `contents:write`, `issues:read`, `members:read`, `organization_projects:read`, `pull_requests:write`, `workflows:write` |
 | triage | `contents:read`, `issues:write` |
-| coder | `checks:read`, `contents:write`, `issues:write`, `pull_requests:write` |
+| coder | `checks:read`, `contents:write`, `issues:write`, `packages:read`, `pull_requests:write` |
+| fix | Reuses the coder app and PEM; the fix stage mints the `coder` role and therefore uses the coder permission set. |
 | review | `checks:read`, `contents:read`, `issues:write`, `pull_requests:write` |
 | retro | `actions:read`, `contents:read`, `issues:write`, `pull_requests:write` |
 | prioritize | `contents:read`, `issues:write`, `organization_projects:write` |
 
+The `fix` row is a hosted-mint dispatch alias: fix workflows mint the `coder`
+role and reuse `fullsend-test-coder` and `TEST_CODER_PEM`; it is not a separate
+App registration in that setup. Per-repo setup may still request the literal
+`fix` role and create a role-specific App for that repository.
+
 ### Operator notes
+
+**Permission rollout for the coder App:** When adding a permission such as
+`packages:read`, update the `fullsend-test-coder` App registration first. Then
+have the installation owner for each existing pool org (`halfsend-01` through
+`halfsend-12`) Accept the pending permission update. New pool-org installs
+receive the permission during installation; existing installs may otherwise
+continue using the mint's rollout warning path.
 
 **PEM rotation:** Generate a new private key on the app's settings page
 (`https://github.com/apps/<slug>/settings`), then update the corresponding
@@ -260,8 +396,9 @@ enrolled on a test mint, update the PEM secret there as well.
 **Cloudflare test token rotation:** Create a new Account API token with Workers
 Edit (or the Edit Cloudflare Workers template), store it as
 `TEST_CLOUDFLARE_API_TOKEN`, and keep `TEST_CLOUDFLARE_ACCOUNT_ID` aligned with
-the account that hosts Worker `mint-test`. Do not put the new value into
-site-deploy `CLOUDFLARE_API_TOKEN`.
+the account that hosts Workers `mint-test` and `stage-mint`. The token must
+cover both Workers. Do not put the new value into site-deploy
+`CLOUDFLARE_API_TOKEN`.
 
 **Installing on a new pool org:** Install each app via its public install
 URL:

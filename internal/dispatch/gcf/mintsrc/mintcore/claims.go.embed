@@ -58,116 +58,82 @@ func (a Audience) Contains(aud string) bool {
 
 const upstreamRepoPrefix = "fullsend-ai/fullsend/"
 
-// ParseAllowedOrgs splits a comma-separated ALLOWED_ORGS value into trimmed entries.
-func ParseAllowedOrgs(allowedOrgs string) []string {
-	if allowedOrgs == "" {
-		return nil
-	}
-	var orgs []string
-	for _, o := range strings.Split(allowedOrgs, ",") {
-		if trimmed := strings.TrimSpace(o); trimmed != "" {
-			orgs = append(orgs, trimmed)
-		}
-	}
-	return orgs
+// IsPublicMintRepos reports whether perRepoWIFRepos contains the wildcard
+// entry "*", meaning every repository gets per-repo treatment (public mint
+// mode).
+func IsPublicMintRepos(perRepoWIFRepos map[string]bool) bool {
+	return perRepoWIFRepos["*"]
 }
 
-// IsPublicMint reports whether ALLOWED_ORGS contains *, enabling public mint mode.
-func IsPublicMint(allowedOrgs []string) bool {
-	for _, entry := range allowedOrgs {
-		if entry == "*" {
-			return true
-		}
+// IsPerRepoMode reports whether repository gets per-repo treatment.
+// A repo is per-repo if it appears in PER_REPO_WIF_REPOS, or if
+// PER_REPO_WIF_REPOS contains "*" (public mint mode).
+func IsPerRepoMode(repository string, perRepoWIFRepos map[string]bool) bool {
+	if perRepoWIFRepos["*"] {
+		return true
 	}
-	return false
+	return perRepoWIFRepos[strings.ToLower(repository)]
 }
 
-// ValidateOrgAllowed checks that org is in the allowed list (case-insensitive).
-// When allowedOrgs contains *, any non-empty org is accepted (public mint mode).
-func ValidateOrgAllowed(org string, allowedOrgs []string) error {
-	if org == "" {
+// AuthorizeToken performs the common authorization policy called by the
+// handler after a verifier backend authenticates the token. Only callers
+// with per-repo treatment are authorized: the caller's repository must be
+// in PER_REPO_WIF_REPOS, or PER_REPO_WIF_REPOS must contain "*" (public
+// mint mode). Organization membership alone (the legacy per-org
+// ALLOWED_ORGS model) does not authorize a caller.
+//
+// repository_owner must be non-empty (defense-in-depth).
+func AuthorizeToken(claims *Claims, perRepoWIFRepos map[string]bool) error {
+	if claims.RepositoryOwner == "" {
 		return fmt.Errorf("missing repository_owner claim")
 	}
-	if IsPublicMint(allowedOrgs) {
-		return nil
+	if !IsPerRepoMode(claims.Repository, perRepoWIFRepos) {
+		return fmt.Errorf("repository %q is not enrolled for per-repo mint access", claims.Repository)
 	}
-	for _, entry := range allowedOrgs {
-		if strings.EqualFold(entry, org) {
-			return nil
-		}
-	}
-	return fmt.Errorf("repository_owner %q not in allowed orgs", org)
+	return nil
 }
 
 // ValidateWorkflowRef checks that a job_workflow_ref claim references an
-// allowed workflow. In public mint mode (allowedOrgs contains *), only upstream
-// fullsend-ai/fullsend workflows are accepted and the basename allowlist is
-// skipped. In tight mode, the ref may belong to the token owner's .fullsend
-// config repo, the upstream fullsend-ai/fullsend repo, or a registered
-// per-repo repo, and the workflow file must be in the allowed list. The
-// repository parameter is the token's repository claim and is used to
-// cross-check per-repo matches.
-func ValidateWorkflowRef(ref, repository string, allowedOrgs []string, perRepoWIFRepos map[string]bool, allowedWorkflowFiles []string) error {
+// allowed workflow host and basename.
+//
+// The workflow must be hosted by a repo in workflowHostRepos. The upstream
+// repo (fullsend-ai/fullsend) is always accepted regardless of the
+// workflowHostRepos contents. The workflow basename must be in
+// allowedWorkflowFiles.
+//
+// Public mode (PER_REPO_WIF_REPOS=*) is not special-cased — it uses the
+// same path. The only difference between public and tight per-repo mode
+// is caller enrollment (PER_REPO_WIF_REPOS=* accepts all requesting repos).
+// See ADR 0082 §2 (revised 2026-08-05).
+func ValidateWorkflowRef(ref string, workflowHostRepos map[string]bool, allowedWorkflowFiles []string) error {
 	if ref == "" {
 		return fmt.Errorf("missing job_workflow_ref claim")
 	}
 
 	lowerRef := strings.ToLower(ref)
 
-	if IsPublicMint(allowedOrgs) {
-		if !strings.HasPrefix(lowerRef, upstreamRepoPrefix) {
-			return fmt.Errorf("job_workflow_ref must reference fullsend-ai/fullsend upstream workflows in public mint mode")
-		}
-		relPath := strings.TrimPrefix(lowerRef, upstreamRepoPrefix)
-		if atIdx := strings.Index(relPath, "@"); atIdx > 0 {
-			relPath = relPath[:atIdx]
-		}
-		if !strings.HasPrefix(relPath, ".github/workflows/") {
-			return fmt.Errorf("job_workflow_ref does not reference a workflow file")
-		}
-		workflowFile := strings.TrimPrefix(relPath, ".github/workflows/")
-		if workflowFile == "" || strings.Contains(workflowFile, "/") {
-			return fmt.Errorf("job_workflow_ref does not reference a workflow file")
-		}
-		return nil
-	}
-
 	var relPath string
 	matched := false
 
-	// Extract the repository owner from the repository claim and only
-	// check that specific org's .fullsend/ prefix, rather than iterating
-	// all allowedOrgs. This ensures the workflow ref matches the token's
-	// own org, not any allowed org.
-	if idx := strings.Index(repository, "/"); idx > 0 {
-		repoOwner := strings.ToLower(repository[:idx])
-		configPrefix := repoOwner + "/.fullsend/"
-		if strings.HasPrefix(lowerRef, configPrefix) {
-			relPath = strings.TrimPrefix(lowerRef, configPrefix)
-			matched = true
-		}
+	// Upstream is always accepted.
+	if strings.HasPrefix(lowerRef, upstreamRepoPrefix) {
+		relPath = strings.TrimPrefix(lowerRef, upstreamRepoPrefix)
+		matched = true
 	}
 
 	if !matched {
-		if strings.HasPrefix(lowerRef, upstreamRepoPrefix) {
-			relPath = strings.TrimPrefix(lowerRef, upstreamRepoPrefix)
-			matched = true
-		}
-	}
-
-	if !matched {
-		repoKey := strings.ToLower(repository)
-		if perRepoWIFRepos[repoKey] {
-			repoPrefix := repoKey + "/"
-			if strings.HasPrefix(lowerRef, repoPrefix) {
-				relPath = strings.TrimPrefix(lowerRef, repoPrefix)
+		for host := range workflowHostRepos {
+			hostPrefix := strings.ToLower(host) + "/"
+			if strings.HasPrefix(lowerRef, hostPrefix) {
+				relPath = strings.TrimPrefix(lowerRef, hostPrefix)
 				matched = true
+				break
 			}
 		}
 	}
 
 	if !matched {
-		return fmt.Errorf("job_workflow_ref does not reference .fullsend, upstream repo, or registered per-repo repo")
+		return fmt.Errorf("job_workflow_ref does not reference an allowed workflow host repo")
 	}
 
 	if atIdx := strings.Index(relPath, "@"); atIdx > 0 {

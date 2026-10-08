@@ -6,6 +6,9 @@ func TestForeignVariableName(t *testing.T) {
 	if got := ForeignVariableName("e2e"); got != "FULLSEND_FOREIGN_E2E_REPOS" {
 		t.Fatalf("got %q", got)
 	}
+	if got := ForeignVariableName("ci-check"); got != "FULLSEND_FOREIGN_CI_CHECK_REPOS" {
+		t.Fatalf("hyphenated role: got %q", got)
+	}
 }
 
 func TestParseForeignAllowlist(t *testing.T) {
@@ -43,5 +46,17 @@ func TestCallerAllowed(t *testing.T) {
 	}
 	if !CallerAllowed(list, "FULLSEND-AI/fullsend", "fullsend-ai") {
 		t.Fatal("expected case-insensitive repo match")
+	}
+}
+
+func TestRepoForeignCacheKey(t *testing.T) {
+	got := repoForeignCacheKey("TargetOrg", "TargetRepo", "Coder")
+	if got != "targetorg/targetrepo/coder" {
+		t.Fatalf("got %q", got)
+	}
+	// Distinct from org-level key.
+	orgKey := foreignCacheKey("TargetOrg", "Coder")
+	if got == orgKey {
+		t.Fatal("repo cache key should differ from org cache key")
 	}
 }

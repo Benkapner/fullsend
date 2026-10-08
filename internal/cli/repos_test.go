@@ -3,18 +3,86 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/repos"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestFormatRef(t *testing.T) {
+	tests := []struct {
+		name     string
+		current  string
+		expected string
+		want     string
+	}{
+		{
+			name:     "SHA with expected ref",
+			current:  "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+			expected: "main",
+			want:     "6f8b968 (main)",
+		},
+		{
+			name:     "SHA without expected ref",
+			current:  "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+			expected: "",
+			want:     "6f8b968",
+		},
+		{
+			name:     "SHA where expected matches current",
+			current:  "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+			expected: "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+			want:     "6f8b968",
+		},
+		{
+			name:     "branch name matching expected",
+			current:  "main",
+			expected: "main",
+			want:     "main",
+		},
+		{
+			name:     "tag matching expected",
+			current:  "v2.3.0",
+			expected: "v2.3.0",
+			want:     "v2.3.0",
+		},
+		{
+			name:     "empty current ref",
+			current:  "",
+			expected: "main",
+			want:     "—",
+		},
+		{
+			name:     "non-SHA differs from expected",
+			current:  "v1.0.0",
+			expected: "v2.0.0",
+			want:     "v1.0.0",
+		},
+		{
+			name:     "SHA with expected also a SHA",
+			current:  "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+			expected: "aabbccddee00112233445566778899aabbccddee",
+			want:     "6f8b968 (aabbccd)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatRef(tt.current, tt.expected)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
 
 func TestReposCommand_HasSubcommands(t *testing.T) {
 	cmd := newReposCmd()
@@ -22,16 +90,12 @@ func TestReposCommand_HasSubcommands(t *testing.T) {
 	for _, sub := range cmd.Commands() {
 		names[sub.Name()] = true
 	}
-	assert.True(t, names["init"], "expected init subcommand")
-	assert.True(t, names["add"], "expected add subcommand")
-	assert.True(t, names["remove"], "expected remove subcommand")
+	assert.False(t, names["migrate"], "migrate subcommand was removed with per-org mode")
 	assert.True(t, names["install"], "expected install subcommand")
 	assert.True(t, names["uninstall"], "expected uninstall subcommand")
 	assert.True(t, names["status"], "expected status subcommand")
-	assert.True(t, names["diff"], "expected diff subcommand")
-	assert.True(t, names["sync"], "expected sync subcommand")
-	assert.True(t, names["upgrade"], "expected upgrade subcommand")
-	assert.True(t, names["upgrade-mint"], "expected upgrade-mint subcommand")
+	assert.True(t, names["set-default"], "expected set-default subcommand")
+	assert.Equal(t, 4, len(names), "expected exactly 4 subcommands")
 }
 
 func TestReposCommand_RegisteredInRoot(t *testing.T) {
@@ -41,54 +105,6 @@ func TestReposCommand_RegisteredInRoot(t *testing.T) {
 		names[sub.Name()] = true
 	}
 	assert.True(t, names["repos"], "expected repos subcommand on root")
-}
-
-func TestReposInitCmd_RequiresArg(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "init"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "accepts 1 arg(s)")
-}
-
-func TestReposInitCmd_Flags(t *testing.T) {
-	cmd := newReposInitCmd()
-
-	outputFlag := cmd.Flags().Lookup("output")
-	require.NotNil(t, outputFlag, "expected --output flag")
-	assert.Equal(t, "repos.yaml", outputFlag.DefValue)
-
-	reposFlag := cmd.Flags().Lookup("repos")
-	require.NotNil(t, reposFlag, "expected --repos flag")
-
-	allFlag := cmd.Flags().Lookup("all")
-	require.NotNil(t, allFlag, "expected --all flag")
-	assert.Equal(t, "false", allFlag.DefValue)
-
-	mintProjectFlag := cmd.Flags().Lookup("mint-project")
-	require.NotNil(t, mintProjectFlag, "expected --mint-project flag")
-
-	mintRegionFlag := cmd.Flags().Lookup("mint-region")
-	require.NotNil(t, mintRegionFlag, "expected --mint-region flag")
-	assert.Equal(t, "us-central1", mintRegionFlag.DefValue)
-
-	inferenceProjectFlag := cmd.Flags().Lookup("inference-project")
-	require.NotNil(t, inferenceProjectFlag, "expected --inference-project flag")
-
-	concurrencyFlag := cmd.Flags().Lookup("concurrency")
-	require.NotNil(t, concurrencyFlag, "expected --concurrency flag")
-	assert.Equal(t, "8", concurrencyFlag.DefValue)
-
-	forceFlag := cmd.Flags().Lookup("force")
-	require.NotNil(t, forceFlag, "expected --force flag")
-	assert.Equal(t, "false", forceFlag.DefValue)
-}
-
-func TestReposInitCmd_ForgeFlag(t *testing.T) {
-	cmd := newReposInitCmd()
-	forgeFlag := cmd.Flags().Lookup("forge")
-	require.NotNil(t, forgeFlag, "expected --forge flag")
-	assert.Equal(t, repos.ForgeGitHub, forgeFlag.DefValue)
 }
 
 func TestReposCmd_GitLabTokenFlag(t *testing.T) {
@@ -101,15 +117,12 @@ func TestReposCmd_GitLabTokenFlag(t *testing.T) {
 func TestRunReposStatus_EmptyManifest(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
 	manifestYAML := `version: 1
-mint:
-  url: https://mint.example.com
-  project: p
-  region: us-central1
 defaults:
-  forge: github
-  inference_project: proj
-  inference_region: us-central1
-repos: []
+  inference:
+    auth: vertex-wif
+github:
+  mint_url: https://mint.example.com
+  repos: []
 `
 	manifestPath := writeTestManifest(t, manifestYAML)
 	cmd := newRootCmd()
@@ -121,66 +134,35 @@ repos: []
 func TestRunReposStatus_GitLabRequiresToken(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "")
 	manifestYAML := `version: 1
-mint:
-  url: https://mint.example.com
-  project: p
-  region: us-central1
 defaults:
-  forge: gitlab
-  inference_project: proj
-  inference_region: us-central1
-repos: []
+  inference:
+    auth: vertex-wif
+gitlab:
+  repos: []
 `
+	// With lazy client creation, status on an empty GitLab manifest
+	// succeeds without a token — no repos means no API calls.
 	manifestPath := writeTestManifest(t, manifestYAML)
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"repos", "status", "--manifest", manifestPath})
 	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
+	require.NoError(t, err)
 }
 
 func TestRunReposStatus_GitLabWithToken(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
 	manifestYAML := `version: 1
-mint:
-  url: https://mint.example.com
-  project: p
-  region: us-central1
 defaults:
-  forge: gitlab
-  inference_project: proj
-  inference_region: us-central1
-repos: []
+  inference:
+    auth: vertex-wif
+gitlab:
+  repos: []
 `
 	manifestPath := writeTestManifest(t, manifestYAML)
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"repos", "status", "--manifest", manifestPath, "--json"})
 	err := cmd.Execute()
 	assert.NoError(t, err)
-}
-
-func TestReposInitCmd_OutputShorthand(t *testing.T) {
-	cmd := newReposInitCmd()
-	outputFlag := cmd.Flags().ShorthandLookup("o")
-	require.NotNil(t, outputFlag, "expected -o shorthand for --output")
-}
-
-func TestReposInitCmd_ValidatesOrgName(t *testing.T) {
-	t.Setenv("GH_TOKEN", "test-token")
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "init", "--", "-invalid"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot start or end with a hyphen")
-}
-
-func TestReposInitCmd_ReposAllMutuallyExclusive(t *testing.T) {
-	t.Setenv("GH_TOKEN", "test-token")
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "init", "test-org", "--all", "--repos", "foo/bar"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "if any flags in the group [repos all] are set none of the others can be")
 }
 
 func TestReposStatusCmd_Flags(t *testing.T) {
@@ -520,6 +502,33 @@ func TestRenderStatusResult_NoErrorWhenAllMatch(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestPrintStatusTable_SHAWithExpectedRef(t *testing.T) {
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{
+			{
+				Owner:       "gallen",
+				Repo:        "integration-service",
+				Installed:   true,
+				CurrentRef:  "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+				ExpectedRef: "main",
+			},
+		},
+		Summary: repos.StatusSummary{
+			Total:     1,
+			Installed: 1,
+		},
+	}
+
+	var buf bytes.Buffer
+	cmd := newReposStatusCmd()
+	cmd.SetOut(&buf)
+	printStatusTable(cmd, result)
+
+	output := buf.String()
+	assert.Contains(t, output, "6f8b968 (main)")
+	assert.NotContains(t, output, "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e")
+}
+
 func TestPrintStatusTable_ColumnAlignment(t *testing.T) {
 	result := &repos.StatusResult{
 		Repos: []repos.RepoStatus{
@@ -561,64 +570,6 @@ func TestPrintStatusTable_WithWarnings(t *testing.T) {
 	assert.Contains(t, output, "org/nonexistent")
 }
 
-type trackingProvisioner struct {
-	label string
-	calls []string
-}
-
-func (p *trackingProvisioner) DiscoverMint(_ context.Context) (*repos.MintDiscovery, error) {
-	p.calls = append(p.calls, "DiscoverMint")
-	return &repos.MintDiscovery{URL: p.label}, nil
-}
-
-func (p *trackingProvisioner) ProvisionWIF(_ context.Context) (string, error) {
-	p.calls = append(p.calls, "ProvisionWIF")
-	return "projects/100000/locations/global/workloadIdentityPools/fake-pool/providers/" + p.label, nil
-}
-
-func (p *trackingProvisioner) RegisterPerRepoWIF(_ context.Context, _ string) error {
-	p.calls = append(p.calls, "RegisterPerRepoWIF")
-	return nil
-}
-
-func (p *trackingProvisioner) EnsureOrgInMint(_ context.Context, _, _ string) error {
-	p.calls = append(p.calls, "EnsureOrgInMint")
-	return nil
-}
-
-func (p *trackingProvisioner) DeletePerRepoWIF(_ context.Context, _ string) error {
-	p.calls = append(p.calls, "DeletePerRepoWIF")
-	return nil
-}
-
-func (p *trackingProvisioner) DeleteWIFProvider(_ context.Context, _ string) error {
-	p.calls = append(p.calls, "DeleteWIFProvider")
-	return nil
-}
-
-func TestSplitProjectAdapter_MethodRouting(t *testing.T) {
-	mint := &trackingProvisioner{label: "mint"}
-	inference := &trackingProvisioner{label: "inference"}
-	adapter := &splitProjectAdapter{mint: mint, inference: inference}
-	ctx := context.Background()
-
-	disc, err := adapter.DiscoverMint(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, "mint", disc.URL, "DiscoverMint should route to mint")
-
-	provider, err := adapter.ProvisionWIF(ctx)
-	require.NoError(t, err)
-	assert.Contains(t, provider, "inference", "ProvisionWIF should route to inference")
-
-	require.NoError(t, adapter.RegisterPerRepoWIF(ctx, "o/r"))
-	require.NoError(t, adapter.EnsureOrgInMint(ctx, "url", "org"))
-
-	require.NoError(t, adapter.DeletePerRepoWIF(ctx, "o/r"))
-
-	assert.Equal(t, []string{"DiscoverMint", "RegisterPerRepoWIF", "EnsureOrgInMint", "DeletePerRepoWIF"}, mint.calls)
-	assert.Equal(t, []string{"ProvisionWIF", "DeleteWIFProvider"}, inference.calls)
-}
-
 func writeTestManifest(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -630,29 +581,34 @@ func writeTestManifest(t *testing.T, content string) string {
 func newInstallFakeClient(repoNames ...string) *forge.FakeClient {
 	fc := forge.NewFakeClient()
 	fc.InstallationToken = true
+	// Set a bot identity and write permissions so commitScaffoldViaPR
+	// takes the direct-push path. Without this, an empty
+	// AuthenticatedUser causes the fork path, where CreateFork returns
+	// "" as the owner and waitForFork hangs for the full timeout (#6501).
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = make(map[string]string)
 	for _, r := range repoNames {
+		fc.PipelineVarOverrideRoles[r] = forge.PipelineVarOverrideNoOneAllowed
 		parts := strings.SplitN(r, "/", 2)
 		fc.Repos = append(fc.Repos, forge.Repository{
 			FullName:      r,
 			Name:          parts[1],
 			DefaultBranch: "main",
 		})
+		fc.CollaboratorPermissions[r+"/fullsend-app[bot]"] = "write"
 	}
 	return fc
 }
 
 const testManifestYAML = `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
 defaults:
-  forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
+  inference:
+    auth: vertex-wif
+github:
+  mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
-repos:
-  - repo: acme/api
+  repos:
+    - name: acme/api
 `
 
 func TestRunReposInstall_ConcurrencyValidation(t *testing.T) {
@@ -683,15 +639,16 @@ func TestRunReposInstall_ConcurrencyValidation(t *testing.T) {
 func TestRunReposInstall_DryRun(t *testing.T) {
 	manifestPath := writeTestManifest(t, testManifestYAML)
 	fc := newInstallFakeClient("acme/api")
-	prov := &trackingProvisioner{label: "test"}
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:        manifestPath,
-		concurrency:     4,
-		dryRun:          true,
-		roles:           []string{"triage"},
-		testClient:      fc,
-		testProvisioner: prov,
+		manifest:               manifestPath,
+		concurrency:            4,
+		dryRun:                 true,
+		roles:                  []string{"triage"},
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
 	})
 	require.NoError(t, err)
 }
@@ -699,15 +656,16 @@ func TestRunReposInstall_DryRun(t *testing.T) {
 func TestRunReposInstall_Success(t *testing.T) {
 	manifestPath := writeTestManifest(t, testManifestYAML)
 	fc := newInstallFakeClient("acme/api")
-	prov := &trackingProvisioner{label: "test"}
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:        manifestPath,
-		concurrency:     4,
-		roles:           []string{"triage"},
-		direct:          true,
-		testClient:      fc,
-		testProvisioner: prov,
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
 	})
 	require.NoError(t, err)
 }
@@ -726,215 +684,233 @@ func TestRunReposInstall_InvalidManifestPath(t *testing.T) {
 
 func TestRunReposInstall_FailedReposReturnError(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
 defaults:
-  forge: github
-  inference_project: ""
-  inference_region: us-central1
+  inference:
+    auth: vertex-wif
+github:
+  mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
-repos:
-  - repo: acme/api
+  repos:
+    - name: acme/api
 `
 	manifestPath := writeTestManifest(t, yaml)
 	fc := newInstallFakeClient("acme/api")
-	prov := &trackingProvisioner{label: "test"}
+	fc.Errors["CreateOrUpdateRepoVariable"] = errors.New("simulated variable write failure")
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:        manifestPath,
-		concurrency:     4,
-		roles:           []string{"triage"},
-		testClient:      fc,
-		testProvisioner: prov,
+		manifest:    manifestPath,
+		concurrency: 4,
+		roles:       []string{"triage"},
+		testClient:  fc,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to install")
+	assert.Contains(t, err.Error(), "repos failed")
 }
 
-// --- repos add ---
-
-func TestReposAddCmd_Flags(t *testing.T) {
-	cmd := newReposAddCmd()
-
-	manifestFlag := cmd.Flags().Lookup("manifest")
-	require.NotNil(t, manifestFlag)
-	assert.Equal(t, "repos.yaml", manifestFlag.DefValue)
-
-	dryRunFlag := cmd.Flags().Lookup("dry-run")
-	require.NotNil(t, dryRunFlag)
-
-	installFlag := cmd.Flags().Lookup("install")
-	require.NotNil(t, installFlag)
-
-	shorthand := cmd.Flags().ShorthandLookup("f")
-	require.NotNil(t, shorthand, "expected -f shorthand for --manifest")
-}
-
-func TestReposAddCmd_RequiresArgs(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "add"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "requires at least 1 arg")
-}
-
-func TestRunReposAdd_Basic(t *testing.T) {
+func TestRunReposInstall_AppSetRejectedForGitLab(t *testing.T) {
 	manifestPath := writeTestManifest(t, testManifestYAML)
-	fc := forge.NewFakeClient()
+	fc := newInstallFakeClient("acme/api")
 
-	err := runReposAdd(context.Background(), &reposAddConfig{
-		manifest:   manifestPath,
-		testClient: fc,
-	}, []string{"acme/web"})
-	require.NoError(t, err)
-
-	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
-	require.NoError(t, loadErr)
-	assert.Equal(t, 2, len(m.Repos))
+	tests := []struct {
+		name string
+		cfg  *reposInstallConfig
+	}{
+		{
+			name: "forge_gitlab",
+			cfg: &reposInstallConfig{
+				manifest:    manifestPath,
+				concurrency: 4,
+				forge:       repos.ForgeGitLab,
+				appSet:      "custom-set",
+				testClient:  fc,
+			},
+		},
+		{
+			name: "gitlab_url",
+			cfg: &reposInstallConfig{
+				manifest:    manifestPath,
+				concurrency: 4,
+				gitlabURL:   "https://gitlab.example.com",
+				appSet:      "custom-set",
+				testClient:  fc,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runReposInstall(context.Background(), tt.cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "--app-set is a GitHub-only option")
+		})
+	}
 }
 
-func TestRunReposAdd_Duplicate(t *testing.T) {
-	manifestPath := writeTestManifest(t, testManifestYAML)
-	fc := forge.NewFakeClient()
-
-	err := runReposAdd(context.Background(), &reposAddConfig{
-		manifest:   manifestPath,
-		testClient: fc,
-	}, []string{"acme/api"})
-	require.NoError(t, err)
-
-	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
-	require.NoError(t, loadErr)
-	assert.Equal(t, 1, len(m.Repos))
-}
-
-func TestRunReposAdd_DryRun(t *testing.T) {
-	manifestPath := writeTestManifest(t, testManifestYAML)
-	fc := forge.NewFakeClient()
-
-	err := runReposAdd(context.Background(), &reposAddConfig{
-		manifest:   manifestPath,
-		testClient: fc,
-		dryRun:     true,
-	}, []string{"acme/web"})
-	require.NoError(t, err)
-
-	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
-	require.NoError(t, loadErr)
-	assert.Equal(t, 1, len(m.Repos), "dry-run should not modify manifest")
-}
-
-func TestRunReposAdd_InvalidManifest(t *testing.T) {
-	err := runReposAdd(context.Background(), &reposAddConfig{
-		manifest: "/nonexistent/repos.yaml",
-	}, []string{"acme/web"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "loading manifest")
-}
-
-// --- repos remove ---
-
-func TestReposRemoveCmd_Flags(t *testing.T) {
-	cmd := newReposRemoveCmd()
-
-	manifestFlag := cmd.Flags().Lookup("manifest")
-	require.NotNil(t, manifestFlag)
-
-	dryRunFlag := cmd.Flags().Lookup("dry-run")
-	require.NotNil(t, dryRunFlag)
-
-	uninstallFlag := cmd.Flags().Lookup("uninstall")
-	require.NotNil(t, uninstallFlag)
-
-	yesFlag := cmd.Flags().Lookup("yes")
-	require.NotNil(t, yesFlag)
-
-	skipWIFFlag := cmd.Flags().Lookup("skip-wif-cleanup")
-	require.NotNil(t, skipWIFFlag)
-}
-
-func TestReposRemoveCmd_RequiresArgs(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "remove"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "requires at least 1 arg")
-}
-
-func TestRunReposRemove_Basic(t *testing.T) {
-	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+// TestRunReposInstall_AppSetRejectedForInferredGitLabTarget verifies that
+// --app-set is rejected even when the target's forge is inferred from the
+// manifest (no explicit --forge or --gitlab-url) and the inferred forge is
+// GitLab, for a repo not yet tracked in the manifest. --app-set must not be
+// silently dropped with a warning in this case.
+func TestRunReposInstall_AppSetRejectedForInferredGitLabTarget(t *testing.T) {
+	gitlabManifest := `version: 1
 defaults:
-  forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-repos:
-  - repo: acme/api
-  - repo: acme/web
+  inference:
+    auth: vertex-wif
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+	fc := newInstallFakeClient("group/project", "group/newproject")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		repoFilter:  []string{"group/newproject"},
+		appSet:      "custom-set",
+		testClient:  fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--app-set is a GitHub-only option")
+}
+
+func TestRunReposInstall_AppSetRejectedForTrackedGitLabTarget(t *testing.T) {
+	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+	fc := newInstallFakeClient("group/project")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		repoFilter:  []string{"group/project"},
+		appSet:      "custom-set",
+		testClient:  fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--app-set is a GitHub-only option")
+}
+
+func TestRunReposInstall_AppSetInvalidFormat(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		appSet:      "Invalid_Set!",
+		testClient:  fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--app-set")
+}
+
+func TestRunReposInstall_AppSetNoneSentinelSkipsFormatCheck(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		appSet:                 repos.NoneSentinel,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	})
+	require.NoError(t, err)
+}
+
+// TestRunReposInstall_NewEntryWritesAppSet verifies that installing a repo not
+// yet in the manifest with --app-set persists FULLSEND_APP_SET for that repo.
+func TestRunReposInstall_NewEntryWritesAppSet(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/newrepo")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		forge:                  repos.ForgeGitHub,
+		appSet:                 "custom-set",
+		repoFilter:             []string{"acme/newrepo"},
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "custom-set", fc.VariableValues["acme/newrepo/FULLSEND_APP_SET"])
+}
+
+func TestRunReposInstall_ExistingEntryAppSetOverride(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		repoFilter:             []string{"acme/api"},
+		appSet:                 "custom-set",
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "custom-set", fc.VariableValues["acme/api/FULLSEND_APP_SET"])
+	reloaded, err := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, err)
+	assert.Equal(t, "custom-set", reloaded.GitHub.Repos[0].AppSet)
+}
+
+// TestRunReposInstall_ManifestAppSetResolvesReviewApp verifies that a manifest
+// github.app_set drives the review-app client-ID lookup to the custom app set's
+// review app rather than the built-in default.
+func TestRunReposInstall_ManifestAppSetResolvesReviewApp(t *testing.T) {
+	yaml := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  app_set: custom-set
+  repos:
+    - name: acme/api
 `
 	manifestPath := writeTestManifest(t, yaml)
+	fc := newInstallFakeClient("acme/api")
+	fc.AppClientIDs = map[string]string{"custom-set-review": "Iv23liCUSTOM"}
 
-	err := runReposRemove(context.Background(), &reposRemoveConfig{
-		manifest: manifestPath,
-		yes:      true,
-	}, []string{"acme/api"})
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	})
 	require.NoError(t, err)
 
-	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
-	require.NoError(t, loadErr)
-	assert.Equal(t, 1, len(m.Repos))
-	assert.Equal(t, "acme/web", m.Repos[0].Repo)
-}
-
-func TestRunReposRemove_NotFound(t *testing.T) {
-	manifestPath := writeTestManifest(t, testManifestYAML)
-
-	err := runReposRemove(context.Background(), &reposRemoveConfig{
-		manifest: manifestPath,
-		yes:      true,
-	}, []string{"acme/nonexistent"})
-	require.NoError(t, err)
-}
-
-func TestRunReposRemove_DryRun(t *testing.T) {
-	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
-defaults:
-  forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-repos:
-  - repo: acme/api
-  - repo: acme/web
-`
-	manifestPath := writeTestManifest(t, yaml)
-
-	err := runReposRemove(context.Background(), &reposRemoveConfig{
-		manifest: manifestPath,
-		dryRun:   true,
-	}, []string{"acme/api"})
-	require.NoError(t, err)
-
-	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
-	require.NoError(t, loadErr)
-	assert.Equal(t, 2, len(m.Repos), "dry-run should not modify manifest")
-}
-
-func TestRunReposRemove_InvalidManifest(t *testing.T) {
-	err := runReposRemove(context.Background(), &reposRemoveConfig{
-		manifest: "/nonexistent/repos.yaml",
-		yes:      true,
-	}, []string{"acme/api"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "loading manifest")
+	assert.Equal(t, "Iv23liCUSTOM", fc.VariableValues["acme/api/FULLSEND_REVIEW_CLIENT_ID"])
+	assert.Equal(t, "custom-set", fc.VariableValues["acme/api/FULLSEND_APP_SET"])
 }
 
 // --- repos uninstall ---
@@ -951,8 +927,9 @@ func TestReposUninstallCmd_Flags(t *testing.T) {
 	yesFlag := cmd.Flags().Lookup("yes")
 	require.NotNil(t, yesFlag)
 
-	skipWIFFlag := cmd.Flags().Lookup("skip-wif-cleanup")
-	require.NotNil(t, skipWIFFlag)
+	directFlag := cmd.Flags().Lookup("direct")
+	require.NotNil(t, directFlag, "expected --direct flag")
+	assert.Equal(t, "false", directFlag.DefValue)
 
 	concurrencyFlag := cmd.Flags().Lookup("concurrency")
 	require.NotNil(t, concurrencyFlag)
@@ -969,6 +946,11 @@ func TestReposUninstallCmd_RequiresArgs(t *testing.T) {
 func newInstalledFakeClientCLI(repoNames ...string) *forge.FakeClient {
 	fc := forge.NewFakeClient()
 	fc.InstallationToken = true
+	// Simulate a GitHub App bot identity with write access to each repo.
+	// Without this, commitScaffoldViaPR falls into the fork path and
+	// waitForFork polls a fake that never reports ready (#6489).
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = make(map[string]string)
 	for _, r := range repoNames {
 		parts := strings.SplitN(r, "/", 2)
 		fc.Repos = append(fc.Repos, forge.Repository{
@@ -976,12 +958,16 @@ func newInstalledFakeClientCLI(repoNames ...string) *forge.FakeClient {
 			Name:          parts[1],
 			DefaultBranch: "main",
 		})
+		fc.CollaboratorPermissions[r+"/fullsend-app[bot]"] = "write"
 		fc.VariableValues[r+"/FULLSEND_PER_REPO_INSTALL"] = "true"
 		fc.VariableValues[r+"/FULLSEND_MINT_URL"] = "https://mint.example.com"
 		fc.VariableValues[r+"/FULLSEND_GCP_REGION"] = "us-central1"
 		fc.Secrets[r+"/FULLSEND_GCP_PROJECT_ID"] = true
 		fc.Secrets[r+"/FULLSEND_GCP_WIF_PROVIDER"] = true
-		fc.FileContents[r+"/.github/workflows/fullsend.yml"] = []byte("uses: fullsend-ai/fullsend/.github/workflows/dispatch.yml@v1")
+		fc.FileContents[r+"/.github/workflows/fullsend.yml"] = []byte("uses: fullsend-ai/fullsend/.github/workflows/dispatch.yml@v1.0.0")
+		for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+			fc.FileContents[r+"/"+tcPath] = []byte("uses: fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@v1.0.0")
+		}
 	}
 	return fc
 }
@@ -989,34 +975,77 @@ func newInstalledFakeClientCLI(repoNames ...string) *forge.FakeClient {
 func TestRunReposUninstall_DryRun(t *testing.T) {
 	manifestPath := writeTestManifest(t, testManifestYAML)
 	fc := newInstalledFakeClientCLI("acme/api")
-	prov := &trackingProvisioner{label: "test"}
 
 	err := runReposUninstall(context.Background(), &reposUninstallConfig{
-		manifest:        manifestPath,
-		dryRun:          true,
-		yes:             true,
-		concurrency:     4,
-		testClient:      fc,
-		testProvisioner: prov,
+		manifest:    manifestPath,
+		dryRun:      true,
+		yes:         true,
+		concurrency: 4,
+		testClient:  fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
-	assert.Empty(t, prov.calls, "dry-run should not call provisioner")
 }
 
 func TestRunReposUninstall_Success(t *testing.T) {
 	manifestPath := writeTestManifest(t, testManifestYAML)
 	fc := newInstalledFakeClientCLI("acme/api")
-	prov := &trackingProvisioner{label: "test"}
 
 	err := runReposUninstall(context.Background(), &reposUninstallConfig{
-		manifest:        manifestPath,
-		yes:             true,
-		concurrency:     4,
-		testClient:      fc,
-		testProvisioner: prov,
+		manifest:    manifestPath,
+		yes:         true,
+		concurrency: 4,
+		testClient:  fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
-	assert.Contains(t, prov.calls, "DeletePerRepoWIF")
+}
+
+func TestRunReposUninstall_DefaultCreatesPR(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api")
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		concurrency: 4,
+		testClient:  fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+
+	require.NotEmpty(t, fc.CreatedProposals, "default uninstall should open a PR for file deletions")
+	assert.Equal(t, "chore: remove fullsend workflow", fc.CreatedProposals[0].Title)
+	// Uninstall reuses DefaultScaffoldBranch (not a distinct uninstall
+	// branch) so the already-deployed per-repo shim exclusion also covers
+	// uninstall PRs.
+	assert.Equal(t, repos.DefaultScaffoldBranch, fc.CreatedProposals[0].Head)
+	assert.Empty(t, fc.CommittedFiles, "default path should not push deletions to the default branch")
+	assert.NotEmpty(t, fc.DeletedVariables, "variables should still be deleted immediately")
+	assert.NotEmpty(t, fc.DeletedSecrets, "secrets should still be deleted immediately")
+}
+
+func TestRunReposUninstall_DirectPushesToDefaultBranch(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api")
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		direct:      true,
+		concurrency: 4,
+		testClient:  fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+
+	assert.Empty(t, fc.CreatedProposals, "--direct should not open a PR")
+	require.NotEmpty(t, fc.CommittedFiles, "--direct should commit deletions to the default branch")
+	hasDelete := false
+	for _, rec := range fc.CommittedFiles {
+		for _, f := range rec.Files {
+			if f.Delete {
+				hasDelete = true
+			}
+		}
+	}
+	assert.True(t, hasDelete, "--direct commit should include file deletions")
 }
 
 func TestRunReposUninstall_NoMatch(t *testing.T) {
@@ -1056,21 +1085,33 @@ func TestRunReposUninstall_InvalidManifest(t *testing.T) {
 	assert.Contains(t, err.Error(), "loading manifest")
 }
 
-func TestRunReposUninstall_SkipWIF(t *testing.T) {
-	manifestPath := writeTestManifest(t, testManifestYAML)
+// Uninstall must not require a valid inference.auth: it removes every
+// Fullsend-managed inference credential regardless of the selection.
+func TestRunReposUninstall_InvalidInferenceAuthStillUninstalls(t *testing.T) {
+	manifestPath := writeTestManifest(t, `version: 1
+defaults:
+  inference:
+    auth: bogus
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/api
+`)
 	fc := newInstalledFakeClientCLI("acme/api")
-	prov := &trackingProvisioner{label: "test"}
+	fc.Secrets["acme/api/"+forge.SecretOpenAIAPIKey] = true
 
 	err := runReposUninstall(context.Background(), &reposUninstallConfig{
-		manifest:        manifestPath,
-		yes:             true,
-		skipWIFCleanup:  true,
-		concurrency:     4,
-		testClient:      fc,
-		testProvisioner: prov,
+		manifest:    manifestPath,
+		yes:         true,
+		direct:      true,
+		concurrency: 4,
+		testClient:  fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
-	assert.NotContains(t, prov.calls, "DeletePerRepoWIF")
+	for _, name := range []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, forge.SecretOpenAIAPIKey} {
+		assert.False(t, fc.Secrets["acme/api/"+name], "%s still present after uninstall", name)
+	}
 }
 
 // --- repos install positional args ---
@@ -1084,122 +1125,31 @@ func TestReposInstallCmd_PositionalArgs(t *testing.T) {
 
 func TestRunReposInstall_WithFilter(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
 defaults:
-  forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
+  inference:
+    auth: vertex-wif
+github:
+  mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
-repos:
-  - repo: acme/api
-  - repo: acme/web
+  repos:
+    - name: acme/api
+    - name: acme/web
 `
 	manifestPath := writeTestManifest(t, yaml)
 	fc := newInstallFakeClient("acme/api", "acme/web")
-	prov := &trackingProvisioner{label: "test"}
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:        manifestPath,
-		concurrency:     4,
-		repoFilter:      []string{"acme/api"},
-		roles:           []string{"triage"},
-		direct:          true,
-		testClient:      fc,
-		testProvisioner: prov,
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/api"},
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
 	})
 	require.NoError(t, err)
-}
-
-// --- repos remove with uninstall ---
-
-func TestRunReposRemove_WithUninstall(t *testing.T) {
-	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
-defaults:
-  forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-repos:
-  - repo: acme/api
-  - repo: acme/web
-`
-	manifestPath := writeTestManifest(t, yaml)
-	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
-	prov := &trackingProvisioner{label: "test"}
-
-	err := runReposRemove(context.Background(), &reposRemoveConfig{
-		manifest:        manifestPath,
-		uninstall:       true,
-		yes:             true,
-		concurrency:     4,
-		testClient:      fc,
-		testProvisioner: prov,
-	}, []string{"acme/api"})
-	require.NoError(t, err)
-
-	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
-	require.NoError(t, loadErr)
-	assert.Equal(t, 1, len(m.Repos), "acme/api should be removed from manifest")
-	assert.Equal(t, "acme/web", m.Repos[0].Repo)
-	assert.Contains(t, prov.calls, "DeletePerRepoWIF")
-}
-
-func TestRunReposRemove_WithUninstall_PartialFailure(t *testing.T) {
-	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
-defaults:
-  forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-repos:
-  - repo: acme/api
-  - repo: acme/web
-`
-	manifestPath := writeTestManifest(t, yaml)
-	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
-	fc.DeleteFilesErrors = map[string]error{
-		"acme/web": fmt.Errorf("permission denied"),
-	}
-	prov := &trackingProvisioner{label: "test"}
-
-	err := runReposRemove(context.Background(), &reposRemoveConfig{
-		manifest:        manifestPath,
-		uninstall:       true,
-		yes:             true,
-		concurrency:     1,
-		testClient:      fc,
-		testProvisioner: prov,
-	}, []string{"acme/api", "acme/web"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "1 repos failed to uninstall")
-	assert.Contains(t, err.Error(), "successfully uninstalled repos were removed from manifest")
-
-	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
-	require.NoError(t, loadErr)
-	assert.Equal(t, 1, len(m.Repos), "only failed repo should remain")
-	assert.Equal(t, "acme/web", m.Repos[0].Repo)
-}
-
-func TestRunReposRemove_ConcurrencyValidation(t *testing.T) {
-	manifestPath := writeTestManifest(t, testManifestYAML)
-
-	err := runReposRemove(context.Background(), &reposRemoveConfig{
-		manifest:    manifestPath,
-		uninstall:   true,
-		concurrency: 0,
-		yes:         true,
-	}, []string{"acme/api"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--concurrency must be between 1 and 32")
 }
 
 // --- repos install flag tests ---
@@ -1225,18 +1175,6 @@ func TestReposInstallCmd_Flags(t *testing.T) {
 	require.NotNil(t, shorthand, "expected -f shorthand for --manifest")
 }
 
-func TestReposAddCmd_ManifestShortFlag(t *testing.T) {
-	cmd := newReposAddCmd()
-	shorthand := cmd.Flags().ShorthandLookup("f")
-	require.NotNil(t, shorthand, "expected -f shorthand for --manifest")
-}
-
-func TestReposRemoveCmd_ManifestShortFlag(t *testing.T) {
-	cmd := newReposRemoveCmd()
-	shorthand := cmd.Flags().ShorthandLookup("f")
-	require.NotNil(t, shorthand, "expected -f shorthand for --manifest")
-}
-
 func TestReposUninstallCmd_ManifestShortFlag(t *testing.T) {
 	cmd := newReposUninstallCmd()
 	shorthand := cmd.Flags().ShorthandLookup("f")
@@ -1247,7 +1185,8 @@ func TestReposUninstallCmd_ManifestShortFlag(t *testing.T) {
 
 func TestConfirmBulkAction_SingleRepo(t *testing.T) {
 	manifest := &repos.Manifest{
-		Repos: []repos.RepoEntry{{Repo: "acme/api"}},
+		Version: 1,
+		GitHub:  &repos.PlatformConfig{Repos: []repos.RepoEntry{{Name: "acme/api"}}},
 	}
 	err := confirmBulkAction(nil, "remove", []string{"acme/api"}, manifest, nil)
 	require.NoError(t, err)
@@ -1255,7 +1194,8 @@ func TestConfirmBulkAction_SingleRepo(t *testing.T) {
 
 func TestConfirmBulkAction_GlobNoMatch(t *testing.T) {
 	manifest := &repos.Manifest{
-		Repos: []repos.RepoEntry{{Repo: "other/repo"}},
+		Version: 1,
+		GitHub:  &repos.PlatformConfig{Repos: []repos.RepoEntry{{Name: "other/repo"}}},
 	}
 	printer := ui.New(os.Stdout)
 	err := confirmBulkAction(printer, "remove", []string{"acme/*"}, manifest, nil)
@@ -1264,7 +1204,8 @@ func TestConfirmBulkAction_GlobNoMatch(t *testing.T) {
 
 func TestConfirmBulkAction_GlobMultiMatch(t *testing.T) {
 	manifest := &repos.Manifest{
-		Repos: []repos.RepoEntry{{Repo: "acme/api"}, {Repo: "acme/web"}},
+		Version: 1,
+		GitHub:  &repos.PlatformConfig{Repos: []repos.RepoEntry{{Name: "acme/api"}, {Name: "acme/web"}}},
 	}
 	printer := ui.New(os.Stdout)
 
@@ -1278,7 +1219,8 @@ func TestConfirmBulkAction_GlobMultiMatch(t *testing.T) {
 
 func TestConfirmBulkAction_ExplicitBulkList(t *testing.T) {
 	manifest := &repos.Manifest{
-		Repos: []repos.RepoEntry{{Repo: "acme/api"}, {Repo: "acme/web"}},
+		Version: 1,
+		GitHub:  &repos.PlatformConfig{Repos: []repos.RepoEntry{{Name: "acme/api"}, {Name: "acme/web"}}},
 	}
 	printer := ui.New(os.Stdout)
 
@@ -1292,559 +1234,324 @@ func TestConfirmBulkAction_ExplicitBulkList(t *testing.T) {
 
 func TestConfirmBulkAction_GlobSingleMatch(t *testing.T) {
 	manifest := &repos.Manifest{
-		Repos: []repos.RepoEntry{{Repo: "acme/api"}},
+		Version: 1,
+		GitHub:  &repos.PlatformConfig{Repos: []repos.RepoEntry{{Name: "acme/api"}}},
 	}
 	err := confirmBulkAction(nil, "remove", []string{"acme/*"}, manifest, nil)
 	require.NoError(t, err)
 }
 
-// --- repos add with install ---
+func TestReposInstallCmd_ForgeFlag(t *testing.T) {
+	cmd := newReposInstallCmd()
+	forgeFlag := cmd.Flags().Lookup("forge")
+	require.NotNil(t, forgeFlag, "expected --forge flag")
+	assert.Equal(t, "", forgeFlag.DefValue)
+}
 
-func TestRunReposAdd_WithInstall(t *testing.T) {
+func TestReposInstallCmd_VendorFlag(t *testing.T) {
+	cmd := newReposInstallCmd()
+	f := cmd.Flags().Lookup("vendor")
+	require.NotNil(t, f, "expected --vendor flag")
+	assert.Equal(t, "false", f.DefValue)
+}
+
+func TestReposInstallCmd_FullsendBinarySourceFlags(t *testing.T) {
+	cmd := newReposInstallCmd()
+
+	binaryFlag := cmd.Flags().Lookup("fullsend-binary")
+	require.NotNil(t, binaryFlag, "expected --fullsend-binary flag")
+	assert.Equal(t, "", binaryFlag.DefValue)
+
+	sourceFlag := cmd.Flags().Lookup("fullsend-source")
+	require.NotNil(t, sourceFlag, "expected --fullsend-source flag")
+	assert.Equal(t, "", sourceFlag.DefValue)
+}
+
+func TestReposInstallCmd_VendorFlagValidation(t *testing.T) {
+	t.Run("fullsend-binary without vendor", func(t *testing.T) {
+		cmd := newRootCmd()
+		cmd.SetArgs([]string{
+			"repos", "install",
+			"--manifest", writeTestManifest(t, testManifestYAML),
+			"--fullsend-binary", "/tmp/fullsend",
+		})
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--fullsend-binary requires --vendor")
+	})
+
+	t.Run("fullsend-source without vendor", func(t *testing.T) {
+		cmd := newRootCmd()
+		cmd.SetArgs([]string{
+			"repos", "install",
+			"--manifest", writeTestManifest(t, testManifestYAML),
+			"--fullsend-source", "/tmp/src",
+		})
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--fullsend-source requires --vendor")
+	})
+}
+
+func TestReposInstallCmd_PerRepoOverrideFlags(t *testing.T) {
+	cmd := newReposInstallCmd()
+	for _, name := range []string{"vertex-project", "vertex-region", "vertex-wif-provider", "fullsend-ref", "mint-url", "allowed-remote-resources"} {
+		f := cmd.Flags().Lookup(name)
+		require.NotNil(t, f, "expected --%s flag", name)
+	}
+}
+
+func TestReposInstallCmd_NoInferenceProjectNumberFlag(t *testing.T) {
+	cmd := newReposInstallCmd()
+	for _, name := range []string{"inference-project-number", "vertex-project-number"} {
+		assert.Nil(t, cmd.Flags().Lookup(name), "--%s must not be a flag", name)
+	}
+}
+
+func TestReposInstallCmd_RemovedInferenceFlagsRejected(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	for _, name := range []string{"inference-project", "inference-wif-provider", "inference-region"} {
+		t.Run(name, func(t *testing.T) {
+			cmd := newRootCmd()
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"repos", "install", "--manifest", manifestPath, "--" + name, "value"})
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unknown flag: --"+name)
+		})
+	}
+}
+
+func TestReposInstallCmd_VertexFlagsParsed(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+
+	t.Run("vertex-project validated", func(t *testing.T) {
+		cmd := newRootCmd()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs([]string{"repos", "install", "--manifest", manifestPath, "--vertex-project", "INVALID-CAPS"})
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `--vertex-project "INVALID-CAPS" is not a valid GCP project ID`)
+	})
+
+	t.Run("vertex-wif-provider validated", func(t *testing.T) {
+		cmd := newRootCmd()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs([]string{"repos", "install", "--manifest", manifestPath,
+			"--vertex-project", "my-project", "--vertex-region", "us-central1", "--vertex-wif-provider", "not-a-valid-provider"})
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `--vertex-wif-provider must be a full WIF provider resource name`)
+		assert.Contains(t, err.Error(), "not-a-valid-provider")
+	})
+}
+
+func TestOtherCommandsKeepInferenceFlags(t *testing.T) {
+	root := newRootCmd()
+	for _, path := range [][]string{{"github", "setup"}, {"admin", "install"}} {
+		cmd, _, err := root.Find(path)
+		require.NoError(t, err)
+		require.Equal(t, path[len(path)-1], cmd.Name())
+		for _, name := range []string{"inference-project", "inference-wif-provider", "inference-region"} {
+			assert.NotNil(t, cmd.Flags().Lookup(name), "%v must keep --%s", path, name)
+		}
+		for _, name := range []string{"vertex-project", "vertex-wif-provider", "vertex-region"} {
+			assert.Nil(t, cmd.Flags().Lookup(name), "%v must not gain --%s", path, name)
+		}
+	}
+}
+
+func TestRunReposInstall_AddsNewReposToManifest(t *testing.T) {
 	manifestPath := writeTestManifest(t, testManifestYAML)
 	fc := newInstallFakeClient("acme/api", "acme/web")
-	prov := &trackingProvisioner{label: "test"}
 
-	err := runReposAdd(context.Background(), &reposAddConfig{
-		manifest:        manifestPath,
-		install:         true,
-		concurrency:     4,
-		direct:          true,
-		testClient:      fc,
-		testProvisioner: prov,
-	}, []string{"acme/web"})
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/web"},
+		forge:                  repos.ForgeGitHub,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	})
 	require.NoError(t, err)
 
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
-	assert.Equal(t, 2, len(m.Repos))
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 2, len(m.GitHub.Repos))
 }
 
-// --- buildProvisionerFactory ---
+func TestRunReposInstall_AddsNewRepos_DryRun(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/web")
 
-func TestBuildProvisionerFactory_SkipWIF(t *testing.T) {
-	factory := buildProvisionerFactory(nil, true)
-	assert.Nil(t, factory)
-}
-
-func TestBuildProvisionerFactory_WithTestProv(t *testing.T) {
-	prov := &trackingProvisioner{label: "test"}
-	factory := buildProvisionerFactory(prov, false)
-	require.NotNil(t, factory)
-
-	result := factory(repos.ResolvedConfig{
-		Owner:            "acme",
-		Repo:             "api",
-		MintProject:      "mint-proj",
-		MintRegion:       "us-central1",
-		InferenceProject: "inf-proj",
-		InferenceRegion:  "us-central1",
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/web"},
+		forge:                  repos.ForgeGitHub,
+		dryRun:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
 	})
-	assert.Equal(t, prov, result)
-}
-
-// --- repos upgrade ---
-
-func TestReposUpgradeCmd_Flags(t *testing.T) {
-	cmd := newReposUpgradeCmd()
-
-	manifestFlag := cmd.Flags().Lookup("manifest")
-	require.NotNil(t, manifestFlag, "expected --manifest flag")
-	assert.Equal(t, "repos.yaml", manifestFlag.DefValue)
-
-	refFlag := cmd.Flags().Lookup("ref")
-	require.NotNil(t, refFlag, "expected --ref flag")
-	assert.Equal(t, "", refFlag.DefValue)
-
-	dryRunFlag := cmd.Flags().Lookup("dry-run")
-	require.NotNil(t, dryRunFlag, "expected --dry-run flag")
-	assert.Equal(t, "false", dryRunFlag.DefValue)
-
-	forceFlag := cmd.Flags().Lookup("force")
-	require.NotNil(t, forceFlag, "expected --force flag")
-	assert.Equal(t, "false", forceFlag.DefValue)
-
-	skipMintFlag := cmd.Flags().Lookup("skip-mint-check")
-	require.NotNil(t, skipMintFlag, "expected --skip-mint-check flag")
-	assert.Equal(t, "false", skipMintFlag.DefValue)
-
-	concurrencyFlag := cmd.Flags().Lookup("concurrency")
-	require.NotNil(t, concurrencyFlag, "expected --concurrency flag")
-	assert.Equal(t, "4", concurrencyFlag.DefValue)
-
-	directFlag := cmd.Flags().Lookup("direct")
-	require.NotNil(t, directFlag, "expected --direct flag")
-	assert.Equal(t, "false", directFlag.DefValue)
-
-	repoFlag := cmd.Flags().Lookup("repo")
-	assert.Nil(t, repoFlag, "--repo flag should not exist, use positional args")
-}
-
-func TestReposUpgradeCmd_ManifestShortFlag(t *testing.T) {
-	cmd := newReposUpgradeCmd()
-	shorthand := cmd.Flags().ShorthandLookup("f")
-	require.NotNil(t, shorthand, "expected -f shorthand for --manifest")
-}
-
-func TestRunReposUpgrade_DryRun(t *testing.T) {
-	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
-defaults:
-  forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v2.0.0
-repos:
-  - repo: acme/api
-`
-	manifestPath := writeTestManifest(t, yaml)
-	fc := newInstallFakeClient("acme/api")
-	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
-		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
-	)
-
-	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:      manifestPath,
-		dryRun:        true,
-		skipMintCheck: true,
-		concurrency:   4,
-		testClient:    fc,
-	}, nil)
 	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 1, len(m.GitHub.Repos), "dry-run should not modify manifest")
 }
 
-func TestRunReposUpgrade_InvalidManifest(t *testing.T) {
+// A greenfield dry run must apply the same inference credential validation
+// as the real run: a new repo without the selected method's credentials
+// fails instead of reporting success (#8011).
+func TestRunReposInstall_AddsNewRepos_DryRunValidatesCredentials(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		repoFilter:  []string{"acme/web"},
+		forge:       repos.ForgeGitHub,
+		dryRun:      true,
+		testClient:  fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "1 repos failed")
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	assert.Equal(t, 1, len(m.GitHub.Repos), "dry-run should not modify manifest")
+}
+
+func TestRunReposInstall_BootstrapsManifest(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+	fc := newInstallFakeClient("acme/repo")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/repo"},
+		forge:                  repos.ForgeGitHub,
+		inferenceAuth:          repos.InferenceAuthVertexWIF,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	assert.Equal(t, 1, m.Version)
+	require.NotNil(t, m.GitHub)
+	assert.Len(t, m.GitHub.Repos, 1)
+	assert.Equal(t, "acme/repo", m.GitHub.Repos[0].Name)
+	assert.Equal(t, repos.InferenceAuthVertexWIF, m.GitHub.Repos[0].Inference.Auth, "--inference-auth must persist on the new entry")
+	assert.Empty(t, m.Defaults.Inference.Auth, "--inference-auth must not change defaults")
+	assert.Empty(t, m.GitHub.Inference.Auth, "--inference-auth must not change the forge section")
+}
+
+func TestRunReposInstall_BootstrapRequiresInferenceAuth(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+	fc := newInstallFakeClient("acme/repo")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		repoFilter:  []string{"acme/repo"},
+		forge:       repos.ForgeGitHub,
+		testClient:  fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no inference authentication selected for acme/repo")
+	assert.Contains(t, err.Error(), "--inference-auth")
+	_, statErr := os.Stat(manifestPath)
+	assert.True(t, os.IsNotExist(statErr), "manifest must not be written when inference auth is missing")
+	assert.Empty(t, fc.FileContents, "no forge mutations when inference auth is missing")
+}
+
+func TestRunReposInstall_BootstrapRequiresForge(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+	fc := newInstallFakeClient("acme/repo")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		repoFilter:  []string{"acme/repo"},
+		testClient:  fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--forge")
+}
+
+func TestRunReposInstall_BootstrapDryRun(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+	fc := newInstallFakeClient("acme/repo")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:      manifestPath,
+		concurrency:   4,
+		repoFilter:    []string{"acme/repo"},
+		forge:         repos.ForgeGitHub,
+		inferenceAuth: repos.InferenceAuthVertexWIF,
+		dryRun:        true,
+		testClient:    fc,
+
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+	})
+	require.NoError(t, err)
+
+	_, statErr := os.Stat(manifestPath)
+	assert.True(t, os.IsNotExist(statErr), "dry-run should not create manifest file")
+}
+
+func TestRunReposInstall_NoManifestNoRepos(t *testing.T) {
 	fc := newInstallFakeClient()
 
-	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:    "/nonexistent/repos.yaml",
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    filepath.Join(t.TempDir(), "repos.yaml"),
 		concurrency: 4,
 		testClient:  fc,
-	}, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "loading manifest")
-}
-
-func TestRunReposUpgrade_ConcurrencyValidation(t *testing.T) {
-	manifestPath := writeTestManifest(t, testManifestYAML)
-
-	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:    manifestPath,
-		concurrency: 0,
-		testClient:  newInstallFakeClient(),
-	}, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--concurrency must be between 1 and 32")
-}
-
-func TestRunReposUpgrade_WithFilter(t *testing.T) {
-	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
-defaults:
-  forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v2.0.0
-repos:
-  - repo: acme/api
-  - repo: acme/web
-`
-	manifestPath := writeTestManifest(t, yaml)
-	fc := newInstallFakeClient("acme/api", "acme/web")
-	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
-		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
-	)
-	fc.FileContents["acme/web/.github/workflows/fullsend.yml"] = []byte(
-		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
-	)
-
-	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:      manifestPath,
-		dryRun:        true,
-		skipMintCheck: true,
-		concurrency:   4,
-		testClient:    fc,
-	}, []string{"acme/api"})
-	require.NoError(t, err)
-}
-
-func TestRunReposUpgrade_InvalidRefFormat(t *testing.T) {
-	manifestPath := writeTestManifest(t, testManifestYAML)
-
-	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:    manifestPath,
-		refOverride: "v1.0.0$bad",
-		concurrency: 4,
-		testClient:  newInstallFakeClient(),
-	}, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid characters")
-}
-
-func TestRunReposUpgrade_HighConcurrency(t *testing.T) {
-	manifestPath := writeTestManifest(t, testManifestYAML)
-
-	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:    manifestPath,
-		concurrency: 33,
-		testClient:  newInstallFakeClient(),
-	}, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--concurrency must be between 1 and 32")
-}
-
-func TestRunReposUpgrade_FullUpgrade(t *testing.T) {
-	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
-defaults:
-  forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v2.0.0
-repos:
-  - repo: acme/api
-`
-	manifestPath := writeTestManifest(t, yaml)
-	fc := newInstallFakeClient("acme/api")
-	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
-		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
-	)
-
-	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:      manifestPath,
-		skipMintCheck: true,
-		concurrency:   4,
-		direct:        true,
-		testClient:    fc,
-	}, nil)
-	require.NoError(t, err)
-}
-
-func TestRunReposUpgrade_WithRefOverride(t *testing.T) {
-	manifestPath := writeTestManifest(t, testManifestYAML)
-	fc := newInstallFakeClient("acme/api")
-	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
-		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v0.9.0\n",
-	)
-
-	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:      manifestPath,
-		refOverride:   "v2.0.0",
-		dryRun:        true,
-		skipMintCheck: true,
-		concurrency:   4,
-		testClient:    fc,
-	}, nil)
-	require.NoError(t, err)
-}
-
-func TestRunReposUpgrade_ManifestValidationFailure(t *testing.T) {
-	badManifest := `version: 99
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
-repos:
-  - repo: acme/api
-`
-	manifestPath := writeTestManifest(t, badManifest)
-
-	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:    manifestPath,
-		concurrency: 4,
-		testClient:  newInstallFakeClient(),
-	}, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "manifest validation failed")
-}
-
-// --- repos upgrade-mint ---
-
-func TestReposUpgradeMintCmd_Flags(t *testing.T) {
-	cmd := newReposUpgradeMintCmd()
-
-	manifestFlag := cmd.Flags().Lookup("manifest")
-	require.NotNil(t, manifestFlag, "expected --manifest flag")
-	assert.Equal(t, "repos.yaml", manifestFlag.DefValue)
-}
-
-func TestReposUpgradeMintCmd_ManifestShortFlag(t *testing.T) {
-	cmd := newReposUpgradeMintCmd()
-	shorthand := cmd.Flags().ShorthandLookup("f")
-	require.NotNil(t, shorthand, "expected -f shorthand for --manifest")
-}
-
-func TestRunReposUpgradeMint_InvalidManifest(t *testing.T) {
-	err := runReposUpgradeMint(context.Background(), &reposUpgradeMintConfig{
-		manifest: "/nonexistent/repos.yaml",
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "loading manifest")
 }
 
-func TestRunReposUpgradeMint_ManifestValidationFailure(t *testing.T) {
-	badManifest := `version: 99
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
-repos:
-  - repo: acme/api
-`
-	manifestPath := writeTestManifest(t, badManifest)
-
-	err := runReposUpgradeMint(context.Background(), &reposUpgradeMintConfig{
-		manifest: manifestPath,
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "manifest validation failed")
-}
-
-func TestRunReposUpgradeMint_Success(t *testing.T) {
-	manifestPath := writeTestManifest(t, testManifestYAML)
-	prov := &trackingProvisioner{label: "https://mint.example.com"}
-
-	err := runReposUpgradeMint(context.Background(), &reposUpgradeMintConfig{
-		manifest:        manifestPath,
-		testProvisioner: prov,
-	})
-	require.NoError(t, err)
-	assert.Contains(t, prov.calls, "DiscoverMint")
-}
-
-func TestResolveMintProvisioner_WithTestProv(t *testing.T) {
-	prov := &trackingProvisioner{label: "test"}
-	m := &repos.Manifest{Mint: repos.MintConfig{Project: "p", Region: "r", URL: "https://mint.example.com"}}
-	got := resolveMintProvisioner(prov, m)
-	assert.Equal(t, prov, got)
-}
-
-func TestResolveMintProvisioner_NilFallsBackToLive(t *testing.T) {
-	m := &repos.Manifest{Mint: repos.MintConfig{Project: "p", Region: "r", URL: "https://mint.example.com"}}
-	got := resolveMintProvisioner(nil, m)
-	require.NotNil(t, got)
-}
-
-// --- repos upgrade mint pre-flight ---
-
-func TestRunReposUpgrade_MintCheckBlocksOnMismatch(t *testing.T) {
-	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+const twoRepoManifestYAML = `version: 1
 defaults:
-  forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v2.0.0
-repos:
-  - repo: acme/api
-`
-	manifestPath := writeTestManifest(t, yaml)
-	fc := newInstallFakeClient("acme/api")
-	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
-		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
-	)
-
-	// Provisioner returns a different URL than the manifest — mint mismatch.
-	prov := &trackingProvisioner{label: "https://other-mint.example.com"}
-
-	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:        manifestPath,
-		concurrency:     4,
-		testClient:      fc,
-		testProvisioner: prov,
-	}, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "mint verification failed")
-	assert.Contains(t, prov.calls, "DiscoverMint")
-}
-
-func TestRunReposUpgrade_SkipMintCheckBypasses(t *testing.T) {
-	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
-defaults:
-  forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v2.0.0
-repos:
-  - repo: acme/api
-`
-	manifestPath := writeTestManifest(t, yaml)
-	fc := newInstallFakeClient("acme/api")
-	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
-		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
-	)
-
-	// Provisioner would fail if called — but --skip-mint-check bypasses it.
-	prov := &trackingProvisioner{label: "https://other-mint.example.com"}
-
-	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:        manifestPath,
-		skipMintCheck:   true,
-		concurrency:     4,
-		direct:          true,
-		testClient:      fc,
-		testProvisioner: prov,
-	}, nil)
-	require.NoError(t, err)
-	assert.NotContains(t, prov.calls, "DiscoverMint",
-		"--skip-mint-check should bypass mint verification")
-}
-
-func TestRunReposUpgrade_MintCheckPassesThenUpgrades(t *testing.T) {
-	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
-defaults:
-  forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v2.0.0
-repos:
-  - repo: acme/api
-`
-	manifestPath := writeTestManifest(t, yaml)
-	fc := newInstallFakeClient("acme/api")
-	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
-		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
-	)
-
-	// Provisioner returns matching URL — mint check passes.
-	prov := &trackingProvisioner{label: "https://mint.example.com"}
-
-	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:        manifestPath,
-		concurrency:     4,
-		direct:          true,
-		testClient:      fc,
-		testProvisioner: prov,
-	}, nil)
-	require.NoError(t, err)
-	assert.Contains(t, prov.calls, "DiscoverMint",
-		"mint verification should run by default")
-}
-
-func TestRunReposUpgrade_MintCheckWithDryRun(t *testing.T) {
-	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
-defaults:
-  forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v2.0.0
-repos:
-  - repo: acme/api
-`
-	manifestPath := writeTestManifest(t, yaml)
-	fc := newInstallFakeClient("acme/api")
-	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
-		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
-	)
-
-	// Mint mismatch should still block even during dry-run.
-	prov := &trackingProvisioner{label: "https://other-mint.example.com"}
-
-	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:        manifestPath,
-		dryRun:          true,
-		concurrency:     4,
-		testClient:      fc,
-		testProvisioner: prov,
-	}, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "mint verification failed")
-}
-
-const diffSyncManifestYAML = `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
-defaults:
-  forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
+  inference:
+    auth: vertex-wif
+github:
+  mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
-repos:
-  - repo: acme/api
-  - repo: acme/web
+  repos:
+    - name: acme/api
+    - name: acme/web
 `
 
-func TestRunReposDiff_NoDrift(t *testing.T) {
-	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
-defaults:
-  forge: github
-  inference_region: us-central1
-  fullsend_ref: v1.0.0
-repos:
-  - repo: acme/api
-`
-	manifestPath := writeTestManifest(t, yaml)
-	fc := newInstalledFakeClientCLI("acme/api")
-
-	err := runReposDiff(context.Background(), &reposDiffConfig{
-		manifest:    manifestPath,
-		concurrency: 4,
-		testClient:  fc,
-	})
-	require.NoError(t, err)
-}
-
-func TestRunReposDiff_WithDrift(t *testing.T) {
-	manifestPath := writeTestManifest(t, diffSyncManifestYAML)
+func TestRunReposInstall_ConvergesAlreadyInstalled(t *testing.T) {
+	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
 	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
 
-	err := runReposDiff(context.Background(), &reposDiffConfig{
-		manifest:    manifestPath,
-		concurrency: 4,
-		testClient:  fc,
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "changes needed to reconcile")
-}
-
-func TestRunReposDiff_InvalidManifest(t *testing.T) {
-	err := runReposDiff(context.Background(), &reposDiffConfig{
-		manifest:    "/nonexistent/repos.yaml",
-		concurrency: 4,
-		testClient:  forge.NewFakeClient(),
-	})
-	require.Error(t, err)
-}
-
-// --- repos sync ---
-
-func TestRunReposSync_Success(t *testing.T) {
-	manifestPath := writeTestManifest(t, diffSyncManifestYAML)
-	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
-	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
-
-	err := runReposSync(context.Background(), &reposSyncConfig{
+	err := runReposInstall(context.Background(), &reposInstallConfig{
 		manifest:    manifestPath,
 		concurrency: 4,
 		testClient:  fc,
@@ -1853,194 +1560,1706 @@ func TestRunReposSync_Success(t *testing.T) {
 	assert.Equal(t, "https://mint.example.com", fc.VariableValues["acme/api/FULLSEND_MINT_URL"])
 }
 
-func TestRunReposSync_DryRun(t *testing.T) {
-	manifestPath := writeTestManifest(t, diffSyncManifestYAML)
-	fc := newInstalledFakeClientCLI("acme/api")
+func TestRunReposInstall_ConvergesAlreadyInstalled_DryRun(t *testing.T) {
+	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
 
-	err := runReposSync(context.Background(), &reposSyncConfig{
+	err := runReposInstall(context.Background(), &reposInstallConfig{
 		manifest:    manifestPath,
 		concurrency: 4,
 		dryRun:      true,
 		testClient:  fc,
 	})
-	require.Error(t, err, "dry-run should return error when drift exists")
-	assert.Contains(t, err.Error(), "changes needed to reconcile")
+	require.NoError(t, err)
 	assert.Equal(t, "https://old-mint.example.com", fc.VariableValues["acme/api/FULLSEND_MINT_URL"],
 		"dry-run should not modify variables")
 }
 
-func TestRunReposSync_InvalidManifest(t *testing.T) {
-	err := runReposSync(context.Background(), &reposSyncConfig{
-		manifest:    "/nonexistent/repos.yaml",
-		concurrency: 4,
-		testClient:  forge.NewFakeClient(),
-	})
-	require.Error(t, err)
-}
-
-func TestRunReposDiff_JSON(t *testing.T) {
-	manifestPath := writeTestManifest(t, diffSyncManifestYAML)
-	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
-	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
-
-	var buf bytes.Buffer
-	err := runReposDiff(context.Background(), &reposDiffConfig{
+func TestRunReposInstall_InvalidForge(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	err := runReposInstall(context.Background(), &reposInstallConfig{
 		manifest:    manifestPath,
 		concurrency: 4,
-		jsonOutput:  true,
-		testClient:  fc,
-		out:         &buf,
+		forge:       "unknown",
+		testClient:  newInstallFakeClient(),
 	})
 	require.Error(t, err)
-
-	output := buf.String()
-	assert.True(t, strings.HasPrefix(strings.TrimSpace(output), "{"), "JSON output should start with {")
-	assert.Contains(t, output, `"changes"`)
-	assert.NotContains(t, output, "Checking token permissions", "preflight text should not appear in JSON output")
+	assert.Contains(t, err.Error(), "not a valid forge platform")
 }
 
-func TestRunReposSync_JSON(t *testing.T) {
-	manifestPath := writeTestManifest(t, diffSyncManifestYAML)
-	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
-	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
-
-	var buf bytes.Buffer
-	err := runReposSync(context.Background(), &reposSyncConfig{
+func TestRunReposInstall_RequiresForgeForNewRepos(t *testing.T) {
+	noDefaultForgeManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos: []
+gitlab:
+  repos: []
+`
+	manifestPath := writeTestManifest(t, noDefaultForgeManifest)
+	err := runReposInstall(context.Background(), &reposInstallConfig{
 		manifest:    manifestPath,
 		concurrency: 4,
-		jsonOutput:  true,
-		testClient:  fc,
-		out:         &buf,
+		repoFilter:  []string{"acme/new"},
+		testClient:  newInstallFakeClient(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--forge is required")
+}
+
+func TestRunReposInstall_InvalidFullsendRef(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		fullsendRef: "v1.0.0; rm -rf /",
+		testClient:  newInstallFakeClient(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--fullsend-ref")
+	assert.Contains(t, err.Error(), "invalid characters")
+}
+
+func TestRunReposInstall_InvalidMintURL(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		mintURL:     "http://not-secure.example.com",
+		testClient:  newInstallFakeClient(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--mint-url")
+	assert.Contains(t, err.Error(), "HTTPS")
+}
+
+func TestRunReposInstall_InvalidInferenceProject(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:         manifestPath,
+		concurrency:      4,
+		inferenceProject: "INVALID-CAPS",
+		testClient:       newInstallFakeClient(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--vertex-project")
+}
+
+func TestRunReposInstall_InvalidInferenceWIFProvider(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:             manifestPath,
+		concurrency:          4,
+		inferenceWIFProvider: "not-a-valid-provider",
+		testClient:           newInstallFakeClient(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--vertex-wif-provider")
+}
+
+func TestRunReposInstall_DerivesProjectNumber(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	opts := &reposInstallConfig{
+		manifest:         manifestPath,
+		concurrency:      4,
+		roles:            []string{"triage"},
+		direct:           true,
+		inferenceProject: "inf-proj",
+		// No inferenceProjectNumber — should be auto-derived.
+		// No inferenceRegion — should default to "global".
+		testClient: fc,
+		testProjectNumberFn: func(_ context.Context, projectID string) (string, error) {
+			if projectID != "inf-proj" {
+				t.Errorf("expected project ID inf-proj, got %s", projectID)
+			}
+			return "987654321", nil
+		},
+	}
+	err := runReposInstall(context.Background(), opts)
+	require.NoError(t, err)
+
+	// The project number is derived lazily during convergence and used
+	// for the per-repo WIF provider written to the repo.
+	var wif string
+	for _, rec := range fc.CreatedSecrets {
+		if rec.Repo == "api" && rec.Name == forge.SecretGCPWIFProvider {
+			wif = rec.Value
+		}
+	}
+	assert.Contains(t, wif, "projects/987654321/",
+		"WIF provider should use the project number from testProjectNumberFn")
+	assert.Equal(t, "global", opts.inferenceRegion,
+		"inference region should default to global")
+}
+
+func TestRunReposInstall_OpenAIOnlySkipsProjectNumberLookup(t *testing.T) {
+	manifestPath := writeTestManifest(t, `version: 1
+github:
+  inference:
+    auth: openai-api-key
+  repos:
+    - name: acme/api
+`)
+	fc := newInstallFakeClient("acme/api")
+
+	lookupCalled := false
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:     manifestPath,
+		concurrency:  4,
+		roles:        []string{"triage"},
+		direct:       true,
+		openAIAPIKey: "test-openai-key",
+		testClient:   fc,
+		testProjectNumberFn: func(_ context.Context, _ string) (string, error) {
+			lookupCalled = true
+			return "999", nil
+		},
+	})
+	require.NoError(t, err)
+	assert.False(t, lookupCalled, "OpenAI-only repos must not trigger GCP lookups")
+	assert.True(t, fc.Secrets["acme/api/"+forge.SecretOpenAIAPIKey])
+	assert.False(t, fc.Secrets["acme/api/"+forge.SecretGCPProjectID])
+	assert.False(t, fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider])
+
+	data, readErr := os.ReadFile(manifestPath)
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(data), "test-openai-key", "--openai-api-key must never be written to repos.yaml")
+}
+
+func TestRunReposInstall_WIFProviderSkipsProjectNumberLookup(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	lookupCalled := false
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:             manifestPath,
+		concurrency:          4,
+		roles:                []string{"triage"},
+		direct:               true,
+		inferenceProject:     "inf-proj",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc",
+		testClient:           fc,
+		testProjectNumberFn: func(_ context.Context, _ string) (string, error) {
+			lookupCalled = true
+			return "999", nil
+		},
+	})
+	require.NoError(t, err)
+	assert.False(t, lookupCalled,
+		"project number lookup should be skipped when --vertex-wif-provider is set")
+}
+
+func TestRunReposInstall_DefaultsInferenceRegion(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	opts := &reposInstallConfig{
+		manifest:         manifestPath,
+		concurrency:      4,
+		roles:            []string{"triage"},
+		direct:           true,
+		inferenceProject: "inf-proj",
+		// inferenceRegion left empty — should default to "global".
+		testClient: fc,
+		testProjectNumberFn: func(_ context.Context, _ string) (string, error) {
+			return "123456789", nil
+		},
+	}
+	err := runReposInstall(context.Background(), opts)
+	require.NoError(t, err)
+	assert.Equal(t, "global", opts.inferenceRegion,
+		"inference region should default to global when --vertex-project is set")
+}
+
+func TestRunReposInstall_ProjectNumberLookupError(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:         manifestPath,
+		concurrency:      4,
+		roles:            []string{"triage"},
+		direct:           true,
+		inferenceProject: "inf-proj",
+		testClient:       fc,
+		testProjectNumberFn: func(_ context.Context, _ string) (string, error) {
+			return "", errors.New("API unavailable")
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deriving project number")
+	assert.Contains(t, err.Error(), "API unavailable")
+	assert.Contains(t, err.Error(), "--vertex-wif-provider")
+}
+
+func TestRunReposInstall_PerRepoOverrideFlags_Applied(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/web"},
+		forge:                  repos.ForgeGitHub,
+		inferenceRegion:        "europe-west1",
+		fullsendRef:            "v2.0.0",
+		mintURL:                "https://custom-mint.example.com",
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		testClient:             fc,
 	})
 	require.NoError(t, err)
 
-	output := buf.String()
-	assert.True(t, strings.HasPrefix(strings.TrimSpace(output), "{"), "JSON output should start with {")
-	assert.Contains(t, output, `"applied"`)
-	assert.NotContains(t, output, "Checking token permissions", "preflight text should not appear in JSON output")
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	require.Equal(t, 2, len(m.GitHub.Repos))
+	newEntry := m.GitHub.Repos[1]
+	assert.Equal(t, "acme/web", newEntry.Name)
+	assert.Equal(t, "v2.0.0", newEntry.FullsendRef)
+	assert.Equal(t, "https://custom-mint.example.com", newEntry.MintURL)
 }
 
-func TestRunReposSync_DryRun_JSON(t *testing.T) {
-	manifestPath := writeTestManifest(t, diffSyncManifestYAML)
+func TestRunReposInstall_AllReposAlreadyCurrent(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
 	fc := newInstalledFakeClientCLI("acme/api")
-	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
 
-	var buf bytes.Buffer
-	err := runReposSync(context.Background(), &reposSyncConfig{
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		testClient:  fc,
+	})
+	require.NoError(t, err)
+}
+
+func TestRunReposInstall_ManifestValidationFailure(t *testing.T) {
+	badManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+github:
+  mint_url: https://mint.example.com
+  repos:
+    - name: acme/api
+gitlab:
+  repos:
+    - name: acme/api
+`
+	manifestPath := writeTestManifest(t, badManifest)
+	fc := newInstallFakeClient("acme/api")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		testClient:  fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "manifest validation failed")
+}
+
+func TestRunReposInstall_GlobFilterSkipped(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		repoFilter:  []string{"acme/*"},
+		testClient:  fc,
+	})
+	require.NoError(t, err)
+}
+
+func TestRunReposInstall_ConvergesWithUpgrade(t *testing.T) {
+	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/dispatch.yml@v0.9.0")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		direct:      true,
+		testClient:  fc,
+	})
+	require.NoError(t, err)
+}
+
+func TestRunReposInstall_ConvergesWithUpgrade_DryRun(t *testing.T) {
+	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/dispatch.yml@v0.9.0")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
 		manifest:    manifestPath,
 		concurrency: 4,
 		dryRun:      true,
-		jsonOutput:  true,
 		testClient:  fc,
-		out:         &buf,
+	})
+	require.NoError(t, err)
+}
+
+func TestRunReposInstall_SingleWordFilterSkipped(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		repoFilter:  []string{"badname", "acme/api"},
+		testClient:  fc,
+	})
+	require.NoError(t, err)
+}
+
+func TestRunReposInstall_NonGitHubForgeWarnings(t *testing.T) {
+	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos: []
+gitlab:
+  url: https://gitlab.example.com
+  repos: []
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+	fc := newInstallFakeClient("group/project")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:        manifestPath,
+		concurrency:     4,
+		repoFilter:      []string{"group/project"},
+		forge:           repos.ForgeGitLab,
+		inferenceRegion: "us-central1",
+		fullsendRef:     "v2.0.0",
+		mintURL:         "https://mint.example.com",
+		vendor:          true,
+		vendorChanged:   true,
+		direct:          true,
+		testClient:      fc,
 	})
 	require.Error(t, err)
+}
 
-	output := buf.String()
-	assert.True(t, strings.HasPrefix(strings.TrimSpace(output), "{"), "JSON output should start with {")
-	assert.Contains(t, output, `"changes"`)
-	assert.NotContains(t, output, "Checking token permissions")
+func TestRunReposInstall_AllowedRemoteResources(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/web"},
+		forge:                  repos.ForgeGitHub,
+		allowedRemoteResources: []string{"https://example.com/harness/"},
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	require.Equal(t, 2, len(m.GitHub.Repos))
+	assert.Equal(t, []string{"https://example.com/harness/"}, m.GitHub.Repos[1].AllowedRemoteResources)
+}
+
+func TestRunReposInstall_InvalidAllowedRemoteResources(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/web"},
+		forge:                  repos.ForgeGitHub,
+		allowedRemoteResources: []string{"https://example.com/harness"},
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--allowed-remote-resources")
+	assert.Contains(t, err.Error(), "must end with /")
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	require.Equal(t, 1, len(m.GitHub.Repos), "malformed prefix must not be persisted")
+}
+
+func TestRunReposInstall_SyncFailureReportsError(t *testing.T) {
+	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
+	// Drift a variable so sync attempts a write.
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
+	// Set a stale ref so upgrade would attempt acme/api.
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte("uses: fullsend-ai/fullsend/.github/workflows/dispatch.yml@v0.9.0")
+	// Inject a global error so the variable write fails.
+	fc.Errors["CreateOrUpdateRepoVariable"] = errors.New("simulated sync failure")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		testClient:  fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "repos failed")
+	assert.Empty(t, fc.CommittedFiles, "scaffold should not be committed when variable sync fails")
+}
+
+// --- repos uninstall mode tests ---
+
+func TestReposUninstallCmd_ManifestOnlyFlag(t *testing.T) {
+	cmd := newReposUninstallCmd()
+	f := cmd.Flags().Lookup("manifest-only")
+	require.NotNil(t, f, "expected --manifest-only flag")
+	assert.Equal(t, "false", f.DefValue)
+}
+
+func TestReposUninstallCmd_UninstallOnlyFlag(t *testing.T) {
+	cmd := newReposUninstallCmd()
+	f := cmd.Flags().Lookup("uninstall-only")
+	require.NotNil(t, f, "expected --uninstall-only flag")
+	assert.Equal(t, "false", f.DefValue)
+}
+
+func TestReposUninstallCmd_FlagsMutuallyExclusive(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "uninstall", "--manifest-only", "--uninstall-only", "--yes", "acme/api"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "none of the others can be")
+}
+
+func TestRunReposUninstall_RemovesFromManifest(t *testing.T) {
+	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		concurrency: 4,
+		testClient:  fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 1, len(m.GitHub.Repos), "manifest should have 1 repo after removing acme/api")
+	assert.Equal(t, "acme/web", m.GitHub.Repos[0].Name)
+}
+
+func TestRunReposUninstall_ManifestOnly(t *testing.T) {
+	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:     manifestPath,
+		yes:          true,
+		concurrency:  4,
+		manifestOnly: true,
+		testClient:   fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 1, len(m.GitHub.Repos), "--manifest-only should remove from manifest")
+	assert.Equal(t, "true", fc.VariableValues["acme/api/FULLSEND_PER_REPO_INSTALL"],
+		"--manifest-only should not touch forge variables")
+}
+
+func TestRunReposUninstall_UninstallOnly(t *testing.T) {
+	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:      manifestPath,
+		yes:           true,
+		concurrency:   4,
+		uninstallOnly: true,
+		testClient:    fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 2, len(m.GitHub.Repos), "--uninstall-only should keep manifest entry")
+}
+
+func TestRunReposUninstall_DryRun_NoManifestChange(t *testing.T) {
+	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		dryRun:      true,
+		yes:         true,
+		concurrency: 4,
+		testClient:  fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 2, len(m.GitHub.Repos), "dry-run should not modify manifest")
+}
+
+func TestRunReposUninstall_PartialFailure_OnlyRemovesSucceeded(t *testing.T) {
+	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
+	fc.CreateBranchErrors = map[string]error{
+		"acme/api": errors.New("simulated workflow deletion failure"),
+	}
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		concurrency: 1,
+		testClient:  fc,
+	}, []string{"acme/api", "acme/web"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to uninstall")
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 1, len(m.GitHub.Repos), "only acme/web should be removed from manifest (acme/api failed)")
+	assert.Equal(t, "acme/api", m.GitHub.Repos[0].Name, "failed repo should remain in manifest")
 }
 
 // --- forge-aware CLI integration tests ---
-// These tests exercise the RunE closures and forgeClientFromManifest paths
-// that are only reachable through the Cobra command chain.
 
 var emptyReposManifestYAML = `version: 1
-mint:
-  url: https://mint.example.com
-  project: p
-  region: us-central1
 defaults:
-  forge: github
-  inference_project: proj
-  inference_region: us-central1
-repos: []
+  inference:
+    auth: vertex-wif
+github:
+  mint_url: https://mint.example.com
+  repos: []
 `
 
-func TestReposDiffCmd_GitLabNoToken(t *testing.T) {
-	t.Setenv("GITLAB_TOKEN", "")
-	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
-	manifestPath := writeTestManifest(t, m)
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "diff", "--manifest", manifestPath})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
-}
-
-func TestReposSyncCmd_GitLabNoToken(t *testing.T) {
-	t.Setenv("GITLAB_TOKEN", "")
-	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
-	manifestPath := writeTestManifest(t, m)
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "sync", "--manifest", manifestPath})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
-}
-
-func TestReposUpgradeCmd_GitLabNoToken(t *testing.T) {
-	t.Setenv("GITLAB_TOKEN", "")
-	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
-	manifestPath := writeTestManifest(t, m)
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "upgrade", "--manifest", manifestPath})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
-}
-
 func TestReposInstallCmd_GitLabNoToken(t *testing.T) {
+	// With zero repos, a GitLab-default manifest does not require a token.
 	t.Setenv("GITLAB_TOKEN", "")
-	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
-	manifestPath := writeTestManifest(t, m)
+	gitlabEmptyManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+gitlab:
+  repos: []
+`
+	manifestPath := writeTestManifest(t, gitlabEmptyManifest)
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"repos", "install", "--manifest", manifestPath})
 	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
+	require.NoError(t, err)
 }
 
 func TestReposUninstallCmd_GitLabNoToken(t *testing.T) {
+	// The token error now surfaces per-repo instead of at scope checking.
 	t.Setenv("GITLAB_TOKEN", "")
-	m := `version: 1
-mint:
-  url: https://mint.example.com
-  project: p
-  region: us-central1
+	gitlabManifest := `version: 1
 defaults:
-  forge: gitlab
-  inference_project: proj
-  inference_region: us-central1
-repos:
-  - acme/repo
+  inference:
+    auth: vertex-wif
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: acme/repo
 `
-	manifestPath := writeTestManifest(t, m)
+	manifestPath := writeTestManifest(t, gitlabManifest)
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"repos", "uninstall", "--yes", "--manifest", manifestPath, "acme/repo"})
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
+	assert.Contains(t, err.Error(), "failed to uninstall")
 }
 
-func TestReposAddCmd_GitLabNoToken(t *testing.T) {
-	t.Setenv("GITLAB_TOKEN", "")
-	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
-	manifestPath := writeTestManifest(t, m)
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "add", "--manifest", manifestPath, "acme/repo"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
+func TestRunReposUninstall_GitLabPRTitleIncludesSkipCI(t *testing.T) {
+	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+
+	fc := forge.NewFakeClient()
+	fc.InstallationToken = true
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	fc.Repos = []forge.Repository{{
+		FullName:      "group/project",
+		Name:          "project",
+		DefaultBranch: "main",
+	}}
+	for _, p := range repos.ScaffoldPathsForForge(repos.ForgeGitLab) {
+		fc.FileContents["group/project/"+p] = []byte("content")
+	}
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		concurrency: 4,
+		testClient:  fc,
+	}, []string{"group/project"})
+	require.NoError(t, err)
+
+	require.NotEmpty(t, fc.CreatedProposals, "expected an uninstall PR to be created")
+	assert.Contains(t, fc.CreatedProposals[0].Title, "[skip ci]",
+		"GitLab uninstall MR title must include [skip ci]")
+
+	require.NotEmpty(t, fc.CommittedFilesToBranch, "expected the uninstall branch commit to be recorded")
+	assert.Contains(t, fc.CommittedFilesToBranch[0].Message, "[skip ci]",
+		"GitLab uninstall commit message must include [skip ci] to skip CI on the scaffold branch")
 }
 
-func TestReposInitCmd_GitLabNoToken(t *testing.T) {
-	t.Setenv("GITLAB_TOKEN", "")
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "init", "--forge", "gitlab", "test-org"})
-	err := cmd.Execute()
+type recordingUninstallTokens struct {
+	listed  []repos.ProjectAccessToken
+	revoked []int
+}
+
+func (r *recordingUninstallTokens) CreateProjectAccessToken(context.Context, string, string, string, []string, int, string) (*repos.ProjectAccessToken, error) {
+	return nil, nil
+}
+
+func (r *recordingUninstallTokens) ListProjectAccessTokens(context.Context, string, string) ([]repos.ProjectAccessToken, error) {
+	return r.listed, nil
+}
+
+func (r *recordingUninstallTokens) RevokeProjectAccessToken(_ context.Context, _, _ string, tokenID int) error {
+	r.revoked = append(r.revoked, tokenID)
+	return nil
+}
+
+func TestRunReposUninstall_GitLabIdentityCleanup(t *testing.T) {
+	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+	fc := forge.NewFakeClient()
+	fc.InstallationToken = true
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	fc.Repos = []forge.Repository{{
+		FullName: "group/project", Name: "project", DefaultBranch: "main",
+	}}
+	for _, p := range repos.ScaffoldPathsForForge(repos.ForgeGitLab) {
+		fc.FileContents["group/project/"+p] = []byte("content")
+	}
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[]}`
+	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
+	for _, name := range []string{
+		forge.SecretForgeToken,
+		forge.SecretGitLabPollerToken,
+		forge.SecretGitLabAnalystToken,
+		forge.SecretGitLabCoderToken,
+	} {
+		fc.Secrets["group/project/"+name] = true
+	}
+
+	tokens := &recordingUninstallTokens{listed: []repos.ProjectAccessToken{
+		{ID: 1, Name: "fullsend-poller", Active: true},
+		{ID: 2, Name: "fullsend-bot", Active: true},
+		{ID: 3, Name: "unrelated", Active: true},
+	}}
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:         manifestPath,
+		yes:              true,
+		direct:           true,
+		concurrency:      4,
+		testClient:       fc,
+		testGitLabTokens: tokens,
+	}, []string{"group/project"})
+	require.NoError(t, err)
+	// Only the Poller role token (ID 1) is revoked; the legacy
+	// fullsend-bot token (ID 2) is left for manual cleanup.
+	assert.ElementsMatch(t, []int{1}, tokens.revoked)
+	assert.Empty(t, fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry])
+	assert.False(t, fc.Secrets["group/project/"+forge.SecretGitLabPollerToken])
+	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken], "legacy shared secret must not be auto-deleted by uninstall")
+}
+
+func TestRunReposInstall_GitLabPRTitleIncludesSkipCI(t *testing.T) {
+	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+
+	fc := forge.NewFakeClient()
+	seedGitLabInputPrerequisites(fc, "group/project", "v1.0.0")
+	fc.InstallationToken = true
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	fc.Repos = []forge.Repository{{
+		FullName:      "group/project",
+		Name:          "project",
+		DefaultBranch: "main",
+	}}
+
+	// The install may report partial failures (e.g. GitLab bot-token
+	// setup requires a real GitLab client), but the scaffold PR is
+	// created before post-install steps run.
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	})
+	t.Logf("runReposInstall: %v", err)
+
+	// The scaffoldCommitFn appends [skip ci] to both CommitMsg and
+	// PRTitle for GitLab repos so merged-results pipelines don't
+	// trigger the dispatch job on scaffold MRs (#6818).
+	require.NotEmpty(t, fc.CreatedProposals, "expected a scaffold PR to be created")
+	assert.Contains(t, fc.CreatedProposals[0].Title, "[skip ci]",
+		"GitLab scaffold MR title must include [skip ci] to suppress dispatch")
+}
+
+func gitlabInstallOpts(manifestPath string, fc *forge.FakeClient) *reposInstallConfig {
+	return &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	}
+}
+
+func assertGitLabInitMRComplete(t *testing.T, fc *forge.FakeClient) {
+	t.Helper()
+	require.NotEmpty(t, fc.CreatedProposals, "expected an initialization MR")
+	for _, p := range fc.CreatedProposals {
+		assert.Equal(t, repos.DefaultScaffoldBranch, p.Head,
+			"expected initialization branch, got %s (title %q)", p.Head, p.Title)
+		assert.NotContains(t, p.Head, repos.ScaffoldBumpBranchPrefix,
+			"upgrade bump branch must not be created while init MR is open")
+	}
+	require.NotEmpty(t, fc.CommittedFilesToBranch, "expected files committed to the init branch")
+	paths := make(map[string]bool)
+	for _, rec := range fc.CommittedFilesToBranch {
+		assert.Equal(t, repos.DefaultScaffoldBranch, rec.Branch,
+			"scaffold files must land on %s, got %s", repos.DefaultScaffoldBranch, rec.Branch)
+		for _, f := range rec.Files {
+			paths[f.Path] = true
+		}
+	}
+	for _, expected := range []string{
+		".gitlab/ci/fullsend-pipeline.yml",
+		".gitlab/ci/fullsend-agent.yml",
+		".gitlab/ci/fullsend-poll.yml",
+		".gitlab/ci/scripts/trust-ci-server-ca.sh",
+		".gitlab/ci/scripts/pin-ci-job-identity.sh",
+		".gitlab/ci/scripts/select-gitlab-role-token.sh",
+		".gitlab/ci/scripts/install-fullsend-cli.sh",
+		".gitlab/ci/scripts/run-poll-job.sh",
+		".gitlab/ci/scripts/run-agent-job.sh",
+		".gitlab/ci/scripts/checkout-mr-source.sh",
+		".fullsend/config.yaml",
+		".gitlab-ci.yml",
+	} {
+		assert.True(t, paths[expected], "init MR branch missing %s", expected)
+	}
+}
+
+// captureStdout runs f with os.Stdout redirected to a pipe and returns
+// everything written to it. Used to observe printer.StepStart/StepWarn
+// output from code paths (like runReposInstall) that write directly to
+// os.Stdout rather than an injectable writer.
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+
+	done := make(chan struct{})
+	var buf bytes.Buffer
+	go func() {
+		defer close(done)
+		_, _ = buf.ReadFrom(r)
+	}()
+
+	f()
+
+	require.NoError(t, w.Close())
+	os.Stdout = old
+	<-done
+	return buf.String()
+}
+
+// TestRunReposInstall_GitLabRerunBeforeInitMergeReusesInitMR reproduces
+// #7417: two consecutive installs without merging between them must keep
+// a single complete initialization MR instead of opening a bump MR.
+func TestRunReposInstall_GitLabRerunBeforeInitMergeReusesInitMR(t *testing.T) {
+	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v0.43.0
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+
+	fc := forge.NewFakeClient()
+	seedGitLabInputPrerequisites(fc, "group/project", "v0.43.0")
+	fc.InstallationToken = true
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	fc.Repos = []forge.Repository{{
+		FullName:      "group/project",
+		Name:          "project",
+		DefaultBranch: "main",
+	}}
+
+	firstOutput := captureStdout(t, func() {
+		_ = runReposInstall(context.Background(), gitlabInstallOpts(manifestPath, fc))
+	})
+	assertGitLabInitMRComplete(t, fc)
+	// First run: nothing existed before it, so GitLab post-install (bot
+	// token + pipeline schedule setup) must be attempted.
+	assert.Contains(t, firstOutput, "GitLab post-install setup",
+		"first install should attempt GitLab post-install setup")
+
+	firstCommitCount := len(fc.CommittedFilesToBranch)
+
+	// FakeClient.CommitFilesToBranch also writes FileContents (the
+	// default-branch store). Strip those files so the second probe sees
+	// the unmerged-MR state: variables/secrets exist, workflow does not.
+	for path := range fc.FileContents {
+		delete(fc.FileContents, path)
+	}
+
+	// The first run's post-install step type-asserts fc.Client to
+	// *gl.LiveClient to perform the actual bot-token/schedule setup;
+	// FakeClient fails that assertion, so it never writes the resulting
+	// secret/schedules here. Seed them directly to simulate a real
+	// GitLab client completing post-install successfully on the first
+	// run, so the second run's NeedsGitLabPostInstall gate (which keys
+	// on those specific artifacts, not just "any component exists") is
+	// exercised against a realistic prior state.
+	fc.Secrets["group/project/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["group/project"] = []forge.PipelineSchedule{
+		{Description: "fullsend slash poll"},
+		{Description: "fullsend event poll"},
+	}
+
+	secondOutput := captureStdout(t, func() {
+		_ = runReposInstall(context.Background(), gitlabInstallOpts(manifestPath, fc))
+	})
+	assertGitLabInitMRComplete(t, fc)
+	// Second run: variables/secrets/bot token already exist from the
+	// first run even though the workflow (and thus Installed) still
+	// reads as a fresh install. Re-running post-install would revoke and
+	// recreate the live fullsend-bot PAT and pipeline schedules — it
+	// must be skipped this time (#7417 follow-up: credential rotation on
+	// every re-run while the init MR is open).
+	assert.NotContains(t, secondOutput, "GitLab post-install setup",
+		"second install must not re-run GitLab post-install setup while the init MR is still open")
+
+	// FakeClient.CreateChangeProposal always records a new proposal, so
+	// the assertion is on branch identity: both runs must target the
+	// initialization branch, never a version bump branch.
+	for _, rec := range fc.CommittedFilesToBranch {
+		assert.Equal(t, repos.DefaultScaffoldBranch, rec.Branch)
+		assert.NotContains(t, rec.Branch, repos.ScaffoldBumpBranchPrefix)
+	}
+	if len(fc.CommittedFilesToBranch) < firstCommitCount {
+		t.Fatalf("second install dropped commits: first=%d second=%d", firstCommitCount, len(fc.CommittedFilesToBranch))
+	}
+}
+
+func TestRunReposInstall_VendorFlagPersistsOnNewRepo(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/web"},
+		forge:                  repos.ForgeGitHub,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		vendor:                 true,
+		vendorChanged:          true,
+		testClient:             fc,
+	})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	require.Equal(t, 2, len(m.GitHub.Repos))
+	newEntry := m.GitHub.Repos[1]
+	assert.Equal(t, "acme/web", newEntry.Name)
+	require.NotNil(t, newEntry.Vendor, "vendor should be persisted on new entry")
+	assert.True(t, *newEntry.Vendor)
+}
+
+func TestRunReposInstall_VendorFalsePersistsWhenDefaultTrue(t *testing.T) {
+	vendorManifest := `version: 1
+defaults:
+  vendor: true
+  inference:
+    auth: vertex-wif
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/api
+`
+	manifestPath := writeTestManifest(t, vendorManifest)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/web"},
+		forge:                  repos.ForgeGitHub,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		vendor:                 false,
+		vendorChanged:          true,
+		testClient:             fc,
+	})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	require.Equal(t, 2, len(m.GitHub.Repos))
+	newEntry := m.GitHub.Repos[1]
+	assert.Equal(t, "acme/web", newEntry.Name)
+	require.NotNil(t, newEntry.Vendor, "vendor=false should be persisted when defaults.vendor=true")
+	assert.False(t, *newEntry.Vendor)
+}
+
+func TestRunReposInstall_VendorNotPersistedWhenUnchanged(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/web"},
+		forge:                  repos.ForgeGitHub,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		vendor:                 false,
+		vendorChanged:          false,
+		testClient:             fc,
+	})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	require.Equal(t, 2, len(m.GitHub.Repos))
+	newEntry := m.GitHub.Repos[1]
+	assert.Equal(t, "acme/web", newEntry.Name)
+	assert.Nil(t, newEntry.Vendor, "vendor should not be set when --vendor was not passed")
+}
+
+func TestReposInstallCmd_GitLabURLFlag(t *testing.T) {
+	cmd := newReposInstallCmd()
+	f := cmd.Flags().Lookup("gitlab-url")
+	require.NotNil(t, f, "expected --gitlab-url flag")
+	assert.Equal(t, "", f.DefValue)
+}
+
+func TestRunReposInstall_GitLabURLBootstrap(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+	fc := newInstallFakeClient("group/project")
+
+	// Bootstrap a new manifest with a GitLab repo and --gitlab-url.
+	// The converge phase will fail (fake client doesn't support full
+	// GitLab setup), but the manifest should be written with the URL.
+	_ = runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:      manifestPath,
+		concurrency:   4,
+		repoFilter:    []string{"group/project"},
+		forge:         repos.ForgeGitLab,
+		gitlabURL:     "https://gitlab.example.com",
+		inferenceAuth: repos.InferenceAuthOpenAIAPIKey,
+		testClient:    fc,
+	})
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitLab, "expected gitlab section in manifest")
+	assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
+	assert.Len(t, m.GitLab.Repos, 1)
+	assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
+	assert.Equal(t, repos.InferenceAuthOpenAIAPIKey, m.GitLab.Repos[0].Inference.Auth)
+}
+
+func TestRunReposInstall_GitLabURLOverridesExisting(t *testing.T) {
+	existingManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+gitlab:
+  url: https://old.gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, existingManifest)
+	fc := newInstallFakeClient("group/project")
+
+	// The converge phase will fail but the manifest URL should be updated.
+	_ = runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		gitlabURL:   "https://new.gitlab.example.com",
+		testClient:  fc,
+	})
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, "https://new.gitlab.example.com", m.GitLab.URL)
+}
+
+func TestRunReposInstall_GitLabURLDryRun(t *testing.T) {
+	existingManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+gitlab:
+  url: https://old.gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, existingManifest)
+	fc := newInstallFakeClient("group/project")
+
+	// Dry-run with --gitlab-url should not modify the manifest on disk.
+	_ = runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		dryRun:      true,
+		gitlabURL:   "https://new.gitlab.example.com",
+		testClient:  fc,
+	})
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, "https://old.gitlab.example.com", m.GitLab.URL,
+		"dry-run should not modify the manifest URL on disk")
+}
+
+func TestRunReposInstall_GitLabURLBootstrapDryRun(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+	fc := newInstallFakeClient("group/project")
+
+	// Bootstrap dry-run: new manifest + --forge gitlab + --gitlab-url + --dry-run.
+	// The function should return without error and NOT write the manifest to disk.
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:      manifestPath,
+		concurrency:   4,
+		dryRun:        true,
+		repoFilter:    []string{"group/project"},
+		forge:         repos.ForgeGitLab,
+		gitlabURL:     "https://gitlab.example.com",
+		inferenceAuth: repos.InferenceAuthOpenAIAPIKey,
+		openAIAPIKey:  "sk-test-dry-run-key",
+		testClient:    fc,
+	})
+	require.NoError(t, err)
+
+	// In dry-run mode the manifest should not be written to disk.
+	_, statErr := os.Stat(manifestPath)
+	assert.True(t, os.IsNotExist(statErr),
+		"dry-run bootstrap should not create the manifest file on disk")
+}
+
+func TestRunReposInstall_GitLabURLImpliesForge(t *testing.T) {
+	t.Run("empty manifest", func(t *testing.T) {
+		dir := t.TempDir()
+		manifestPath := filepath.Join(dir, "repos.yaml")
+		fc := newInstallFakeClient("group/project")
+
+		// When --gitlab-url is provided without --forge on a fresh
+		// manifest, the forge should be inferred as gitlab.
+		_ = runReposInstall(context.Background(), &reposInstallConfig{
+			manifest:      manifestPath,
+			concurrency:   4,
+			repoFilter:    []string{"group/project"},
+			gitlabURL:     "https://gitlab.example.com",
+			inferenceAuth: repos.InferenceAuthVertexWIF,
+			testClient:    fc,
+		})
+
+		m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+		require.NoError(t, loadErr)
+		require.NotNil(t, m.GitLab, "expected gitlab section — --gitlab-url should imply gitlab forge")
+		assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
+		assert.Len(t, m.GitLab.Repos, 1)
+		assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
+	})
+
+	t.Run("manifest with existing GitHub repos", func(t *testing.T) {
+		// When the manifest already contains GitHub repos and --gitlab-url
+		// is passed without --forge, the new repo must land in the GitLab
+		// section, not GitHub.
+		existingManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+github:
+  repos:
+    - name: acme/web
+`
+		manifestPath := writeTestManifest(t, existingManifest)
+		fc := newInstallFakeClient("group/project")
+
+		_ = runReposInstall(context.Background(), &reposInstallConfig{
+			manifest:    manifestPath,
+			concurrency: 4,
+			repoFilter:  []string{"group/project"},
+			gitlabURL:   "https://gitlab.example.com",
+			testClient:  fc,
+		})
+
+		m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+		require.NoError(t, loadErr)
+		require.NotNil(t, m.GitLab, "expected gitlab section — --gitlab-url should imply gitlab forge even with existing GitHub repos")
+		assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
+		assert.Len(t, m.GitLab.Repos, 1, "new repo should be in GitLab section")
+		assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
+		// The existing GitHub repo should still be there.
+		require.NotNil(t, m.GitHub)
+		assert.Len(t, m.GitHub.Repos, 1)
+		assert.Equal(t, "acme/web", m.GitHub.Repos[0].Name)
+	})
+}
+
+func TestRunReposInstall_GitLabURLValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		url       string
+		forge     string
+		wantError string
+	}{
+		{
+			name:      "non-HTTPS scheme",
+			url:       "http://gitlab.example.com",
+			forge:     repos.ForgeGitLab,
+			wantError: "--gitlab-url must be a valid HTTPS URL",
+		},
+		{
+			name:      "invalid URL",
+			url:       "not-a-url",
+			forge:     repos.ForgeGitLab,
+			wantError: "--gitlab-url must be a valid HTTPS URL",
+		},
+		{
+			name:      "URL with path",
+			url:       "https://gitlab.example.com/some/path",
+			forge:     repos.ForgeGitLab,
+			wantError: "--gitlab-url must not contain a path component",
+		},
+		{
+			name:      "conflicts with --forge=github",
+			url:       "https://gitlab.example.com",
+			forge:     repos.ForgeGitHub,
+			wantError: "--gitlab-url cannot be combined with --forge=github",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runReposInstall(context.Background(), &reposInstallConfig{
+				manifest:    filepath.Join(t.TempDir(), "repos.yaml"),
+				concurrency: 4,
+				repoFilter:  []string{"group/project"},
+				forge:       tt.forge,
+				gitlabURL:   tt.url,
+				testClient:  newInstallFakeClient("group/project"),
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantError)
+		})
+	}
+}
+
+const mixedForgeManifestYAML = `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/api
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: group/project
+`
+
+// filterForgeFactory returns a distinct client or error per forge name so
+// tests can prove unselected forges are never requested.
+type filterForgeFactory struct {
+	mu      sync.Mutex
+	clients map[string]forge.Client
+	errs    map[string]error
+	seen    []string
+}
+
+func (f *filterForgeFactory) ConfigFor(forgeName string) (repos.ForgeConfig, error) {
+	if forgeName == "" {
+		forgeName = repos.ForgeGitHub
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seen = append(f.seen, forgeName)
+	if err := f.errs[forgeName]; err != nil {
+		return repos.ForgeConfig{}, err
+	}
+	client := f.clients[forgeName]
+	if client == nil {
+		return repos.ForgeConfig{}, fmt.Errorf("no test client for forge %q", forgeName)
+	}
+	cfg := repos.ForgeConfigFor(forgeName)
+	cfg.Client = client
+	return cfg, nil
+}
+
+func (f *filterForgeFactory) requested(forgeName string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, name := range f.seen {
+		if name == forgeName {
+			return true
+		}
+	}
+	return false
+}
+
+func TestForgeListIncludesGitHub(t *testing.T) {
+	assert.False(t, forgeListIncludesGitHub(nil))
+	assert.False(t, forgeListIncludesGitHub([]string{repos.ForgeGitLab}))
+	assert.True(t, forgeListIncludesGitHub([]string{repos.ForgeGitHub}))
+	assert.True(t, forgeListIncludesGitHub([]string{""}))
+	assert.True(t, forgeListIncludesGitHub([]string{repos.ForgeGitLab, repos.ForgeGitHub}))
+}
+
+func TestCheckAllForgeScopes_SkipsUnselectedGitHub(t *testing.T) {
+	printer := ui.New(&discardWriter{})
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitLab: newInstallFakeClient("group/project"),
+		},
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("github client should not be requested"),
+		},
+	}
+
+	err := checkAllForgeScopes(context.Background(), factory, printer, []string{repos.ForgeGitLab})
+	require.NoError(t, err)
+	assert.False(t, factory.requested(repos.ForgeGitHub))
+}
+
+func TestCheckAllForgeScopes_RequestsGitHubWhenSelected(t *testing.T) {
+	printer := ui.New(&discardWriter{})
+	factory := &filterForgeFactory{
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("no GitHub token found"),
+		},
+	}
+
+	err := checkAllForgeScopes(context.Background(), factory, printer, []string{repos.ForgeGitHub, repos.ForgeGitLab})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
+	assert.Contains(t, err.Error(), "no GitHub token found")
+}
+
+func TestCheckAllForgeScopes_EmptyForges(t *testing.T) {
+	printer := ui.New(&discardWriter{})
+	factory := &filterForgeFactory{
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("github client should not be requested"),
+		},
+	}
+
+	err := checkAllForgeScopes(context.Background(), factory, printer, nil)
+	require.NoError(t, err)
+	assert.False(t, factory.requested(repos.ForgeGitHub))
+}
+
+func TestCheckAllForgeScopes_GitHubClientSucceeds(t *testing.T) {
+	printer := ui.New(&discardWriter{})
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitHub: &forge.FakeClient{InstallationToken: true},
+		},
+	}
+
+	err := checkAllForgeScopes(context.Background(), factory, printer, []string{repos.ForgeGitHub})
+	require.NoError(t, err)
+}
+
+func TestCheckAllForgeScopes_MissingScopes(t *testing.T) {
+	printer := ui.New(&discardWriter{})
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitHub: &forge.FakeClient{TokenScopes: []string{"repo"}},
+		},
+	}
+
+	err := checkAllForgeScopes(context.Background(), factory, printer, []string{repos.ForgeGitHub})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workflow")
+}
+
+func TestRunReposInstall_GitLabPinRejectsMissingUpstreamClient(t *testing.T) {
+	manifestPath := writeTestManifest(t, mixedForgeManifestYAML)
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitLab: newInstallFakeClient("group/project"),
+		},
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("no GitHub token found"),
+		},
+	}
+
+	var err error
+	output := captureStdout(t, func() {
+		err = runReposInstall(context.Background(), &reposInstallConfig{
+			manifest:               manifestPath,
+			concurrency:            1,
+			repoFilter:             []string{"group/project"},
+			roles:                  []string{"triage"},
+			dryRun:                 true,
+			inferenceProject:       "inf-proj",
+			inferenceProjectNumber: "123456789",
+			inferenceRegion:        "us-central1",
+			testFactory:            factory,
+		})
+	})
+	require.Error(t, err, "a pin cannot silently use embedded GitLab templates without an upstream client")
+	assert.Contains(t, output, "matching pinned GitLab templates require an upstream GitHub client")
+	assert.True(t, factory.requested(repos.ForgeGitLab))
+}
+
+// globForgeManifestYAML pairs a GitHub glob entry with a concrete GitLab
+// entry. A GitLab-only filtered install must not expand the GitHub glob
+// (which lists org repos via the GitHub API), since that would require
+// GH_TOKEN even though no GitHub repo is targeted.
+const globForgeManifestYAML = `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/*
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: group/project
+`
+
+func TestRunReposInstall_GitLabFilterSkipsGitHubGlobExpansion(t *testing.T) {
+	manifestPath := writeTestManifest(t, globForgeManifestYAML)
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitLab: newInstallFakeClient("group/project"),
+		},
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("github client should not be requested"),
+		},
+	}
+
+	var err error
+	output := captureStdout(t, func() {
+		err = runReposInstall(context.Background(), &reposInstallConfig{
+			manifest:               manifestPath,
+			concurrency:            1,
+			repoFilter:             []string{"group/project"},
+			roles:                  []string{"triage"},
+			dryRun:                 true,
+			inferenceProject:       "inf-proj",
+			inferenceProjectNumber: "123456789",
+			inferenceRegion:        "us-central1",
+			testFactory:            factory,
+		})
+	})
+	require.Error(t, err, "a pin cannot silently use embedded GitLab templates without an upstream client")
+	assert.Contains(t, output, "matching pinned GitLab templates require an upstream GitHub client")
+	assert.True(t, factory.requested(repos.ForgeGitLab))
+}
+
+func TestRunReposInstall_GitHubFilterDoesNotRequestGitLab(t *testing.T) {
+	manifestPath := writeTestManifest(t, mixedForgeManifestYAML)
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitHub: newInstalledFakeClientCLI("acme/api"),
+		},
+		errs: map[string]error{
+			repos.ForgeGitLab: errors.New("gitlab client should not be requested"),
+		},
+	}
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            1,
+		repoFilter:             []string{"acme/api"},
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testFactory:            factory,
+	})
+	require.NoError(t, err)
+	assert.False(t, factory.requested(repos.ForgeGitLab))
+	assert.True(t, factory.requested(repos.ForgeGitHub))
+}
+
+func TestRunReposInstall_UnfilteredMixedManifestRequestsGitHub(t *testing.T) {
+	manifestPath := writeTestManifest(t, mixedForgeManifestYAML)
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitLab: newInstallFakeClient("group/project"),
+		},
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("no GitHub token found"),
+		},
+	}
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 1,
+		dryRun:      true,
+		testFactory: factory,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitHub token found")
+}
+
+func TestRunReposUninstall_GitLabFilterDoesNotRequestGitHub(t *testing.T) {
+	manifestPath := writeTestManifest(t, mixedForgeManifestYAML)
+	gl := forge.NewFakeClient()
+	gl.InstallationToken = true
+	gl.AuthenticatedUser = "fullsend-app[bot]"
+	gl.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	gl.Repos = []forge.Repository{{
+		FullName: "group/project", Name: "project", DefaultBranch: "main",
+	}}
+	for _, p := range repos.ScaffoldPathsForForge(repos.ForgeGitLab) {
+		gl.FileContents["group/project/"+p] = []byte("content")
+	}
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitLab: gl,
+		},
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("github client should not be requested"),
+		},
+	}
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		dryRun:      true,
+		concurrency: 1,
+		testFactory: factory,
+	}, []string{"group/project"})
+	require.NoError(t, err)
+	assert.False(t, factory.requested(repos.ForgeGitHub))
+}
+
+// A repo whose install or convergence fails must still have its managed
+// webhook and trigger token revoked when the pipeline-variable override
+// restriction is weakened: the success-only webhook step never runs for it.
+func TestRunReposInstall_GitLabFailedRepoRevokesWebhookWhenRestrictionWeakened(t *testing.T) {
+	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v0.43.0
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+
+	fc := forge.NewFakeClient()
+	seedGitLabInputPrerequisites(fc, "group/project", "v0.43.0")
+	fc.InstallationToken = true
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	fc.Repos = []forge.Repository{{
+		FullName:      "group/project",
+		Name:          "project",
+		DefaultBranch: "main",
+	}}
+	fc.ProtectedBranches["group/project/main"] = true
+	fc.PipelineVarOverrideRoles["group/project"] = forge.PipelineVarOverrideDeveloper
+	fc.PipelineTriggerTokens["group/project"] = []forge.PipelineTriggerToken{
+		{ID: 7, Description: repos.GitLabWebhookTriggerDescription, Token: "managed-trigger"},
+	}
+	fc.ProjectHooks["group/project"] = []forge.ProjectHook{
+		{ID: 11, Name: repos.GitLabWebhookName},
+	}
+	fc.Errors = map[string]error{"CommitFilesToBranch": errors.New("convergence boom")}
+
+	var installErr error
+	out := captureStdout(t, func() {
+		installErr = runReposInstall(context.Background(), gitlabInstallOpts(manifestPath, fc))
+	})
+
+	require.Error(t, installErr, "the installation failure is preserved")
+	assert.Contains(t, out, "FAILED: group/project")
+	assert.Empty(t, fc.PipelineTriggerTokens["group/project"], "managed trigger token is revoked")
+	assert.Empty(t, fc.ProjectHooks["group/project"], "managed webhook is deleted")
+	assert.Empty(t, fc.CreatedTriggerTokens, "nothing is provisioned for a failed repo")
+}
+
+// Role-stage failures (role provisioning, rotation, protected-ref access, the
+// override-role check) skip the webhook step, so they are reconciled with the
+// other failed repos: the managed webhook and trigger token are revoked when
+// a safety invariant drifts (an extra protected branch here) and the original
+// failure is preserved with any cleanup error joined onto it.
+func TestReconcileFailedGitLabWebhookSafety_CoversRoleStageFailures(t *testing.T) {
+	m := &repos.Manifest{
+		Version: 1,
+		GitLab: &repos.PlatformConfig{
+			URL:   "https://gitlab.example.com",
+			Repos: []repos.RepoEntry{{Name: "group/project"}},
+		},
+	}
+	newFake := func() *forge.FakeClient {
+		fc := forge.NewFakeClient()
+		fc.Repos = []forge.Repository{{FullName: "group/project", Name: "project", DefaultBranch: "main"}}
+		fc.ProtectedBranches["group/project/main"] = true
+		fc.ProtectedBranches["group/project/release/1.0"] = true
+		fc.PipelineVarOverrideRoles["group/project"] = forge.PipelineVarOverrideNoOneAllowed
+		fc.PipelineTriggerTokens["group/project"] = []forge.PipelineTriggerToken{
+			{ID: 7, Description: repos.GitLabWebhookTriggerDescription, OwnerID: 1001},
+		}
+		fc.ProjectHooks["group/project"] = []forge.ProjectHook{{ID: 11, Name: repos.GitLabWebhookName}}
+		return fc
+	}
+	roleErr := errors.New("role provisioning boom")
+
+	t.Run("revokes and preserves the role failure", func(t *testing.T) {
+		fc := newFake()
+		roleFailed := []repos.ConvergeResult{{Owner: "group", Repo: "project", Error: roleErr}}
+
+		captureStdout(t, func() {
+			reconcileFailedGitLabWebhookSafety(context.Background(), newSingleClientFactory(fc), m,
+				ui.New(os.Stdout), false, map[string]bool{}, nil, roleFailed)
+		})
+
+		assert.Empty(t, fc.PipelineTriggerTokens["group/project"], "managed trigger token is revoked")
+		assert.Empty(t, fc.ProjectHooks["group/project"], "managed webhook is deleted")
+		assert.ErrorIs(t, roleFailed[0].Error, roleErr)
+	})
+
+	t.Run("cleanup errors are joined onto the role failure", func(t *testing.T) {
+		fc := newFake()
+		fc.Errors = map[string]error{"RevokePipelineTriggerToken": errors.New("revoke boom")}
+		roleFailed := []repos.ConvergeResult{{Owner: "group", Repo: "project", Error: roleErr}}
+
+		captureStdout(t, func() {
+			reconcileFailedGitLabWebhookSafety(context.Background(), newSingleClientFactory(fc), m,
+				ui.New(os.Stdout), false, map[string]bool{}, roleFailed)
+		})
+
+		require.Error(t, roleFailed[0].Error)
+		assert.ErrorIs(t, roleFailed[0].Error, roleErr)
+		assert.ErrorContains(t, roleFailed[0].Error, "revoke boom")
+	})
+
+	t.Run("a repo reconciled once is not reconciled again", func(t *testing.T) {
+		fc := newFake()
+		done := map[string]bool{"group/project": true}
+		roleFailed := []repos.ConvergeResult{{Owner: "group", Repo: "project", Error: roleErr}}
+
+		captureStdout(t, func() {
+			reconcileFailedGitLabWebhookSafety(context.Background(), newSingleClientFactory(fc), m,
+				ui.New(os.Stdout), false, done, roleFailed)
+		})
+
+		assert.Len(t, fc.PipelineTriggerTokens["group/project"], 1)
+	})
 }

@@ -22,6 +22,8 @@ Before the code agent commits or opens a PR, it invokes the review sub-agents lo
 
 This is a normal pattern for humans using coding agents today. It produces higher quality output faster and wastes fewer resources.
 
+This two-phase pattern has external validation. Oxide's [RFD 576](https://rfd.shared.oxide.computer/rfd/0576) requires engineers to self-review LLM-generated code before submitting for peer review — recognizing that self-review catches problems cheaply before they consume reviewer attention. Fullsend's pre-PR phase is the automated analog of this practice. RFD 576 also observes that LLMs "can identify specific issues effectively but miss larger problems" in review, which aligns precisely with the rationale for [decomposing review into specialized sub-agents](#why-review-must-be-decomposed-into-sub-agents) — no single agent catches everything, so the system compensates with multiple specialized perspectives.
+
 ### Phase 2: PR-level review (the actual gate)
 
 The PR is open. Review sub-agents evaluate it with no special trust granted because the code came from a code agent that already ran pre-PR review. The PR-level review is a fully independent evaluation — not a rubber stamp of Phase 1.
@@ -183,7 +185,7 @@ Critically, the escalation must always include an explicit "none of the above" o
 
 The human sees coherent framings and can pick the one that matches their understanding, offer their own, or reject the change — rather than starting from scratch. This is faster and more structured than an open-ended "please review."
 
-This pattern is most valuable at escalation boundaries — where the system has already decided it can't resolve something autonomously. It doesn't replace confidence scores or explicit uncertainty signals; it complements them by making the *nature* of the uncertainty actionable. It applies wherever agents interact with humans: intent authorization tier classification (see [intent-representation.md](intent-representation.md#the-intent-authorization-tier-escalation-problem)), the exploration phase for proposed features (see [intent-representation.md](intent-representation.md#the-try-it-phase)), and deadlock resolution between review sub-agents (see [agent-architecture.md](agent-architecture.md#how-deadlocks-are-resolved)).
+This pattern is most valuable at escalation boundaries — where the system has already decided it can't resolve something autonomously. It doesn't replace confidence scores or explicit uncertainty signals; it complements them by making the *nature* of the uncertainty actionable. A well-formed escalation still fails if it reaches someone without the context or authority to act on it; routing is covered in [escalation without context](agentic-sdlc-adoption-org-communication.md#escalation-without-context). It applies wherever agents interact with humans: intent authorization tier classification (see [intent-representation.md](intent-representation.md#the-intent-authorization-tier-escalation-problem)), the exploration phase for proposed features (see [intent-representation.md](intent-representation.md#the-try-it-phase)), and deadlock resolution between review sub-agents (see [agent-architecture.md](agent-architecture.md#how-deadlocks-are-resolved)).
 
 [Forge-sdlc/forge](../landscape.md#forge-sdlcforge) has a concrete version of this idea in its `implement_review` flow: review comments are treated as their own task type, classified as actionable or contested before the agent acts, and contested comments trigger a structured response rather than silent compliance. That is a useful precedent for fullsend's review loops, especially when an agent should push back on incorrect feedback while still respecting the reviewer's blocking authority. When review loops fail to converge (review ping-pong), see [flapping-convergence.md](flapping-convergence.md).
 
@@ -195,12 +197,14 @@ This adds a new composition model: **review + rewrite**. The review sub-agents i
 
 Whether this belongs in the review system or is a separate workflow operating on review output is an open question. For a fuller treatment of the salvage concept, including trade-offs and cost implications, see [contribution-volume.md](contribution-volume.md#the-salvage-question).
 
+A contributor (or agent) that always accepts review feedback in order to trigger salvage is indistinguishable from the [speed-to-merge gaming](security-threat-model.md#threat-7-coordinated-inauthentic-contributions) pattern coordinated inauthentic actors use — apparent cooperation, optimized for getting merged quickly rather than for the change being sound.
+
 ## Open questions
 
 - Can we quantify review quality? How do we know if an agent's review is as good as a human's? [Review autonomy evidence](review-autonomy-evidence.md) tracks empirical observations from PRs where both agents and humans reviewed the same change.
 - How do we handle the case where an agent approves a PR that a human would have caught? (Learning from mistakes.)
 - Should review agents have access to the full repo context, or just the diff? Full context is more accurate but more expensive and more vulnerable to injection from existing code.
-- How do we prevent review agents from being "rubber stamps" — always approving because they're optimizing for throughput?
+- How do we prevent review agents from being "rubber stamps" — always approving because they're optimizing for throughput? (PR-level risk scoring provides one input — high-risk PRs can require stricter review thresholds; see [ADR 0089](../ADRs/0089-pr-risk-assessment-scoring.md). Risk gating of review outcomes is deferred until scoring confidence is established.)
 - What's the right interface for review feedback? GitHub PR comments? A structured report? Both?
 - How do we handle multi-repo changes where the review needs to consider changes across repos together?
 - Is there a "coherence" or "fitness" review dimension that can't be decomposed into the existing sub-agents? The [taste problem](contribution-volume.md#the-taste-problem) suggests that some review concerns require holistic project judgment rather than specialized analysis.

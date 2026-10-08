@@ -4,13 +4,24 @@ sidebar_position: 2
 
 # Getting Inference For Fullsend
 
-The goal of this document is that you acquire a WIF provider URL to pass to the next step
-of the process ([Configuring GitHub](configuring-github.md)).
+This document explains how to acquire a GCP WIF provider URL for Vertex inference.
+Skip it if your agents use only OpenAI; both [GitHub setup](configuring-github.md)
+and [GitLab install](configuring-gitlab.md) accept no GCP inference inputs.
 
-Currently Fullsend only supports GCP Vertex AI inference using Workload Identity Federation (WIF).
-WIF grants short-lived tokens to requesters that meet certain requirements. In the case of Fullsend
-these requirements are to provide an OIDC Token signed by GitHub with their origin (org, repository
-and other details). If the WIF finds the request valid, it provides a short lived token.
+Fullsend supports GCP Vertex AI inference using Workload Identity Federation (WIF) on both
+GitHub and GitLab. WIF grants short-lived tokens to requesters that meet certain requirements.
+For GitHub, this requires an OIDC token signed by GitHub with its origin (org, repository and
+other details). For GitLab, the OIDC token is signed by GitLab's built-in `id_tokens` mechanism.
+If the WIF finds the request valid, it provides a short-lived token.
+
+GPT models on the pi or codex runtime use OpenAI Workload Identity Federation instead, so an
+OpenAI agent run needs no GCP credentials and stores no key on the recommended path; see
+[OpenAI Workload Identity](../infrastructure/openai-workload-identity.md). Initial repository
+setup can omit the GCP project and WIF provider pair. If you cannot enrol an OpenAI WIF
+provider, that guide's Route C uses a `FULLSEND_OPENAI_API_KEY` repository secret.
+
+For **GitLab repos**, inference credentials are configured via `repos install --vertex-project`
+rather than the steps below. See [Configuring GitLab](configuring-gitlab.md#inference-setup).
 
 You may need to create a new GCP project or reuse one. The output of this process is a WIF provider
 URL resembling:
@@ -80,3 +91,7 @@ The important piece of information is the `WIF Provider` which you need to pass 
 ## Next steps
 
 Head over to [Configuring GitHub](configuring-github.md) to use your WIF provider URL.
+
+For GitLab repositories, skip this provision output and follow
+[Configuring GitLab](configuring-gitlab.md) instead — GitLab inference credentials
+are written by `repos install --vertex-project`, not by this command.

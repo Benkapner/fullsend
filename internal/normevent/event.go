@@ -18,15 +18,18 @@ type Event struct {
 	Source     Source     `json:"source"`
 }
 
-// EntityKind identifies work items vs change proposals.
+// EntityKind identifies work items, change proposals, or conversations.
+// Threads are not a separate entity kind; reply association uses
+// transition.comment.parent_id (ADR 0086).
 type EntityKind string
 
 const (
 	EntityWorkItem       EntityKind = "work_item"
 	EntityChangeProposal EntityKind = "change_proposal"
+	EntityConversation   EntityKind = "conversation"
 )
 
-// Entity is the target work item or change proposal.
+// Entity is the target work item, change proposal, or conversation.
 type Entity struct {
 	Kind                 EntityKind            `json:"kind"`
 	ID                   int                   `json:"id"`
@@ -74,8 +77,14 @@ type LabelChange struct {
 	Action string `json:"action"` // added | removed
 }
 
-// Comment describes a comment_added transition.
+// Comment describes a comment_* transition.
+// ID and ParentID are backend-native message ids (ADR 0086): GitHub comment
+// id/node_id and normalized parent_id; Slack ts and thread_ts.
+// For conversation comment events both are required; ParentID is always the
+// thread-root id (equal to ID when this message is the root).
 type Comment struct {
+	ID          string `json:"id,omitempty"`
+	ParentID    string `json:"parent_id,omitempty"`
 	Command     string `json:"command,omitempty"`
 	Body        string `json:"body"`
 	Instruction string `json:"instruction,omitempty"`
@@ -118,8 +127,22 @@ type Actor struct {
 
 // State is a snapshot of entity metadata at event time.
 type State struct {
-	Labels         []string        `json:"labels"`
-	ChangeProposal *ChangeProposal `json:"change_proposal,omitempty"`
+	Labels         []string           `json:"labels"`
+	ChangeProposal *ChangeProposal    `json:"change_proposal,omitempty"`
+	Conversation   *ConversationState `json:"conversation,omitempty"`
+}
+
+// ConversationState is conversation-level metadata (ADR 0086).
+type ConversationState struct {
+	Category ConversationCategory `json:"category"`
+}
+
+// ConversationCategory is the exclusive category of a conversation.
+type ConversationCategory struct {
+	ID     string `json:"id,omitempty"`
+	Name   string `json:"name"`
+	Slug   string `json:"slug,omitempty"`
+	Format string `json:"format,omitempty"`
 }
 
 // ChangeProposal carries branch/repo context for PR/MR workloads.
@@ -224,6 +247,26 @@ func (e *Event) Validate() error {
 		return fmt.Errorf("normalized event: linked_change_proposal forbidden when entity.kind is change_proposal")
 	}
 
+	if e.Entity.Kind == EntityConversation {
+		if e.State.Conversation == nil {
+			return fmt.Errorf("normalized event: state.conversation required when entity.kind is conversation")
+		}
+		if strings.TrimSpace(e.State.Conversation.Category.Name) == "" {
+			return fmt.Errorf("normalized event: state.conversation.category.name is required")
+		}
+		switch e.Transition.Kind {
+		case TransitionCommentAdded, TransitionCommentEdited, TransitionCommentDeleted:
+			if e.Transition.Comment == nil || strings.TrimSpace(e.Transition.Comment.ID) == "" {
+				return fmt.Errorf("normalized event: transition.comment.id required for comment transitions on conversations")
+			}
+			if strings.TrimSpace(e.Transition.Comment.ParentID) == "" {
+				return fmt.Errorf("normalized event: transition.comment.parent_id required for comment transitions on conversations")
+			}
+		}
+	} else if e.State.Conversation != nil {
+		return fmt.Errorf("normalized event: state.conversation forbidden when entity.kind is %s", e.Entity.Kind)
+	}
+
 	if e.State.ChangeProposal != nil && e.Entity.Kind == EntityWorkItem && e.Entity.LinkedChangeProposal == nil {
 		return fmt.Errorf("normalized event: entity.linked_change_proposal required when state.change_proposal is set on work_item")
 	}
@@ -258,10 +301,9 @@ func IsWriteAuthorized(role ActorRole) bool {
 	}
 }
 
-// MapGitHubPermission maps GitHub collaborator API role_name to ActorRole.
-// Custom repository roles are not resolved here; they map to RoleNone, matching
-// the bash routing gate and keeping dispatch semantics restrictive until custom
-// roles are handled platform-wide.
+// MapGitHubPermission maps a GitHub base role to ActorRole. The GitHub client
+// resolves custom repository roles to a base role before this mapping;
+// unrecognized values map to RoleNone.
 func MapGitHubPermission(roleName string) ActorRole {
 	switch strings.ToLower(strings.TrimSpace(roleName)) {
 	case "admin":

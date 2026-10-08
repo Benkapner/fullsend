@@ -53,10 +53,64 @@ fullsend is pinned to — the source of truth is
 in the fullsend repo at your release tag (also printed on Fullsend workflow runs).
 
 ```bash
-export OPENSHELL_VERSION=0.0.83  # check the pin file for the current version
+export OPENSHELL_VERSION=0.1.2  # check the pin file for the current version
 curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSION}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
 openshell --version
 ```
+
+The gateway reads a schema v2 config. With podman, pin the compute driver and the supervisor image
+that matches the CLI:
+
+```toml
+# ~/.config/openshell/gateway.toml (Homebrew on macOS: /opt/homebrew/var/openshell/gateway.toml
+# is used when this file does not exist)
+[openshell]
+version = 2
+
+[openshell.gateway]
+compute_driver = "podman"
+
+[openshell.drivers.podman]
+supervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.1.2"  # match your openshell --version
+health_check_interval_secs = 10
+```
+
+Restart the gateway after editing it (`brew services restart openshell` on macOS). `openshell sandbox
+list` answering `No sandboxes found.` means the CLI reaches it.
+
+**Upgrading from OpenShell 0.0.x.** 0.1 cannot read 0.0.x gateway state or a schema v1 config, and
+its installer refuses to replace 0.0.x unless `OPENSHELL_ACK_BREAKING_UPGRADE=1` is set. Clean up
+while the 0.0.x CLI is still installed, and write the new config before installing: the installer
+starts the gateway straight away.
+
+```bash
+# 1. With the 0.0.x CLI: delete your sandboxes (they do not carry over)
+openshell sandbox delete --all
+
+# 2. Stop the 0.0.x gateway
+systemctl --user stop openshell-gateway
+
+# 3. Move the old config and gateway state aside
+cfg="${XDG_CONFIG_HOME:-$HOME/.config}/openshell"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/openshell"
+ts="$(date +%s)"
+if [ -f "$cfg/gateway.toml" ]; then mv "$cfg/gateway.toml" "$cfg/gateway.toml.pre-0.1"; fi
+for d in gateway tls; do
+  if [ -d "$state/$d" ]; then mv "$state/$d" "$state/$d.pre-0.1.$ts"; fi
+done
+
+# 4. Write the schema v2 config shown above to "$cfg/gateway.toml", then install
+curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSION}/install.sh \
+  | OPENSHELL_ACK_BREAKING_UPGRADE=1 OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
+openshell sandbox list   # "No sandboxes found." means the new gateway is up
+```
+
+The paths are the XDG defaults, which a Homebrew install (what the installer uses on Apple Silicon
+macOS) also uses for the gateway state. With Homebrew, stop the gateway in step 2 with
+`brew services stop openshell` instead, and start it with `brew services start openshell` after
+installing. The rest is unchanged: `$cfg/gateway.toml` takes precedence over Homebrew's
+`$(brew --prefix)/var/openshell/gateway.toml`, and the installer manages Homebrew's TLS under that
+directory. fullsend recreates its providers and profiles on the next run.
 
 ## Get Google Cloud Platform credentials
 
@@ -97,6 +151,45 @@ instead of the native binary, keep the key file and env file in your
 working directory — the container mounts it as `/work` and resolves
 `GOOGLE_APPLICATION_CREDENTIALS` relative to it.
 
+## Get an OpenAI key (GPT on pi or codex)
+
+<a id="get-an-openai-key-gpt-on-pi-only"></a>
+
+GPT models run on the [pi](../../runtimes/pi.md) and [codex](../../runtimes/codex.md) runtimes,
+with the credential kept out of the sandbox by an OpenShell provider. In CI the runner obtains it from OpenAI with the job's GitHub
+identity ([OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)); on your
+machine there is no such identity, so use an API key from the same OpenAI project. Put it in an
+environment file, like the GCP settings above — never in the harness YAML and never under
+`env.sandbox` (the runner refuses to export it into the sandbox):
+
+```bash
+# fullsend-openai.env
+OPENAI_API_KEY=sk-...
+```
+
+Then pick a GPT model when you run:
+
+```bash
+fullsend run triage --runtime pi --model openai/gpt-5.6-luna \
+  --forge github --env-file fullsend-openai.env --env-file fullsend-triage.env ...
+```
+
+Codex takes the same key and the same harness requirements — swap `--runtime pi` for
+`--runtime codex`.
+
+A committed `inference.openai` block in the repository's `config.yaml` is ignored here while
+`OPENAI_API_KEY` is set (there is no GitHub OIDC endpoint to exchange with), so the same checkout
+works in CI and on your machine.
+
+The agent's harness must declare the provider (`providers: [openai]`; both the definition and the
+`fullsend-openai` profile are built into fullsend, nothing needs to be on disk; the fleet's agents
+declare it) and a sandbox policy
+(`policy: policies/base.yaml` — the fleet's agents already have it; a custom harness needs it because
+the sandbox image's default policy leaves an uninspected route to `api.openai.com`, which the gateway
+refuses to carry the credential over). The sandbox only ever sees a placeholder; the provider holding
+your key belongs to this run, expires an hour after the run at the latest and is deleted when the run
+ends.
+
 ## Get a GitHub token
 
 Create a [fine grained token](https://github.com/settings/personal-access-tokens) at GitHub. The
@@ -125,6 +218,13 @@ git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/fullsend-agen
 Depending on the agent you want to run you need a different set of environment variables.
 Check the variables they need in their environment files, referenced in their harness files.
 
+**Note**: the fleet-clone examples below need `--forge github` (or `--forge gitlab`),
+because the clone's `config.yaml` sets no `forge:`. Without a forge, the harness's
+GitHub settings (`ISSUE_URL`, the GitHub provider) never apply and the pre-script
+stops with `ISSUE_URL must be set`. `fullsend run` takes the forge from `--forge`, then
+`forge:` in the `config.yaml` at the root of `--fullsend-dir`, then CI environment
+variables (`GITHUB_ACTIONS`, `GITLAB_CI`).
+
 **Tip**: use `--no-post-script` in the `fullsend run` calls to avoid side-effects. You
 can also use `--keep-sandbox` to debug failures (but remember to remove them).
 
@@ -149,8 +249,10 @@ GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
-  --env-file fullsend-triage.env
+  --env-file fullsend-triage.env \
+  --forge github
 ```
 
 ### Review agent
@@ -162,17 +264,23 @@ Add to an env file:
 # In CI, REVIEW_TOKEN is auto-minted by the binary when --mint-url is provided.
 # For local runs, supply a GitHub PAT manually:
 REVIEW_TOKEN={github-pat}
+GH_TOKEN={github-pat}
 GITHUB_PR_URL="https://github.com/{org}/{repo}/pull/{pr_number}"
 PR_NUMBER="{pr_number}"
 REPO_FULL_NAME="{org}/{repo}"
+# Set by CI on a re-review; leave empty for a first review.
+PRIOR_REVIEW_SHA=
+PRIOR_REVIEW_PROVENANCE=
 ```
 
 ```bash
 fullsend run review \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
-  --env-file fullsend-review.env
+  --env-file fullsend-review.env \
+  --forge github
 ```
 
 ### Code agent
@@ -192,25 +300,58 @@ ISSUE_NUMBER={issue_num}
 CODE_ALLOWED_TARGET_BRANCHES=main
 REPO_DIR=/tmp/repo-dir
 GITHUB_WORKSPACE=/tmp/
+# Author and committer email for the agent's commits.
+GIT_BOT_EMAIL={bot-or-your-email}
 ```
 
 ```bash
 fullsend run code \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
-  --env-file fullsend-code.env
+  --env-file fullsend-code.env \
+  --forge github
 ```
+
+### Choosing the runtime
+
+<a id="run-a-minimal-agent-on-the-pi-runtime"></a><a id="troubleshooting-pi-runtime"></a><a id="platform-notes-pi"></a>
+
+Every example above runs on **Claude Code**, the default runtime. Fullsend
+also has two opt-in runtimes — **pi** and **codex** — and any example on
+this page runs on either by adding one flag to the same command:
+
+```bash
+fullsend run triage \
+  --fullsend-dir /tmp/fullsend-agents/ \
+  --target-repo /tmp/target-repo/ \
+  --forge github \
+  --env-file fullsend-gcp.env \
+  --env-file fullsend-triage.env \
+  --forge github \
+  --runtime pi
+```
+
+Codex is selected the same way (`--runtime codex`); it runs OpenAI models
+only, so pair it with `--model openai/gpt-5.6-luna` and the OpenAI key
+above.
+
+Everything else about runtimes lives in one place: [Agent
+runtimes](../../runtimes.md) for selecting and overriding the runtime,
+model and effort — per run, or per agent in `config.yaml` — and
+[Pi › Running it locally](../../runtimes/pi.md#running-it-locally) or
+[Codex › Running it locally](../../runtimes/codex.md#running-it-locally)
+for what a local run on either needs, its models and its troubleshooting.
 
 ### Remote resource flags
 
-When your harness references URL-based skills with transitive dependencies
-(see [ADR-0038](../../ADRs/0038-universal-harness-access.md)), you can tune
-resolution limits:
+When your harness references URL-based skills with transitive dependencies,
+you can tune resolution limits:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--forge` | (auto-detect) | Forge platform to use (`github`, `gitlab`). Auto-detected from CI env vars (`GITHUB_ACTIONS`, `GITLAB_CI`) when omitted |
+| `--forge` | (auto-detect) | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--max-depth` | 10 | Maximum dependency depth for transitive resolution (0 disables) |
 | `--max-resources` | 50 | Maximum total remote resources fetched per harness |
 | `--offline` | false | Reject network fetches; only use cached remote resources |
@@ -253,6 +394,7 @@ target issue/PR. These flags mirror what the CI workflows pass automatically:
 | `--status-repo` | Repository (`owner/repo`) to post status comments on |
 | `--status-number` | Issue or PR number for status comments |
 | `--mint-url` | Mint service URL for on-demand status comment tokens (default: `$FULLSEND_MINT_URL`) |
+| `--forge` | Forge platform (`github` or `gitlab`); when omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 
 Example:
 
@@ -260,15 +402,19 @@ Example:
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --status-repo myorg/myrepo \
   --status-number 42 \
   --run-url "https://github.com/myorg/myrepo/actions/runs/12345"
 ```
 
+For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent resolves its credential through the [GitLab role-credential contract](../../contributing/gitlab-role-credentials.md) and exports `GITLAB_TOKEN` (and `PUSH_TOKEN`, for roles with repository-write access) itself; it does not require the mint service. Set the matching per-role secret (Poller/Analyst/Coder, or a registered custom role). A missing role secret fails closed and does not fall back to `FULLSEND_FORGE_TOKEN` or a directly-set `GITLAB_TOKEN`. See the [operations guide](../getting-started/operations.md#gitlab-ci) for required environment variables. Self-hosted instances that use a private CA have a separate [certificate-provisioning contract](../getting-started/operations.md#private-ca-self-hosted-gitlab).
+
 Status comment behavior is configured via `status_notifications` in
-`config.yaml`. See the [operations guide](../getting-started/operations.md#status-notifications).
+`config.yaml`. See [Status Notifications](customizing-agents.md#status-notifications).
 
 ## Run from a container
 
@@ -298,8 +444,10 @@ podman run --rm -it --network=host \
   run triage \
     --fullsend-dir /tmp/fullsend-agents/ \
     --target-repo /tmp/target-repo/ \
+    --forge github \
     --env-file fullsend-gcp.env \
-    --env-file fullsend-triage.env
+    --env-file fullsend-triage.env \
+    --forge github
 ```
 
 The image's working directory is `/work`, so relative paths in `--env-file`
@@ -331,32 +479,17 @@ Fullsend automatically aggregates different layers of information before running
 In case you want to test how customizations impact default agents, or you custom agents, follow the
 next steps.
 
-Start by cloning `fullsend-ai/agents` to a dedicated directory:
+If your repository uses config-driven agents registered in
+`.fullsend/config.yaml`, pass the target repository's local `.fullsend/`
+directory as `--fullsend-dir`:
 
 ```bash
-git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/agents/
+git clone --depth 1 https://github.com/{org}/{repo}.git /tmp/target-repo/
 ```
 
-Then apply your organization customizations, if any:
-
-> **Note:** The `customized/` overlay mechanism is deprecated per
-> [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
-> Orgs that have migrated to config-driven agents should skip these
-> `cp -r customized/` steps and use the registered harness paths directly.
-
-```bash
-git clone --depth 1 https://github.com/{org}/.fullsend.git /tmp/org-fullsend/
-cp -r /tmp/org-fullsend/customized/. /tmp/agents/
-```
-
-And finally apply your own target repository customizations, if any:
-
-```bash
-git clone https://github.com/{org}/{target-repo} /tmp/target-repo
-cp -r /tmp/target-repo/.fullsend/customized/. /tmp/agents/
-```
-
-When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/agents/`.
+When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/target-repo/.fullsend/`.
+See [Bring Your Own Agent](bring-your-own-agent.md) for the config-driven
+approach.
 
 ## Platform notes
 
@@ -392,6 +525,10 @@ to the server (gateway). It is likely that you need to bind the gateway to `0.0.
 **`Syntax error: "(" unexpected` inside sandbox**
 - The macOS Mach-O binary was injected instead of a Linux ELF. Update to fullsend 0.4.0+ which auto-resolves the correct binary, or provide one explicitly with `--fullsend-binary`
 
+**`API Error: Error code policy_denied` on the first model call (agent exits after ~2 s, 0 tokens)**
+- The gateway denied the agent's binary, not the model. Run `grep DENIED <run-dir>/logs/openshell-sandbox.log`; a line ending in `binary '…/claude.exe' not allowed in policy '_provider_vertex_ai'` means the Vertex profile lacks `**/claude.exe` (Claude Code 2.1.2xx runs as `claude.exe`, even on Linux)
+- For the built-in `fullsend-vertex-ai` profile, upgrade fullsend: the profile ships in the binary. To try a changed profile locally, copy it under your own id (for example `profiles/myorg-vertex-ai.yaml` with `id: myorg-vertex-ai`), list it in `openshell.profiles`, and point a provider of your own at it (`type: myorg-vertex-ai`). Files under `profiles/` are **not** imported unless the harness lists them
+
 **Agent fails with missing environment variable**
 - Check your env file contains all variables listed in the agent's harness YAML (`harness/{agent}.yaml` in the `.fullsend` config directory)
 
@@ -401,3 +538,159 @@ to the server (gateway). It is likely that you need to bind the gateway to `0.0.
 
 **`unable to replace "host-gateway"` on macOS**
 - Set `host_containers_internal_ip = "192.168.127.254"` under `[containers]` in `~/.config/containers/containers.conf` and restart the Podman machine
+
+## Debugging network policies locally
+
+When customizing network policies, running agents locally lets you inspect
+sandbox artifacts directly instead of pushing changes and waiting for CI. This
+section describes what a local `fullsend run` produces and how to use the
+output to iterate on network policy allowlists.
+
+### Run directory structure
+
+Every `fullsend run` creates a run directory. By default this is under
+`/tmp/fullsend/`; override it with `--output-dir`. Relative `--output-dir`
+values are resolved to an absolute path so post-script env vars such as
+`FULLSEND_VALIDATED_ITERATION_DIR` do not depend on the process cwd:
+
+```bash
+fullsend run triage \
+  --fullsend-dir /tmp/fullsend-agents/ \
+  --target-repo /tmp/target-repo/ \
+  --forge github \
+  --env-file fullsend-gcp.env \
+  --env-file fullsend-triage.env \
+  --forge github \
+  --output-dir /tmp/my-debug-output
+```
+
+The run directory is printed at the end of every run under **Run directory**.
+Its layout:
+
+```
+<run-dir>/
+  logs/
+    openshell-sandbox.log    # OCSF events: network, process, policy decisions
+    openshell-gateway.log    # Gateway-side events
+  iteration-1/
+    output/                  # Agent output files (agent-result.json, etc.)
+    transcripts/             # Agent conversation transcripts (.jsonl)
+  metrics.json               # Behavioral metrics (tokens, cost, duration)
+  security/
+    findings.jsonl           # Security scan findings
+```
+
+### Key artifacts for network policy debugging
+
+**`openshell-sandbox.log`** is the primary artifact. It contains
+[OCSF](https://schema.ocsf.io/) events for every network connection, HTTP
+request, process launch, and policy evaluation that occurred inside the
+sandbox. Each event records whether the connection was allowed or denied
+and which policy rule applied.
+
+Look for `DENIED` entries to find connections your policy rejected:
+
+```bash
+grep -i DENIED <run-dir>/logs/openshell-sandbox.log
+```
+
+Each denied entry includes the destination host, port, and the binary that
+attempted the connection — enough to decide whether to add the endpoint to
+your policy.
+
+**`openshell-gateway.log`** contains gateway-side events. Useful when a
+connection fails before reaching the sandbox (e.g., provider misconfiguration
+or gateway routing issues).
+
+### Debugging workflow
+
+1. **Start with a restrictive policy.** Create or modify a policy YAML that
+   blocks the endpoint you want to test. See
+   [Building custom agents — Sandbox policy](building-custom-agents.md#step-3-define-the-sandbox-policy)
+   for the policy format.
+
+2. **Run the agent locally with `--keep-sandbox`:**
+
+   ```bash
+   fullsend run <agent> \
+     --fullsend-dir /tmp/fullsend-agents/ \
+     --target-repo /tmp/target-repo/ \
+     --forge github \
+     --env-file fullsend-gcp.env \
+     --env-file fullsend-<agent>.env \
+     --forge github \
+     --keep-sandbox \
+     --no-post-script
+   ```
+
+   `--keep-sandbox` preserves the sandbox container after the run finishes,
+   letting you exec into it for further inspection. `--no-post-script`
+   prevents side effects (issue comments, PR creation) while debugging.
+
+3. **Inspect the sandbox log for denied connections:**
+
+   ```bash
+   grep -i DENIED <run-dir>/logs/openshell-sandbox.log
+   ```
+
+   If the [analyze-transcript](https://github.com/fullsend-ai/fullsend/tree/main/skills/analyze-transcript)
+   skill is available, you can use the network analysis commands for a
+   structured view:
+
+   ```bash
+   python3 skills/analyze-transcript/analyze-transcript.py network \
+     <run-dir>/logs/openshell-sandbox.log
+
+   python3 skills/analyze-transcript/analyze-transcript.py netsearch "DENIED" \
+     <run-dir>/logs/openshell-sandbox.log
+   ```
+
+4. **Update your policy** to allow the blocked endpoints, then re-run. Each
+   cycle takes only the time to start a sandbox and run the agent — no push
+   or CI wait.
+
+5. **When done, clean up the kept sandbox:**
+
+   ```bash
+   openshell sandbox delete <sandbox-name>
+   ```
+
+   The sandbox name is printed during the run and also shown in the
+   `--keep-sandbox` warning message at the end.
+
+### Entering a kept sandbox
+
+When you pass `--keep-sandbox`, the CLI prints a command to exec into the
+sandbox:
+
+```bash
+openshell sandbox exec --tty --name <sandbox-name> -- bash
+```
+
+Inside the sandbox you can inspect the workspace, re-run commands the agent
+tried, or verify that network access works as expected for a specific host:
+
+```bash
+curl -sf https://api.example.com/healthz
+```
+
+### Tips
+
+- **Network summary:** `openshell-sandbox.log` can be large. Use
+  `grep -c DENIED` to get a count before reading individual entries.
+- **Iterate fast:** after updating your policy YAML, you do not need to
+  reinstall or reconfigure OpenShell — just re-run `fullsend run` with the
+  updated policy file.
+- **Compare runs:** diff two sandbox logs to confirm that a policy change
+  resolved the denials:
+  ```bash
+  diff <(grep DENIED run-1/logs/openshell-sandbox.log) \
+       <(grep DENIED run-2/logs/openshell-sandbox.log)
+  ```
+
+## See also
+
+- [Agent runtimes](../../runtimes.md) — choosing a runtime and overriding runtime, model and effort per run or per agent
+- [Pi › Running it locally](../../runtimes/pi.md#running-it-locally) — what a local pi run needs, its models and troubleshooting
+- [fullsend run](../../cli/run.md) — the full flag reference
+- [Configuring agent behavior](customizing-agents.md) — harness configuration and `base:` composition

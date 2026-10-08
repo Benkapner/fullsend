@@ -25,18 +25,20 @@ on:
         type: string
       project_number:
         description: GitHub Projects V2 project number for RICE scoring
-        required: true
+        required: false
         type: string
+        default: ""
+      install_mode:
+        description: "Legacy compatibility input; ignored because installations are always per-repo"
+        required: false
+        type: string
+        default: "per-repo"
       fullsend_version:
         required: false
         type: string
-        default: "latest"
-      install_mode:
-        required: false
-        type: string
-        default: "per-org"
+        default: ""
       fullsend_ai_ref:
-        description: "Deprecated: upstream defaults now use job.workflow_sha. Kept for per-org caller compatibility."
+        description: "Deprecated: upstream defaults now use job.workflow_sha. Kept for caller compatibility."
         type: string
         required: false
         default: v0
@@ -50,7 +52,11 @@ on:
         required: true
       FULLSEND_GCP_PROJECT_ID:
         required: true
+      FULLSEND_OPENAI_API_KEY:
+        required: false
       OTEL_EXPORTER_OTLP_TRACES_HEADERS:
+        required: false
+      OTEL_EXPORTER_OTLP_HEADERS:
         required: false
 
 concurrency:
@@ -68,7 +74,7 @@ jobs:
       issues: write
 
     steps:
-      - name: Checkout config repository
+      - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # checkout@v7 blocks fork PR checkouts on pull_request_target by default.
@@ -92,59 +98,34 @@ jobs:
             internal/scaffold/fullsend-repo/
             action.yml
 
-      - name: Prepare workspace (upstream defaults + org/repo overrides)
-        env:
-          INSTALL_MODE: ${{ inputs.install_mode }}
+      - name: Prepare workspace (upstream defaults + repo overrides)
         run: |
           set -euo pipefail
-          if [[ "${INSTALL_MODE}" != "per-org" && "${INSTALL_MODE}" != "per-repo" ]]; then
-            printf 'Received install_mode: %q\n' "${INSTALL_MODE}"
-            echo "::error::Invalid install_mode: must be 'per-org' or 'per-repo'"
-            exit 1
-          fi
           SRC=".defaults/internal/scaffold/fullsend-repo"
-          LAYERED_DIRS="agents skills schemas harness plugins policies scripts env"
-          DEST=""
-          if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
-            DEST=".fullsend/"
-          fi
+          LAYERED_DIRS="agents skills schemas harness plugins scripts env"
+          DEST=".fullsend/"
           for dir in ${LAYERED_DIRS}; do
             if [[ -d "${SRC}/${dir}" ]]; then
               mkdir -p "${DEST}${dir}"
               cp -r "${SRC}/${dir}/." "${DEST}${dir}/"
             fi
           done
-          CUSTOM_BASE="customized"
-          if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
-            CUSTOM_BASE=".fullsend/customized"
-          fi
-          for dir in ${LAYERED_DIRS}; do
-            if [[ -d "${CUSTOM_BASE}/${dir}" ]]; then
-              find "${CUSTOM_BASE}/${dir}" -type f ! -name '.gitkeep' -print0 \
-                | while IFS= read -r -d '' f; do
-                    rel="${f#"${CUSTOM_BASE}"/}"
-                    mkdir -p "$(dirname "${DEST}${rel}")"
-                    cp "${f}" "${DEST}${rel}"
-                  done
-            fi
-          done
           mkdir -p .github/scripts
           cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
 
 
-      - name: Validate enrollment and extract repo metadata
+      - name: Validate enrollment and extract repository metadata
         id: repo-parts
         uses: ./.defaults/.github/actions/validate-enrollment
         with:
           source_repo: ${{ inputs.source_repo }}
-          install_mode: ${{ inputs.install_mode }}
 
       - name: Setup GCP and prepare credentials
         uses: ./.defaults/.github/actions/setup-gcp
         with:
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+          fullsend-dir: .fullsend
 
       - name: Setup agent environment
         env:
@@ -153,6 +134,9 @@ jobs:
           PRIORITIZE_PROJECT_NUMBER: ${{ inputs.project_number }}
           PRIORITIZE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           PRIORITIZE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, PRIORITIZE_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Create empty target-repo directory
@@ -163,11 +147,24 @@ jobs:
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
           REPO_FULL_NAME: ${{ inputs.source_repo }}
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+          OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+          OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
+          OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
+          OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: ${{ vars.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }}
+          # OpenAI Workload Identity Federation for the pi runtime (ADR 0092):
+          # non-secret identifiers the runner exchanges the job's OIDC token
+          # against. Unset = the openai provider is not usable in this repo.
+          FULLSEND_OPENAI_AUDIENCE: ${{ vars.FULLSEND_OPENAI_AUDIENCE }}
+          FULLSEND_OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.FULLSEND_OPENAI_IDENTITY_PROVIDER_ID }}
+          FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
+          # Opt-in static key, used only when the three variables above are unset (ADR 0092).
+          OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
         with:
           agent: prioritize
-          version: ${{ inputs.fullsend_version }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          fullsend-dir: .fullsend
           mint-url: ${{ inputs.mint_url }}

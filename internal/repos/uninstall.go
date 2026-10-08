@@ -1,6 +1,7 @@
 package repos
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,19 +10,187 @@ import (
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
-var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables)
+var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{forge.VarGCPRegion, forge.VarReviewClientID})
 
-var uninstallSecrets = requiredSecrets
+// uninstallSecrets deletes every Fullsend-managed inference secret of
+// every inference.auth method (managedInferenceSecrets), independent of
+// the repository's current selection, so leftovers from an earlier
+// selection are removed and a missing or invalid inference.auth does not
+// block cleanup. Deleting an absent secret is a no-op, so repeating
+// uninstall is safe. It must not become requiredSecrets — probe/converge
+// require only the selected method's secrets.
+var uninstallSecrets = managedInferenceSecrets()
+
+// gitlabUninstallVars intentionally does NOT include the legacy
+// FULLSEND_FORGE_TOKEN shared secret. Uninstall no longer retires it
+// automatically: a repository installed before the role-only rollout
+// may require manual cleanup of that secret and its matching
+// fullsend-bot project access token.
+var gitlabUninstallVars = []string{
+	forge.PerRepoGuardVar,
+	forge.VarLegacyBotTokenSecret,
+	forge.VarDispatchedKeysFast,
+	forge.VarDispatchedKeysFull,
+	forge.VarFailedKeysFast,
+	forge.VarFailedKeysFull,
+	forge.VarLegacyForge,
+	forge.SecretDispatch,
+	forge.VarGCPRegion,
+	forge.VarLabelState,
+	forge.VarLastPollAtFast,
+	forge.VarLastPollAtFull,
+	forge.VarLegacySA,
+	forge.VarLegacyWIFProvider,
+	forge.VarGitLabRoleRegistry,
+	forge.VarGitLabRoleRotation,
+	forge.SecretGitLabPollerToken,
+	forge.SecretGitLabAnalystToken,
+	forge.SecretGitLabCoderToken,
+}
+
+// gitlabUninstallSecrets intentionally does NOT include GitLab's
+// unprefixed OPENAI_API_KEY CI/CD variable. Unlike FULLSEND_OPENAI_API_KEY
+// — a dedicated, FULLSEND_-namespaced variable — the unprefixed one
+// shares no such namespace and may have been set by whoever manages the
+// project for other jobs. The Fullsend CI job no longer reads it (it maps
+// FULLSEND_OPENAI_API_KEY instead), and deleting an unprefixed,
+// potentially-shared variable on uninstall risks destroying a credential
+// unrelated jobs in the same project depend on. Like uninstallSecrets it
+// is derived from managedInferenceSecrets so both forges and orphan
+// detection share one classification.
+//
+// It also includes the webhook fast-path credentials (FULLSEND_TRIGGER_TOKEN
+// and FULLSEND_WEBHOOK_SECRET). Secret deletion addresses only the
+// wildcard-scoped variable, which is the one Fullsend creates.
+var gitlabUninstallSecrets = append(managedInferenceSecrets(), forge.SecretTriggerToken, forge.SecretWebhookSecret)
+
+// gitlabScaffoldPaths is the full set of files uninstall removes. It is
+// a superset of the current install set: fullsend-dispatch.yml is no
+// longer installed (#7707) but must still be deleted from repos enrolled
+// before the version marker moved to fullsend-pipeline.yml.
+var gitlabScaffoldPaths = []string{
+	fullsendPipelineInclude,
+	".gitlab/ci/fullsend-agent.yml",
+	fullsendDispatchInclude,
+	".gitlab/ci/fullsend-poll.yml",
+	fullsendDispatcherTemplatePath,
+	".gitlab/ci/scripts/trust-ci-server-ca.sh",
+	".gitlab/ci/scripts/pin-ci-job-identity.sh",
+	".gitlab/ci/scripts/select-gitlab-role-token.sh",
+	".gitlab/ci/scripts/install-fullsend-cli.sh",
+	".gitlab/ci/scripts/run-poll-job.sh",
+	gitlabDispatcherJobScriptPath,
+	".gitlab/ci/scripts/run-agent-job.sh",
+	".gitlab/ci/scripts/checkout-mr-source.sh",
+	".fullsend/config.yaml",
+}
+
+// gitlabRetiredScaffoldPaths are files previous GitLab installs wrote
+// that the current template no longer produces. Converge deletes them
+// (unlike generic orphans, which are reported but left in place).
+var gitlabRetiredScaffoldPaths = []string{
+	fullsendDispatchInclude,
+}
+
+const gitlabTrustScriptPath = ".gitlab/ci/scripts/trust-ci-server-ca.sh"
+
+const gitlabPinCIJobIdentityScriptPath = ".gitlab/ci/scripts/pin-ci-job-identity.sh"
+
+const gitlabRoleTokenScriptPath = ".gitlab/ci/scripts/select-gitlab-role-token.sh"
+
+const gitlabInstallCLIScriptPath = ".gitlab/ci/scripts/install-fullsend-cli.sh"
+
+const gitlabPollJobScriptPath = ".gitlab/ci/scripts/run-poll-job.sh"
+
+// gitlabDispatcherJobScriptPath is the webhook dispatcher job body (#7771)
+// sourced by fullsendDispatcherTemplatePath.
+const gitlabDispatcherJobScriptPath = ".gitlab/ci/scripts/run-dispatcher-job.sh"
+
+const gitlabAgentJobScriptPath = ".gitlab/ci/scripts/run-agent-job.sh"
+
+const gitlabCheckoutMRSourceScriptPath = ".gitlab/ci/scripts/checkout-mr-source.sh"
+
+// gitlabAuxiliaryScriptPaths returns the CI helper scripts sourced by the
+// generated poll and agent jobs. Probe and converge treat each as its own
+// scaffold component so a missing script is detected and repaired. The
+// webhook dispatcher files are version-dependent and listed separately by
+// gitlabDispatcherPaths.
+func gitlabAuxiliaryScriptPaths() []string {
+	return []string{
+		gitlabTrustScriptPath,
+		gitlabPinCIJobIdentityScriptPath,
+		gitlabRoleTokenScriptPath,
+		gitlabInstallCLIScriptPath,
+		gitlabPollJobScriptPath,
+		gitlabAgentJobScriptPath,
+		gitlabCheckoutMRSourceScriptPath,
+	}
+}
+
+// gitlabDispatcherPaths returns the webhook dispatcher scaffold files (#7771):
+// the job template the pipeline wrapper includes and the script it sources.
+// Scaffold versions that predate the dispatcher ship neither, so they are
+// required only when the pipeline wrapper references the template (see
+// gitlabWrapperReferencesDispatcher).
+func gitlabDispatcherPaths() []string {
+	return []string{
+		fullsendDispatcherTemplatePath,
+		gitlabDispatcherJobScriptPath,
+	}
+}
+
+// gitlabWrapperReferencesDispatcher reports whether pipeline wrapper content
+// includes the webhook dispatcher template, i.e. the scaffold version that
+// produced it requires the dispatcher files.
+func gitlabWrapperReferencesDispatcher(wrapper []byte) bool {
+	return bytes.Contains(wrapper, []byte(fullsendDispatcherTemplatePath))
+}
+
+// UninstallVarsForForge returns the CI/CD variable names to delete for
+// the given forge during uninstall.
+func UninstallVarsForForge(forgeName string) []string {
+	if forgeName == ForgeGitLab {
+		return gitlabUninstallVars
+	}
+	return uninstallVariables
+}
+
+// UninstallSecretsForForge returns the CI/CD secret names to delete for
+// the given forge during uninstall.
+func UninstallSecretsForForge(forgeName string) []string {
+	if forgeName == ForgeGitLab {
+		return gitlabUninstallSecrets
+	}
+	return uninstallSecrets
+}
+
+// ScaffoldPathsForForge returns the scaffold file paths to delete for
+// the given forge during uninstall.
+func ScaffoldPathsForForge(forgeName string) []string {
+	if forgeName == ForgeGitLab {
+		return gitlabScaffoldPaths
+	}
+	return nil
+}
 
 // UninstallConfig holds all inputs for a multi-repo uninstall operation.
 type UninstallConfig struct {
-	Manifest       *Manifest
-	Repos          []string
-	DryRun         bool
-	SkipWIFCleanup bool
+	Manifest *Manifest
+	Repos    []string
+	DryRun   bool
+	// Direct controls scaffold file removal: true pushes deletions
+	// directly to the default branch; false creates a PR. Variable
+	// and secret deletions are API-only and always happen immediately.
+	Direct         bool
 	MaxConcurrency int
+	// GitLabTokens, when set, revokes GitLab role and shared-bot project
+	// access tokens during uninstall. Nil skips PAT revocation; CI/CD
+	// variables and secrets are still deleted. A revocation failure
+	// fails the uninstall so the manifest entry remains for retry.
+	GitLabTokens ProjectAccessTokenClient
 }
 
 // UninstallResult holds the outcome of uninstalling fullsend from a single repo.
@@ -33,22 +202,22 @@ type UninstallResult struct {
 	WorkflowDeleted bool
 	VarsDeleted     int
 	SecretsDeleted  int
-	WIFDeregistered bool
+	TokensRevoked   int
 }
 
 // Uninstall tears down fullsend from the specified repos.
 //
-// It runs in two phases:
-//  1. Parallel per-repo cleanup (bounded by MaxConcurrency): delete workflow
-//     file, then delete variables and secrets. If workflow deletion fails,
-//     variables and secrets are left intact.
-//  2. Sequential WIF cleanup (only for Phase 1 successes): deregister from
-//     mint's PER_REPO_WIF_REPOS and delete WIF provider. Sequential because
-//     mint env var updates are read-modify-write operations.
+// It runs in a single phase: parallel per-repo cleanup (bounded by
+// MaxConcurrency) removes scaffold files via commitScaffold (PR by
+// default, or a direct push when cfg.Direct is true), then deletes
+// variables and secrets via the forge API.
+//
+// GCP WIF cleanup is handled separately via `inference deprovision`.
 //
 // Does NOT modify repos.yaml — use RemoveFromManifest for that.
 func Uninstall(ctx context.Context, cfg UninstallConfig,
-	client forge.Client, provisionerFactory ProvisionerFactory,
+	clients ForgeClientFactory,
+	commitScaffold ScaffoldCommitFunc,
 	progress ProgressFunc) ([]UninstallResult, error) {
 
 	if len(cfg.Repos) == 0 {
@@ -83,8 +252,11 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 		}
 		return results, nil
 	}
+	if commitScaffold == nil {
+		return nil, fmt.Errorf("scaffold commit function is required")
+	}
 
-	// Phase 1: Parallel per-repo cleanup.
+	// Parallel per-repo cleanup.
 	results := make([]UninstallResult, len(parsed))
 	sem := make(chan struct{}, cfg.MaxConcurrency)
 	var wg sync.WaitGroup
@@ -107,53 +279,19 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 
 			forgeName := ""
 			if cfg.Manifest != nil {
-				if rc, ok := resolveConfigWithGlobs(cfg.Manifest, owner, repo); ok {
+				if rc, ok := cfg.Manifest.ResolveConfigWithGlobs(owner, repo); ok {
 					forgeName = rc.Forge
 				}
 			}
-			fc := ForgeConfigFor(forgeName)
-			results[idx] = uninstallRepoResources(ctx, owner, repo, client, fc, progress)
+			fc, fcErr := clients.ConfigFor(forgeName)
+			if fcErr != nil {
+				results[idx] = UninstallResult{Owner: owner, Repo: repo, Error: fcErr}
+				return
+			}
+			results[idx] = uninstallRepoResources(ctx, ResolvedConfig{Owner: owner, Repo: repo, Forge: forgeName, ForgeConfig: fc}, cfg.Direct, commitScaffold, progress, cfg.GitLabTokens)
 		}(i, p.owner, p.repo)
 	}
 	wg.Wait()
-
-	// Phase 2: Sequential WIF cleanup (only for Phase 1 successes).
-	if !cfg.SkipWIFCleanup && provisionerFactory != nil && cfg.Manifest != nil {
-		for i := range results {
-			if results[i].Error != nil || !results[i].WorkflowDeleted {
-				continue
-			}
-			if ctx.Err() != nil {
-				for j := i; j < len(results); j++ {
-					if results[j].Error != nil || !results[j].WorkflowDeleted {
-						continue
-					}
-					if _, ok := resolveConfigWithGlobs(cfg.Manifest, results[j].Owner, results[j].Repo); ok {
-						results[j].Error = fmt.Errorf("WIF cleanup skipped: %w", ctx.Err())
-					}
-				}
-				break
-			}
-
-			fullName := results[i].Owner + "/" + results[i].Repo
-			resolved, ok := resolveConfigWithGlobs(cfg.Manifest, results[i].Owner, results[i].Repo)
-			if !ok {
-				progress(fullName, "wif", "Not in manifest, skipping WIF cleanup")
-				results[i].Success = true
-				continue
-			}
-
-			prov := provisionerFactory(resolved)
-			progress(fullName, "wif", "Deregistering from mint and deleting WIF provider")
-			if err := prov.DeletePerRepoWIF(ctx, fullName); err != nil {
-				results[i].Error = fmt.Errorf("WIF cleanup: %w", err)
-				progress(fullName, "wif", fmt.Sprintf("WIF cleanup failed: %v", err))
-				continue
-			}
-			results[i].WIFDeregistered = true
-			progress(fullName, "wif", "WIF cleanup complete")
-		}
-	}
 
 	for i := range results {
 		if results[i].Error == nil {
@@ -164,22 +302,102 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 	return results, nil
 }
 
-func uninstallRepoResources(ctx context.Context, owner, repo string,
-	client forge.Client, fc ForgeConfig, progress ProgressFunc) UninstallResult {
-
+func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool, commitScaffold ScaffoldCommitFunc, progress ProgressFunc, tokens ProjectAccessTokenClient) UninstallResult {
+	owner, repo := cfg.Owner, cfg.Repo
+	client := cfg.ForgeConfig.Client
 	fullName := owner + "/" + repo
 	result := UninstallResult{Owner: owner, Repo: repo}
 
-	progress(fullName, "workflow", "Deleting workflow file")
-	_, err := client.DeleteFiles(ctx, owner, repo,
-		"chore: remove fullsend workflow", fc.WorkflowPaths)
-	if err != nil {
-		result.Error = fmt.Errorf("deleting workflow: %w", err)
+	// Collect scaffold file removals. For GitHub this is the workflow
+	// paths from ForgeConfig plus any per-repo thin callers; for GitLab
+	// the full scaffold set is needed. Delivery goes through
+	// commitScaffold so the caller can open a PR (default) or push
+	// directly (--direct), matching repos install.
+	deletePaths := ScaffoldPathsForForge(cfg.Forge)
+	if len(deletePaths) == 0 {
+		deletePaths = cfg.ForgeConfig.WorkflowPaths
+	}
+	if cfg.Forge == ForgeGitHub || cfg.Forge == "" {
+		deletePaths = slices.Concat(deletePaths, scaffold.PerRepoThinCallerPaths())
+	}
+	files := make([]forge.TreeFile, 0, len(deletePaths)+1)
+	for _, p := range deletePaths {
+		files = append(files, forge.TreeFile{Path: p, Delete: true})
+	}
+
+	// For GitLab, clean fullsend entries from the root .gitlab-ci.yml
+	// in the same commit as the scaffold deletes. The root file is
+	// user-owned: we remove only fullsend's include directive and
+	// workflow:rules entries rather than deleting the entire file.
+	// If the file is empty after cleanup, delete it.
+	if cfg.Forge == ForgeGitLab {
+		cleaned, cleanErr := unmergeGitLabRootCI(ctx, client, owner, repo)
+		if cleanErr != nil {
+			// Best-effort: log and continue. The fullsend-owned files
+			// are still removed below, so the root include will be
+			// broken but harmless until the user cleans it up.
+			progress(fullName, "workflow", fmt.Sprintf("Warning: could not clean .gitlab-ci.yml: %v", cleanErr))
+		} else if cleaned == nil {
+			files = append(files, forge.TreeFile{Path: ".gitlab-ci.yml", Delete: true})
+		} else {
+			files = append(files, forge.TreeFile{
+				Path:    ".gitlab-ci.yml",
+				Content: cleaned,
+				Mode:    "100644",
+			})
+		}
+	}
+
+	// Tear down the webhook fast-path before the scaffold goes: it stops
+	// the webhook from requesting pipelines against a repository whose
+	// dispatcher is being removed, and revokes the separately minted
+	// trigger token. A failure stops uninstall here so the manifest entry
+	// is retained and a retry repeats the (idempotent) teardown.
+	var triggersRevoked int
+	if cfg.Forge == ForgeGitLab {
+		progress(fullName, "cleanup", "Removing GitLab webhook fast-path")
+		teardown, teardownErr := TeardownGitLabWebhookFastPath(ctx, client, owner, repo)
+		triggersRevoked = teardown.TriggersRevoked
+		if teardownErr != nil {
+			result.TokensRevoked = triggersRevoked
+			result.Error = fmt.Errorf("removing webhook fast-path: %w", teardownErr)
+			progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", teardownErr))
+			return result
+		}
+	}
+
+	progress(fullName, "workflow", "Removing scaffold files")
+	if err := commitScaffold(ctx, owner, repo, files, direct, true); err != nil {
+		result.Error = fmt.Errorf("removing scaffold files: %w", err)
 		progress(fullName, "workflow", fmt.Sprintf("Failed: %v", err))
 		return result
 	}
 	result.WorkflowDeleted = true
-	progress(fullName, "workflow", "Workflow deleted")
+	progress(fullName, "workflow", "Scaffold files removed")
+
+	forgeVars := UninstallVarsForForge(cfg.Forge)
+	var identityErr error
+	if cfg.Forge == ForgeGitLab {
+		progress(fullName, "cleanup", "Removing GitLab role identity state")
+		cleanup, cleanupErr := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{
+			Owner: owner, Repo: repo, Client: client, Tokens: tokens,
+		})
+		result.TokensRevoked = cleanup.TokensRevoked + triggersRevoked
+		result.VarsDeleted += cleanup.VarsDeleted
+		for _, d := range cleanup.Diagnostics {
+			progress(fullName, "cleanup", d)
+		}
+		identityErr = cleanupErr
+		rest := make([]string, 0, len(forgeVars))
+		for _, name := range forgeVars {
+			if isGitLabIdentityUninstallVar(name) {
+				continue
+			}
+			rest = append(rest, name)
+		}
+		forgeVars = rest
+	}
+	forgeSecrets := UninstallSecretsForForge(cfg.Forge)
 
 	var varsDeleted, secretsDeleted int
 	var varErr, secretErr error
@@ -188,7 +406,7 @@ func uninstallRepoResources(ctx context.Context, owner, repo string,
 	innerWg.Add(2)
 	go func() {
 		defer innerWg.Done()
-		for _, name := range uninstallVariables {
+		for _, name := range forgeVars {
 			if delErr := client.DeleteRepoVariable(ctx, owner, repo, name); delErr != nil {
 				varErr = fmt.Errorf("deleting variable %s: %w", name, delErr)
 				return
@@ -198,9 +416,16 @@ func uninstallRepoResources(ctx context.Context, owner, repo string,
 	}()
 	go func() {
 		defer innerWg.Done()
-		for _, name := range uninstallSecrets {
+		for _, name := range forgeSecrets {
 			if delErr := client.DeleteRepoSecret(ctx, owner, repo, name); delErr != nil {
-				secretErr = fmt.Errorf("deleting secret %s: %w", name, delErr)
+				if name == forge.SecretTriggerToken || name == forge.SecretWebhookSecret {
+					// The webhook credentials are not known to any redactor
+					// at this point, so an error echoing one must not reach
+					// uninstall output; withhold the server text.
+					secretErr = safeAPIError("deleting secret "+name, delErr)
+				} else {
+					secretErr = fmt.Errorf("deleting secret %s: %w", name, delErr)
+				}
 				return
 			}
 			secretsDeleted++
@@ -208,49 +433,48 @@ func uninstallRepoResources(ctx context.Context, owner, repo string,
 	}()
 	innerWg.Wait()
 
-	result.VarsDeleted = varsDeleted
+	result.VarsDeleted += varsDeleted
 	result.SecretsDeleted = secretsDeleted
 
-	if varErr != nil && secretErr != nil {
-		result.Error = errors.Join(varErr, secretErr)
-		progress(fullName, "cleanup", fmt.Sprintf("Failed: %v; %v", varErr, secretErr))
-		return result
+	var branchErr error
+	if cfg.Forge == ForgeGitLab {
+		branchErr = deleteGitLabPollStateBranches(ctx, client, owner, repo)
 	}
-	if varErr != nil {
-		result.Error = varErr
-		progress(fullName, "vars", fmt.Sprintf("Failed: %v", varErr))
-		return result
-	}
-	if secretErr != nil {
-		result.Error = secretErr
-		progress(fullName, "secrets", fmt.Sprintf("Failed: %v", secretErr))
+
+	if joined := errors.Join(identityErr, varErr, secretErr, branchErr); joined != nil {
+		result.Error = joined
+		progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", joined))
 		return result
 	}
 
-	progress(fullName, "done", fmt.Sprintf("Removed: %d vars, %d secrets", varsDeleted, secretsDeleted))
+	progress(fullName, "done", fmt.Sprintf("Removed: %d vars, %d secrets", result.VarsDeleted, result.SecretsDeleted))
 	return result
 }
 
-// resolveConfigWithGlobs resolves config for a repo, falling back to
-// glob-pattern matching when the exact entry lookup fails.
-func resolveConfigWithGlobs(m *Manifest, owner, repo string) (ResolvedConfig, bool) {
-	if resolved, ok := m.ResolveConfig(owner, repo); ok {
-		return resolved, true
-	}
-	fullName := owner + "/" + repo
-	for _, e := range m.Repos {
-		if ok, _ := matchesPattern(e.Repo, fullName); ok {
-			return m.ResolveConfigForEntry(owner, repo, e), true
+// deleteGitLabPollStateBranches removes the two poll-state branches created
+// at install. A missing branch (never seeded, or already deleted) is not
+// an error so uninstall stays idempotent on older installs.
+func deleteGitLabPollStateBranches(ctx context.Context, client forge.Client, owner, repo string) error {
+	var errs []error
+	for _, branch := range gitlabPollStateBranches {
+		if err := client.DeleteRef(ctx, owner, repo, "heads/"+branch); err != nil && !errors.Is(err, forge.ErrNotFound) {
+			errs = append(errs, fmt.Errorf("deleting poll-state branch %s: %w", branch, err))
 		}
 	}
-	return ResolvedConfig{}, false
+	return errors.Join(errs...)
 }
 
-// splitOwnerRepo splits "owner/repo" and rejects glob characters. Callers
+// splitOwnerRepo splits "owner/repo" (or "group/subgroup/project" for
+// GitLab nested paths) and rejects glob characters. The first segment
+// becomes owner; everything after the first "/" becomes repo. Callers
 // that accept glob patterns must filter them out before calling this.
+//
+// Validation uses gitlabRepoNamePattern (2+ segments) rather than the
+// stricter repoNamePattern because splitOwnerRepo runs before the forge
+// is resolved; forge-specific validation already occurs at install time.
 func splitOwnerRepo(fullName string) (string, string, error) {
-	if !repoNamePattern.MatchString(fullName) {
-		return "", "", fmt.Errorf("invalid repo format %q: expected owner/repo with alphanumeric, dash, dot, or underscore characters", fullName)
+	if !gitlabRepoNamePattern.MatchString(fullName) {
+		return "", "", fmt.Errorf("invalid repo format %q: expected owner/repo[/subgroup/...] using alphanumeric, dash, dot, or underscore characters", fullName)
 	}
 	parts := strings.SplitN(fullName, "/", 2)
 	return parts[0], parts[1], nil

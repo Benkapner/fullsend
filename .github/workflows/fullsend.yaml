@@ -1,31 +1,22 @@
 # This file is managed by fullsend. Do not edit it directly.
-# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/templates/shim-workflow-call.yaml
+# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/.github/workflows/fullsend.yaml
 ---
-# --- fullsend managed below - do not edit ---
-# lint-workflow-size: max-lines=280
-# fullsend shim workflow (workflow_call mode)
-# Routes events to agent workflows in .fullsend via workflow_call.
-# No secrets are needed in the enrolled repo — agents fetch scoped tokens
-# from the centralized token mint using GitHub OIDC.
+# fullsend shim workflow (per-repo installation mode)
+# Routes events to agent workflows via reusable-dispatch.yml.
+# All agent execution happens in this repository's context.
 #
 # Security: pull_request_target runs the BASE branch version of this workflow,
 # preventing PRs from modifying it to exfiltrate credentials.
 # This shim never checks out PR code, so it is not vulnerable to "pwn request"
 # attacks.
 #
-# fullsend-ai is replaced by reconcile-repos.sh at deploy time.
+# Routing: this shim forwards the raw event context to reusable-dispatch.yml,
+# which determines the stage and runs the agent inline (ADR 62).
+# Adding a new stage requires only a job in reusable-dispatch.yml — zero changes to this repo.
 #
-# Routing: this shim forwards the raw event context to dispatch.yml, which
-# determines the stage from event_type + event_action + payload fields.
-# Adding a new stage requires only a case branch in dispatch.yml — zero
-# changes to enrolled repos.
+# Concurrency: per-role cancel-in-progress groups live in reusable-dispatch.yml
+# stage jobs with -agent- suffix. Roles operate independently (#2452).
 name: fullsend
-
-permissions:
-  actions: write
-  id-token: write
-  contents: read
-  pull-requests: read
 
 on:
   issues:
@@ -37,19 +28,36 @@ on:
   pull_request_review:
     types: [submitted]
 
+permissions: {}
+
 jobs:
   dispatch:
-    concurrency:
-      group: fullsend-dispatch-${{ github.event.issue.number || github.event.pull_request.number }}
-      cancel-in-progress: false
     if: >-
       (github.event_name != 'pull_request_target' && github.event_name != 'pull_request_review'
        || github.event.pull_request.head.ref != 'fullsend/scaffold-install')
       && (github.event_name != 'issue_comment'
-       || github.event.comment.user.type != 'Bot')
-    uses: fullsend-ai/.fullsend/.github/workflows/dispatch.yml@main
+       || (startsWith(github.event.comment.body, '/fs-')
+           && github.event.comment.user.type != 'Bot'))
+    permissions:
+      actions: write
+      id-token: write
+      contents: write
+      issues: write
+      packages: read
+      pull-requests: write
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@main
     with:
       event_action: ${{ github.event.action }}
+      mint_url: ${{ vars.FULLSEND_MINT_URL }}
+      gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
+      project_number: ${{ vars.FULLSEND_PROJECT_NUMBER }}
+      runner_image: ubuntu-24.04
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+      FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
 
   stop-fix:
     # Job-level if: is intentionally coarse — it only screens for the
@@ -80,7 +88,8 @@ jobs:
           # ADR 0054: authorize via the collaborator permission API
           # (admin|maintain|write), not author_association — the latter grants
           # contributor status to anyone with a single merged PR (issue #5421).
-          # Mirrors has_repo_permission() in dispatch.yml; keep the two in sync.
+          # Mirrors has_repo_permission() in reusable-dispatch.yml, including the
+          # custom-role --jq resolution; keep the two in sync.
           # The PR author may always stop the fix agent on their own PR.
           authorized=false
           if [[ -n "$COMMENT_USER_LOGIN" && "$COMMENT_USER_LOGIN" == "$ISSUE_USER_LOGIN" ]]; then
@@ -88,7 +97,19 @@ jobs:
           else
             if api_err=$(mktemp); then
               if role=$(gh api "repos/$REPO/collaborators/$COMMENT_USER_LOGIN/permission" \
-                --jq '.role_name' 2>"$api_err"); then
+                --jq '.user.permissions as $p
+                  | if (.role_name | type) != "string" or .role_name == "" then "none"
+                    elif (.role_name | IN("admin", "maintain", "write", "triage", "read")) then .role_name
+                    elif $p == null then
+                      if (.permission | IN("admin", "write", "read")) then .permission else "none" end
+                    elif ($p | type) == "object" then
+                      if $p.admin == true then "admin"
+                      elif $p.maintain == true then "maintain"
+                      elif $p.push == true then "write"
+                      elif $p.triage == true then "triage"
+                      elif $p.pull == true then "read"
+                      else "none" end
+                    else "none" end' 2>"$api_err"); then
                 case "$role" in
                   admin|maintain|write) authorized=true ;;
                 esac

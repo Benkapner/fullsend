@@ -1,3 +1,7 @@
+---
+description: How the fullsend triage agent inspects new GitHub issues, assesses information sufficiency, asks clarifying questions, and produces a structured triage decision.
+---
+
 # Triage Agent
 
 ![Triage agent icon](icons/triage.png)
@@ -30,11 +34,11 @@ The `/fs-triage` command does not accept arguments — it re-evaluates the issue
 using current content, comments, and any prior triage analysis.
 
 Triage also runs automatically when a new issue is opened or edited by a
-user with triage-level permission or higher, when the `ready-for-triage`
+user with triage-level permission or higher, and when the `ready-for-triage`
 label is applied to an issue (used by the [retro agent](retro.md) to
-route proposal issues into the triage pipeline), and when someone
-comments on an issue labeled `needs-info` (to re-evaluate after the
-reporter provides clarification).
+route proposal issues into the triage pipeline). To re-trigger triage
+after providing clarification on a `needs-info` issue, use the
+`/fs-triage` command.
 
 ## Control labels
 
@@ -70,8 +74,7 @@ create_issues:
       - upstream-org/specific-repo
 ```
 
-**Defaults:** At install time, fullsend populates this with your org (in org mode)
-or your repo (in per-repo mode), plus `fullsend-ai/fullsend` as an upstream target.
+**Defaults:** At install time, fullsend populates this with your repo, plus `fullsend-ai/fullsend` as an upstream target.
 
 **When to expand the allowlist:** If your project depends on libraries or services
 in other GitHub orgs and you want the triage agent to automatically file
@@ -89,23 +92,22 @@ regardless of the allowlist.
 ### Skill: `issue-labels`
 
 The triage agent includes a built-in `issue-labels` skill that discovers your
-repo's labels and applies them opportunistically during triage. You can replace
-it with your own version to encode your team's labeling knowledge directly in
-the skill, keeping it out of `AGENTS.md` (where it would bloat context for
-every agent).
+repo's labels and applies them opportunistically during triage. You can encode
+your team's labeling knowledge in a skill, keeping it out of `AGENTS.md`
+(where it would bloat context for every agent).
 
-To overload the built-in skill, create your own `issue-labels` skill in
-`.agents/skills/issue-labels/SKILL.md` and symlink `.claude/skills` to
-`.agents/skills` so it's discoverable by both fullsend and local agent tooling.
-You can also overload it at the org level in your `.fullsend` config repo at
-`customized/skills/issue-labels/SKILL.md`. At runtime, your version replaces
-the upstream default — no other configuration needed.
+To **extend** the agent, add a uniquely named skill in `.agents/skills/` and
+symlink `.claude/skills` to `.agents/skills` so it is discoverable by both
+fullsend and local agent tooling. A same-named `issue-labels` skill in that
+directory is shadowed by the built-in version and is ignored.
 
-> **Deprecated (ADR-0064):** The `customized/` overlay is deprecated. Use
-> config-driven agent registration instead. Run `fullsend agent migrate-customizations`
-> to migrate existing overrides.
+To **override** the built-in skill, register the triage agent with a harness
+that uses `base:` composition and include your replacement `issue-labels`
+skill in the `skills:` list — see
+[Configuring with Skills](../guides/user/customizing-with-skills.md#overriding-built-in-skills)
+and [Bring Your Own Agent](../guides/user/bring-your-own-agent.md).
 
-Here's an example that encodes domain-specific labeling rules:
+Here is an example replacement skill for the override path:
 
 ```markdown
 ---
@@ -172,4 +174,4 @@ None.
 
 ## Source
 
-[`internal/scaffold/fullsend-repo/harness/triage.yaml`](../../internal/scaffold/fullsend-repo/harness/triage.yaml)
+[`fullsend-ai/agents` — `harness/triage.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/triage.yaml)

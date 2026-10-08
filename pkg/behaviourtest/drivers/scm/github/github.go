@@ -2,10 +2,20 @@ package github
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 )
+
+// repoVisibleAttempts and repoVisibleDelay bound the wait for a
+// just-created repo to become readable (see getNewRepo). With doubling
+// backoff, 5 attempts cover about 1+2+4+8 = 15s. repoVisibleDelay is a
+// variable so tests can set it to zero.
+const repoVisibleAttempts = 5
+
+var repoVisibleDelay = time.Second
 
 // Driver implements scm.Driver using forge.Client.
 type Driver struct {
@@ -49,6 +59,10 @@ func (d *Driver) GetFileContent(ctx context.Context, owner, repo, path string) (
 	return d.Client.GetFileContent(ctx, owner, repo, path)
 }
 
+func (d *Driver) GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
+	return d.Client.GetFileContentAtRef(ctx, owner, repo, path, ref)
+}
+
 func (d *Driver) CreateBranch(ctx context.Context, owner, repo, branch string) error {
 	return d.Client.CreateBranch(ctx, owner, repo, branch)
 }
@@ -65,12 +79,71 @@ func (d *Driver) CreateChangeProposal(ctx context.Context, owner, repo, title, b
 	return d.Client.CreateChangeProposal(ctx, owner, repo, title, body, head, base)
 }
 
+func (d *Driver) ListOpenChangeProposals(ctx context.Context, owner, repo string) ([]forge.ChangeProposal, error) {
+	return d.Client.ListRepoPullRequests(ctx, owner, repo)
+}
+
+func (d *Driver) ListComments(ctx context.Context, owner, repo string, number int) ([]forge.IssueComment, error) {
+	return d.Client.ListIssueComments(ctx, owner, repo, number)
+}
+
+func (d *Driver) ListIssueReactions(ctx context.Context, owner, repo string, number int) ([]forge.Reaction, error) {
+	return d.Client.ListIssueReactions(ctx, owner, repo, number)
+}
+
 func (d *Driver) SubmitPullRequestReview(ctx context.Context, owner, repo string, number int, event string) error {
 	sha, err := d.Client.GetPullRequestHeadSHA(ctx, owner, repo, number)
 	if err != nil {
 		return err
 	}
 	return d.Client.CreatePullRequestReview(ctx, owner, repo, number, event, "behaviour test review", sha, nil)
+}
+
+func (d *Driver) CreateRepo(ctx context.Context, org, name, description string) error {
+	_, err := d.Client.CreateRepo(ctx, org, name, description, false)
+	if err != nil && forge.IsAlreadyExists(err) {
+		return nil
+	}
+	return err
+}
+
+func (d *Driver) GetDefaultBranch(ctx context.Context, owner, repo string) (string, error) {
+	r, err := d.Client.GetRepo(ctx, owner, repo)
+	if err != nil {
+		return "", fmt.Errorf("getting default branch: %w", err)
+	}
+	return r.DefaultBranch, nil
+}
+
+func (d *Driver) GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error) {
+	return d.Client.GetBranchRef(ctx, owner, repo, branch)
+}
+
+func (d *Driver) EnsureRepoPublic(ctx context.Context, owner, repo string) error {
+	r, err := d.getNewRepo(ctx, owner, repo)
+	if err != nil {
+		return fmt.Errorf("checking repo visibility: %w", err)
+	}
+	if !r.Private {
+		return nil
+	}
+	// Org may force repos private despite CreateRepo(private=false).
+	// Attempt to update visibility.
+	if err := d.Client.UpdateRepoVisibility(ctx, owner, repo, false); err != nil {
+		return fmt.Errorf("repo %s/%s is private despite requesting public; "+
+			"failed to update visibility (org policy may prevent public repos): %w",
+			owner, repo, err)
+	}
+	// Re-verify after update.
+	r, err = d.Client.GetRepo(ctx, owner, repo)
+	if err != nil {
+		return fmt.Errorf("re-checking repo visibility after update: %w", err)
+	}
+	if r.Private {
+		return fmt.Errorf("repo %s/%s is still private after visibility update; "+
+			"the org may enforce private-only repos", owner, repo)
+	}
+	return nil
 }
 
 func (d *Driver) DeleteRepo(ctx context.Context, owner, repo string) error {
@@ -97,7 +170,39 @@ func (d *Driver) CreateForkChangeProposal(ctx context.Context, baseOwner, baseRe
 	return d.Client.CreateChangeProposal(ctx, baseOwner, baseRepo, title, body, headRef, base)
 }
 
+func (d *Driver) ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]forge.PullRequestReview, error) {
+	return d.Client.ListPullRequestReviews(ctx, owner, repo, number)
+}
+
+func (d *Driver) ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error) {
+	return d.Client.ListPullRequestCommits(ctx, owner, repo, number)
+}
+
 // ParseRepo splits "owner/repo" into owner and repo name.
 func ParseRepo(fullName string) (owner, repo string, err error) {
 	return scm.ParseRepo(fullName)
+}
+
+// getNewRepo reads a repo that a caller has just created. GitHub can
+// return 404 for a moment after CreateRepo succeeds (#7861), so a
+// not-found is retried with bounded, context-aware backoff. Any other
+// error is returned at once. Only use this where the repo is known to
+// exist; elsewhere a 404 means the repo is missing.
+func (d *Driver) getNewRepo(ctx context.Context, owner, repo string) (*forge.Repository, error) {
+	delay := repoVisibleDelay
+	for attempt := 1; ; attempt++ {
+		r, err := d.Client.GetRepo(ctx, owner, repo)
+		if err == nil || !forge.IsNotFound(err) || attempt == repoVisibleAttempts {
+			if err != nil && forge.IsNotFound(err) {
+				return nil, fmt.Errorf("repo %s/%s still not found %d attempts after creation: %w", owner, repo, attempt, err)
+			}
+			return r, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("waiting for new repo %s/%s: %w", owner, repo, ctx.Err())
+		case <-time.After(delay):
+		}
+		delay *= 2
+	}
 }
