@@ -1,0 +1,51 @@
+# Agent-configuration health as merge evidence.
+#
+# harness-autonomy runs only decidable rules (effect block or policy) and
+# judges the change against the PR base: exit 0 PASS, 1 FAIL (a defect in
+# the configuration this PR ships), 2 REVIEW_REQUIRED (the PR introduces a
+# trust-relevant fact nobody has accepted). Accepted facts live in
+# .harness-eval/autonomy-policy.yaml, which CODEOWNERS should protect.
+name: harness-eval
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  autonomy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Until 8.0.0 is on PyPI; the action's own install then finds it satisfied.
+      - name: Install harness-eval 8.0
+        run: pip install -q "git+https://github.com/redhat-community-ai-tools/harness-eval@main"
+
+      - uses: redhat-community-ai-tools/harness-eval/.github/actions/harness-eval@main
+        id: harness
+        with:
+          autonomy: "true"
+          autonomy-policy: .harness-eval/autonomy-policy.yaml
+          autonomy-changed-only: "true"
+          gate: "false"            # subsumed by the autonomy check
+          security-gate: "false"   # security findings are a review input, not a merge gate (see harness-security job)
+          lint-gate: "false"
+          sarif: "true"
+          comment: "true"
+
+      - name: Merge evidence
+        if: always()
+        run: echo "harness-autonomy verdict: ${{ steps.harness.outputs.autonomy-verdict }}"
+
+  security-read:
+    # Heuristic findings for a human reviewer. Never blocks a merge.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: pip install -q "git+https://github.com/redhat-community-ai-tools/harness-eval@main"
+      - run: harness-eval harness-security . --enforce advisory
