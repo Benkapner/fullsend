@@ -197,7 +197,102 @@ GL_TOKEN=glpat-xxx \
 
 # 3. List VMs:
 GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
+
+# 4. Finish or repair an existing VM (same environment as the create):
+RUNNER_TOKEN=glrt-xxx \
+  GITLAB_URL=https://gitlab.example.com \
+  GCP_PROJECT=my-gcp-project \
+  RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 \
+  ./create-gcp-vm.sh --resume 05
 ```
+
+### Resuming or repairing a GCE runner
+
+`create-gcp-vm.sh --resume NUMBER` re-runs provisioning on the existing VM
+`fullsend-gitlab-runner-NUMBER` in `GCP_PROJECT` / `GCP_ZONE`. It finishes a
+VM whose create failed part-way, or brings a working runner up to the
+current provisioning. It reuses the steps and files of a fresh create:
+package install, root filesystem growth, staging `hack/gitlab-runner-vm/`,
+and `setup.sh`, followed by its verification.
+
+**Inputs.** Pass the same environment as the create: `GITLAB_URL`,
+`RUNNER_IMAGE`, `GCP_PROJECT`, `GCP_ZONE`, and either `RUNNER_TOKEN` or
+`GL_TOKEN` with `PROJECT_ID` / `GROUP_ID`. `RUNNER_USER` is optional (see
+below). `--resume` never creates or starts a VM: it refuses if the VM does
+not exist or is not running.
+
+**Service user.** `gcloud compute ssh` logs in as a per-operator account,
+so the login user is not necessarily the account the runner runs as. The
+script works out the existing service user from the gitlab-runner systemd
+drop-in (`User=`) and the owner of `/etc/gitlab-runner`, then stages files
+and runs `setup.sh` as that user. It uses `sudo -u` with that user's
+`HOME`, `XDG_RUNTIME_DIR`, and user D-Bus, after enabling lingering. This
+keeps rootless Podman storage, the executor paths and the workspace with
+the same account. On a VM that was never configured, the service user is
+`RUNNER_USER` if set, otherwise the login user. The script refuses if:
+
+- `RUNNER_USER` names a different account from the existing service user,
+  because it does not move a runner between accounts;
+- the drop-in and `/etc/gitlab-runner` disagree about the service user;
+- the service user is `root`;
+- the service user has no passwordless `sudo`, which `setup.sh` needs.
+
+**Disk.** If the boot disk is smaller than 30 GiB, it is resized to 30 GiB
+online. A larger disk is never shrunk. Either way, `grow-root-fs.sh` then
+grows the root filesystem to fill the disk and verifies it.
+
+**Job interruption.** `setup.sh` stops gitlab-runner while it reconfigures
+and restarts it at the end. A job running on the VM at that moment is
+interrupted. Resume when the runner is idle, or pause it in GitLab and
+wait for running jobs to finish first.
+
+**Rerun semantics.** `--resume` is idempotent and safe to repeat. On a
+healthy runner it changes nothing beyond restarting the service: setup
+leaves an already-correct config untouched and the runner keeps its
+registration, images and workspace data.
+
+- With `RUNNER_TOKEN`, the shared token is re-applied. Nothing is
+  registered or deregistered, so a shared fleet runner is never removed.
+- With `GL_TOKEN`, the existing registration for this VM (described as
+  `<GCP_PROJECT>/<vm-name>`) is reused when the VM's config already holds
+  its token. A new runner is registered only if none exists for the VM. If
+  that run fails, only the runner it just registered is deregistered. A
+  stale config is replaced only when GitLab confirms its runner ID is gone;
+  the old file is kept on the VM as
+  `/etc/gitlab-runner/config.toml.stale-<timestamp>` (root-only) so settings
+  you added by hand can be recovered.
+
+`--resume` refuses rather than guessing when it finds:
+
+- a config registered with a different GitLab instance;
+- several runners registered for the VM;
+- a config whose runner ID does not match this VM's registration;
+- a config with a `[[runners]]` entry that has no positive integer `id`.
+
+A runner token is verified from the VM over HTTPS before setup runs, so a
+stale CA trust on the VM (for example after a GitLab CA rotation) also makes
+`--resume` refuse; refresh the VM's CA certificates manually or recreate the
+VM.
+
+A runner that is registered in GitLab but whose token never reached the VM
+cannot be recovered, because GitLab does not show the token again. For
+that, and for any refusal, drain and delete the VM with
+`./delete-gcp-vm.sh` (which deregisters an individual runner) and create it
+again.
+
+**Differences from OpenShift `--resume`.**
+
+- The GCE script resizes an undersized boot disk and grows the root
+  filesystem.
+- It detects the service user instead of using a fixed `VM_USER`.
+- It connects with `gcloud compute ssh` (through IAP unless
+  `GCP_USE_IAP=false`) and installs packages with `dnf`, where OpenShift
+  waits for and repairs cloud-init.
+- It checks the GCE instance status first and refuses a VM that is not
+  running (start it with `gcloud compute instances start`).
+
+Recreating the VM (delete, then create) remains the compliance path for a
+VM that was configured and served jobs.
 
 ## Environment variables
 
@@ -243,7 +338,7 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 | `GCP_USE_IAP` | no | `true` | Use IAP tunneling for SSH. Set to `false` to create the VM with an external IP and SSH directly. |
 | `GCP_IMAGE_FAMILY` | no | `fedora-cloud-43-x86-64` | GCE image family |
 | `GCP_IMAGE_PROJECT` | no | `fedora-cloud` | GCE image project |
-| `RUNNER_USER` | no | unset | Delete mode only: Unix account gitlab-runner/podman run as on the VM (setup.sh's `RUNNER_USER`, i.e. whichever identity ran `setup.sh`). Used to drain as the correct identity when `gcloud compute ssh` connects as someone else. GCE has no fixed login user equivalent to OpenShift's `VM_USER`, so unlike there this has no safe default — without it, the drain runs as the connecting identity and can under-report idle if that identity differs from the one gitlab-runner runs as |
+| `RUNNER_USER` | no | unset | `create-gcp-vm.sh --resume`: service user for a VM that was never configured (default: the `gcloud compute ssh` login user). On a configured VM it must match the detected service user or resume refuses (see [Resuming or repairing a GCE runner](#resuming-or-repairing-a-gce-runner)). Delete mode: Unix account gitlab-runner/podman run as on the VM (setup.sh's `RUNNER_USER`, i.e. whichever identity ran `setup.sh`). Used to drain as the correct identity when `gcloud compute ssh` connects as someone else. GCE has no fixed login user equivalent to OpenShift's `VM_USER`, so unlike there this has no safe default — without it, the drain runs as the connecting identity and can under-report idle if that identity differs from the one gitlab-runner runs as |
 
 ## Files
 
@@ -254,6 +349,7 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 - `setup.sh` — standalone VM configuration (called by create-openshift-vm.sh / create-gcp-vm.sh). Idempotent and safe to re-run in place as a debug convenience; recreation is the compliance path (see #7257). Re-running it on an already-provisioned VM also installs/refreshes the Podman prune timer.
 - `setup_test.sh` — unit tests for setup.sh idempotency hygiene (backup, executor path reconciliation and verification, gateway seed skip)
 - `create-openshift-vm_test.sh` — end-to-end tests for create-openshift-vm.sh against stubbed `oc`/`virtctl`/GitLab API (shared-token path, cloud-init package repair, `--resume`)
+- `create-gcp-vm_test.sh` — end-to-end tests for create-gcp-vm.sh against stubbed `gcloud`/GitLab API (fresh create, `--resume` disk growth, service-user detection, both registration modes)
 - `podman-prune.sh` — reclaims unused rootless Podman containers and images; installed as a user systemd timer by setup.sh and invoked from prepare/cleanup
 - `podman-prune_test.sh` — unit tests for the prune script and timer install
 - `grow-root-fs.sh` — grows the root partition and Btrfs filesystem to fill the disk and verifies capacity; run by create-gcp-vm.sh and used to repair existing GCE runners (see [GCE boot disk size and repair](#gce-boot-disk-size-and-repair))
@@ -396,7 +492,10 @@ df -h / /home /var
 
 The script is idempotent and grows the disk online. It does not recreate
 the VM and leaves the runner registration, images, and workspace data in
-place. Run it from the repo root on your workstation (drop
+place. `./create-gcp-vm.sh --resume NUMBER` performs both steps below
+(see [Resuming or repairing a GCE runner](#resuming-or-repairing-a-gce-runner))
+and also re-runs `setup.sh`. To grow only the disk, run it from the repo
+root on your workstation (drop
 `--tunnel-through-iap` for VMs with an external IP):
 
 ```bash
