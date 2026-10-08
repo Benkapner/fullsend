@@ -199,6 +199,7 @@ script-test:
 	$(call run-timed,bash hack/gitlab-runner-vm/setup_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/vm_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/create-openshift-vm_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/create-gcp-vm_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/podman-prune_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/grow-root-fs_test.sh)
 	$(call run-timed,bash internal/runtime/kill_stray_processes_test.sh)

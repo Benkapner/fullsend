@@ -4,8 +4,8 @@
 #
 # Source this file at the top of any script that needs gl_curl(),
 # validate_runner_scope(), build_scope_args(), uses_runner_token(),
-# find_runner_ids(), runner_exists(), check_runner_registration(), or
-# drain_runner_vm().
+# find_runner_ids(), runner_exists(), check_runner_registration(),
+# resume_registration_check(), or drain_runner_vm().
 
 # uses_runner_token reports whether RUNNER_TOKEN is set, selecting the
 # join-existing-pool (runner-hub) path over GitLab API registration.
@@ -68,7 +68,8 @@ validate_runner_scope() {
 #
 # Print the IDs of runners visible to GL_TOKEN whose description is exactly
 # <description> (create-openshift-vm.sh registers each VM as
-# "<namespace>/<vm-name>"), one per line. The lookup is by VM identity only:
+# "<namespace>/<vm-name>", create-gcp-vm.sh as "<gcp-project>/<vm-name>"),
+# one per line. The lookup is by VM identity only:
 # it deliberately does not filter on tags, which are mutable in GitLab, so a
 # runner whose tags were edited is still found. Tag compatibility is checked
 # separately by check_runner_registration. Uses /runners (user-scoped) rather
@@ -179,6 +180,176 @@ if scope == 'project':
     if r.get('locked') is not True:
         sys.exit('locked is %r, requested True' % (r.get('locked'),))
 " "${RUNNER_SCOPE}" "${SCOPE_ID}" "${RUNNER_ACCESS_LEVEL}" "${RUNNER_TAG}" >&2
+}
+
+# resume_registration_check <remote_exec> <vm_name> <description> <recreate_cmd>
+#
+# On a GL_TOKEN-mode --resume, decide whether VM <vm_name> already has a
+# runner before anything is registered, so repeating resume never duplicates
+# a registration. Shared by create-openshift-vm.sh and create-gcp-vm.sh.
+#
+#   remote_exec  — name of a function that runs its one argument as a shell
+#                  command on the VM, as a user with passwordless sudo
+#   description  — the description create registers the VM's runner under
+#                  ("<namespace>/<vm-name>" or "<gcp-project>/<vm-name>")
+#   recreate_cmd — the delete command named in refusals (e.g.
+#                  "./delete-openshift-vm.sh <vm-name>")
+#
+# The VM's config.toml is read as TOML (as setup.sh does) and its GitLab
+# instance is checked before any runner ID is looked up at GITLAB_URL, since
+# IDs are instance-local. Then:
+#   - exactly one runner registered under <description>, the VM configured
+#     with that runner, its token confirmed by GitLab from the VM, and the
+#     registration still matching the requested scope (check_runner_registration)
+#     → reuse it;
+#   - no runner under <description> and no VM config → register a new one;
+#   - no runner under <description>, and every runner ID in the VM config
+#     positively reported deleted (404) → register a new one and replace the
+#     stale config;
+#   - anything else (several runners, wrong ID, foreign instance, unverifiable
+#     token, outage) → refuse.
+#
+# Sets:
+#   RESUME_REUSE_RUNNER — "true" when the VM's configured runner is reused
+#   RESUME_STALE_CONFIG — "true" when the caller must remove the VM's stale
+#                         /etc/gitlab-runner/config.toml after registering
+#   RESUME_RUNNER_ID    — the reused runner ID (empty otherwise)
+# Returns 0 to proceed; 1 when resume refuses (after stopping the VM's
+# gitlab-runner so a rejected config does not keep serving jobs); 2 when the
+# VM can never be finished by resume (its runner is registered but the VM
+# never received the token — GitLab returns it only at creation). Never
+# registers or deregisters anything.
+# Requires: GL_TOKEN, GITLAB_URL, RUNNER_SCOPE, SCOPE_ID, RUNNER_ACCESS_LEVEL,
+#           RUNNER_TAG
+resume_registration_check() {
+  local remote_exec="$1" vm_name="$2" description="$3" recreate_cmd="$4"
+  local vm_probe_py vm_verify_py vm_probe_out vm_runner_ids vm_runner_url vm_runner_id
+  local existing_ids existing_count vm_registered vm_token_id mismatch exists_rc
+  RESUME_REUSE_RUNNER=false
+  RESUME_STALE_CONFIG=false
+  RESUME_RUNNER_ID=""
+
+  # Prints "<id> <url>" per runner entry (id 0 when the entry records none,
+  # url "-" when it records none) and nothing when there is no config.
+  vm_probe_py='import os, tomllib
+p = "/etc/gitlab-runner/config.toml"
+if os.path.exists(p):
+    with open(p, "rb") as f:
+        for r in tomllib.load(f).get("runners", []):
+            print(r.get("id", 0), r.get("url", "") or "-")'
+  if ! vm_probe_out=$("${remote_exec}" "sudo python3 -c '${vm_probe_py}'"); then
+    echo "ERROR: could not read the runner config on ${vm_name} — refusing to resume without knowing whether it already has a runner" >&2
+    _resume_stop_vm_runner "${remote_exec}" "${vm_name}"
+    return 1
+  fi
+  vm_runner_ids=$(printf '%s\n' "${vm_probe_out}" | cut -d' ' -f1)
+  # A config registered on another GitLab instance must never be judged by
+  # looking its IDs up here (they would 404 and look stale, so resume would
+  # orphan that registration and delete the config): refuse before any lookup.
+  for vm_runner_url in $(printf '%s\n' "${vm_probe_out}" | cut -d' ' -f2); do
+    if [ "${vm_runner_url%/}" != "${GITLAB_URL%/}" ]; then
+      echo "ERROR: ${vm_name} is configured for GitLab instance '${vm_runner_url}', not ${GITLAB_URL} — refusing to resume; recreate the VM instead: ${recreate_cmd}, then re-run create" >&2
+      _resume_stop_vm_runner "${remote_exec}" "${vm_name}"
+      return 1
+    fi
+  done
+  if ! existing_ids=$(find_runner_ids "${description}"); then
+    echo "ERROR: GitLab API lookup failed — refusing to resume without knowing whether ${vm_name} already has a runner" >&2
+    echo "  Hint: check GL_TOKEN scopes (needs api + manage_runner) and network connectivity" >&2
+    _resume_stop_vm_runner "${remote_exec}" "${vm_name}"
+    return 1
+  fi
+  vm_registered=false
+  if [ -n "${vm_runner_ids}" ]; then
+    vm_registered=true
+  fi
+  existing_count=0
+  if [ -n "${existing_ids}" ]; then
+    existing_count=$(printf '%s\n' "${existing_ids}" | wc -l)
+  fi
+  if [ "${existing_count}" -gt 1 ]; then
+    echo "ERROR: ${existing_count} runners are registered as ${description} (IDs: $(printf '%s' "${existing_ids}" | tr '\n' ' ')) — deregister the extras at ${GITLAB_URL}, then re-run --resume" >&2
+    _resume_stop_vm_runner "${remote_exec}" "${vm_name}"
+    return 1
+  elif [ "${existing_count}" -eq 1 ]; then
+    if [ "${vm_registered}" != "true" ]; then
+      # GitLab returns a runner's token only when it is created, so the
+      # VM cannot be given this runner's token after the fact.
+      echo "ERROR: runner ID ${existing_ids} is registered for ${vm_name}, but the VM has no runner config and its token cannot be retrieved — recreate the VM instead: ${recreate_cmd} (deregisters it), then re-run create" >&2
+      return 2
+    fi
+    # The config on the VM must be this exact runner (not some other valid
+    # token), and GitLab must still hold it with the requested scope and
+    # access level — otherwise reuse would silently keep a wrong registration.
+    if [ "${vm_runner_ids}" != "${existing_ids}" ]; then
+      echo "ERROR: ${vm_name} is configured with runner ID '$(printf '%s' "${vm_runner_ids}" | tr '\n' ' ')' but GitLab's runner for it is ID ${existing_ids} — recreate the VM instead: ${recreate_cmd} (deregisters it), then re-run create" >&2
+      _resume_stop_vm_runner "${remote_exec}" "${vm_name}"
+      return 1
+    fi
+    # The configured token must belong to that runner: an ID in config.toml
+    # alone proves nothing. Ask GitLab (from the VM, so the token never leaves
+    # it) which runner the token authenticates and require the same ID.
+    # GitLab requires the runner manager's system_id with a glrt- token, so it
+    # is read from the file gitlab-runner keeps next to config.toml; without
+    # it the check cannot run and the script exits non-zero.
+    vm_verify_py='import json, tomllib, urllib.parse, urllib.request
+with open("/etc/gitlab-runner/config.toml", "rb") as f:
+    r = tomllib.load(f)["runners"][0]
+with open("/etc/gitlab-runner/.runner_system_id") as f:
+    system_id = f.read().strip()
+if not system_id:
+    raise SystemExit("empty /etc/gitlab-runner/.runner_system_id")
+data = urllib.parse.urlencode({"token": r["token"], "system_id": system_id}).encode()
+with urllib.request.urlopen(r["url"].rstrip("/") + "/api/v4/runners/verify", data, timeout=30) as resp:
+    print(json.load(resp)["id"])'
+    vm_token_id=""
+    if ! vm_token_id=$("${remote_exec}" "sudo python3 -c '${vm_verify_py}'" 2>/dev/null) \
+      || [ "${vm_token_id}" != "${existing_ids}" ]; then
+      echo "ERROR: the runner token configured on ${vm_name} could not be confirmed as belonging to runner ID ${existing_ids} at ${GITLAB_URL} (GitLab says: '${vm_token_id:-no answer}'; the VM must also hold /etc/gitlab-runner/.runner_system_id) — recreate the VM instead: ${recreate_cmd} (deregisters it), then re-run create" >&2
+      _resume_stop_vm_runner "${remote_exec}" "${vm_name}"
+      return 1
+    fi
+    if ! mismatch=$(check_runner_registration "${existing_ids}" 2>&1); then
+      echo "ERROR: runner ID ${existing_ids} no longer matches the requested ${RUNNER_SCOPE} ${SCOPE_ID} / ${RUNNER_ACCESS_LEVEL} registration: ${mismatch}" >&2
+      echo "  Recreate the VM instead: ${recreate_cmd} (deregisters it), then re-run create" >&2
+      _resume_stop_vm_runner "${remote_exec}" "${vm_name}"
+      return 1
+    fi
+    # shellcheck disable=SC2034  # consumed by callers
+    RESUME_REUSE_RUNNER=true
+    # shellcheck disable=SC2034  # consumed by callers
+    RESUME_RUNNER_ID="${existing_ids}"
+  elif [ "${vm_registered}" = "true" ]; then
+    # No runner is registered under this VM's description. The config is only
+    # stale (a failed run deregisters the runner it created) if GitLab
+    # positively reports every runner ID it records as gone; a runner that
+    # still exists under another description, or an unknown answer, means
+    # replacing the config would leave a registration behind.
+    for vm_runner_id in ${vm_runner_ids}; do
+      exists_rc=0
+      runner_exists "${vm_runner_id}" || exists_rc=$?
+      if [ "${exists_rc}" -ne 1 ]; then
+        echo "ERROR: ${vm_name} is configured with runner ID ${vm_runner_id}, which GitLab does not list for it but could not be confirmed deleted (lookup status ${exists_rc}: 0 = still exists, 2 = unknown) — refusing to replace the config; check ${GITLAB_URL}, or recreate the VM: ${recreate_cmd} (deregisters it), then re-run create" >&2
+        _resume_stop_vm_runner "${remote_exec}" "${vm_name}"
+        return 1
+      fi
+    done
+    # shellcheck disable=SC2034  # consumed by callers
+    RESUME_STALE_CONFIG=true
+  fi
+  return 0
+}
+
+# _resume_stop_vm_runner <remote_exec> <vm_name> — when resume rejects the
+# VM's existing runner config, make sure an already-running gitlab-runner
+# stops polling for jobs under it (as setup.sh's own rejection paths do).
+# Best effort, then confirmed inactive. Never deregisters anything: the
+# resume did not create those runners.
+_resume_stop_vm_runner() {
+  echo "  Stopping gitlab-runner on $2 so the rejected config does not keep serving jobs" >&2
+  if ! "$1" "sudo systemctl stop gitlab-runner; ! systemctl is-active --quiet gitlab-runner" >/dev/null 2>&1; then
+    echo "  WARN: could not confirm gitlab-runner is stopped on $2 — stop it manually: sudo systemctl stop gitlab-runner" >&2
+  fi
 }
 
 # Build scope-specific curl arguments for the GitLab runner registration API.
