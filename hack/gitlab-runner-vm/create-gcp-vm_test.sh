@@ -133,13 +133,22 @@ case "${cmd}" in
     PYTHONPATH="$(dirname "$0")/pyshim" bash -c "${real//\/etc\/gitlab-runner/${root}}" ;;
   *"sudo python3 -c"*"/etc/gitlab-runner/config.toml"*)
     # The VM-side TOML probe: "<id> <url>" per [[runners]] entry.
-    if [ -f "${S}/vm_config" ]; then
+    if [ -f "${S}/vm_config_noid" ]; then
+      # A hand-edited config whose [[runners]] entry records no id: run the
+      # script's real Python against a VM root holding it.
+      root="${S}/vmroot"
+      rm -rf "${root}"; mkdir -p "${root}"
+      printf '[[runners]]\n  url = "%s"\n  token = "glrt-noid"\n' "${GITLAB_URL}" > "${root}/config.toml"
+      real="${cmd#sudo }"
+      bash -c "${real//\/etc\/gitlab-runner/${root}}"
+    elif [ -f "${S}/vm_config" ]; then
       echo "$(sed 's/.*-//' "${S}/vm_config") $(cat "${S}/vm_runner_url" 2>/dev/null || echo "${GITLAB_URL}")"
     fi ;;
   "sudo systemctl stop gitlab-runner; ! systemctl is-active --quiet gitlab-runner")
     rm -f "${S}/service_active" ;;
-  "sudo rm -f /etc/gitlab-runner/config.toml")
-    rm -f "${S}/vm_config" ;;
+  "sudo mv /etc/gitlab-runner/config.toml /etc/gitlab-runner/config.toml.stale-"*" && sudo chmod 600 /etc/gitlab-runner/config.toml.stale-"*)
+    # The stale config is moved aside, not deleted: keep it as the backup.
+    mv "${S}/vm_config" "${S}/vm_config_backup" ;;
   "mkdir -p ~/gitlab-runner-vm" | "chmod +x "*) exit 0 ;;
   "tar -C ~/gitlab-runner-vm -xf -")
     cat > /dev/null; echo "${user}" >> "${S}/files_users" ;;
@@ -388,7 +397,7 @@ if [ "${first_rc}" -eq 0 ] && [ "${RUN_RC}" -eq 0 ] \
   && [ "$(count_in 'instances create' "${STATE}/gcloud.log")" -eq "${creates}" ] \
   && [ ! -s "${STATE}/curl.log" ] && cmp -s "${STATE}/vm_config" "${STATE}/vm_config.before" \
   && ! grep -Fq 'disks resize' "${STATE}/gcloud.log" \
-  && ! grep -Fq 'sudo rm -f /etc/gitlab-runner/config.toml' "${STATE}/ssh.log"; then
+  && ! grep -Fq 'config.toml.stale-' "${STATE}/ssh.log"; then
   pass "resuming a healthy runner is repeatable and changes no VM, disk, config, or registration"
 else
   fail "healthy shared-token resume (rc=${first_rc}, ${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
@@ -537,10 +546,12 @@ fi
 rm -f "${STATE}/setup_rc"
 run_create "${INDIVIDUAL[@]}" --resume 05
 if [ "${RUN_RC}" -eq 0 ] && [ "$(runner_count)" -eq 1 ] \
-  && grep -Fq 'sudo rm -f /etc/gitlab-runner/config.toml' "${STATE}/ssh.log" \
+  && grep -Fq 'sudo mv /etc/gitlab-runner/config.toml /etc/gitlab-runner/config.toml.stale-' "${STATE}/ssh.log" \
+  && ! grep -Fq 'sudo rm -f /etc/gitlab-runner/config.toml' "${STATE}/ssh.log" \
+  && [ "$(cat "${STATE}/vm_config_backup")" = "glrt-new-1" ] \
   && [ "$(cat "${STATE}/vm_config")" = "glrt-new-2" ] \
   && grep -Fq '"description": "test-project/fullsend-gitlab-runner-05"' "${STATE}/runners.json"; then
-  pass "resume replaces the stale config with exactly one new registration"
+  pass "resume moves the stale config aside and replaces it with exactly one new registration"
 else
   fail "resume after rollback (rc=${RUN_RC}, runners=$(runner_count)): $(tail -5 <<< "${RUN_OUT}")"
 fi
@@ -629,6 +640,22 @@ if [ "${RUN_RC}" -ne 0 ] && grep -Fq 'could not be confirmed deleted' <<< "${RUN
   pass "resume never replaces a config whose runner still exists elsewhere"
 else
   fail "unrelated live runner (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
+fi
+
+# A [[runners]] entry with no id must not default to a runner ID that GitLab
+# then reports missing: resume refuses instead of replacing the config.
+new_state
+existing_vm alice 30
+echo glrt-new-3 > "${STATE}/vm_config"
+touch "${STATE}/vm_config_noid"
+run_create "${INDIVIDUAL[@]}" --resume 05
+if [ "${RUN_RC}" -ne 0 ] && grep -Fq 'no positive integer id' <<< "${RUN_OUT}" \
+  && [ "$(cat "${STATE}/vm_config")" = "glrt-new-3" ] && [ ! -e "${STATE}/vm_config_backup" ] \
+  && ! grep -q '^\(POST\|DELETE\) ' "${STATE}/curl.log" 2>/dev/null \
+  && ! grep -Fq 'config.toml.stale-' "${STATE}/ssh.log"; then
+  pass "resume refuses a config whose runner entry has no id"
+else
+  fail "config without a runner id (rc=${RUN_RC}): $(tail -5 <<< "${RUN_OUT}")"
 fi
 
 echo ""

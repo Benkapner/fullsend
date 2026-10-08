@@ -257,13 +257,22 @@ registration, images and workspace data.
   `<GCP_PROJECT>/<vm-name>`) is reused when the VM's config already holds
   its token. A new runner is registered only if none exists for the VM. If
   that run fails, only the runner it just registered is deregistered. A
-  stale config is replaced only when GitLab confirms its runner ID is gone.
+  stale config is replaced only when GitLab confirms its runner ID is gone;
+  the old file is kept on the VM as
+  `/etc/gitlab-runner/config.toml.stale-<timestamp>` (root-only) so settings
+  you added by hand can be recovered.
 
 `--resume` refuses rather than guessing when it finds:
 
 - a config registered with a different GitLab instance;
 - several runners registered for the VM;
-- a config whose runner ID does not match this VM's registration.
+- a config whose runner ID does not match this VM's registration;
+- a config with a `[[runners]]` entry that has no positive integer `id`.
+
+A runner token is verified from the VM over HTTPS before setup runs, so a
+stale CA trust on the VM (for example after a GitLab CA rotation) also makes
+`--resume` refuse; refresh the VM's CA certificates manually or recreate the
+VM.
 
 A runner that is registered in GitLab but whose token never reached the VM
 cannot be recovered, because GitLab does not show the token again. For

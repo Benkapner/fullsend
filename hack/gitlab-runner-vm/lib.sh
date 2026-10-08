@@ -229,16 +229,22 @@ resume_registration_check() {
   RESUME_STALE_CONFIG=false
   RESUME_RUNNER_ID=""
 
-  # Prints "<id> <url>" per runner entry (id 0 when the entry records none,
-  # url "-" when it records none) and nothing when there is no config.
+  # Prints "<id> <url>" per runner entry (url "-" when it records none) and
+  # nothing when there is no config. Exits non-zero when an entry has no
+  # positive integer id: defaulting it to an ID such as 0 would look up a
+  # runner that never existed, read the 404 as "deleted", and replace the
+  # config without checking which runner its token authenticates.
   vm_probe_py='import os, tomllib
 p = "/etc/gitlab-runner/config.toml"
 if os.path.exists(p):
     with open(p, "rb") as f:
         for r in tomllib.load(f).get("runners", []):
-            print(r.get("id", 0), r.get("url", "") or "-")'
+            i = r.get("id")
+            if isinstance(i, bool) or not isinstance(i, int) or i < 1:
+                raise SystemExit("runner entry without a positive integer id")
+            print(i, r.get("url", "") or "-")'
   if ! vm_probe_out=$("${remote_exec}" "sudo python3 -c '${vm_probe_py}'"); then
-    echo "ERROR: could not read the runner config on ${vm_name} — refusing to resume without knowing whether it already has a runner" >&2
+    echo "ERROR: could not read the runner config on ${vm_name} (or a [[runners]] entry has no positive integer id) — refusing to resume without knowing whether it already has a runner" >&2
     _resume_stop_vm_runner "${remote_exec}" "${vm_name}"
     return 1
   fi
@@ -305,7 +311,7 @@ with urllib.request.urlopen(r["url"].rstrip("/") + "/api/v4/runners/verify", dat
     vm_token_id=""
     if ! vm_token_id=$("${remote_exec}" "sudo python3 -c '${vm_verify_py}'" 2>/dev/null) \
       || [ "${vm_token_id}" != "${existing_ids}" ]; then
-      echo "ERROR: the runner token configured on ${vm_name} could not be confirmed as belonging to runner ID ${existing_ids} at ${GITLAB_URL} (GitLab says: '${vm_token_id:-no answer}'; the VM must also hold /etc/gitlab-runner/.runner_system_id) — recreate the VM instead: ${recreate_cmd} (deregisters it), then re-run create" >&2
+      echo "ERROR: the runner token configured on ${vm_name} could not be confirmed as belonging to runner ID ${existing_ids} at ${GITLAB_URL} (GitLab says: '${vm_token_id:-no answer}'; the VM must also hold /etc/gitlab-runner/.runner_system_id; a stale CA trust on the VM, e.g. after a GitLab CA rotation, also fails this check and needs a manual CA refresh) — recreate the VM instead: ${recreate_cmd} (deregisters it), then re-run create" >&2
       _resume_stop_vm_runner "${remote_exec}" "${vm_name}"
       return 1
     fi

@@ -800,9 +800,12 @@ fi
 if [ "${stale_vm_config}" = "true" ]; then
   # Without this, setup.sh would see the old [[runners]] entry, skip
   # registration, and leave the VM on a token GitLab no longer accepts.
-  echo "==> Removing stale runner config from ${vm_name}"
-  with_backoff gce_ssh "sudo rm -f /etc/gitlab-runner/config.toml"
-  echo "  OK: stale config removed"
+  # The file is moved aside rather than deleted so operator-added settings
+  # (concurrent, check_interval, logging, ...) can be recovered.
+  echo "==> Moving stale runner config on ${vm_name} aside"
+  stale_config_backup="/etc/gitlab-runner/config.toml.stale-$(date +%s)"
+  with_backoff gce_ssh "sudo mv /etc/gitlab-runner/config.toml ${stale_config_backup} && sudo chmod 600 ${stale_config_backup}"
+  echo "  OK: stale config moved to ${stale_config_backup} on ${vm_name}"
 fi
 
 # ----------------------------------------------------------------------
