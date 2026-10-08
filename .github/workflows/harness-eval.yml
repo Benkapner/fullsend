@@ -40,7 +40,7 @@ jobs:
 
       - name: Merge evidence
         if: always()
-        run: echo "harness-autonomy verdict: ${{ steps.harness.outputs.autonomy-verdict }}"
+        run: echo "harness-autonomy verdict=${{ steps.harness.outputs.autonomy-verdict }}"
 
   security-read:
     # Heuristic findings for a human reviewer. Never blocks a merge.
