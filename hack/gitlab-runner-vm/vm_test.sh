@@ -6,6 +6,8 @@
 # These tests extract the bootcmd entries from vm.yaml and run them against
 # representative Fedora 44 cloud-image repo files (placeholder baseurl=,
 # metalink-only OpenH264 repo) in a temp dir instead of /etc/yum.repos.d.
+# Enabled repos must end up on HTTPS: some egress-restricted clusters block
+# HTTP (port 80) to dl.fedoraproject.org while HTTPS works (#8169).
 #
 # Run from the repo root:
 #   bash hack/gitlab-runner-vm/vm_test.sh
@@ -114,9 +116,33 @@ run_bootcmd() {
   done <<< "${BOOTCMD}"
 }
 
+# write_http_baseurl_repos <dir> — repo files a previous bootstrap left with
+# metalink= commented out and a plain-HTTP dl.fedoraproject.org baseurl=
+# enabled (the repair case: no active metalink= to trigger a switch).
+write_http_baseurl_repos() {
+  local dir="$1"
+  mkdir -p "${dir}"
+  cat > "${dir}/fedora.repo" <<'EOF'
+[fedora]
+name=Fedora $releasever - $basearch
+baseurl=http://dl.fedoraproject.org/pub/fedora/linux/releases/$releasever/Everything/$basearch/os/
+#metalink=https://mirrors.fedoraproject.org/metalink?repo=fedora-$releasever&arch=$basearch
+enabled=1
+gpgcheck=1
+EOF
+  cat > "${dir}/fedora-updates.repo" <<'EOF'
+[updates]
+name=Fedora $releasever - $basearch - Updates
+baseurl=http://dl.fedoraproject.org/pub/fedora/linux/updates/$releasever/Everything/$basearch/
+#metalink=https://mirrors.fedoraproject.org/metalink?repo=updates-released-f$releasever&arch=$basearch
+enabled=1
+gpgcheck=1
+EOF
+}
+
 # check_enabled_repos <dir> — print one line per enabled repo section that
-# dnf could not load from the egress-allowlisted mirror, and exit non-zero
-# if there are any.
+# dnf could not load from the egress-allowlisted mirror over HTTPS, and exit
+# non-zero if there are any.
 check_enabled_repos() {
   python3 - "$1" <<'PY'
 import configparser, glob, sys
@@ -130,7 +156,7 @@ for path in sorted(glob.glob(sys.argv[1] + "/fedora*.repo")):
         baseurl = cp.get(section, "baseurl", fallback="")
         if cp.has_option(section, "metalink"):
             bad.append(f"{section}: metalink= still active")
-        elif not baseurl.startswith("http://dl.fedoraproject.org/"):
+        elif not baseurl.startswith("https://dl.fedoraproject.org/"):
             bad.append(f"{section}: unusable baseurl={baseurl!r}")
 for b in bad:
     print(b)
@@ -172,7 +198,7 @@ else
 fi
 
 if problems=$(check_enabled_repos "${REPOS}"); then
-  pass "every enabled repo uses a dl.fedoraproject.org baseurl"
+  pass "every enabled repo uses an HTTPS dl.fedoraproject.org baseurl"
 else
   fail "enabled repos dnf cannot load: ${problems//$'\n'/; }"
 fi
@@ -212,6 +238,23 @@ if run_bootcmd "${NO_CISCO}" && check_enabled_repos "${NO_CISCO}" >/dev/null; th
   pass "bootcmd succeeds when fedora-cisco-openh264.repo is absent"
 else
   fail "bootcmd fails or leaves unusable repos when fedora-cisco-openh264.repo is absent"
+fi
+
+echo "== enabled plain-HTTP baseurl, no metalink (repair) =="
+HTTP_REPOS="${WORK_DIR}/http-baseurl"
+write_http_baseurl_repos "${HTTP_REPOS}"
+problems=""
+if run_bootcmd "${HTTP_REPOS}" && problems=$(check_enabled_repos "${HTTP_REPOS}"); then
+  pass "bootcmd switches an enabled HTTP baseurl to HTTPS"
+else
+  problems="${problems:-bootcmd failed}"
+  fail "bootcmd left an unusable enabled baseurl: ${problems//$'\n'/; }"
+fi
+before=$(cat "${HTTP_REPOS}"/*.repo)
+if run_bootcmd "${HTTP_REPOS}" && [ "$(cat "${HTTP_REPOS}"/*.repo)" = "${before}" ]; then
+  pass "second boot leaves repaired HTTPS repo files unchanged"
+else
+  fail "second bootcmd run changed repaired repo files or failed"
 fi
 
 echo ""

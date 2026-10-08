@@ -110,8 +110,11 @@ RUNNER_TOKEN=glrt-xxx \
 
 The VM's cloud-init `bootcmd` makes the Fedora repos usable before cloud-init
 installs packages: it switches `metalink=` to `baseurl=`, replaces the
-`download.example` placeholder that recent Fedora cloud images ship, and
-disables the metalink-only OpenH264 repo. If the base packages are still
+`download.example` placeholder that recent Fedora cloud images ship, rewrites
+the `dl.fedoraproject.org` base URLs from HTTP to HTTPS (some clusters block
+HTTP egress), and disables the metalink-only OpenH264 repo. `setup.sh` applies
+the same repair, including to repos already switched to an HTTP `baseurl=`. If
+the base packages are still
 missing after cloud-init, `create-openshift-vm.sh` sends the current `vm.yaml`
 repair commands to the VM (so a VM created from an older template is fixed too)
 and re-runs the package module once before running `setup.sh`, which then
@@ -252,7 +255,7 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 - `create-gcp-vm.sh` — end-to-end VM creation on GCE + runner registration + setup
 - `delete-gcp-vm.sh` — drain in-flight jobs, then GCE VM teardown + runner deregistration
 - `setup.sh` — standalone VM configuration (called by create-openshift-vm.sh / create-gcp-vm.sh). Idempotent and safe to re-run in place as a debug convenience; recreation is the compliance path (see #7257). Re-running it on an already-provisioned VM also installs/refreshes the Podman prune timer.
-- `setup_test.sh` — unit tests for setup.sh idempotency hygiene (backup, executor path reconciliation and verification, gateway seed skip)
+- `setup_test.sh` — unit tests for setup.sh idempotency hygiene (backup, executor path reconciliation and verification, gateway seed skip, Fedora repo repair)
 - `create-openshift-vm_test.sh` — end-to-end tests for create-openshift-vm.sh against stubbed `oc`/`virtctl`/GitLab API (shared-token path, cloud-init package repair, `--resume`)
 - `podman-prune.sh` — reclaims unused rootless Podman containers and images; installed as a user systemd timer by setup.sh and invoked from prepare/cleanup
 - `podman-prune_test.sh` — unit tests for the prune script and timer install
@@ -260,7 +263,7 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 - `grow-root-fs_test.sh` — unit tests for grow-root-fs.sh (unexpanded, already-expanded, failed growth, unsupported layouts)
 - `gitlab-runner-version.sh` — central pin for the gitlab-runner version
 - `vm.yaml` — KubeVirt VirtualMachine template (OpenShift only)
-- `vm_test.sh` — tests that vm.yaml's `bootcmd` leaves Fedora repo files usable before cloud-init installs packages
+- `vm_test.sh` — tests that vm.yaml's `bootcmd` leaves Fedora repo files usable (HTTPS `baseurl=`) before cloud-init installs packages
 - `executor/job_id.sh` — shared helper resolving the trusted job ID
 - `executor/prepare.sh` — custom executor prepare stage (reaps leftover OpenShell containers, prunes unused images, starts a per-job gateway matched to the job image's OpenShell version)
 - `executor/run.sh` — custom executor run stage
