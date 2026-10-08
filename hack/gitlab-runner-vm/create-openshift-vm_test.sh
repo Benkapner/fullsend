@@ -56,10 +56,12 @@ case "${cmd}" in
     [ ! -f "${STUB_STATE}/packages_missing" ] ;;
   "sudo sh -es")
     # The repo repair, sent on stdin. Only commands that fix the placeholder
-    # baseurl and the OpenH264 repo mend a repo broken by older user data.
+    # baseurl, switch it to HTTPS (HTTP may be blocked, #8169), and fix the
+    # OpenH264 repo mend a repo broken by older user data.
     cat > "${STUB_STATE}/repair_input"
     [ -f "${STUB_STATE}/repair_fails" ] && exit 1
     if grep -Fq 'download[.]example' "${STUB_STATE}/repair_input" \
+      && grep -Fq 'baseurl=https://dl.fedoraproject.org/' "${STUB_STATE}/repair_input" \
       && grep -Fq 'fedora-cisco-openh264' "${STUB_STATE}/repair_input"; then
       touch "${STUB_STATE}/repo_fixed"
     fi ;;

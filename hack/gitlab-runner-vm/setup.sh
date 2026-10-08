@@ -80,6 +80,8 @@ GITLAB_RUNNER_OVERRIDE_DIR="/etc/systemd/system/gitlab-runner.service.d"
 HOST_CA_BUNDLE="/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
 CA_HOOK_SCRIPT="/usr/local/bin/inject-ca-certs.sh"
 OCI_HOOKS_DIR="/etc/containers/oci/hooks.d"
+# Overridable so setup_test.sh can repair Fedora repo files in a temp dir.
+YUM_REPOS_DIR="/etc/yum.repos.d"
 
 # Source the central gitlab-runner version pin.
 _runner_version_sh="${SCRIPT_DIR}/gitlab-runner-version.sh"
@@ -107,17 +109,27 @@ fix_fedora_repos() {
   #
   # Standard Fedora repo files have baseurl= commented out and metalink=
   # active. This function comments out metalink= and uncomments baseurl=.
+  #
+  # The base URLs themselves are repaired independently of metalink=, so a
+  # repo already switched to baseurl= (e.g. by vm.yaml's bootcmd from an
+  # older template) is fixed too. Keep in step with vm.yaml's bootcmd.
   local changed=0
-  for repo_file in /etc/yum.repos.d/fedora*.repo; do
+  for repo_file in "${YUM_REPOS_DIR}"/fedora*.repo; do
     [ -f "${repo_file}" ] || continue
     if grep -q '^metalink=' "${repo_file}"; then
       sudo sed -i -e 's/^metalink=/#metalink=/' -e 's/^#baseurl=/baseurl=/' "${repo_file}"
-      # Stock Fedora cloud images ship a placeholder baseurl pointing at
-      # download.example (not a real mirror). Replace it with the real
-      # Fedora mirror that is already in the TenantEgress allowlist.
-      if grep -q 'download\.example' "${repo_file}"; then
-        sudo sed -i 's|download\.example|dl.fedoraproject.org|g' "${repo_file}"
-      fi
+      changed=1
+    fi
+    # Stock Fedora cloud images ship a placeholder baseurl pointing at
+    # download.example (not a real mirror), over plain HTTP. Replace it
+    # with the real Fedora mirror that is already in the TenantEgress
+    # allowlist, and use HTTPS: egress-restricted clusters may block
+    # port 80 while HTTPS to dl.fedoraproject.org works.
+    if grep -q 'download\.example' "${repo_file}" \
+      || grep -q '^baseurl=http://dl\.fedoraproject\.org/' "${repo_file}"; then
+      sudo sed -i -e 's|download\.example|dl.fedoraproject.org|g' \
+        -e 's|^baseurl=http://dl\.fedoraproject\.org/|baseurl=https://dl.fedoraproject.org/|' \
+        "${repo_file}"
       changed=1
     fi
   done
@@ -125,7 +137,7 @@ fix_fedora_repos() {
   # The Cisco openh264 repo has broken mirrors on Fedora 43 cloud images
   # and is not needed for runner operation. Disable it to prevent dnf
   # metadata refresh failures.
-  local cisco_repo="/etc/yum.repos.d/fedora-cisco-openh264.repo"
+  local cisco_repo="${YUM_REPOS_DIR}/fedora-cisco-openh264.repo"
   if [ -f "${cisco_repo}" ]; then
     sudo dnf config-manager setopt fedora-cisco-openh264.enabled=0 2>/dev/null \
       || sudo sed -i 's/^enabled=1/enabled=0/' "${cisco_repo}"
@@ -133,9 +145,9 @@ fix_fedora_repos() {
   fi
 
   if [ "${changed}" -eq 1 ]; then
-    ok "switched Fedora repos from metalink to baseurl"
+    ok "switched Fedora repos to HTTPS dl.fedoraproject.org baseurl"
   else
-    ok "Fedora repos already using baseurl"
+    ok "Fedora repos already using HTTPS baseurl"
   fi
 }
 

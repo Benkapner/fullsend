@@ -3,8 +3,9 @@
 # and stale custom-executor path reconciliation, configured executor path
 # verification, configure_per_job_gateway seed-start skip, setup_runner_user
 # UID drop-in),
-# the OpenShell 0.1 upgrade path (configure_gateway, install_openshell), and
-# CA hook permissions for rootless Podman (install_ca_hook).
+# the OpenShell 0.1 upgrade path (configure_gateway, install_openshell),
+# CA hook permissions for rootless Podman (install_ca_hook), and the Fedora
+# repo repair (fix_fedora_repos).
 #
 # Run from the repo root:
 #   bash hack/gitlab-runner-vm/setup_test.sh
@@ -36,6 +37,7 @@ run_setup() {
   local test_host_ca_bundle="${HOST_CA_BUNDLE}"
   local test_ca_hook_script="${CA_HOOK_SCRIPT}"
   local test_oci_hooks_dir="${OCI_HOOKS_DIR}"
+  local test_yum_repos_dir="${YUM_REPOS_DIR}"
   # Not an && / || list: bash ignores errexit inside one, so a failing
   # command in setup.sh (e.g. the installer) would not stop the function.
   set +e
@@ -52,6 +54,7 @@ run_setup() {
     HOST_CA_BUNDLE="${test_host_ca_bundle}"
     CA_HOOK_SCRIPT="${test_ca_hook_script}"
     OCI_HOOKS_DIR="${test_oci_hooks_dir}"
+    YUM_REPOS_DIR="${test_yum_repos_dir}"
     export RUNNER_USER="testuser"
     "${fn}"
   )
@@ -73,6 +76,7 @@ CA_ROOT="${WORK_DIR}/ca-root"
 HOST_CA_BUNDLE="${CA_ROOT}/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
 CA_HOOK_SCRIPT="${CA_ROOT}/usr/local/bin/inject-ca-certs.sh"
 OCI_HOOKS_DIR="${CA_ROOT}/etc/containers/oci/hooks.d"
+YUM_REPOS_DIR="${WORK_DIR}/yum.repos.d"
 SYSTEMCTL_LOG="${SHIM_DIR}/systemctl.log"
 OPENSHELL_LOG="${SHIM_DIR}/openshell.log"
 SUDO_LOG="${SHIM_DIR}/sudo.log"
@@ -1346,6 +1350,101 @@ else
 fi
 unset GITLAB_URL
 rm -f "${SHIM_DIR}/gitlab-runner"
+
+echo "== fix_fedora_repos: HTTPS dl.fedoraproject.org baseurl (#8169) =="
+# sudo runs sed for real; dnf config-manager fails so the OpenH264 repo is
+# disabled through the sed fallback, as on a host without the plugin.
+cat > "${SHIM_DIR}/sudo" <<STUB
+#!/bin/sh
+echo "\$@" >> "${SUDO_LOG}"
+case "\$1" in
+  sed) exec "\$@" ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "${SHIM_DIR}/sudo"
+: > "${SUDO_LOG}"
+
+# write_repo <name> <baseurl line> <metalink line> — one fedora*.repo file.
+write_repo() {
+  cat > "${YUM_REPOS_DIR}/$1.repo" <<EOF
+[$1]
+name=$1
+$2
+$3
+enabled=1
+gpgcheck=1
+EOF
+}
+
+# check_repos — print the enabled repo sections without an HTTPS
+# dl.fedoraproject.org baseurl (or with metalink= still active), and exit
+# non-zero if there are any.
+check_repos() {
+  python3 - "${YUM_REPOS_DIR}" <<'PY'
+import configparser, glob, sys
+bad = []
+for path in sorted(glob.glob(sys.argv[1] + "/fedora*.repo")):
+    cp = configparser.RawConfigParser()
+    cp.read(path)
+    for section in cp.sections():
+        if cp.get(section, "enabled", fallback="1") != "1":
+            continue
+        baseurl = cp.get(section, "baseurl", fallback="")
+        if cp.has_option(section, "metalink"):
+            bad.append(f"{section}: metalink= still active")
+        elif not baseurl.startswith("https://dl.fedoraproject.org/"):
+            bad.append(f"{section}: baseurl={baseurl!r}")
+print("; ".join(bad))
+sys.exit(1 if bad else 0)
+PY
+}
+
+rm -rf "${YUM_REPOS_DIR}"
+mkdir -p "${YUM_REPOS_DIR}"
+# Stock cloud image: metalink= active, placeholder HTTP baseurl commented out.
+# ($releasever/$basearch are dnf variables, kept literal.)
+write_repo fedora '#baseurl=http://download.example/pub/fedora/linux/releases/$releasever/Everything/$basearch/os/' \
+  'metalink=https://mirrors.fedoraproject.org/metalink?repo=fedora-$releasever&arch=$basearch'
+# Repair case: an enabled plain-HTTP baseurl and no active metalink=, as an
+# older bootstrap leaves it. This used to be skipped (no active metalink=).
+write_repo fedora-updates 'baseurl=http://dl.fedoraproject.org/pub/fedora/linux/updates/$releasever/Everything/$basearch/' \
+  '#metalink=https://mirrors.fedoraproject.org/metalink?repo=updates-released-f$releasever&arch=$basearch'
+# Already repaired: must be left alone.
+write_repo fedora-updates-testing 'baseurl=https://dl.fedoraproject.org/pub/fedora/linux/updates/testing/$releasever/Everything/$basearch/' \
+  '#metalink=https://mirrors.fedoraproject.org/metalink?repo=updates-testing-f$releasever&arch=$basearch'
+write_repo fedora-cisco-openh264 '' \
+  'metalink=https://mirrors.fedoraproject.org/metalink?repo=fedora-cisco-openh264-$releasever&arch=$basearch'
+cp "${YUM_REPOS_DIR}/fedora-updates-testing.repo" "${WORK_DIR}/https.repo.before"
+
+run_setup fix_fedora_repos
+if [ "${RUN_SETUP_RC}" -ne 0 ]; then
+  fail "fix_fedora_repos failed (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+elif ! problems=$(check_repos); then
+  fail "fix_fedora_repos left unusable enabled repos: ${problems}"
+else
+  pass "every enabled repo ends on an HTTPS dl.fedoraproject.org baseurl"
+fi
+if grep -h '^[^#]' "${YUM_REPOS_DIR}"/fedora*.repo | grep -Fq 'download.example'; then
+  fail "an active line still points at the download.example placeholder"
+else
+  pass "no active line points at download.example"
+fi
+if cmp -s "${WORK_DIR}/https.repo.before" "${YUM_REPOS_DIR}/fedora-updates-testing.repo"; then
+  pass "an already-HTTPS repo file is left unchanged"
+else
+  fail "fix_fedora_repos rewrote an already-HTTPS repo file"
+fi
+
+cat "${YUM_REPOS_DIR}"/*.repo > "${WORK_DIR}/repos.before"
+run_setup fix_fedora_repos
+cat "${YUM_REPOS_DIR}"/*.repo > "${WORK_DIR}/repos.after"
+if [ "${RUN_SETUP_RC}" -eq 0 ] && cmp -s "${WORK_DIR}/repos.before" "${WORK_DIR}/repos.after" \
+  && grep -Fq 'Fedora repos already using HTTPS baseurl' <<< "${RUN_SETUP_OUT}"; then
+  pass "a second run changes no Fedora repo file"
+else
+  fail "second fix_fedora_repos run was not a no-op (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
 
 if [ "${FAILURES}" -ne 0 ]; then
   echo "${FAILURES} case(s) failed" >&2
