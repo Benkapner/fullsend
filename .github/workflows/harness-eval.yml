@@ -24,9 +24,9 @@ jobs:
 
       # Until 8.0.0 is on PyPI; the action's own install then finds it satisfied.
       - name: Install harness-eval 8.0
-        run: pip install -q "git+https://github.com/redhat-community-ai-tools/harness-eval@0c73ea99770aa2ac384201e294b84f1d0f525f20"
+        run: pip install -q "git+https://github.com/redhat-community-ai-tools/harness-eval@c5762e7cf5b57d00511c259f00706adf4086d389"
 
-      - uses: redhat-community-ai-tools/harness-eval/.github/actions/harness-eval@0c73ea99770aa2ac384201e294b84f1d0f525f20 # v8.0.0 (main)
+      - uses: redhat-community-ai-tools/harness-eval/.github/actions/harness-eval@c5762e7cf5b57d00511c259f00706adf4086d389 # v8.0.0 (main)
         id: harness
         with:
           autonomy: "true"
@@ -47,5 +47,5 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: pip install -q "git+https://github.com/redhat-community-ai-tools/harness-eval@0c73ea99770aa2ac384201e294b84f1d0f525f20"
+      - run: pip install -q "git+https://github.com/redhat-community-ai-tools/harness-eval@c5762e7cf5b57d00511c259f00706adf4086d389"
       - run: harness-eval harness-security . --enforce advisory
