@@ -869,10 +869,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// credential (Poller/Analyst/Coder or a custom role) and export
 	// GITLAB_TOKEN / PUSH_TOKEN from that CI/CD variable. Missing role
 	// credentials fail closed; there is no shared-token fallback. #6865 #7499.
-	mintURL := sOpts.mintURL
-	if mintURL == "" {
-		mintURL = os.Getenv("FULLSEND_MINT_URL")
-	}
+	// Precedence: flag > config.yaml/config.base.yaml mint_url > env (#8192).
+	mintURL := resolveMintURL(sOpts.mintURL, orgCfg, os.Getenv)
 	runtimeLevel := h.PrivilegeLevelForStage(harness.PrivilegeStageRuntime)
 	var minted bool
 	var mintCleanup func()
@@ -6084,7 +6082,8 @@ func titleCase(s string) string {
 func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
 	var notifyCfg config.StatusNotificationConfig
 	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
-	if fsCfg := tryLoadFullsendConfig(orgConfigPath, printer); fsCfg != nil {
+	fsCfg := tryLoadFullsendConfig(orgConfigPath, printer)
+	if fsCfg != nil {
 		// StatusNotifications is part of the shared ConfigReader interface,
 		// so this works for both orgConfig and perRepoConfig.
 		if sn := fsCfg.StatusNotifications(); sn != nil {
@@ -6109,17 +6108,14 @@ func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, 
 	if forgePlatform == "gitlab" {
 		return setupStatusNotifierGitLab(notifyCfg, owner, repo, sOpts, printer)
 	}
-	return setupStatusNotifierGitHub(notifyCfg, owner, repo, role, sOpts, printer)
+	return setupStatusNotifierGitHub(notifyCfg, fsCfg, owner, repo, role, sOpts, printer)
 }
 
 // setupStatusNotifierGitHub creates a status notifier for GitHub. It mints
 // a fresh token via the mint service for each API call and reads SHA/run ID
 // from GitHub Actions environment variables.
-func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner, repo, role string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
-	mintURL := sOpts.mintURL
-	if mintURL == "" {
-		mintURL = os.Getenv("FULLSEND_MINT_URL")
-	}
+func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, orgCfg config.ConfigReader, owner, repo, role string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+	mintURL := resolveMintURL(sOpts.mintURL, orgCfg, os.Getenv)
 	if mintURL == "" {
 		return nil, fmt.Errorf("no mint URL available (set --mint-url or FULLSEND_MINT_URL)")
 	}
@@ -6535,6 +6531,31 @@ func maybeRemintAgentTokenForStage(ctx context.Context, h *harness.Harness, mint
 		cleanup()
 		syncRunnerEnvTokens(h)
 	}, nil
+}
+
+// resolveMintURL resolves the token mint URL with the precedence order
+// documented in docs/contributing/config-source-inventory.md's mint_url
+// row: an explicit flag value wins outright (one-run override); then
+// config.yaml/config.base.yaml's mint_url ("file should win" over the
+// variable kept for older workflows/binaries); then FULLSEND_MINT_URL;
+// then "" so callers keep today's warn-and-skip-minting behavior. The
+// compiled default (DefaultPerRepoMintURL) is deliberately not consulted
+// here — ConfigMintURLFromFile stops short of it, so an installed repo
+// that never configured mint_url anywhere still resolves to "".
+//
+// orgCfg may be nil (no config loaded) or may not implement
+// PerRepoConfigReader (e.g. deprecated org-mode config); both cases
+// simply skip the file layer and fall through to the environment.
+func resolveMintURL(flagValue string, orgCfg config.ConfigReader, getenv func(string) string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	if prc, ok := orgCfg.(config.PerRepoConfigReader); ok {
+		if u := prc.ConfigMintURLFromFile(); u != "" {
+			return u
+		}
+	}
+	return getenv("FULLSEND_MINT_URL")
 }
 
 // mintAgentToken mints a write-level GitHub App installation token for the

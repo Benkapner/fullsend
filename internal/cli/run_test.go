@@ -5031,6 +5031,41 @@ func TestSetupStatusNotifier_MintURLFromEnv(t *testing.T) {
 	assert.True(t, n.HasClientFactory(), "client factory should be set from FULLSEND_MINT_URL env var")
 }
 
+func TestSetupStatusNotifier_MintURLFileWinsOverEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(tmpDir, "config.yaml"),
+		[]byte("version: \"1\"\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "https://mint-from-file.example.com", req.MintURL, "config.yaml's mint_url must win over FULLSEND_MINT_URL")
+		return &mintclient.MintResult{Token: "ghs_test_minted"}, nil
+	}
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	require.NotNil(t, n)
+
+	client, err := n.InvokeClientFactory(context.Background())
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
 func TestSetupStatusNotifier_NoMintURL(t *testing.T) {
 	tmpDir := t.TempDir()
 	printer := ui.New(io.Discard)
@@ -7330,6 +7365,167 @@ func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 	assert.True(t, mintCalled, "should have used FULLSEND_MINT_URL env var fallback")
+}
+
+func TestRunAgent_MintURLFileWinsOverEnv(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var mintCalled bool
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		mintCalled = true
+		assert.Equal(t, "https://mint-from-file.example.com", req.MintURL, "config.yaml's mint_url must win over FULLSEND_MINT_URL")
+		return &mintclient.MintResult{Token: "ghs_file_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	// A stale/different value in the environment — simulating a
+	// repository variable set at install time that the file has since
+	// overridden without anyone updating the variable.
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	assert.True(t, mintCalled, "should have minted using config.yaml's mint_url")
+}
+
+func TestRunAgent_MintURLFromBaseFileWinsOverEnv(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	// config.base.yaml carries mint_url; config.yaml is present (so the
+	// repo is in layered mode) but does not override it.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.base.yaml"),
+		[]byte("version: \"1\"\nmint_url: https://mint-from-base.example.com\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var mintCalled bool
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		mintCalled = true
+		assert.Equal(t, "https://mint-from-base.example.com", req.MintURL, "config.base.yaml's mint_url must win over FULLSEND_MINT_URL when config.yaml is silent")
+		return &mintclient.MintResult{Token: "ghs_base_file_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	assert.True(t, mintCalled, "should have minted using config.base.yaml's mint_url")
+}
+
+func TestRunAgent_MintURLFlagWinsOverFile(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var mintCalled bool
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		mintCalled = true
+		assert.Equal(t, "https://mint-from-flag.example.com", req.MintURL, "--mint-url flag must win over config.yaml's mint_url")
+		return &mintclient.MintResult{Token: "ghs_flag_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	sOpts := statusOpts{mintURL: "https://mint-from-flag.example.com"}
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, sOpts, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	assert.True(t, mintCalled, "should have minted using the --mint-url flag")
 }
 
 func TestRunAgent_MintsRuntimePrivilegeLevel(t *testing.T) {
