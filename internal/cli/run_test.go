@@ -549,6 +549,51 @@ func TestTryLoadFullsendConfig_OmittedAllowlist(t *testing.T) {
 		"omitted field must get defaults")
 }
 
+func TestTryLoadLayeredFullsendConfig_BaseOnly(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(
+		"version: \"1\"\nmint_url: https://mint-from-base.example.com\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadLayeredFullsendConfig(dir, printer)
+	require.NotNil(t, cfg, "config.base.yaml alone (no config.yaml) must be honored")
+	prc, ok := cfg.(config.PerRepoConfigReader)
+	require.True(t, ok)
+	assert.Equal(t, "https://mint-from-base.example.com", prc.ConfigMintURLFromFile())
+}
+
+func TestTryLoadLayeredFullsendConfig_NeitherFileExists(t *testing.T) {
+	dir := t.TempDir()
+	printer := ui.New(io.Discard)
+	assert.Nil(t, tryLoadLayeredFullsendConfig(dir, printer))
+}
+
+func TestTryLoadLayeredFullsendConfig_OverlayWinsOverBase(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(
+		"version: \"1\"\nmint_url: https://mint-from-base.example.com\n",
+	), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"version: \"1\"\nmint_url: https://mint-from-overlay.example.com\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadLayeredFullsendConfig(dir, printer)
+	require.NotNil(t, cfg)
+	prc, ok := cfg.(config.PerRepoConfigReader)
+	require.True(t, ok)
+	assert.Equal(t, "https://mint-from-overlay.example.com", prc.ConfigMintURLFromFile())
+}
+
+func TestTryLoadLayeredFullsendConfig_MalformedBase(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte("[[[not yaml"), 0o644))
+
+	printer := ui.New(io.Discard)
+	assert.Nil(t, tryLoadLayeredFullsendConfig(dir, printer))
+}
+
 func TestRequireFullsendConfig_OrgGetsDefaultAllowlist(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -5064,6 +5109,77 @@ func TestSetupStatusNotifier_MintURLFileWinsOverEnv(t *testing.T) {
 	client, err := n.InvokeClientFactory(context.Background())
 	require.NoError(t, err)
 	assert.NotNil(t, client)
+}
+
+// TestSetupStatusNotifier_MintURLFromBaseFileWinsOverEnv covers the
+// base-only layout (config.base.yaml present, config.yaml absent from
+// disk) that tryLoadFullsendConfig used to silently drop entirely,
+// since it gated on config.yaml's mere existence before ever
+// consulting config.base.yaml. setupStatusNotifier must resolve
+// mint_url from the base file and prefer it over FULLSEND_MINT_URL,
+// matching runAgent's resolveMintURL precedence
+// (TestRunAgent_MintURLFromBaseFileWinsOverEnv).
+func TestSetupStatusNotifier_MintURLFromBaseFileWinsOverEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(tmpDir, "config.base.yaml"),
+		[]byte("version: \"1\"\nmint_url: https://mint-from-base.example.com\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "https://mint-from-base.example.com", req.MintURL,
+			"config.base.yaml's mint_url must win over FULLSEND_MINT_URL when config.yaml is absent")
+		return &mintclient.MintResult{Token: "ghs_base_test_minted"}, nil
+	}
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	require.NotNil(t, n)
+
+	client, err := n.InvokeClientFactory(context.Background())
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+// TestSetupStatusNotifier_MintURLFromBaseFileWithoutEnv confirms the
+// base-only mint_url is honored even when FULLSEND_MINT_URL is unset,
+// so the file layer is genuinely consulted rather than the test only
+// passing by coincidence of the env-var fallback.
+func TestSetupStatusNotifier_MintURLFromBaseFileWithoutEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(tmpDir, "config.base.yaml"),
+		[]byte("version: \"1\"\nmint_url: https://mint-from-base.example.com\n"),
+		0o644,
+	))
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "review", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+	assert.True(t, n.HasClientFactory(), "client factory should be set from config.base.yaml's mint_url with no env var set")
 }
 
 func TestSetupStatusNotifier_NoMintURL(t *testing.T) {

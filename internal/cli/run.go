@@ -6103,8 +6103,7 @@ func titleCase(s string) string {
 // code-hosting forge (ADR 0093).
 func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
 	var notifyCfg config.StatusNotificationConfig
-	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
-	fsCfg := tryLoadFullsendConfig(orgConfigPath, printer)
+	fsCfg := tryLoadLayeredFullsendConfig(fullsendDir, printer)
 	if fsCfg != nil {
 		// StatusNotifications is part of the shared ConfigReader interface,
 		// so this works for both orgConfig and perRepoConfig.
