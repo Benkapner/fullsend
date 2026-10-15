@@ -181,6 +181,18 @@ repo baseline and overrides)
   (contract: [`docs/normative/prescript-output/v1`](normative/prescript-output/v1/README.md)),
   replacing the inline workflow pre-checks and their scaffold script copies
   ([ADR 0072](ADRs/0072-pre-script-output-protocol.md)).
+- Deterministic forge entity-context-snapshot (v1): before the pre-script, the
+  runner fetches one
+  bounded entity snapshot through `forge.Client`, filters untrusted content,
+  and stages a versioned per-record file tree with relationship, projection,
+  and immutable agent-run lineage metadata outside the repository. Repository
+  diffs and commit history remain derived from the separately provisioned Git
+  checkout; the entity-context-snapshot carries Git object IDs only as
+  relationship anchors.
+  Scripts and the sandbox use `FULLSEND_CONTEXT_DIR` with the same relative
+  paths; runtimes may inject ordered records as separate cacheable input blocks
+  ([ADR 0141](ADRs/0141-deterministic-filtered-entity-context-staging.md),
+  constrained by [ADR 0133](ADRs/0133-actor-attributed-data-security-boundary.md)).
 - CEL-guarded overlays: an `overlays:` list of CEL-guarded config
   overlays generalizes the `forge:` block, letting harness authors
   condition scripts, skills, env vars, and other fields on any event
@@ -391,6 +403,16 @@ The existing design principle is that [the repo is the coordinator](problems/age
   non-label paths ([ADR 0107](ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md);
   [Authorization Contract v1](normative/authorization/v1/);
   [ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
+- Data security boundary (target state): each source-system record is admitted
+  only when its actor attribution and current authorization meet the selected
+  harness threshold, regardless of whether it arrives through an event or a
+  proactive API read; unrecognized or unauthorized content is redacted.
+  Host-side filtering removes hidden characters, redacts sensitive data, scans
+  for prompt injection, and applies size limits before filtered,
+  provenance-labelled content reaches the model. This ADR does not govern
+  model-initiated direct source-system calls; future ADRs may encourage use of
+  platform-originated checked data or add filtering for model-originated
+  retrievals ([ADR 0133](ADRs/0133-actor-attributed-data-security-boundary.md)).
 - Poll entity-discovery authorization: `fullsend poll` has no prompting event
   actor; verified, non-user-assertable Fullsend invocation provenance authorizes
   entity enumeration and evaluation, and callers without it are denied. Before

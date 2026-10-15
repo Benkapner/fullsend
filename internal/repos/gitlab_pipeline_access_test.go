@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -49,6 +50,13 @@ func TestPollerCanCreatePipeline(t *testing.T) {
 			PushAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 30}},
 		}
 		assert.True(t, PollerCanCreatePipeline(rule, nil))
+	})
+	t.Run("deploy key grant is not a role grant", func(t *testing.T) {
+		rule := &forge.ProtectedBranchRule{
+			MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+			PushAccessLevels:  []forge.ProtectedBranchAccess{{AccessLevel: 30, DeployKeyID: 12}},
+		}
+		assert.False(t, PollerCanCreatePipeline(rule, poller))
 	})
 	t.Run("maintainer only", func(t *testing.T) {
 		rule := &forge.ProtectedBranchRule{
@@ -129,6 +137,27 @@ func TestEnsureGitLabPollerPipelineAccess_Unprotected(t *testing.T) {
 	assert.Equal(t, "main", res.Branch)
 	assert.Empty(t, res.Action)
 	assert.Empty(t, fc.GrantedProtectedBranchMergeUsers)
+}
+
+// The protected-pipeline probe of a replacement Poller generation reads the
+// branch policy and never changes it.
+func TestVerifyGitLabPollerProtectedPipelineAccess(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	seedRepo(fc, "group", "project", "release")
+	require.Error(t, VerifyGitLabPollerProtectedPipelineAccess(ctx, fc, "group", "project", 0))
+	require.NoError(t, VerifyGitLabPollerProtectedPipelineAccess(ctx, fc, "group", "project", 99), "an unprotected branch passes")
+
+	fc.ProtectedBranchRules["group/project/release"] = maintainerOnlyRule("release")
+	err := VerifyGitLabPollerProtectedPipelineAccess(ctx, fc, "group", "project", 99)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `user ID 99 cannot start pipelines on protected branch "release"`)
+	assert.Empty(t, fc.GrantedProtectedBranchMergeUsers, "the probe never grants access")
+
+	fc.Errors = map[string]error{"GetProtectedBranch": forge.ErrNotSupported}
+	require.NoError(t, VerifyGitLabPollerProtectedPipelineAccess(ctx, fc, "group", "project", 99))
+	fc.Errors = map[string]error{"GetProtectedBranch": errors.New("500")}
+	require.Error(t, VerifyGitLabPollerProtectedPipelineAccess(ctx, fc, "group", "project", 99))
 }
 
 func TestEnsureGitLabPollerPipelineAccess_DeveloperPreset(t *testing.T) {
@@ -351,9 +380,12 @@ func TestDescribePipelineAccess(t *testing.T) {
 			{AccessLevel: 0},
 			{UserID: 9},
 			{GroupID: 3},
+			{AccessLevel: 40, DeployKeyID: 12},
 			{AccessLevel: 60},
 		},
 	})
+	assert.Contains(t, got, "deploy-key:12")
+	assert.NotContains(t, got, "maintainer+")
 	assert.Contains(t, got, "no one")
 	assert.Contains(t, got, "user:9")
 	assert.Contains(t, got, "group:3")
@@ -446,4 +478,18 @@ func TestWithSuppliedPollerUserID(t *testing.T) {
 	assert.Equal(t, []int{5}, WithSuppliedPollerUserID(ctx, set(t, suppliedCoderEnrolledState), "group", "project", []int{5}), "a supplied non-Poller role adds nothing")
 	assert.Equal(t, []int{5}, WithSuppliedPollerUserID(ctx, set(t, ""), "group", "project", []int{5}), "no state adds nothing")
 	assert.Equal(t, []int{5}, WithSuppliedPollerUserID(ctx, nil, "group", "project", []int{5}), "no client adds nothing")
+}
+
+func TestProtectedRuleAdmitsUserIgnoresDeployKeyGrants(t *testing.T) {
+	deployKeyOnly := forge.ProtectedBranchRule{
+		Name:             "main",
+		PushAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40, DeployKeyID: 12}},
+	}
+	assert.False(t, protectedRuleAdmitsUser(deployKeyOnly, 99, 40))
+
+	maintainerRole := forge.ProtectedBranchRule{
+		Name:             "main",
+		PushAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+	}
+	assert.True(t, protectedRuleAdmitsUser(maintainerRole, 99, 40))
 }

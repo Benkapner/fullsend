@@ -127,7 +127,7 @@ and typed pins predating the secured contract are unsupported.
 > schedules were never created, expect any such re-run to fail even when
 > it's otherwise applying an unrelated change. Set manifest options like
 > `gitlab.agent_runner_tags` (see [Runner Configuration](#runner-configuration)
-> below) with `repos set-default` *before* your first install so they're
+> below) with `repos set` *before* your first install so they're
 > captured by that first, non-converge run instead of requiring a
 > converge-path re-run later. Rely on [Off-system
 > polling](#off-system-polling) for pickup on repos where schedule
@@ -175,7 +175,7 @@ whenever it's omitted, and nothing auto-populates it. Pass
 `https://gitlab.com` for gitlab.com, or your instance URL for a self-hosted
 install (`--gitlab-url https://gitlab.example.com`); either form also
 implies `--forge=gitlab` when no forge is specified. You can set it after
-the fact instead with `fullsend repos set-default gitlab.url <url>`.
+the fact instead with `fullsend repos set gitlab.url <url>`.
 
 The command bootstraps a `repos.yaml` manifest if one does not exist,
 then converges the project:
@@ -210,7 +210,17 @@ then converges the project:
   step is deferred until the dispatcher and its scripts are on the default
   branch, the default branch is protected, and
   `no_one_allowed` is verified, so on a merge-request install re-run
-  `repos install` after the scaffold merges. Re-runs are no-ops and repair a
+  `repos install` after the scaffold merges. A project, group, or
+  instance-level CI/CD variable that redefines a predefined variable such
+  as `CI_PIPELINE_SOURCE` or `CI_COMMIT_REF_PROTECTED` also defers it.
+  Instance-level variables can only be listed with administrator access
+  and group variables with group Owner access. Every scope your
+  credential can read is checked; a scope it cannot read is skipped as
+  unverified and neither defers the fast path nor revokes an existing
+  one, so a project Maintainer can enable it without administrator or
+  group Owner access. Fullsend does not verify those scopes; see
+  [Inherited CI/CD variable trust](#inherited-cicd-variable-trust)
+  for the security assumption this relies on. Re-runs are no-ops and repair a
   missing or drifted webhook or token; `--rotate-gitlab-trigger-token`
   rotates the token and revokes the old one after the webhook is updated.
   The polling schedules stay in place as the backstop. Token and secret
@@ -232,8 +242,9 @@ then converges the project:
   token to the Maintainer who creates it, the fast path stays disabled
   when the only available creator is a Maintainer or Owner; the polling
   schedules keep working, and the poller, dispatcher, and agent
-  credentials stay Developer-level. A Poller-owned trigger lifecycle
-  stays deferred; see
+  credentials stay Developer-level. Where the project is eligible, the
+  trigger is owned by a fresh Poller service account that is verified at
+  Developer before its credential is published; see
   [Project service accounts](#project-service-accounts).
 * Writes inference CI/CD variables when `--vertex-project` is set.
 
@@ -242,6 +253,46 @@ to the default branch instead. Preview with `--dry-run`.
 
 For the full list of install flags, see the
 [CLI reference](../../cli/repos.md#repos-install).
+
+### Inherited CI/CD variable trust
+
+> **Security assumption:** the webhook fast path trusts GitLab instance
+> administrators and group Owners not to define CI/CD variables that
+> redefine predefined variables such as `CI_PIPELINE_SOURCE` or
+> `CI_COMMIT_REF_PROTECTED`. Fullsend checks only the scopes the installing
+> credential can read. It does not verify the others and cannot prove that
+> no override exists there.
+
+GitLab gives instance and group CI/CD variables
+[precedence](https://docs.gitlab.com/ci/variables/#ci-cd-variable-precedence)
+over predefined values. Fullsend decides statically which committed jobs
+can run in a trigger pipeline. An inherited override of one of these
+variables can make that check wrongly conclude that a user-owned job is
+excluded. GitLab would then run that job in a protected trigger pipeline,
+where it receives the protected, wildcard-scoped project credentials and
+its GitLab job token before the dispatcher's runtime checks run. The same
+applies to an override added **after** installation: later `repos install`
+and `repos status` runs cannot inspect that scope either.
+
+Without administrator access, `repos install` cannot list instance-level
+variables. Without group Owner access, it cannot list the variables of an
+ancestor group. A forbidden response means the scope is unverified, not
+unsafe: the fast path is activated or retained when the remaining checks
+pass. These checks still apply:
+
+* A collision found in any scope the credential **can** read defers the
+  fast path and revokes existing managed credentials. So does a
+  collision in a project variable.
+* Errors other than forbidden from those listings fail the step instead
+  of being treated as unverified.
+* The committed-CI job and include exclusion checks, protected-ref
+  checks, the `no_one_allowed` pipeline-variable restriction, the
+  debug-trace gate, dispatcher job identity verification, and the
+  polling fallback all still apply.
+
+Environment-scoped variables do not mitigate this risk. A job can
+declare the matching environment, and Fullsend stores and reads these
+credentials at the wildcard scope.
 
 ### Enabling a subset of agents
 
@@ -442,19 +493,20 @@ cleanup of those. See [Operations § Uninstalling](operations.md#uninstalling).
 > and older uninstall revokes active role-named tokens, supplied ones included
 > (see
 > [Upgrade compatibility](../../cli/repos.md#upgrade-compatibility)). The
-> webhook fast path stays deferred and the polling schedules stay the dispatch
-> path until the live fresh-identity Poller handoff
-> ([#8243](https://github.com/fullsend-ai/fullsend/issues/8243)) merges and is
-> validated.
+> live fresh-identity Poller handoff
+> ([#8243](https://github.com/fullsend-ai/fullsend/issues/8243)) activates the
+> webhook fast path where the project is eligible. Ineligible or ambiguous
+> projects defer, and the polling schedules stay the dispatch path.
 
 > **Poller elevation safety:** Re-elevating a Poller identity that ever held a
 > distributed runtime credential requires a verified server-side guarantee
 > that requests accepted before credential revocation, including asynchronous
 > credential and job creation, have finished. The current GitLab adapter
-> cannot establish that guarantee, so it defers temporary Maintainer elevation
-> and new trigger creation. Polling continues with Developer credentials;
-> compliant existing triggers can still be reused. Revocation and empty
-> resource inventories alone do not prove that requests have drained.
+> cannot establish that guarantee, so it never re-elevates the current Poller
+> and creates new triggers through a fresh Poller generation instead. Polling
+> continues with Developer credentials; compliant existing triggers can still
+> be reused. Revocation and empty resource inventories alone do not prove that
+> requests have drained.
 
 Fresh installs create a separate project service account for
 the Poller, Analyst, and Coder roles where the instance supports project
@@ -509,17 +561,20 @@ Remaining SSH credentials, unfinished jobs, schedules or triggers prevent
 account deletion; address the reported resource and retry uninstall.
 
 GitLab ties a trigger token to the user who creates it, and creating one needs
-Maintainer. The target design therefore creates it as a fresh replacement
+Maintainer. Install therefore creates it as a fresh replacement
 Poller service account that has never held a distributed credential, instead
-of the installing Maintainer or the current Poller. Re-elevating an identity
-whose runtime credential was distributed is unsafe, because GitLab has no
-drain barrier for requests accepted before revocation. This stays deferred
-until the live handoff
-([#8243](https://github.com/fullsend-ai/fullsend/issues/8243)) is wired to an
-adapter. When enabled, install:
+of the installing Maintainer or the current Poller
+([#8243](https://github.com/fullsend-ai/fullsend/issues/8243)). Re-elevating an
+identity whose runtime credential was distributed is unsafe, because GitLab has
+no drain barrier for requests accepted before revocation. Install:
 
 1. Creates the replacement Poller service account at Developer and records
-   its ID in `FULLSEND_GITLAB_POLLER_GENERATIONS` before acting.
+   its ID in `FULLSEND_GITLAB_POLLER_GENERATIONS` before acting. Creating the
+   replacement account never changes branch protection. Fullsend checks
+   default-branch pipeline access read-only and defers the handoff before
+   elevation when the existing policy (for example a protected default branch
+   that only lists individual users) excludes the replacement Poller; it never
+   writes a merge grant for the replacement account.
 2. Creates an installer-only bootstrap personal access token for the
    replacement account. The bootstrap token is never stored in a CI/CD
    variable, log, or agent environment.
@@ -531,28 +586,54 @@ adapter. When enabled, install:
 5. Confirms the trigger is owned by the replacement account, re-checks the
    project-wide trigger-safety invariants (pipeline-variable override policy,
    no other protected branches or tags, the standard CI configuration path,
-   and trigger pipelines that run only the dispatcher), and starts a pipeline
-   on the protected default branch at Developer access. The same invariants
+   and trigger pipelines that run only the dispatcher), and confirms the
+   replacement account, at Developer access, may start pipelines on the
+   protected default branch under the existing branch rule. This check reads
+   the rule without changing it or starting a pipeline. The same invariants
    are checked before the account is raised, so an unsafe or unverifiable
    project defers the handoff before any trigger exists. A trigger owned by a
    different user than the replacement account is quarantined with an
    instruction to delete that exact trigger and confirm it is gone.
-6. Publishes the replacement runtime credential and cuts over; the previous
-   Poller is then retired.
+6. Records that the trigger may be distributed, stores the trigger secret
+   (`FULLSEND_TRIGGER_TOKEN`), and creates or updates the webhook. Then, only
+   after both succeed, publishes the replacement runtime credential and cuts
+   over. The previous Poller stays at Developer as the retiring generation
+   until it is retired
+   ([#8244](https://github.com/fullsend-ai/fullsend/issues/8244)); until then
+   a forced trigger rotation defers and keeps the existing fast path.
 
 The current Poller is never elevated or modified, and keeps polling
 throughout, so polling and in-flight jobs that authenticate as the current
 Poller are not interrupted. The webhook is enabled or updated only after the
-replacement is verified. If any step after the trigger-create request fails,
-install publishes nothing and quarantines the generation with an
-operator-facing reason. A quarantined generation or a lost account ID blocks
-any new generation until an administrator reviews
+replacement is verified. If the trigger request, its verification, or the
+final checks fail, install publishes nothing and quarantines the generation
+with an operator-facing reason. A quarantined generation or a lost account ID
+blocks any new generation until an administrator reviews
 `FULLSEND_GITLAB_POLLER_GENERATIONS`, deletes any pipeline trigger the
 replacement account owns, removes the replacement account, and then removes
-only the `pending` generation, keeping `version`, `current_user_id` and
-`retiring_user_id` so the running Poller is still recorded and retired at the
-next cutover. Removing `pending` forgets the account and its trigger, so do it
-only after both are gone.
+only the `pending` generation, keeping `version`, `current_user_id`,
+`retiring_user_id` and `abandoned_user_ids` so the running Poller is still
+recorded and retired at the next cutover. Removing `pending` forgets the
+account and its trigger, so do it only after both are gone.
+
+A failure while storing the trigger secret (including a write whose outcome is
+unknown) or while creating or updating the webhook does not quarantine the
+generation and records no cutover; the current Poller stays in service. The
+trigger may already have reached protected jobs, so the next install revokes
+it, confirms by listing again that it is gone, and never raises that account
+again: the account is recorded in `abandoned_user_ids`, stays at Developer
+without credentials, and a fresh account finishes the handoff. Uninstall
+verifies and deletes abandoned, retiring and pending accounts. After
+several abandoned accounts, install stops creating new ones until they are
+deleted and `abandoned_user_ids` is cleared. A cutover interrupted after the
+webhook and credential are live is finished by the next install, which does
+not create another trigger.
+
+An absent `FULLSEND_GITLAB_POLLER_GENERATIONS` variable is an empty state,
+which is also the starting point after an administrator deletes it. A variable
+that exists but is blank fails closed, because recorded state may have been
+lost; see the variable table in the
+[operations guide](operations.md) for the full recovery steps.
 
 An unresolved retiring Poller is a separate condition: it blocks any new
 generation and cutover, and removing `pending` does not clear it. Retirement
@@ -561,17 +642,20 @@ triggers and account are removed and its `retiring_user_id` is then cleared
 through the retirement step (`finishPollerRetirement`). Polling continues with
 the current Poller in the meantime.
 
-Install refuses to raise the Poller, and defers the fast path, when the Poller
-service account holds an active personal access token that fullsend does not
-manage, or owns a pipeline trigger token that fullsend does not manage, or
-when its credentials cannot be listed. Revoke the extra token or trigger
-before re-running install; fullsend never revokes credentials it does not
-manage, and an administrator-supplied Poller credential is left untouched.
+The current Poller is not raised, so its own credentials do not block the
+handoff. The checks that guard the temporary Maintainer elevation apply to the
+fresh replacement account instead: install defers the fast path, before any
+trigger exists, when the replacement holds an active personal access token,
+owns a pipeline trigger that fullsend does not manage, or holds a usable SSH
+key, an unfinished job or a pipeline schedule, when the project-wide
+trigger-safety invariants do not hold, or when its credentials cannot be
+listed. Fullsend never revokes credentials it does not manage, and an
+administrator-supplied Poller credential is left untouched.
 
-When the Poller is a project access token bot, its role cannot be raised, so
-the fast path stays deferred. Rotating the Poller migrates it to a service
-account. In every deferral the polling schedules keep working, and the poller,
-dispatcher, and agent credentials stay Developer-level. See the
+When the Poller is a project access token bot, no generation can be recorded
+for it, so the fast path stays deferred. Rotating the Poller migrates it to a
+service account. In every deferral the polling schedules keep working, and the
+poller, dispatcher, and agent credentials stay Developer-level. See the
 [CLI reference](../../cli/repos.md#gitlab-project-service-account-lifecycle)
 and the
 [role-credential contract](../../contributing/gitlab-role-credentials.md#project-service-accounts)
@@ -919,7 +1003,7 @@ tag-restricted with no untagged pool, set `gitlab.control_runner_tags`
 explicitly or the poll job will sit pending indefinitely:
 
 ```bash
-fullsend repos set-default gitlab.agent_runner_tags fullsend-gitlab-runner
+fullsend repos set gitlab.agent_runner_tags '[fullsend-gitlab-runner]'
 fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
@@ -931,7 +1015,7 @@ example, a cheaper high-concurrency runner without sandbox capacity),
 set `gitlab.control_runner_tags` explicitly:
 
 ```bash
-fullsend repos set-default gitlab.control_runner_tags fullsend-api
+fullsend repos set gitlab.control_runner_tags '[fullsend-api]'
 ```
 
 > **Migration note.** Upgrading an existing install that only had the
@@ -954,14 +1038,15 @@ fullsend repos set-default gitlab.control_runner_tags fullsend-api
 > no drift is detected and no repair commit runs there — that install
 > keeps its old rendered tag until it moves past the pre-split pin. The
 > on-disk `gitlab.runner_tags` key is separately rewritten to
-> `gitlab.agent_runner_tags` the next time a manifest-writing command
-> runs (see [`repos
-> set-default`](../../cli/repos.md#repos-set-default) for exactly which
-> commands persist the rewrite); that key rewrite is unrelated to the
-> poll job's tag default described above.
+> `gitlab.agent_runner_tags` the next time `repos install` appends
+> manifest entries or `repos uninstall` removes them. [`repos
+> set`](../../cli/repos.md#repos-set) edits the file in place and leaves
+> the old key alone; remove it with `fullsend repos set --unset
+> gitlab.runner_tags`. That key rewrite is unrelated to the poll job's
+> tag default described above.
 
 If the repo is already installed, setting the tag with `repos
-set-default` and re-running `fullsend repos install -f repos.yaml`
+set` and re-running `fullsend repos install -f repos.yaml`
 takes the converge path instead of a fresh install: it retries any
 not-yet-created pipeline schedules, and on any instance where schedule
 creation previously failed that retry fails
@@ -1185,7 +1270,7 @@ GitLab repos are present` otherwise. Set it via `--gitlab-url` at
 install time, or later with:
 
 ```bash
-fullsend repos set-default gitlab.url https://gitlab.example.com
+fullsend repos set gitlab.url https://gitlab.example.com
 ```
 
 Self-hosted instances sign OIDC tokens with their own issuer. The GCP
