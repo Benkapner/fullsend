@@ -7483,6 +7483,118 @@ func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
 	assert.True(t, mintCalled, "should have used FULLSEND_MINT_URL env var fallback")
 }
 
+// TestResolveMintURL_Source verifies resolveMintURL reports where its
+// returned value came from, which runAgent (#8400 follow-up) relies on to
+// decide whether a missing GitHub Actions OIDC environment should warn-and-
+// skip (file source) or stay fail-closed (flag/env source).
+func TestResolveMintURL_Source(t *testing.T) {
+	fileCfgDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(fileCfgDir, "config.yaml"),
+		[]byte("version: \"1\"\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+	fileCfg, err := config.LoadConfigWriter(fileCfgDir, config.LoadOpts{MissingOK: true})
+	require.NoError(t, err)
+
+	emptyCfgDir := t.TempDir()
+	emptyCfg, err := config.LoadConfigWriter(emptyCfgDir, config.LoadOpts{MissingOK: true})
+	require.NoError(t, err)
+
+	getenvWith := func(v string) func(string) string {
+		return func(key string) string {
+			if key == "FULLSEND_MINT_URL" {
+				return v
+			}
+			return ""
+		}
+	}
+
+	tests := []struct {
+		name       string
+		flagValue  string
+		orgCfg     config.ConfigReader
+		getenv     func(string) string
+		wantURL    string
+		wantSource mintURLSource
+	}{
+		{
+			name:       "flag wins over file and env",
+			flagValue:  "https://mint-from-flag.example.com",
+			orgCfg:     fileCfg,
+			getenv:     getenvWith("https://mint-from-env.example.com"),
+			wantURL:    "https://mint-from-flag.example.com",
+			wantSource: mintURLSourceFlag,
+		},
+		{
+			name:       "file wins over env when no flag",
+			flagValue:  "",
+			orgCfg:     fileCfg,
+			getenv:     getenvWith("https://mint-from-env.example.com"),
+			wantURL:    "https://mint-from-file.example.com",
+			wantSource: mintURLSourceFile,
+		},
+		{
+			name:       "env used when file is silent",
+			flagValue:  "",
+			orgCfg:     emptyCfg,
+			getenv:     getenvWith("https://mint-from-env.example.com"),
+			wantURL:    "https://mint-from-env.example.com",
+			wantSource: mintURLSourceEnv,
+		},
+		{
+			name:       "env used when orgCfg is nil",
+			flagValue:  "",
+			orgCfg:     nil,
+			getenv:     getenvWith("https://mint-from-env.example.com"),
+			wantURL:    "https://mint-from-env.example.com",
+			wantSource: mintURLSourceEnv,
+		},
+		{
+			name:       "none when nothing is set",
+			flagValue:  "",
+			orgCfg:     emptyCfg,
+			getenv:     getenvWith(""),
+			wantURL:    "",
+			wantSource: mintURLSourceNone,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotURL, gotSource := resolveMintURL(tt.flagValue, tt.orgCfg, tt.getenv)
+			assert.Equal(t, tt.wantURL, gotURL)
+			assert.Equal(t, tt.wantSource, gotSource)
+		})
+	}
+}
+
+// TestHasActionsOIDCEnv verifies the gate runAgent uses to decide whether a
+// file-sourced mint_url can be attempted: both OIDC request env vars must
+// be present, matching mintclient.fetchOIDCJWT's own requirement.
+func TestHasActionsOIDCEnv(t *testing.T) {
+	tests := []struct {
+		name         string
+		requestURL   string
+		requestToken string
+		want         bool
+	}{
+		{"both set", "https://actions.example.com", "tok", true},
+		{"url missing", "", "tok", false},
+		{"token missing", "https://actions.example.com", "", false},
+		{"neither set", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := map[string]string{
+				"ACTIONS_ID_TOKEN_REQUEST_URL":   tt.requestURL,
+				"ACTIONS_ID_TOKEN_REQUEST_TOKEN": tt.requestToken,
+			}
+			got := hasActionsOIDCEnv(func(k string) string { return env[k] })
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestRunAgent_MintURLFileWinsOverEnv(t *testing.T) {
 	useFakeOpenshell(t)
 	dir := t.TempDir()
@@ -7524,6 +7636,11 @@ func TestRunAgent_MintURLFileWinsOverEnv(t *testing.T) {
 	t.Setenv("GH_TOKEN", "")
 	t.Setenv("PUSH_TOKEN", "")
 	t.Setenv("PUSH_TOKEN_SOURCE", "")
+	// A file-sourced mint_url only proceeds to mint when GitHub Actions
+	// OIDC is available; otherwise it is a warn-and-skip (#8400). Set
+	// both so this test exercises the "mint attempted" branch.
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://actions.example.com/oidc")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "fake-oidc-request-token")
 
 	var buf bytes.Buffer
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
@@ -7581,6 +7698,11 @@ func TestRunAgent_MintURLFromBaseFileWinsOverEnv(t *testing.T) {
 	t.Setenv("GH_TOKEN", "")
 	t.Setenv("PUSH_TOKEN", "")
 	t.Setenv("PUSH_TOKEN_SOURCE", "")
+	// A file-sourced mint_url only proceeds to mint when GitHub Actions
+	// OIDC is available; otherwise it is a warn-and-skip (#8400). Set
+	// both so this test exercises the "mint attempted" branch.
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://actions.example.com/oidc")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "fake-oidc-request-token")
 
 	var buf bytes.Buffer
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
@@ -7642,6 +7764,105 @@ func TestRunAgent_MintURLFlagWinsOverFile(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 	assert.True(t, mintCalled, "should have minted using the --mint-url flag")
+}
+
+func TestRunAgent_MintURLFromFileSkipsWithoutOIDC(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	// No --mint-url flag, no FULLSEND_MINT_URL, and critically no
+	// ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN — this is the local-run case from
+	// docs/guides/user/running-agents-locally.md: the ambient GH_TOKEN is
+	// used directly and minting is skipped, exactly as it was before
+	// config.yaml's mint_url was consulted at all.
+	t.Setenv("FULLSEND_MINT_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "fake-gh-token")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "agent token minting failed", "a file-sourced mint_url without OIDC must not hard-fail the run")
+	assert.Contains(t, err.Error(), "openshell", "run should proceed past the skipped mint to the shell stage")
+	assert.Contains(t, buf.String(), "GitHub Actions OIDC is unavailable", "should warn that the file-sourced mint_url was skipped")
+	// mintAgentTokenAtLevel only calls os.Setenv("GH_TOKEN", ...) after a
+	// successful mint; skipping the mint attempt means that call never
+	// happens, so GH_TOKEN must still hold the ambient value set above,
+	// not a minted one. The fake openshell stub exits before reading any
+	// env vars, so this is the only way this test can observe that the
+	// ambient credential was left for the (unexercised) shell to use.
+	assert.Equal(t, "fake-gh-token", os.Getenv("GH_TOKEN"), "GH_TOKEN must remain the ambient token; minting must not have touched it")
+}
+
+// TestRunAgent_MintURLFlagFailsClosedWithoutOIDC confirms the other half of
+// the #8400 follow-up fix: unlike a file-sourced mint_url, an explicit
+// --mint-url flag (or FULLSEND_MINT_URL) is a deliberate signal from the
+// operator and stays fail-closed — it must still hard-fail when GitHub
+// Actions OIDC is unavailable, rather than silently degrading.
+func TestRunAgent_MintURLFlagFailsClosedWithoutOIDC(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "fake-gh-token")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	sOpts := statusOpts{mintURL: "https://mint-from-flag.example.com"}
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, sOpts, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent token minting failed", "an explicit --mint-url must stay fail-closed even without OIDC")
 }
 
 func TestRunAgent_MintsRuntimePrivilegeLevel(t *testing.T) {

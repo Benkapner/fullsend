@@ -878,7 +878,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// GITLAB_TOKEN / PUSH_TOKEN from that CI/CD variable. Missing role
 	// credentials fail closed; there is no shared-token fallback. #6865 #7499.
 	// Precedence: flag > config.yaml/config.base.yaml mint_url > env (#8192).
-	mintURL := resolveMintURL(sOpts.mintURL, orgCfg, os.Getenv)
+	mintURL, mintSource := resolveMintURL(sOpts.mintURL, orgCfg, os.Getenv)
+	// A mint_url that only came from the file layer is an implicit default
+	// meant to make CI convenient; it must not turn a previously-safe local
+	// run into a hard failure by attempting a GitHub Actions OIDC exchange
+	// that isn't available outside Actions. A flag or FULLSEND_MINT_URL is
+	// an explicit signal from the operator, so those stay fail-closed below
+	// (#8400).
+	mintSkipWarning := ""
+	if mintSource == mintURLSourceFile && !hasActionsOIDCEnv(os.Getenv) {
+		mintSkipWarning = "config.yaml/config.base.yaml sets mint_url, but GitHub Actions OIDC is unavailable (not running in Actions, or missing id-token: write); skipping token minting for role " + h.Role
+		mintURL = ""
+	}
 	runtimeLevel := h.PrivilegeLevelForStage(harness.PrivilegeStageRuntime)
 	var minted bool
 	var mintCleanup func()
@@ -893,7 +904,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if mintErr != nil {
 			return fmt.Errorf("agent token minting failed: %w", mintErr)
 		}
-		if !minted && mintURL == "" {
+		switch {
+		case mintSkipWarning != "":
+			printer.StepWarn(mintSkipWarning)
+		case !minted && mintURL == "":
 			printer.StepWarn("No --mint-url provided; skipping token minting for role " + h.Role)
 		}
 	}
@@ -6136,7 +6150,7 @@ func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, 
 // a fresh token via the mint service for each API call and reads SHA/run ID
 // from GitHub Actions environment variables.
 func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, orgCfg config.ConfigReader, owner, repo, role string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
-	mintURL := resolveMintURL(sOpts.mintURL, orgCfg, os.Getenv)
+	mintURL, _ := resolveMintURL(sOpts.mintURL, orgCfg, os.Getenv)
 	if mintURL == "" {
 		return nil, fmt.Errorf("no mint URL available (set --mint-url or FULLSEND_MINT_URL)")
 	}
@@ -6554,6 +6568,22 @@ func maybeRemintAgentTokenForStage(ctx context.Context, h *harness.Harness, mint
 	}, nil
 }
 
+// mintURLSource identifies where resolveMintURL's returned value came
+// from. Callers with a fail-closed mint path (e.g. runAgent) use this to
+// distinguish an explicit signal — a flag or FULLSEND_MINT_URL, where an
+// operator deliberately asked for minting — from the implicit file layer,
+// so a config.yaml/config.base.yaml-sourced mint_url does not turn a
+// previously-safe local run into a hard failure when GitHub Actions OIDC
+// isn't available (#8400).
+type mintURLSource int
+
+const (
+	mintURLSourceNone mintURLSource = iota
+	mintURLSourceFlag
+	mintURLSourceFile
+	mintURLSourceEnv
+)
+
 // resolveMintURL resolves the token mint URL with the precedence order
 // documented in docs/contributing/config-source-inventory.md's mint_url
 // row: an explicit flag value wins outright (one-run override); then
@@ -6567,16 +6597,31 @@ func maybeRemintAgentTokenForStage(ctx context.Context, h *harness.Harness, mint
 // orgCfg may be nil (no config loaded) or may not implement
 // PerRepoConfigReader (e.g. deprecated org-mode config); both cases
 // simply skip the file layer and fall through to the environment.
-func resolveMintURL(flagValue string, orgCfg config.ConfigReader, getenv func(string) string) string {
+func resolveMintURL(flagValue string, orgCfg config.ConfigReader, getenv func(string) string) (string, mintURLSource) {
 	if flagValue != "" {
-		return flagValue
+		return flagValue, mintURLSourceFlag
 	}
 	if prc, ok := orgCfg.(config.PerRepoConfigReader); ok {
 		if u := prc.ConfigMintURLFromFile(); u != "" {
-			return u
+			return u, mintURLSourceFile
 		}
 	}
-	return getenv("FULLSEND_MINT_URL")
+	if u := getenv("FULLSEND_MINT_URL"); u != "" {
+		return u, mintURLSourceEnv
+	}
+	return "", mintURLSourceNone
+}
+
+// hasActionsOIDCEnv reports whether the GitHub Actions OIDC request
+// environment variables are present. mintclient.MintToken's only
+// credential path is exchanging a GitHub Actions OIDC JWT
+// (ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN), so
+// their absence means any mint attempt is guaranteed to fail with a
+// generic "is this running in GitHub Actions" error. Callers use this to
+// decide whether to downgrade an implicit (file-sourced) mint attempt to
+// a warn-and-skip instead of a hard failure (#8400).
+func hasActionsOIDCEnv(getenv func(string) string) bool {
+	return getenv("ACTIONS_ID_TOKEN_REQUEST_URL") != "" && getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN") != ""
 }
 
 // mintAgentToken mints a write-level GitHub App installation token for the
