@@ -88,16 +88,16 @@ Cross-run memory is one piece of a broader question: what happens when an agent 
 
 ### Retry vs. escalate
 
-When a run fails (CI failure, merge conflict, model refusal, timeout), the system must decide: retry the same approach, try a different approach, or escalate to a human. Today this decision is implicit. A run stops at the runner's `timeout_minutes` kill, after `validation_loop.max_iterations`, or, for fix, at the per-PR commit cap. None of those is a retry-versus-escalate decision; they are ceilings that happen to end the loop. There is no structured decision about whether retrying is likely to produce a different outcome.
+When a run fails (CI failure, merge conflict, model refusal, timeout), the system must decide: retry the same approach, try a different approach, or escalate to a human. Execution limits bound how much work can occur, but reaching a limit does not establish whether another attempt is likely to produce a different outcome.
 
 The key distinction: **transient failures** (network timeout, flaky test, rate limit) benefit from retry. **Structural failures** (wrong approach, missing context, incompatible change) do not. Retrying a structural failure wastes resources and can make things worse if each attempt introduces new problems.
 
 ### Retry budgets
 
-Without an explicit retry budget, agents can retry the same task across multiple runs without any cumulative limit, even though each individual run is bounded by its own per-run constraints. A retry budget is distinct from per-run limits:
+A per-run execution limit does not bound the total work spent on a task across runs. A cross-run retry budget would account for that cumulative work, including attempts that fail or produce no commit. It is distinct from per-run limits:
 
-- **Per-run limit:** turn and cost ceilings for a single attempt. `max_turns` and `max_cost_usd` (PR #1682) are eval assertions checked against a run that has already completed, not live budgets that interrupt one in progress.
-- **Retry budget:** max total attempts across runs for the same task, and max total cost across all attempts
+- **Per-run limit:** an execution ceiling within one run, such as the runner's per-iteration timeout or a runtime-supported turn or cost limit.
+- **Retry budget:** a cumulative limit on attempts or cost across runs for the same task.
 
 A task might allow 3 retries with a total budget of $10. Each individual run stays within its per-run limits, but the system tracks cumulative spend and attempt count.
 
@@ -114,17 +114,18 @@ When should the system stop retrying and ask a human?
 
 The triggers above are stated qualitatively ("after N identical failures", "2-3 distinct failure types"). Nothing in the system evaluates them as stated.
 
-What exists today is a count, and it counts something other than attempts. The fix agent caps iterations per PR, applies the `needs-human` label as a run approaches the cap, and fails the run before the sandbox starts once the cap is exceeded ([Iteration limits](../agents/fix.md#iteration-limits)). The count is the number of prior `fullsend-fix` commits on the PR: a successful push advances it, while a run that fails, times out, or pushes nothing does not. So it bounds review-fix rounds that produced a commit, not repeated failing attempts, which is what the triggers above are about.
+The existing fix iteration cap counts prior `fullsend-fix` commits on the PR ([Iteration limits](../agents/fix.md#iteration-limits)). A push that adds a matching commit advances the count; a failed, timed-out, or no-op attempt that adds no such commit does not. It therefore bounds commit-producing review-fix rounds rather than all attempts.
 
-#### What the existing limits are not
+#### Execution limits and evaluation thresholds
 
-A cross-run attempt cap is a different thing from three limits already in the system, and the names invite conflation:
+Cross-run escalation policy is distinct from both execution limits and evaluation thresholds:
 
-- **`timeout_minutes`** is runner-enforced. The runner owns the iteration budget, kills the iteration at the deadline, and ends the run instead of retrying it ([ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md)). It bounds wall-clock time for one iteration and knows nothing about attempts.
-- **`validation_loop.max_iterations`** retries output defects inside a single run ([ADR 0024](../ADRs/0024-harness-definitions.md), [ADR 0022](../ADRs/0022-harness-level-output-schema-enforcement.md)). It does not span runs, and per ADR 0105 it no longer retries an iteration the runner killed.
-- **`max_turns` / `max_cost_usd`** (PR #1682) are eval assertions. They are evaluated against a run that has already finished; they do not enforce a live budget or stop an attempt in flight.
+- **Runner timeout.** `timeout_minutes` bounds each iteration. A timed-out iteration ends further validation retries, but post-loop validation still runs and can accept valid output ([ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md)).
+- **Output-validation retries.** `validation_loop.max_iterations` limits iterations used to obtain valid output within one run; it does not count attempts across runs ([ADR 0022](../ADRs/0022-harness-level-output-schema-enforcement.md)).
+- **Runtime behavioral limits.** A supported runtime can interrupt execution at a turn or cost ceiling. The runner recognizes `error_max_turns` and `error_max_budget_usd` as behavioral exit reasons and makes the reason available to the post-script when it runs. These exit reasons are not configuration keys or cumulative budgets; support depends on the runtime ([How a run ends](../cli/run.md#how-a-run-ends)).
+- **Evaluation thresholds.** The functional-test suite's `max_turns` and `max_cost_usd` annotations are checked against completed runs; they do not interrupt execution. The suite now lives in the agents repository ([Functional Tests](../testing/functional-tests.md)).
 
-Sandbox environment values are a fourth thing that resembles enforcement and is not. The runner writes the budget and deadline (`FULLSEND_TIMEOUT_MINUTES`, `FULLSEND_ITERATION_DEADLINE`) into the sandbox so an agent can pace itself, but ADR 0105 describes those variables as advisory: the runner's kill timer is what actually ends the iteration. An escalation threshold exposed to the sandbox would inherit the same property. The agent could read it, and reading it would not enforce it.
+Exposing a value inside the sandbox does not itself enforce it. ADR 0105 distinguishes advisory budget information available to the agent from the runner's independently enforced timeout.
 
 #### Configuration options
 
@@ -145,9 +146,11 @@ Most of the triggers above cannot be evaluated from an attempt count at all. The
 - **Regressions** need the failing set from the current attempt compared against the previous one, to separate "still broken" from "newly broken."
 - **Cumulative cost** needs per-attempt cost summed across the task, independent of any per-run ceiling.
 
+[ADR 0141](../ADRs/0141-deterministic-filtered-entity-context-staging.md) and the [entity-context-snapshot specification](../normative/entity-context-snapshot/v1/README.md) already specify forge-observable, per-entity run receipts in `history/agent-runs.json`, alongside check metadata. These contracts provide outcome and revision information, but do not define failure signatures, per-attempt cost, or a task identity spanning multiple entities.
+
 Two properties constrain how that history can be gathered. The signature has to be derived from system evidence such as check names, exit reasons, and structured results, rather than from the agent's own account of what went wrong, because history written by one agent and trusted by a later one is the poisoning path described in [Memory as an attack surface](#memory-as-an-attack-surface). And the history needs a stable task identity that survives across runs: an attempt count scoped to a PR and a failure history scoped to an issue would disagree about what "the same task" is.
 
-Where that accumulation happens is itself an open question. It is a prerequisite any escalation design has to satisfy somewhere, not a mandate for a particular component.
+How these records should be combined into task-level failure history and cumulative accounting remains open. The existing contracts provide inputs, not a complete escalation mechanism.
 
 ### Interaction with cross-run memory
 
@@ -174,6 +177,6 @@ Retry loops can become flapping when the system does not converge. See [flapping
 - What retention model prevents stale memory from dominating: time-based, count-based, outcome-based, or explicit supersession?
 - Should the retro agent curate memory by pruning stale entries and proposing durable skill additions, or would that give it too much influence over future runs?
 - How should memory interact with structured agent output? Should agent output include an "observations" field that post-scripts can validate and classify?
-- What is the stable failure signature that makes "N identical failures" countable across runs, and who computes it: the post-script from system-derived signals, or the agent?
-- How should task identity be assigned, inherited, or reset across runs? When does failure history reset: on a new issue, a run from main, an explicit reset, or never?
-- Who may relax an escalation threshold, and where does that authority live: repo configuration under CODEOWNERS review, a command a maintainer can issue on the PR, or neither?
+- Which system-derived signals should define stable failure signatures and per-attempt failure sets, beyond the outcomes already specified by entity-context-snapshot?
+- How should task identity connect runs across issues and PRs, and when should failure history and cumulative accounting reset?
+- Who may relax an escalation threshold, and what authorization and review should that change require?
