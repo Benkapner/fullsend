@@ -88,7 +88,7 @@ Cross-run memory is one piece of a broader question: what happens when an agent 
 
 ### Retry vs. escalate
 
-When a run fails (CI failure, merge conflict, model refusal, timeout), the system must decide: retry the same approach, try a different approach, or escalate to a human. Today this decision is implicit. Agents retry until they hit a turn or cost limit, then stop. There is no structured decision about whether retrying is likely to produce a different outcome.
+When a run fails (CI failure, merge conflict, model refusal, timeout), the system must decide: retry the same approach, try a different approach, or escalate to a human. Today this decision is implicit. A run stops at the runner's `timeout_minutes` kill, after `validation_loop.max_iterations`, or, for fix, at the per-PR commit cap. None of those is a retry-versus-escalate decision; they are ceilings that happen to end the loop. There is no structured decision about whether retrying is likely to produce a different outcome.
 
 The key distinction: **transient failures** (network timeout, flaky test, rate limit) benefit from retry. **Structural failures** (wrong approach, missing context, incompatible change) do not. Retrying a structural failure wastes resources and can make things worse if each attempt introduces new problems.
 
@@ -114,7 +114,7 @@ When should the system stop retrying and ask a human?
 
 The triggers above are stated qualitatively ("after N identical failures", "2-3 distinct failure types"). Nothing in the system evaluates them as stated.
 
-What exists today is a count. The fix agent caps iterations per PR, separately for bot-triggered and human-triggered runs, applies the `needs-human` label as a run approaches the cap, and fails the run before the sandbox starts once the cap is exceeded ([Iteration limits](../agents/fix.md#iteration-limits)). That cap is derived by the fix pipeline from the iterations already spent on the same PR, which makes it the closest thing to a live cross-run limit. It is also only a count: it cannot distinguish a task that failed the same way five times from one that failed five different ways, so it bounds the loop without identifying repeated failures.
+What exists today is a count, and it counts something other than attempts. The fix agent caps iterations per PR, applies the `needs-human` label as a run approaches the cap, and fails the run before the sandbox starts once the cap is exceeded ([Iteration limits](../agents/fix.md#iteration-limits)). The count is the number of prior `fullsend-fix` commits on the PR: a successful push advances it, while a run that fails, times out, or pushes nothing does not. So it bounds review-fix rounds that produced a commit, not repeated failing attempts, which is what the triggers above are about.
 
 #### What the existing limits are not
 
