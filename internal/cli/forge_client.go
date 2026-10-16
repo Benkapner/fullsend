@@ -26,15 +26,14 @@ func resolveGitLabToken() (string, error) {
 }
 
 // newForgeClient creates a forge.Client for the given forge type.
-// For GitHub, it uses the standard token resolution chain (GH_TOKEN,
+// For GitHub, it delegates to newAuthenticatedGitHubClient (GH_TOKEN,
 // GITHUB_TOKEN, gh auth token). For GitLab, it uses GITLAB_TOKEN or
 // the provided gitlabToken override.
 //
 // The baseURL parameter, when non-empty, sets the forge instance URL
 // (from the manifest's forge section). It takes precedence over the
 // GITLAB_API_URL / GITHUB_API_URL environment variables, which are
-// kept as a fallback for callers that don't have a manifest yet
-// (e.g., repos migrate).
+// kept as a fallback for callers that don't have a manifest yet.
 func newForgeClient(forgeName, gitlabToken, baseURL string, glOpts ...gl.Option) (forge.Client, error) {
 	switch forgeName {
 	case repos.ForgeGitLab:
@@ -46,25 +45,23 @@ func newForgeClient(forgeName, gitlabToken, baseURL string, glOpts ...gl.Option)
 				return nil, err
 			}
 		}
-		// Base URL precedence: explicit arg > FULLSEND_GITLAB_URL > GITLAB_API_URL > CI_SERVER_URL
+		// Base URL precedence: explicit arg > env vars (via gl.URLEnvVars).
+		// The env-var precedence is shared with gl.ResolveForgeHostPort().
 		var opts []gl.Option
 		if baseURL != "" {
 			opts = append(opts, gl.WithBaseURL(baseURL))
-		} else if envURL := strings.TrimSpace(os.Getenv("FULLSEND_GITLAB_URL")); envURL != "" {
-			opts = append(opts, gl.WithBaseURL(envURL))
-		} else if envURL := strings.TrimSpace(os.Getenv("GITLAB_API_URL")); envURL != "" {
-			opts = append(opts, gl.WithBaseURL(envURL))
-		} else if envURL := strings.TrimSpace(os.Getenv("CI_SERVER_URL")); envURL != "" {
-			opts = append(opts, gl.WithBaseURL(envURL))
+		} else {
+			for _, env := range gl.URLEnvVars {
+				if envURL := strings.TrimSpace(os.Getenv(env)); envURL != "" {
+					opts = append(opts, gl.WithBaseURL(envURL))
+					break
+				}
+			}
 		}
 		opts = append(opts, glOpts...)
 		return gl.New(token, opts...)
 	case repos.ForgeGitHub, "":
-		token, err := resolveToken()
-		if err != nil {
-			return nil, err
-		}
-		return newGitHubLiveClient(token, baseURL), nil
+		return newAuthenticatedGitHubClient("", baseURL)
 	default:
 		return nil, fmt.Errorf("unsupported forge %q", forgeName)
 	}

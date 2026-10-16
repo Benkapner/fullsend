@@ -1,49 +1,51 @@
-import { defineConfig } from "vitepress";
+import { defineConfig } from "@lando/vitepress-theme-default-plus/config";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { getLatestPatchMatching } from "./mvb-satisfies";
+import { copyMarkdownSources } from "./markdown-sources";
+import {
+  DOCS_URL_BASE,
+  globalSeoHead,
+  isIndexablePage,
+  isSitemapUrl,
+  pageRobotsHead,
+  pageSeoHead,
+} from "./seo";
+import { getMarkdownFiles } from "./sidebar";
+import { githubSlugify } from "./slugify";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsDir = path.resolve(__dirname, "..");
+const repoRoot = path.resolve(__dirname, "..", "..");
 
-/** Non-content entry: template placeholder or repo-metadata (ALL-CAPS) name. */
-function isNonContent(entry: string): boolean {
-  if (/^0000-.*-template/.test(entry)) return true;
-  const base = entry.replace(/\.md$/, "");
-  return /^[A-Z][A-Z0-9_-]*$/.test(base);
+/** Git glob passed to `git tag --list` and to mvb `multiVersionBuild.match`. */
+const MVB_TAG_MATCH = "v[0-9].*";
+
+/**
+ * Number of newest minors that get a versioned docs copy under /docs/v/.
+ *
+ * Cloudflare Workers Free rejects a deploy with more than 20,000 static asset
+ * files per Worker version. Each versioned copy adds about 1,650 files, and
+ * stable/edge/dev plus the rest of the site add about 6,500 more, so 6 minors
+ * keeps the site near 16,500 files. Lower this if the per-version cost grows.
+ */
+const MVB_MAX_MINORS = 6;
+
+/** Git tags mvb will later re-test with `semver.satisfies` (one version at a time). */
+function gitVersionTags(match: string): string[] {
+  return execFileSync("git", ["tag", "--list", match], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  })
+    .split("\n")
+    .filter(Boolean);
 }
 
-function getMarkdownFiles(dir: string, base: string): { text: string; link: string }[] {
-  const fullDir = path.resolve(docsDir, dir);
-  if (!fs.existsSync(fullDir)) return [];
-  const items: { text: string; link: string }[] = [];
-  for (const entry of fs.readdirSync(fullDir).sort()) {
-    const entryPath = path.resolve(fullDir, entry);
-    if (entry.endsWith(".md") && entry !== "README.md" && !isNonContent(entry)) {
-      const slug = entry.replace(/\.md$/, "");
-      const content = fs.readFileSync(entryPath, "utf-8");
-      const fmTitleMatch = content.match(/^title:\s*["']?(.+?)["']?\s*$/m);
-      const titleMatch = content.match(/^#\s+(.+)$/m);
-      items.push({ text: fmTitleMatch?.[1] || titleMatch?.[1] || slug, link: `/${base}/${slug}` });
-    } else if (
-      fs.statSync(entryPath).isDirectory() &&
-      !entry.startsWith(".") &&
-      !isNonContent(entry)
-    ) {
-      const readme = path.resolve(entryPath, "README.md");
-      if (fs.existsSync(readme)) {
-        const content = fs.readFileSync(readme, "utf-8");
-        const fmTitleMatch = content.match(/^title:\s*["']?(.+?)["']?\s*$/m);
-        const titleMatch = content.match(/^#\s+(.+)$/m);
-        items.push({
-          text: fmTitleMatch?.[1] || titleMatch?.[1] || entry,
-          link: `/${base}/${entry}/`,
-        });
-      }
-    }
-  }
-  return items;
-}
+const version =
+  JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "package.json"), "utf-8"))
+    .version ?? "dev";
 
 // Escape Vue-incompatible syntax ({ }, {{ }}, <non-HTML-tags>) in markdown
 // before markdown-it processes it. Code fence tracking uses backtick-count
@@ -135,6 +137,12 @@ export default defineConfig({
   description: "Autonomous SDLC agents for your codebase",
 
   base: "/docs/",
+  // Required for SEO correctness, not cosmetic: Cloudflare Workers serves the
+  // extensionless URL with a 200 and 307-redirects the `.html` form. With
+  // cleanUrls the canonical/og:url/sitemap URLs match the 200-serving shape
+  // instead of pointing at redirecting `.html` URLs (search engines discard
+  // canonicals that redirect).
+  cleanUrls: true,
 
   rewrites: {
     "README.md": "index.md",
@@ -158,16 +166,57 @@ export default defineConfig({
         href: "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap",
       },
     ],
+    // Site-wide SEO metadata (Open Graph type/site name/image + Twitter card).
+    ...globalSeoHead,
   ],
 
-  srcExclude: ["**/agents/icons/**", "**/testing/**"],
+  // Emit sitemap.xml for the docs. The hostname carries the /docs/ base (and a
+  // trailing slash) because VitePress resolves base-less page paths against it.
+  sitemap: {
+    hostname: DOCS_URL_BASE,
+    transformItems: (items) => items.filter((item) => isSitemapUrl(item.url)),
+  },
 
+  // Per-page canonical + Open Graph tags derived from the resolved page data.
+  transformHead({ page, title, description, siteConfig }) {
+    const robotsHead = pageRobotsHead(page);
+    if (!isIndexablePage(page)) return robotsHead;
+    return [
+      ...robotsHead,
+      ...pageSeoHead({
+        page,
+        title,
+        description,
+        base: siteConfig.site.base,
+        cleanUrls: siteConfig.cleanUrls,
+      }),
+    ];
+  },
+
+  // Emit the markdown source next to each HTML page so /docs/foo.md is a
+  // static file alongside /docs/foo.html (and /docs/foo with cleanUrls).
+  buildEnd(siteConfig) {
+    copyMarkdownSources({
+      pages: siteConfig.pages,
+      srcDir: siteConfig.srcDir,
+      outDir: siteConfig.outDir,
+      rewrites: siteConfig.rewrites.map,
+    });
+  },
+
+  srcExclude: ["**/agents/icons/**", "**/testing/**"],
   ignoreDeadLinks: true,
 
   themeConfig: {
     logo: "/img/logo.png",
     logoLink: { link: "https://fullsend.sh", target: "_self" },
     siteTitle: "Fullsend",
+
+    multiVersionBuild: {
+      match: MVB_TAG_MATCH,
+      satisfies: getLatestPatchMatching(gitVersionTags(MVB_TAG_MATCH), ">=0.37.0", MVB_MAX_MINORS),
+      build: "stable",
+    },
 
     nav: [
       { text: "Docs", link: "/guides/getting-started/", activeMatch: "^/(?!cli/)" },
@@ -198,8 +247,12 @@ export default defineConfig({
             { text: "Getting Inference", link: "/guides/getting-started/getting-inference" },
             { text: "Choose a Runtime", link: "/guides/getting-started/choosing-a-runtime" },
             { text: "Configuring GitHub", link: "/guides/getting-started/configuring-github" },
-            { text: "Per-Org Mode", link: "/guides/getting-started/org-mode" },
+            { text: "Configuring GitLab", link: "/guides/getting-started/configuring-gitlab" },
             { text: "Repo Management", link: "/guides/getting-started/repo-management" },
+            {
+              text: "Migrating to Manifest-Driven Install",
+              link: "/guides/getting-started/migrating-from-github-setup",
+            },
             { text: "Operations", link: "/guides/getting-started/operations" },
           ],
         },
@@ -210,6 +263,8 @@ export default defineConfig({
           items: [
             { text: "Claude Code", link: "/runtimes/claude" },
             { text: "Pi", link: "/runtimes/pi" },
+            { text: "Codex", link: "/runtimes/codex" },
+            { text: "OpenCode", link: "/runtimes/opencode" },
           ],
         },
         {
@@ -223,8 +278,6 @@ export default defineConfig({
             { text: "Fix", link: "/agents/fix" },
             { text: "Retro", link: "/agents/retro" },
             { text: "Prioritize", link: "/agents/prioritize" },
-            { text: "Default vs. Custom", link: "/agents/topics/default-vs-custom" },
-            { text: "Escalation Ladder", link: "/agents/topics/escalation-ladder" },
           ],
         },
         {
@@ -232,19 +285,53 @@ export default defineConfig({
           collapsed: true,
           link: "/guides/",
           items: [
-            { text: "Bring Your Own Agent", link: "/guides/user/bring-your-own-agent" },
-            { text: "Custom Agent Identity", link: "/guides/user/custom-agent-identity" },
-            { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
-            { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
-            { text: "Configuring Agent Behavior", link: "/guides/user/customizing-agents" },
-            { text: "Configuring with AGENTS.md", link: "/guides/user/customizing-with-agents-md" },
-            { text: "Configuring with Skills", link: "/guides/user/customizing-with-skills" },
+            { text: "Adopting Fullsend Incrementally", link: "/guides/user/adoption" },
             {
-              text: "Building custom agents from scratch (deprecated)",
-              link: "/guides/user/building-custom-agents",
+              text: "How fullsend authenticates",
+              link: "/guides/user/how-fullsend-authenticates",
+            },
+            { text: "Using an inference gateway", link: "/guides/user/inference-gateway" },
+            { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
+            { text: "Issue Commands", link: "/guides/user/issues-commands" },
+            {
+              text: "Customizing Agents",
+              collapsed: true,
+              items: [
+                { text: "Overview", link: "/guides/user/customizing-overview" },
+                {
+                  text: "Configuring with AGENTS.md",
+                  link: "/guides/user/customizing-with-agents-md",
+                },
+                { text: "Configuring with Skills", link: "/guides/user/customizing-with-skills" },
+                {
+                  text: "Configuring Agent Behavior",
+                  link: "/guides/user/customizing-agents",
+                },
+                { text: "Default vs. Custom", link: "/guides/user/default-vs-custom" },
+                { text: "Escalation Ladder", link: "/guides/user/escalation-ladder" },
+                { text: "Bring Your Own Agent", link: "/guides/user/bring-your-own-agent" },
+                {
+                  text: "Custom Agent Identity",
+                  link: "/guides/user/custom-agent-identity",
+                },
+                {
+                  text: "Chaining Follow-up Workflows",
+                  link: "/guides/user/chaining-follow-up-workflows",
+                },
+                { text: "Config Reference", link: "/reference/config-reference" },
+                { text: "Harness Field Reference", link: "/reference/harness-reference" },
+                { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
+                {
+                  text: "Building custom agents (deprecated)",
+                  link: "/guides/user/building-custom-agents",
+                },
+              ],
+            },
+            {
+              text: "OWNERS File Authorization",
+              link: "/guides/user/owners-file-authorization",
             },
             { text: "Running Agents Locally", link: "/guides/user/running-agents-locally" },
-            { text: "Issue Commands", link: "/guides/user/issues-commands" },
             { text: "Jira Integration", link: "/guides/user/jira-integration" },
             { text: "How To Emit Traces", link: "/guides/user/how-to-emit-traces" },
             { text: "Tracing with MLflow", link: "/guides/user/tracing-with-mlflow" },
@@ -263,6 +350,7 @@ export default defineConfig({
           text: "Reference",
           collapsed: true,
           items: [
+            { text: "Config Reference", link: "/reference/config-reference" },
             { text: "Harness Field Reference", link: "/reference/harness-reference" },
           ],
         },
@@ -279,7 +367,16 @@ export default defineConfig({
             { text: "Private Repositories", link: "/guides/infrastructure/private-repositories" },
             { text: "Tracing Reference", link: "/guides/infrastructure/distributed-tracing" },
             { text: "Eval Measurements", link: "/guides/infrastructure/eval-measurements" },
+            { text: "Gate Binaries", link: "/guides/infrastructure/gate-binaries" },
             { text: "Advanced Setup", link: "/guides/infrastructure/advanced-setup" },
+            {
+              text: "OpenAI Workload Identity",
+              link: "/guides/infrastructure/openai-workload-identity",
+            },
+            {
+              text: "Inference Gateway Operator",
+              link: "/guides/infrastructure/inference-gateway-operator",
+            },
             {
               text: "Layered Config Reference",
               link: "/guides/infrastructure/layered-config-reference",
@@ -308,7 +405,14 @@ export default defineConfig({
               items: getMarkdownFiles("contributing", "contributing"),
             },
             { text: "Roadmap", link: "/roadmap" },
-            { text: "Archived roadmaps", link: "/archived-roadmap" },
+            {
+              text: "Archived roadmaps",
+              collapsed: true,
+              items: [
+                { text: "Index", link: "/archived-roadmaps/" },
+                ...getMarkdownFiles("archived-roadmaps", "archived-roadmaps").reverse(),
+              ],
+            },
             { text: "Landscape", link: "/landscape" },
             {
               text: "Architecture Decisions",
@@ -337,6 +441,26 @@ export default defineConfig({
       ],
     },
 
+    sidebarEnder: {
+      text: version,
+      collapsed: true,
+      items: [
+        {
+          text: "Other Doc Versions",
+          items: [
+            { rel: "mvb", text: "stable", target: "_blank", link: "/stable/" },
+            { rel: "mvb", text: "edge", target: "_blank", link: "/edge/" },
+            { rel: "mvb", text: "dev", target: "_blank", link: "/dev/" },
+            { text: "<strong>see all versions</strong>", link: "/v/" },
+          ],
+        },
+        {
+          text: "Other Releases",
+          link: "https://github.com/fullsend-ai/fullsend/releases",
+        },
+      ],
+    },
+
     socialLinks: [{ icon: "github", link: "https://github.com/fullsend-ai/fullsend" }],
 
     editLink: {
@@ -348,7 +472,16 @@ export default defineConfig({
       provider: "local",
       options: {
         scopes: [
-          { label: "Guides", prefixes: ["/docs/guides/", "/docs/agents/", "/docs/cli/", "/docs/runtimes"] },
+          {
+            label: "Guides",
+            prefixes: [
+              "/docs/guides/",
+              "/docs/agents/",
+              "/docs/cli/",
+              "/docs/runtimes",
+              "/docs/reference/",
+            ],
+          },
           {
             label: "Design Docs",
             prefixes: ["/docs/problems/", "/docs/ADRs/", "/docs/normative/", "/docs/spikes/"],
@@ -410,18 +543,21 @@ export default defineConfig({
   },
 
   markdown: {
+    // GitHub-compatible heading ids, so links lychee accepts also work here.
+    anchor: { slugify: githubSlugify },
+
     shikiSetup: async (shiki) => {
       await shiki.loadLanguage("toml");
     },
+
     preConfig: (md) => {
       const defaultParse = md.parse.bind(md);
       md.parse = (src: string, env: Record<string, unknown>) => {
+        const rel = (env?.relativePath as string) ?? "";
+        if (rel === "v/index.md") return defaultParse(src, env);
         return defaultParse(escapeVueSyntax(src), env);
       };
     },
-    // Auto-add v-pre to inline code so `{{ }}` inside backticks is safe.
-    // Recommended by VitePress maintainer brc-dd:
-    // https://github.com/vuejs/vitepress/discussions/3724
     config: (md) => {
       const defaultCodeInline = md.renderer.rules.code_inline!;
       md.renderer.rules.code_inline = (tokens, idx, options, env, self) => {

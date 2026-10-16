@@ -16,24 +16,58 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 type bootstrapInput struct {
-	sandboxName string
-	agentPath   string
-	agentName   string
-	skillDirs   []string
-	pluginDirs  []string
+	sandboxName            string
+	agentPath              string
+	agentName              string
+	skillDirs              []string
+	plugins                []PluginInput
+	modelAliases           map[string]string
+	repoDir                string
+	agentSubagents         map[string]*string
+	parentModel            string
+	openAIProviderAttached bool
 }
 
-func (b bootstrapInput) SandboxName() string  { return b.sandboxName }
-func (b bootstrapInput) AgentPath() string    { return b.agentPath }
-func (b bootstrapInput) AgentName() string    { return b.agentName }
-func (b bootstrapInput) SkillDirs() []string  { return b.skillDirs }
-func (b bootstrapInput) PluginDirs() []string { return b.pluginDirs }
+func (b bootstrapInput) SandboxName() string                { return b.sandboxName }
+func (b bootstrapInput) AgentPath() string                  { return b.agentPath }
+func (b bootstrapInput) AgentName() string                  { return b.agentName }
+func (b bootstrapInput) SkillDirs() []string                { return b.skillDirs }
+func (b bootstrapInput) Plugins() []PluginInput             { return b.plugins }
+func (b bootstrapInput) ModelAliases() map[string]string    { return b.modelAliases }
+func (b bootstrapInput) AgentSubagents() map[string]*string { return b.agentSubagents }
+func (b bootstrapInput) ParentModel() string                { return b.parentModel }
+func (b bootstrapInput) OpenAIProviderAttached() bool       { return b.openAIProviderAttached }
+func (b bootstrapInput) RepoDir() string {
+	if b.repoDir == "" {
+		return "/sandbox/workspace/repo"
+	}
+	return b.repoDir
+}
+
+// claudePlugins and piPlugins build the two kinds of plugin input from
+// host directories, so a test names the format it means.
+func claudePlugins(dirs ...string) []PluginInput {
+	out := make([]PluginInput, 0, len(dirs))
+	for _, d := range dirs {
+		out = append(out, PluginInput{Path: d, Kind: pluginformat.KindClaude})
+	}
+	return out
+}
+
+func piPlugins(dirs ...string) []PluginInput {
+	out := make([]PluginInput, 0, len(dirs))
+	for _, d := range dirs {
+		out = append(out, PluginInput{Path: d, Kind: pluginformat.KindPi})
+	}
+	return out
+}
 
 func TestBootstrap_EmptyAgentPath(t *testing.T) {
 	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{sandboxName: "test"})
@@ -105,6 +139,92 @@ func TestAgentDestName(t *testing.T) {
 	}
 }
 
+func TestValidateAgentNameMatch(t *testing.T) {
+	tests := []struct {
+		name           string
+		requestedName  string
+		definitionName string
+		wantErr        string // empty means no error expected
+	}{
+		{
+			name:           "matching names pass",
+			requestedName:  "code",
+			definitionName: "code",
+			wantErr:        "",
+		},
+		{
+			name:           "mismatched names fail",
+			requestedName:  "coder",
+			definitionName: "code",
+			wantErr:        `agent name mismatch: requested "coder" but definition declares "code"`,
+		},
+		{
+			name:           "empty requested name skips validation",
+			requestedName:  "",
+			definitionName: "code",
+			wantErr:        "",
+		},
+		{
+			name:           "empty definition name skips validation",
+			requestedName:  "coder",
+			definitionName: "",
+			wantErr:        "",
+		},
+		{
+			name:           "both empty skips validation",
+			requestedName:  "",
+			definitionName: "",
+			wantErr:        "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateAgentNameMatch(tc.requestedName, tc.definitionName)
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestBootstrap_AgentNameMismatch(t *testing.T) {
+	stubDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	agentFile := filepath.Join(t.TempDir(), "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("---\nname: code\n---\n# Code agent"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "coder",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent name mismatch")
+	assert.Contains(t, err.Error(), `"coder"`)
+	assert.Contains(t, err.Error(), `"code"`)
+}
+
+func TestBootstrap_AgentNameMatch(t *testing.T) {
+	stubDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	agentFile := filepath.Join(t.TempDir(), "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("---\nname: code\n---\n# Code agent"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "code",
+	})
+	assert.NoError(t, err)
+}
+
 func TestBuildRunCommand_Basic(t *testing.T) {
 	cmd := testRunCommand("hello-world", "", "/sandbox/workspace/repo", nil, "")
 	assert.Contains(t, cmd, "cd /sandbox/workspace/repo")
@@ -115,7 +235,7 @@ func TestBuildRunCommand_Basic(t *testing.T) {
 
 func TestBuildRunCommand_WithModel(t *testing.T) {
 	cmd := testRunCommand("hello-world", "sonnet", "/sandbox/workspace/repo", nil, "")
-	assert.Contains(t, cmd, "--model 'sonnet'")
+	assert.Contains(t, cmd, "--model 'claude-sonnet-5-5'", "an alias gets its built-in default id (#8426)")
 	assert.Contains(t, cmd, "--agent 'hello-world'")
 }
 
@@ -128,7 +248,7 @@ func TestBuildRunCommand_WithEffort(t *testing.T) {
 
 func TestBuildRunCommand_WithModelAndEffort(t *testing.T) {
 	cmd := testRunCommandWithEffort("hello-world", "sonnet", "xhigh", "/sandbox/workspace/repo", nil, "")
-	assert.Contains(t, cmd, "--model 'sonnet'")
+	assert.Contains(t, cmd, "--model 'claude-sonnet-5-5'")
 	assert.Contains(t, cmd, "--effort 'xhigh'")
 }
 
@@ -282,6 +402,63 @@ func TestBuildRunCommand_NoDoubleSpaces(t *testing.T) {
 			assert.NotContains(t, cmd, "  ", "command should not contain double spaces")
 		})
 	}
+}
+
+// --- models.aliases tests (#6882) ---
+
+func TestBuildRunCommand_WithConfigAlias(t *testing.T) {
+	// When a models.aliases entry exists for the model, the Claude
+	// runtime translates it to the id before --model.
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "agent",
+		Model:         "sonnet",
+		RepoDir:       "/sandbox/workspace/repo",
+		ModelAliases:  map[string]string{"sonnet": "claude-sonnet-5"},
+	})
+	assert.Contains(t, cmd, "--model 'claude-sonnet-5'",
+		"config alias remaps the model")
+	assert.NotContains(t, cmd, "'sonnet'",
+		"alias name does not appear in the command")
+}
+
+func TestBuildRunCommand_WithConfigAliasNoMatch(t *testing.T) {
+	// When the model is not in the config aliases, it gets its built-in
+	// default id (#8426).
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "agent",
+		Model:         "opus",
+		RepoDir:       "/sandbox/workspace/repo",
+		ModelAliases:  map[string]string{"sonnet": "claude-sonnet-5"},
+	})
+	assert.Contains(t, cmd, "--model 'claude-opus-5-5'",
+		"unmatched alias takes the built-in default")
+}
+
+func TestBuildRunCommand_WithConfigAliasNilMap(t *testing.T) {
+	// Nil aliases behaves identically to no aliases.
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "agent",
+		Model:         "sonnet",
+		RepoDir:       "/sandbox/workspace/repo",
+		ModelAliases:  nil,
+	})
+	assert.Contains(t, cmd, "--model 'claude-sonnet-5-5'",
+		"nil aliases resolves the built-in default")
+}
+
+func TestBuildRunCommand_FallbackModelsUseConfigAlias(t *testing.T) {
+	// The fallback chain goes through the same remap as --model, so a
+	// chain cannot land on the generation the repo retargeted away from.
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName:  "agent",
+		Model:          "opus",
+		FallbackModels: []string{"sonnet", "claude-haiku-4-5"},
+		RepoDir:        "/sandbox/workspace/repo",
+		ModelAliases:   map[string]string{"sonnet": "claude-sonnet-5"},
+	})
+	assert.Contains(t, cmd, "--fallback-model 'claude-sonnet-5,claude-haiku-4-5'",
+		"aliased fallback entries are remapped, bare ids pass through")
+	assert.Contains(t, cmd, "--model 'claude-opus-5-5'", "unmapped primary takes the built-in default")
 }
 
 func TestBuildPluginConfigs_SinglePlugin(t *testing.T) {
@@ -450,18 +627,19 @@ func TestClaudeRuntime_Bootstrap_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	agentDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "agent.md"), []byte("test"), 0o644))
+	agentFile := filepath.Join(agentDir, "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("test"), 0o644))
 
 	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
 		sandboxName: "test-sandbox",
-		agentPath:   agentDir,
+		agentPath:   agentFile,
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "creating runtime config dirs")
 }
 
 // TestClaudeRuntime_Bootstrap_AgentNameDest verifies that Bootstrap uses
-// agentDestName to derive the destination filename and calls UploadFile
+// agentDestName to derive the destination filename and calls uploadBytes
 // with the correct path. A stub openshell binary is placed on PATH so
 // sandbox operations succeed without a real sandbox.
 func TestClaudeRuntime_Bootstrap_AgentNameDest(t *testing.T) {
@@ -481,7 +659,7 @@ func TestClaudeRuntime_Bootstrap_AgentNameDest(t *testing.T) {
 	})
 	// The stub openshell succeeds for all sandbox calls, so Bootstrap
 	// should complete without error, exercising agentDestName and the
-	// UploadFile call path.
+	// uploadBytes call path.
 	assert.NoError(t, err)
 }
 
@@ -511,6 +689,44 @@ func TestClaudeRuntime_ClearIterationArtifacts_OpenshellNotInPath(t *testing.T) 
 	assert.Error(t, err)
 }
 
+// ClearIterationArtifacts sweeps stray processes left by the previous
+// iteration before removing its files (see killStrayProcesses).
+func TestClaudeRuntime_ClearIterationArtifacts_SweepsStraysBeforeFiles(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	fakeOpenshellBootstrap(t, logPath, filepath.Join(t.TempDir(), "unused"))
+
+	require.NoError(t, ClaudeRuntime{}.ClearIterationArtifacts("test-sandbox"))
+
+	logBytes, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	log := string(logBytes)
+	sweep := strings.Index(log, "ps -o pid= -o ppid=")
+	rm := strings.Index(log, "rm -rf /sandbox/workspace/output/*")
+	require.NotEqual(t, -1, sweep, "expected the stray-process sweep to run")
+	require.NotEqual(t, -1, rm, "expected the file cleanup to run")
+	assert.Less(t, sweep, rm, "sweep must precede the file cleanup")
+}
+
+// A sweep that fails (exit 124 is the only exec failure sandbox.Exec
+// reports) is warning-only: the rm -rf still runs and the result is nil.
+func TestClaudeRuntime_ClearIterationArtifacts_SweepFailureIsNotAnError(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	binDir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"echo \"$@\" >> '" + logPath + "'\n" +
+		"for last; do :; done\n" +
+		"case \"$last\" in *\"stray processes killed\"*) echo boom >&2; exit 124 ;; esac\n" +
+		"exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	require.NoError(t, ClaudeRuntime{}.ClearIterationArtifacts("test-sandbox"))
+
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(log), "rm -rf /sandbox/workspace/output/*", "file cleanup still runs after a failed sweep")
+}
+
 func TestClaudeRuntime_ExtractTranscripts_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
@@ -520,65 +736,11 @@ func TestClaudeRuntime_ExtractTranscripts_OpenshellNotInPath(t *testing.T) {
 	assert.Contains(t, err.Error(), "finding transcripts")
 }
 
-func TestResolveSkillDisplayName(t *testing.T) {
-	tests := []struct {
-		name     string
-		dirName  string
-		skillMD  string // empty means no SKILL.md
-		expected string
-	}{
-		{
-			name:     "frontmatter name overrides directory name",
-			dirName:  "tree",
-			skillMD:  "---\nname: architecture\n---\n# Architecture skill",
-			expected: "architecture",
-		},
-		{
-			name:     "falls back to filepath.Base when no SKILL.md",
-			dirName:  "my-skill",
-			skillMD:  "",
-			expected: "my-skill",
-		},
-		{
-			name:     "falls back when frontmatter has no name field",
-			dirName:  "tree",
-			skillMD:  "---\ndescription: some skill\n---\n# Content",
-			expected: "tree",
-		},
-		{
-			name:     "falls back when SKILL.md has no frontmatter",
-			dirName:  "tree",
-			skillMD:  "# Just a heading\nNo frontmatter here.",
-			expected: "tree",
-		},
-		{
-			name:     "local skill with matching directory name",
-			dirName:  "public-research",
-			skillMD:  "---\nname: public-research\n---\n# Public Research",
-			expected: "public-research",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := filepath.Join(t.TempDir(), tc.dirName)
-			require.NoError(t, os.MkdirAll(dir, 0o755))
-			if tc.skillMD != "" {
-				require.NoError(t, os.WriteFile(
-					filepath.Join(dir, "SKILL.md"),
-					[]byte(tc.skillMD), 0o644))
-			}
-
-			got := resolveSkillDisplayName(dir)
-			assert.Equal(t, tc.expected, got)
-		})
-	}
-}
-
 // fakeOpenshellBootstrap installs a fake "openshell" on PATH (ahead of the
 // real "tar", which is left reachable via the pre-existing PATH) that logs
-// every invocation's full argv to logPath and, on "sandbox upload <name>
-// <local> <remote>" where <local> is a tarball, copies it to sentinelPath.
+// every invocation's full argv to logPath and, on "sandbox upload
+// --no-git-ignore <name> <local> <remote>" where <local> is a tarball,
+// copies it to sentinelPath.
 // Bootstrap uploads several other regular files (the agent definition,
 // plugin marketplace config) in the same run, so the copy is restricted to
 // *.tar.gz uploads — otherwise a later, unrelated file upload would
@@ -593,8 +755,8 @@ func fakeOpenshellBootstrap(t *testing.T, logPath, sentinelPath string) {
 	script := "#!/bin/sh\n" +
 		"echo \"$@\" >> '" + logPath + "'\n" +
 		"if [ \"$2\" = \"upload\" ]; then\n" +
-		"  case \"$4\" in\n" +
-		"    *.tar.gz) cp \"$4\" '" + sentinelPath + "' ;;\n" +
+		"  case \"$5\" in\n" +
+		"    *.tar.gz) cp \"$5\" '" + sentinelPath + "' ;;\n" +
 		"  esac\n" +
 		"fi\n" +
 		"exit 0\n"
@@ -694,6 +856,123 @@ func TestClaudeRuntime_Bootstrap_SkillRegularDir(t *testing.T) {
 	assert.Contains(t, string(log), sandbox.SandboxClaudeConfig+"/skills/my-skill")
 }
 
+// TestClaudeRuntime_Bootstrap_NestedForgeSkillsShareBasename is the #7830
+// runtime half: two skill dirs named "github" with distinct SKILL.md names
+// must both upload, each to skills/<declared-name>, not skills/github.
+func TestClaudeRuntime_Bootstrap_NestedForgeSkillsShareBasename(t *testing.T) {
+	root := t.TempDir()
+	labelsDir := filepath.Join(root, "issue-labels", "github")
+	reviewDir := filepath.Join(root, "pr-review", "github")
+	require.NoError(t, os.MkdirAll(labelsDir, 0o755))
+	require.NoError(t, os.MkdirAll(reviewDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(labelsDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n# labels"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(reviewDir, "SKILL.md"),
+		[]byte("---\nname: pr-review-github\n---\n# review"), 0o644))
+
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	sentinelPath := filepath.Join(t.TempDir(), "uploaded.tar.gz")
+	fakeOpenshellBootstrap(t, logPath, sentinelPath)
+
+	agentFile := filepath.Join(t.TempDir(), "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("# agent"), 0o644))
+
+	stderr := captureStderr(t, func() {
+		require.NoError(t, ClaudeRuntime{}.Bootstrap(bootstrapInput{
+			sandboxName: "test-sandbox",
+			agentPath:   agentFile,
+			agentName:   "review",
+			skillDirs:   []string{labelsDir, reviewDir},
+		}))
+	})
+
+	log, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	logStr := string(log)
+	assert.Contains(t, logStr, sandbox.SandboxClaudeConfig+"/skills/issue-labels")
+	assert.Contains(t, logStr, sandbox.SandboxClaudeConfig+"/skills/pr-review-github")
+	assert.NotContains(t, logStr, sandbox.SandboxClaudeConfig+"/skills/github")
+	// The operator is told where a skill landed when the name differs.
+	assert.Contains(t, stderr, `Skill "github": uploaded to sandbox as "issue-labels", its declared SKILL.md name`)
+	assert.Contains(t, stderr, `Skill "github": uploaded to sandbox as "pr-review-github", its declared SKILL.md name`)
+}
+
+func TestClaudeRuntime_Bootstrap_DuplicateDeclaredSkillName(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "one", "github")
+	b := filepath.Join(root, "two", "github")
+	require.NoError(t, os.MkdirAll(a, 0o755))
+	require.NoError(t, os.MkdirAll(b, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(a, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(b, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	sentinelPath := filepath.Join(t.TempDir(), "uploaded.tar.gz")
+	fakeOpenshellBootstrap(t, logPath, sentinelPath)
+
+	agentFile := filepath.Join(t.TempDir(), "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("# agent"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "review",
+		skillDirs:   []string{a, b},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox name \"issue-labels\"")
+}
+
+func TestSkillDestNames_UsesDeclaredName(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "issue-labels", "github")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+
+	got := skillDestNames([]string{"", nested})
+	require.Len(t, got, 1)
+	assert.Equal(t, nameEntry{name: "issue-labels", path: nested}, got[0])
+}
+
+// TestClaudeRuntime_Bootstrap_DuplicateDeclaredSkillName_SameParent covers
+// the gap the #7830 fix left open: two skill directories that share both a
+// parent directory and a declared SKILL.md name (e.g. a "github" and a
+// "gitlab" forge variant nested under the same skill, both declaring the
+// same `name:`) synthesize into an identical joined path under the old
+// skillDestPaths rewrite and skip the collision check entirely, letting the
+// second upload silently overwrite the first. skillDestNames must catch this
+// by comparing the original directories, not a synthesized path.
+func TestClaudeRuntime_Bootstrap_DuplicateDeclaredSkillName_SameParent(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "issue-labels", "github")
+	b := filepath.Join(root, "issue-labels", "gitlab")
+	require.NoError(t, os.MkdirAll(a, 0o755))
+	require.NoError(t, os.MkdirAll(b, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(a, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(b, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	sentinelPath := filepath.Join(t.TempDir(), "uploaded.tar.gz")
+	fakeOpenshellBootstrap(t, logPath, sentinelPath)
+
+	agentFile := filepath.Join(t.TempDir(), "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("# agent"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "review",
+		skillDirs:   []string{a, b},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox name \"issue-labels\"")
+}
+
 // TestClaudeRuntime_Bootstrap_PluginSymlink verifies that plugin uploads
 // survive a symlinked path the same way skills do. No current code path
 // produces a symlinked plugin directory yet (plugins don't go through
@@ -723,7 +1002,7 @@ func TestClaudeRuntime_Bootstrap_PluginSymlink(t *testing.T) {
 		sandboxName: "test-sandbox",
 		agentPath:   agentFile,
 		agentName:   "review",
-		pluginDirs:  []string{pluginPath},
+		plugins:     claudePlugins(pluginPath),
 	})
 	require.NoError(t, err)
 
@@ -806,7 +1085,7 @@ func TestClaudeRuntime_Bootstrap_ReservedPluginName_FailsLoudly(t *testing.T) {
 				sandboxName: "test-sandbox",
 				agentPath:   agentFile,
 				agentName:   "review",
-				pluginDirs:  []string{pluginDir},
+				plugins:     claudePlugins(pluginDir),
 			})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), reserved)
@@ -843,7 +1122,7 @@ func TestClaudeRuntime_Bootstrap_PluginMaliciousName_MarketplaceSetupQuoted(t *t
 		sandboxName: "test-sandbox",
 		agentPath:   agentFile,
 		agentName:   "review",
-		pluginDirs:  []string{pluginDir},
+		plugins:     claudePlugins(pluginDir),
 	})
 	require.NoError(t, err)
 
@@ -879,7 +1158,7 @@ func TestInstallClaudeHooks_HappyPath(t *testing.T) {
 	t.Setenv("PATH", stubDir)
 
 	hooks := security.SandboxHookConfig{} // default hooks (all enabled)
-	require.NoError(t, installClaudeHooks("test-sandbox", hooks))
+	require.NoError(t, installClaudeHooks("test-sandbox", hooks, nil))
 
 	logBytes, err := os.ReadFile(logPath)
 	require.NoError(t, err)
@@ -898,7 +1177,7 @@ func TestInstallClaudeHooks_SettingsUploadError(t *testing.T) {
 	t.Setenv("PATH", stubDir)
 
 	hooks := security.SandboxHookConfig{}
-	err := installClaudeHooks("test-sandbox", hooks)
+	err := installClaudeHooks("test-sandbox", hooks, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "copying hooks.json to sandbox")
 }
@@ -909,7 +1188,7 @@ func TestInstallClaudeHooks_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	hooks := security.SandboxHookConfig{}
-	err := installClaudeHooks("test-sandbox", hooks)
+	err := installClaudeHooks("test-sandbox", hooks, nil)
 	require.Error(t, err)
 }
 
@@ -935,7 +1214,7 @@ func TestInstallClaudeHooks_TempFileError(t *testing.T) {
 		UnicodePostTool:         &off,
 		ContextSuppressPostTool: &off,
 	}}}
-	err := installClaudeHooks("test-sandbox", security.SandboxHookConfigFromHarness(h))
+	err := installClaudeHooks("test-sandbox", security.SandboxHookConfigFromHarness(h), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating temp hooks file")
 }

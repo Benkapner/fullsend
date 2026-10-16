@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -21,9 +23,10 @@ import (
 const validManifest = `
 version: 1
 defaults:
-  allowed_remote_resources:
-    - resource-a
-    - resource-b
+  config:
+    allowed_remote_resources:
+      - https://resource-a.example.com/
+      - https://resource-b.example.com/
 github:
   mint_url: https://mint.example.com
   fullsend_ref: main
@@ -41,7 +44,8 @@ func TestParseSimpleManifest(t *testing.T) {
 	require.NotNil(t, m.GitHub)
 	assert.Equal(t, "https://mint.example.com", m.GitHub.MintURL)
 	assert.Equal(t, "main", m.GitHub.FullsendRef)
-	assert.Equal(t, []string{"resource-a", "resource-b"}, m.Defaults.AllowedRemoteResources)
+	require.True(t, m.Defaults.Config.IsSet())
+	assert.Subset(t, m.Defaults.Config.Writer().AllowedResources(), []string{"https://resource-a.example.com/", "https://resource-b.example.com/"})
 	require.Len(t, m.GitHub.Repos, 2)
 	assert.Equal(t, "acme/repo-one", m.GitHub.Repos[0].Name)
 	assert.Equal(t, "acme/repo-two", m.GitHub.Repos[1].Name)
@@ -551,6 +555,102 @@ github:
 	}
 }
 
+func TestExpandGlobsFor_SkipsUnselectedPlatform(t *testing.T) {
+	// GitHub has only a glob entry; GitLab has the concrete repo actually
+	// targeted by the filter. A GitLab-only install must not need to
+	// expand (and therefore must not need credentials for) the GitHub
+	// glob entry.
+	input := `
+version: 1
+github:
+  mint_url: https://mint.example.com
+  repos:
+    - name: acme/*
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: group/project
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	gl := forge.NewFakeClient()
+	gl.Repos = []forge.Repository{{Name: "project", FullName: "group/project"}}
+
+	factory := &perForgeClientFactory{
+		clients: map[string]forge.Client{ForgeGitLab: gl},
+		errs:    map[string]error{ForgeGitHub: assert.AnError},
+	}
+
+	ctx := context.Background()
+	resolved, err := m.ExpandGlobsFor(ctx, factory, []string{"group/project"})
+	require.NoError(t, err, "expanding the GitHub glob entry must be skipped when the filter only selects GitLab repos")
+	require.Len(t, resolved, 1)
+	assert.Equal(t, "group", resolved[0].Owner)
+	assert.Equal(t, "project", resolved[0].Repo)
+	assert.Equal(t, ForgeGitLab, resolved[0].Forge)
+}
+
+func TestExpandGlobsFor_ExplicitEntryWinsCaseInsensitively(t *testing.T) {
+	// A carved explicit entry keeps the spelling of the concrete filter
+	// ("acme/API"), while the forge returns "api". The explicit entry must
+	// suppress the glob-expanded row so the repository resolves exactly once
+	// with the persisted override.
+	input := `
+version: 1
+github:
+  mint_url: https://mint.example.com
+  repos:
+    - name: acme/*
+    - name: acme/API
+      fullsend_ref: pinned
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "api", FullName: "acme/api"},
+		{Name: "web", FullName: "acme/web"},
+	}
+
+	resolved, err := m.ExpandGlobsFor(context.Background(), newTestClientFactory(fc), nil)
+	require.NoError(t, err)
+	require.Len(t, resolved, 2)
+
+	var apiRows int
+	for _, rr := range resolved {
+		if strings.EqualFold(rr.Repo, "api") {
+			apiRows++
+			assert.Equal(t, "pinned", rr.Entry.FullsendRef)
+		} else {
+			assert.Empty(t, rr.Entry.FullsendRef)
+		}
+	}
+	assert.Equal(t, 1, apiRows)
+}
+
+func TestExpandGlobsFor_EmptyFilterExpandsEveryPlatform(t *testing.T) {
+	input := `
+version: 1
+github:
+  mint_url: https://mint.example.com
+  repos:
+    - name: acme/*
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{{Name: "api", FullName: "acme/api"}}
+
+	ctx := context.Background()
+	resolved, err := m.ExpandGlobsFor(ctx, newTestClientFactory(fc), nil)
+	require.NoError(t, err)
+	require.Len(t, resolved, 1)
+	assert.Equal(t, "api", resolved[0].Repo)
+}
+
 func TestExpandGlobs_ListOrgReposError(t *testing.T) {
 	input := `
 version: 1
@@ -606,7 +706,7 @@ func TestResolveConfig_DefaultsOnly(t *testing.T) {
 	assert.Equal(t, "repo-one", cfg.Repo)
 	assert.Equal(t, "https://mint.example.com", cfg.MintURL)
 	assert.Equal(t, "main", cfg.FullsendRef)
-	assert.Equal(t, []string{"resource-a", "resource-b"}, cfg.AllowedRemoteResources)
+	assert.Subset(t, cfg.Managed.AllowedResources(), []string{"https://resource-a.example.com/", "https://resource-b.example.com/"})
 }
 
 func TestResolveConfig_PlatformFields(t *testing.T) {
@@ -649,6 +749,153 @@ github:
 	cfg, found := m.ResolveConfig("acme", "no-ref")
 	assert.True(t, found)
 	assert.Equal(t, "", cfg.FullsendRef) // none stops fallback
+}
+
+func TestResolveConfig_AppSet(t *testing.T) {
+	input := `
+version: 1
+github:
+  mint_url: https://mint.example.com
+  app_set: org-wide
+  repos:
+    - name: acme/inherits
+    - name: acme/overrides
+      app_set: repo-local
+    - name: acme/resets
+      app_set: none
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	// Inherits the manifest default; explicit because the platform set it.
+	cfg, found := m.ResolveConfig("acme", "inherits")
+	require.True(t, found)
+	assert.Equal(t, "org-wide", cfg.AppSet)
+	assert.True(t, cfg.AppSetExplicit)
+
+	// Per-repo override wins over the manifest default.
+	cfg, found = m.ResolveConfig("acme", "overrides")
+	require.True(t, found)
+	assert.Equal(t, "repo-local", cfg.AppSet)
+	assert.True(t, cfg.AppSetExplicit)
+
+	// "none" resets to the built-in default (reset, not disable).
+	cfg, found = m.ResolveConfig("acme", "resets")
+	require.True(t, found)
+	assert.Equal(t, appsetup.DefaultAppSet, cfg.AppSet)
+	assert.True(t, cfg.AppSetExplicit)
+}
+
+func TestResolveConfig_AppSet_BuiltinDefaultWhenUnset(t *testing.T) {
+	input := `
+version: 1
+github:
+  mint_url: https://mint.example.com
+  repos:
+    - name: acme/plain
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	cfg, found := m.ResolveConfig("acme", "plain")
+	require.True(t, found)
+	assert.Equal(t, appsetup.DefaultAppSet, cfg.AppSet)
+	assert.False(t, cfg.AppSetExplicit)
+}
+
+func TestResolveConfig_AppSet_EmptyForGitLab(t *testing.T) {
+	input := `
+version: 1
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: acme/service
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	cfg, found := m.ResolveConfig("acme", "service")
+	require.True(t, found)
+	assert.Equal(t, "", cfg.AppSet)
+	assert.False(t, cfg.AppSetExplicit)
+}
+
+func TestValidate_AppSet_GitHubValid(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			AppSet:  "org-wide",
+			Repos:   []RepoEntry{{Name: "acme/repo", AppSet: "repo-local"}},
+		},
+	}
+	assert.NoError(t, m.Validate())
+}
+
+func TestValidate_AppSet_GitHubInvalid(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			AppSet:  "Invalid_AppSet",
+			Repos:   []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "github.app_set")
+}
+
+func TestValidate_AppSet_PerRepoInvalid(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			Repos:   []RepoEntry{{Name: "acme/repo", AppSet: "Bad Value"}},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app_set")
+}
+
+func TestValidate_AppSet_NoneSentinelSkipsFormatCheck(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			AppSet:  "none",
+			Repos:   []RepoEntry{{Name: "acme/repo", AppSet: "none"}},
+		},
+	}
+	assert.NoError(t, m.Validate())
+}
+
+func TestValidate_AppSet_RejectedOnGitLabPlatform(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:    "https://gitlab.example.com",
+			AppSet: "org-wide",
+			Repos:  []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gitlab.app_set is not supported")
+}
+
+func TestValidate_AppSet_RejectedOnGitLabRepo(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:   "https://gitlab.example.com",
+			Repos: []RepoEntry{{Name: "acme/repo", AppSet: "repo-local"}},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app_set is only supported for GitHub repos")
 }
 
 func TestResolveConfig_UnknownRepo(t *testing.T) {
@@ -872,7 +1119,7 @@ unknown_section: true
 func TestParseManifestBytes_EmptyAndCommentOnlyInput(t *testing.T) {
 	// yaml.Decoder.Decode returns io.EOF for empty or comment-only input.
 	// parseManifestBytes must treat this as a no-op (matching the old
-	// yaml.Unmarshal behavior) so callers like SetDefault can handle
+	// yaml.Unmarshal behavior) so callers can handle
 	// empty manifest files as zero-value manifests.
 	tests := []struct {
 		name  string
@@ -1130,6 +1377,236 @@ func TestDistinctForges_SingleForge(t *testing.T) {
 	assert.Equal(t, []string{"github"}, forges)
 }
 
+func TestUndeclaredSelectors(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			Repos: []RepoEntry{{Name: "acme/api"}, {Name: "widgets/*"}},
+		},
+		GitLab: &PlatformConfig{
+			URL:   "https://gitlab.example.com",
+			Repos: []RepoEntry{{Name: "group/sub/project"}},
+		},
+	}
+
+	undeclared, err := m.UndeclaredSelectors(nil)
+	require.NoError(t, err)
+	assert.Empty(t, undeclared)
+
+	undeclared, err = m.UndeclaredSelectors([]string{
+		"acme/api",          // explicit entry
+		"ACME/API",          // case-insensitive
+		"widgets/gadget",    // covered by a glob entry
+		"group/sub/project", // GitLab nested path
+		"acme/*",            // glob: judged against resolved repositories
+		"other/*",           // glob: not judged from the manifest alone
+		"acme/web",          // not declared
+		"nonsense",          // not an owner/repo name
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acme/web", "nonsense"}, undeclared)
+
+	// Glob selectors are only syntax-checked here.
+	_, err = m.UndeclaredSelectors([]string{"acme/["})
+	require.Error(t, err, "an invalid glob selector is an error")
+}
+
+func TestVendorSelected(t *testing.T) {
+	yes, no := true, false
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			Repos: []RepoEntry{{Name: "acme/api"}, {Name: "acme/vendored", Vendor: &yes}},
+		},
+	}
+
+	got, err := m.VendorSelected([]string{"acme/api"})
+	require.NoError(t, err)
+	assert.False(t, got)
+
+	got, err = m.VendorSelected([]string{"acme/vendored"})
+	require.NoError(t, err)
+	assert.True(t, got)
+
+	got, err = m.VendorSelected(nil)
+	require.NoError(t, err)
+	assert.True(t, got, "an empty filter selects every entry")
+
+	m.Defaults.Vendor = &yes
+	m.GitHub.Repos[1].Vendor = &no
+	got, err = m.VendorSelected([]string{"acme/api"})
+	require.NoError(t, err)
+	assert.True(t, got, "defaults.vendor applies to entries without their own value")
+
+	got, err = m.VendorSelected([]string{"acme/vendored"})
+	require.NoError(t, err)
+	assert.False(t, got, "an entry's vendor: false overrides defaults")
+
+	_, err = m.VendorSelected([]string{"acme/["})
+	require.Error(t, err)
+}
+
+// A concrete filter name resolves vendoring with explicit-entry and
+// first-glob precedence, not through any entry that merely may match.
+func TestVendorSelected_Precedence(t *testing.T) {
+	yes, no := true, false
+
+	t.Run("explicit entry overrides vendored glob", func(t *testing.T) {
+		m := &Manifest{
+			Version: 1,
+			GitHub: &PlatformConfig{
+				Repos: []RepoEntry{
+					{Name: "acme/*", Vendor: &yes},
+					{Name: "acme/api", Vendor: &no},
+				},
+			},
+		}
+		got, err := m.VendorSelected([]string{"acme/api"})
+		require.NoError(t, err)
+		assert.False(t, got, "explicit vendor: false wins over the vendored glob")
+
+		got, err = m.VendorSelected([]string{"acme/web"})
+		require.NoError(t, err)
+		assert.True(t, got, "a repo covered only by the vendored glob is vendored")
+
+		got, err = m.VendorSelected([]string{"acme/*"})
+		require.NoError(t, err)
+		assert.True(t, got, "glob filters stay conservative")
+	})
+
+	t.Run("earlier glob shadows later vendored glob", func(t *testing.T) {
+		m := &Manifest{
+			Version: 1,
+			GitHub: &PlatformConfig{
+				Repos: []RepoEntry{
+					{Name: "acme/*", Vendor: &no},
+					{Name: "acme/team-*", Vendor: &yes},
+				},
+			},
+		}
+		got, err := m.VendorSelected([]string{"acme/team-a"})
+		require.NoError(t, err)
+		assert.False(t, got, "the first matching glob decides")
+
+		got, err = m.VendorSelected(nil)
+		require.NoError(t, err)
+		assert.False(t, got, "a shadowed vendored glob never wins resolution")
+	})
+}
+
+func TestResolveConfig_MintURLExplicit(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			Repos: []RepoEntry{{Name: "acme/default"}, {Name: "acme/entry", MintURL: "https://entry.example.com"}, {Name: "acme/none", MintURL: NoneSentinel}},
+		},
+	}
+	rc, _ := m.ResolveConfig("acme", "default")
+	assert.False(t, rc.MintURLExplicit, "the public-mode default is not an explicit mint_url")
+	rc, _ = m.ResolveConfig("acme", "entry")
+	assert.True(t, rc.MintURLExplicit)
+	rc, _ = m.ResolveConfig("acme", "none")
+	assert.False(t, rc.MintURLExplicit, "none clears the value")
+
+	m.GitHub.MintURL = "https://platform.example.com"
+	rc, _ = m.ResolveConfig("acme", "default")
+	assert.True(t, rc.MintURLExplicit)
+}
+
+func TestDistinctForgesFor(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			Repos:   []RepoEntry{{Name: "acme/api"}, {Name: "acme/web"}},
+		},
+		GitLab: &PlatformConfig{
+			URL:   "https://gitlab.example.com",
+			Repos: []RepoEntry{{Name: "gallen/integration-service"}, {Name: "acme/ml"}},
+		},
+	}
+
+	t.Run("empty filter returns both forges", func(t *testing.T) {
+		forges, err := m.DistinctForgesFor(nil)
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitHub, ForgeGitLab}, forges)
+
+		forges, err = m.DistinctForgesFor([]string{})
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitHub, ForgeGitLab}, forges)
+	})
+
+	t.Run("gitlab-only filter", func(t *testing.T) {
+		forges, err := m.DistinctForgesFor([]string{"gallen/integration-service"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitLab}, forges)
+	})
+
+	t.Run("github-only filter", func(t *testing.T) {
+		forges, err := m.DistinctForgesFor([]string{"acme/api"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitHub}, forges)
+	})
+
+	t.Run("filter spanning both forges", func(t *testing.T) {
+		forges, err := m.DistinctForgesFor([]string{"acme/api", "gallen/integration-service"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitHub, ForgeGitLab}, forges)
+	})
+
+	t.Run("glob filter matching only github", func(t *testing.T) {
+		forges, err := m.DistinctForgesFor([]string{"acme/w*"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitHub}, forges)
+	})
+
+	t.Run("unmatched filter returns empty", func(t *testing.T) {
+		forges, err := m.DistinctForgesFor([]string{"missing/repo"})
+		require.NoError(t, err)
+		assert.Empty(t, forges)
+	})
+
+	t.Run("glob manifest entry selected by concrete filter", func(t *testing.T) {
+		globManifest := &Manifest{
+			Version: 1,
+			GitHub: &PlatformConfig{
+				MintURL: "https://mint.example.com",
+				Repos:   []RepoEntry{{Name: "acme/*"}},
+			},
+			GitLab: &PlatformConfig{
+				URL:   "https://gitlab.example.com",
+				Repos: []RepoEntry{{Name: "gallen/integration-service"}},
+			},
+		}
+		forges, err := globManifest.DistinctForgesFor([]string{"acme/api"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitHub}, forges)
+	})
+
+	t.Run("glob manifest entry and glob filter that overlap after expansion", func(t *testing.T) {
+		// entry "acme/*" and filter "*/api" don't match as literal
+		// pattern strings in either direction, but both can resolve to
+		// "acme/api" once expanded against the real repo list.
+		// platformEntriesMatchFilter can't expand globs itself, so it
+		// must conservatively treat this as a match rather than silently
+		// dropping GitHub from the targeted forges.
+		globManifest := &Manifest{
+			Version: 1,
+			GitHub: &PlatformConfig{
+				MintURL: "https://mint.example.com",
+				Repos:   []RepoEntry{{Name: "acme/*"}},
+			},
+			GitLab: &PlatformConfig{
+				URL:   "https://gitlab.example.com",
+				Repos: []RepoEntry{{Name: "gallen/integration-service"}},
+			},
+		}
+		forges, err := globManifest.DistinctForgesFor([]string{"*/api"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitHub}, forges)
+	})
+}
+
 func TestValidate_GitHubURL_DefaultsToGitHubCom(t *testing.T) {
 	m := Manifest{
 		Version: 1,
@@ -1378,8 +1855,9 @@ func TestResolveConfig_PerRepoOverrides(t *testing.T) {
 	input := `
 version: 1
 defaults:
-  allowed_remote_resources:
-    - https://default.example.com/
+  config:
+    allowed_remote_resources:
+      - https://default.example.com/
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
@@ -1388,8 +1866,9 @@ github:
     - name: acme/overrides
       fullsend_ref: v2.0.0
       mint_url: https://eu-mint.example.com
-      allowed_remote_resources:
-        - https://special.example.com/
+      config:
+        allowed_remote_resources:
+          - https://special.example.com/
 `
 	var m Manifest
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
@@ -1399,7 +1878,8 @@ github:
 		require.True(t, found)
 		assert.Equal(t, "https://mint.example.com", cfg.MintURL)
 		assert.Equal(t, "v1.0.0", cfg.FullsendRef)
-		assert.Equal(t, []string{"https://default.example.com/"}, cfg.AllowedRemoteResources)
+		assert.Contains(t, cfg.Managed.AllowedResources(), "https://default.example.com/")
+		assert.NotContains(t, cfg.Managed.AllowedResources(), "https://special.example.com/")
 	})
 
 	t.Run("per_repo_override_takes_precedence", func(t *testing.T) {
@@ -1407,7 +1887,10 @@ github:
 		require.True(t, found)
 		assert.Equal(t, "https://eu-mint.example.com", cfg.MintURL)
 		assert.Equal(t, "v2.0.0", cfg.FullsendRef)
-		assert.Equal(t, []string{"https://special.example.com/"}, cfg.AllowedRemoteResources)
+		// allowed_remote_resources keeps its layered merge rule: a
+		// non-empty repository list is unioned with the inherited one.
+		assert.Equal(t, "https://special.example.com/", cfg.Managed.AllowedResources()[0])
+		assert.Contains(t, cfg.Managed.AllowedResources(), "https://default.example.com/")
 	})
 }
 
@@ -1416,8 +1899,9 @@ func TestRepoEntry_PerRepoOverrideFields(t *testing.T) {
 name: acme/my-repo
 fullsend_ref: v2.0.0
 mint_url: https://eu-mint.example.com
-allowed_remote_resources:
-  - https://special.example.com/
+config:
+  allowed_remote_resources:
+    - https://special.example.com/
 `
 	var entry RepoEntry
 	err := yaml.Unmarshal([]byte(input), &entry)
@@ -1425,14 +1909,15 @@ allowed_remote_resources:
 	assert.Equal(t, "acme/my-repo", entry.Name)
 	assert.Equal(t, "v2.0.0", entry.FullsendRef)
 	assert.Equal(t, "https://eu-mint.example.com", entry.MintURL)
-	assert.Equal(t, []string{"https://special.example.com/"}, entry.AllowedRemoteResources)
+	require.True(t, entry.Config.IsSet())
+	assert.Equal(t, "https://special.example.com/", entry.Config.Writer().AllowedResources()[0])
 }
 
 func TestMarshalRoundTrip_PerRepoOverrides(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Defaults: DefaultsConfig{
-			AllowedRemoteResources: []string{"https://default.example.com/"},
+			Config: mustManagedConfig(t, "allowed_remote_resources:\n  - https://default.example.com/\n"),
 		},
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
@@ -1440,10 +1925,10 @@ func TestMarshalRoundTrip_PerRepoOverrides(t *testing.T) {
 			Repos: []RepoEntry{
 				{Name: "acme/inherits"},
 				{
-					Name:                   "acme/overrides",
-					FullsendRef:            "v2.0.0",
-					MintURL:                "https://eu-mint.example.com",
-					AllowedRemoteResources: []string{"https://special.example.com/"},
+					Name:        "acme/overrides",
+					FullsendRef: "v2.0.0",
+					MintURL:     "https://eu-mint.example.com",
+					Config:      mustManagedConfig(t, "allowed_remote_resources:\n  - https://special.example.com/\n"),
 				},
 			},
 		},
@@ -1461,7 +1946,10 @@ func TestMarshalRoundTrip_PerRepoOverrides(t *testing.T) {
 	assert.Equal(t, "acme/overrides", roundTripped.GitHub.Repos[1].Name)
 	assert.Equal(t, "v2.0.0", roundTripped.GitHub.Repos[1].FullsendRef)
 	assert.Equal(t, "https://eu-mint.example.com", roundTripped.GitHub.Repos[1].MintURL)
-	assert.Equal(t, []string{"https://special.example.com/"}, roundTripped.GitHub.Repos[1].AllowedRemoteResources)
+	require.True(t, roundTripped.GitHub.Repos[1].Config.IsSet())
+	assert.Equal(t, "https://special.example.com/", roundTripped.GitHub.Repos[1].Config.Writer().AllowedResources()[0])
+	require.True(t, roundTripped.Defaults.Config.IsSet())
+	assert.Equal(t, "https://default.example.com/", roundTripped.Defaults.Config.Writer().AllowedResources()[0])
 }
 
 func TestValidate_PerRepoMintURLMustBeHTTPS(t *testing.T) {
@@ -1843,34 +2331,577 @@ func TestIsValidGCPProjectID(t *testing.T) {
 	assert.False(t, IsValidGCPProjectID("my-project-"))
 }
 
+func TestValidate_PerRepoInvalidConfigScheme(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			Repos: []RepoEntry{{
+				Name:       "acme/app",
+				ConfigBase: ConfigBase{Source: "ftp://example.com/preset.yaml"},
+			}},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported URL scheme")
+}
+
+func TestValidate_InvalidHTTPSConfigURL(t *testing.T) {
+	m := &Manifest{
+		Version:  1,
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: "https://"}},
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			Repos:   []RepoEntry{{Name: "acme/app"}},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a valid HTTPS URL")
+}
+
+func TestValidate_InvalidConfigHashHex(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		Defaults: DefaultsConfig{
+			ConfigBase: ConfigBase{
+				Source: "https://example.com/preset.yaml",
+				SHA256: strings.Repeat("g", 64),
+			},
+		},
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			Repos:   []RepoEntry{{Name: "acme/app"}},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not valid hex")
+}
+
+func TestValidate_ConfigHashWithoutSource(t *testing.T) {
+	m := &Manifest{
+		Version:  1,
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{SHA256: strings.Repeat("a", 64)}},
+		GitHub:   &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "defaults.config_base.sha256 is set without defaults.config_base.source")
+}
+
+func TestValidate_PerRepoConfigHashWithoutSource(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{Repos: []RepoEntry{{
+			Name:       "acme/app",
+			ConfigBase: ConfigBase{SHA256: strings.Repeat("a", 64)},
+		}}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config_base.sha256 is set but no config_base.source is declared")
+}
+
+func TestValidate_ConfigHashWithDisabledSource(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{Repos: []RepoEntry{{
+			Name:       "acme/app",
+			ConfigBase: ConfigBase{Source: NoneSentinel, SHA256: strings.Repeat("a", 64)},
+		}}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config_base.sha256 is set but config_base.source is")
+}
+
+func TestValidate_InvalidConfigScheme(t *testing.T) {
+	m := &Manifest{
+		Version:  1,
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: "http://example.com/preset.yaml"}},
+		GitHub:   &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported URL scheme")
+}
+
+func TestValidate_InvalidConfigHashLength(t *testing.T) {
+	m := &Manifest{
+		Version:  1,
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: "https://example.com/preset.yaml", SHA256: "abc"}},
+		GitHub:   &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "64-character")
+}
+
+func TestValidate_HTTPSConfigAccepted(t *testing.T) {
+	m := &Manifest{
+		Version:  1,
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: "https://example.com/preset.yaml"}},
+		GitHub:   &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+	require.NoError(t, m.Validate())
+}
+
+func TestLoadManifest_LegacyConfigFieldsRejected(t *testing.T) {
+	// The legacy string form of defaults.config (a preset URL before
+	// config_base) is now a typed overlay mapping, so a URL scalar is
+	// rejected as the wrong shape. The retired config_hash key is covered
+	// by TestLoadManifest_LegacyConfigHashStillUnknown.
+	input := `
+version: 1
+defaults:
+  config: https://example.com/preset.yaml
+github:
+  repos:
+    - name: acme/app
+`
+	dir := t.TempDir()
+	p := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(p, []byte(input), 0o644))
+	_, err := LoadManifest(context.Background(), p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a YAML mapping")
+}
+
+func TestParseManifest_ConfigFieldsRoundTrip(t *testing.T) {
+	input := `
+version: 1
+defaults:
+  config_base:
+    source: https://example.com/preset.yaml
+    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+github:
+  repos:
+    - name: acme/app
+      config_base:
+        source: /tmp/override.yaml
+        sha256: none
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+	assert.Equal(t, "https://example.com/preset.yaml", m.Defaults.ConfigBase.Source)
+	assert.Equal(t, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", m.Defaults.ConfigBase.SHA256)
+	assert.Equal(t, "/tmp/override.yaml", m.GitHub.Repos[0].ConfigBase.Source)
+	assert.Equal(t, NoneSentinel, m.GitHub.Repos[0].ConfigBase.SHA256)
+}
+
+func TestValidate_RemoteManifestRejectsLocalConfigSource(t *testing.T) {
+	m := &Manifest{
+		Version:      1,
+		sourceRemote: true,
+		Defaults:     DefaultsConfig{ConfigBase: ConfigBase{Source: "preset.yaml"}},
+		GitHub:       &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "remote manifests must use HTTPS config_base sources")
+}
+
+func TestValidate_LocalConfigSourceIsContainedAndResolvedRelativeToManifest(t *testing.T) {
+	base := t.TempDir()
+	m := &Manifest{
+		Version:   1,
+		sourceDir: base,
+		Defaults:  DefaultsConfig{ConfigBase: ConfigBase{Source: "presets/base.yaml"}},
+		GitHub:    &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+	require.NoError(t, m.Validate())
+	// The user-facing Source field must stay the relative path the
+	// operator wrote so a subsequent marshal (e.g. RemoveFromManifest,
+	// WriteManifest) round-trips it unchanged; only the internal
+	// fetch-time source is resolved to an absolute, manifest-relative path.
+	assert.Equal(t, "presets/base.yaml", m.Defaults.ConfigBase.Source)
+	assert.Equal(t, filepath.Join(base, "presets/base.yaml"), m.Defaults.ConfigBase.configSource())
+
+	escaping := &Manifest{
+		Version:   1,
+		sourceDir: base,
+		Defaults:  DefaultsConfig{ConfigBase: ConfigBase{Source: "../outside.yaml"}},
+		GitHub:    &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+	err := escaping.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes manifest directory")
+
+	outside := filepath.Join(t.TempDir(), "outside.yaml")
+	require.NoError(t, os.WriteFile(outside, []byte("version: \"1\"\n"), 0o644))
+	link := filepath.Join(base, "linked.yaml")
+	require.NoError(t, os.Symlink(outside, link))
+	symlinked := &Manifest{
+		Version:   1,
+		sourceDir: base,
+		Defaults:  DefaultsConfig{ConfigBase: ConfigBase{Source: "linked.yaml"}},
+		GitHub:    &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+	err = symlinked.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes manifest directory")
+}
+
 func TestManifest_RuntimeResolvesAndValidates(t *testing.T) {
 	t.Parallel()
 	m := &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{Runtime: "pi"},
+		Defaults: DefaultsConfig{Config: mustManagedConfig(t, "runtime: pi\n")},
 		GitHub: &PlatformConfig{Repos: []RepoEntry{
 			{Name: "acme/a"},
-			{Name: "acme/b", Runtime: "claude"},
-			{Name: "acme/c", Runtime: NoneSentinel},
+			{Name: "acme/b", Config: mustManagedConfig(t, "runtime: claude\n")},
 		}},
 	}
 	require.NoError(t, m.Validate())
 
 	rc, ok := m.ResolveConfig("acme", "a")
 	require.True(t, ok)
-	assert.Equal(t, "pi", rc.Runtime, "entry inherits defaults.runtime")
+	assert.Equal(t, "pi", rc.Runtime, "entry inherits defaults.config.runtime")
+	assert.Equal(t, "pi", rc.Managed.ConfigRuntime())
 	rc, _ = m.ResolveConfig("acme", "b")
-	assert.Equal(t, "claude", rc.Runtime, "entry overrides the default")
-	rc, _ = m.ResolveConfig("acme", "c")
-	assert.Equal(t, "", rc.Runtime, "none stops the chain: code default")
+	assert.Equal(t, "claude", rc.Runtime, "entry config overrides the default")
 
-	bad := &Manifest{Version: 1, Defaults: DefaultsConfig{Runtime: "opencode"}}
+	none := &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/c"}}}}
+	rc, _ = none.ResolveConfig("acme", "c")
+	assert.Equal(t, "", rc.Runtime, "no layer declares runtime: preset or code default")
+
+	opencode := &Manifest{Version: 1, Defaults: DefaultsConfig{Config: mustManagedConfig(t, "runtime: opencode\n")}}
+	require.NoError(t, opencode.Validate())
+
+	bad := &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/x", Config: mustManagedConfig(t, "runtime: nope\n")}}}}
 	err := bad.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `defaults.runtime "opencode" is not a valid runtime`)
+	assert.Contains(t, err.Error(), "github.repos[acme/x].config")
+	assert.Contains(t, err.Error(), `invalid runtime "nope"`)
+}
 
-	bad = &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/x", Runtime: "nope"}}}}
-	err = bad.Validate()
+func TestResolveBoolField(t *testing.T) {
+	boolPtr := func(v bool) *bool { return &v }
+
+	t.Run("per_repo_true_overrides_default_false", func(t *testing.T) {
+		got := resolveBoolField(boolPtr(true), boolPtr(false), false)
+		assert.True(t, got)
+	})
+	t.Run("per_repo_false_overrides_default_true", func(t *testing.T) {
+		got := resolveBoolField(boolPtr(false), boolPtr(true), true)
+		assert.False(t, got)
+	})
+	t.Run("nil_per_repo_inherits_default_true", func(t *testing.T) {
+		got := resolveBoolField(nil, boolPtr(true), false)
+		assert.True(t, got)
+	})
+	t.Run("nil_per_repo_inherits_default_false", func(t *testing.T) {
+		got := resolveBoolField(nil, boolPtr(false), true)
+		assert.False(t, got)
+	})
+	t.Run("all_nil_returns_builtin_default", func(t *testing.T) {
+		got := resolveBoolField(nil, nil, true)
+		assert.True(t, got)
+		got = resolveBoolField(nil, nil, false)
+		assert.False(t, got)
+	})
+}
+
+func TestResolveConfig_VendorField(t *testing.T) {
+	boolPtr := func(v bool) *bool { return &v }
+
+	t.Run("defaults_vendor_true_inherited", func(t *testing.T) {
+		input := `
+version: 1
+defaults:
+  vendor: true
+github:
+  mint_url: https://mint.example.com
+  repos:
+    - name: acme/app
+`
+		var m Manifest
+		require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+		cfg, found := m.ResolveConfig("acme", "app")
+		require.True(t, found)
+		assert.True(t, cfg.Vendor)
+	})
+
+	t.Run("per_repo_vendor_overrides_default", func(t *testing.T) {
+		m := Manifest{
+			Version:  1,
+			Defaults: DefaultsConfig{Vendor: boolPtr(true)},
+			GitHub: &PlatformConfig{
+				MintURL: "https://mint.example.com",
+				Repos: []RepoEntry{
+					{Name: "acme/vendored"},
+					{Name: "acme/not-vendored", Vendor: boolPtr(false)},
+				},
+			},
+		}
+
+		cfg, found := m.ResolveConfig("acme", "vendored")
+		require.True(t, found)
+		assert.True(t, cfg.Vendor, "inherits defaults.vendor=true")
+
+		cfg, found = m.ResolveConfig("acme", "not-vendored")
+		require.True(t, found)
+		assert.False(t, cfg.Vendor, "per-repo vendor=false overrides default")
+	})
+
+	t.Run("no_vendor_defaults_to_false", func(t *testing.T) {
+		input := `
+version: 1
+github:
+  mint_url: https://mint.example.com
+  repos:
+    - name: acme/app
+`
+		var m Manifest
+		require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+		cfg, found := m.ResolveConfig("acme", "app")
+		require.True(t, found)
+		assert.False(t, cfg.Vendor, "default vendor is false when unset")
+	})
+
+	t.Run("vendor_yaml_roundtrip", func(t *testing.T) {
+		m := Manifest{
+			Version:  1,
+			Defaults: DefaultsConfig{Vendor: boolPtr(true)},
+			GitHub: &PlatformConfig{
+				MintURL: "https://mint.example.com",
+				Repos: []RepoEntry{
+					{Name: "acme/a"},
+					{Name: "acme/b", Vendor: boolPtr(false)},
+				},
+			},
+		}
+		data, err := m.Marshal()
+		require.NoError(t, err)
+
+		var roundTripped Manifest
+		require.NoError(t, yaml.Unmarshal(data, &roundTripped))
+		require.NotNil(t, roundTripped.Defaults.Vendor)
+		assert.True(t, *roundTripped.Defaults.Vendor)
+
+		require.Nil(t, roundTripped.GitHub.Repos[0].Vendor, "omitempty omits nil vendor")
+		require.NotNil(t, roundTripped.GitHub.Repos[1].Vendor)
+		assert.False(t, *roundTripped.GitHub.Repos[1].Vendor)
+	})
+}
+
+func TestParseManifest_DeprecatedRunnerTagsAlias(t *testing.T) {
+	input := []byte(`version: 1
+gitlab:
+  url: https://gitlab.example.com
+  runner_tags:
+    - fullsend-agent
+  repos: []
+`)
+	var m Manifest
+	require.NoError(t, parseManifestBytes(input, &m))
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, []string{"fullsend-agent"}, m.GitLab.AgentRunnerTags,
+		"runner_tags alias must populate agent_runner_tags")
+	assert.Nil(t, m.GitLab.DeprecatedRunnerTags)
+	assert.Equal(t, []string{"fullsend-agent"}, gitlabAgentRunnerTags(&m))
+	assert.Empty(t, m.GitLab.ControlRunnerTags,
+		"runner_tags alias must not populate the ControlRunnerTags field directly")
+	assert.Empty(t, gitlabControlRunnerTags(&m),
+		"unset control_runner_tags must not inherit the migrated agent_runner_tags")
+}
+
+func TestGitLabControlRunnerTags_UnsetDoesNotInheritAgentTags(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:             "https://gitlab.example.com",
+			AgentRunnerTags: []string{"fullsend-agent"},
+			Repos:           []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+	assert.Equal(t, []string{"fullsend-agent"}, gitlabAgentRunnerTags(m))
+	assert.Empty(t, gitlabControlRunnerTags(m),
+		"unset control_runner_tags must not inherit agent_runner_tags (independent fields, no cross-fallback)")
+	assert.Equal(t, "[]", scaffold.FormatRunnerTags(gitlabControlRunnerTags(m)),
+		"unset control_runner_tags renders tags: [], not the agent tags")
+}
+
+func TestGitLabAgentRunnerTags_UnsetRendersEmpty(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:   "https://gitlab.example.com",
+			Repos: []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+	assert.Nil(t, gitlabAgentRunnerTags(m))
+	assert.Equal(t, "[]", scaffold.FormatRunnerTags(gitlabAgentRunnerTags(m)),
+		"unset agent_runner_tags renders tags: []")
+}
+
+func TestParseManifest_AgentRunnerTagsWinsOverDeprecated(t *testing.T) {
+	input := []byte(`version: 1
+gitlab:
+  url: https://gitlab.example.com
+  agent_runner_tags:
+    - agent-fleet
+  runner_tags:
+    - old-fleet
+  repos: []
+`)
+	var m Manifest
+	require.NoError(t, parseManifestBytes(input, &m))
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, []string{"agent-fleet"}, m.GitLab.AgentRunnerTags)
+	assert.Nil(t, m.GitLab.DeprecatedRunnerTags)
+}
+
+func TestParseManifest_ControlRunnerTagsIndependentOfAgentTags(t *testing.T) {
+	input := []byte(`version: 1
+gitlab:
+  url: https://gitlab.example.com
+  agent_runner_tags:
+    - agent-fleet
+  control_runner_tags:
+    - api-fleet
+  repos: []
+`)
+	var m Manifest
+	require.NoError(t, parseManifestBytes(input, &m))
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, []string{"agent-fleet"}, gitlabAgentRunnerTags(&m))
+	assert.Equal(t, []string{"api-fleet"}, gitlabControlRunnerTags(&m))
+}
+
+func TestMarshal_DropsDeprecatedRunnerTags(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:                  "https://gitlab.example.com",
+			DeprecatedRunnerTags: []string{"fullsend-agent"},
+			Repos:                []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+	data, err := m.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "agent_runner_tags:")
+	assert.NotRegexp(t, `(?m)^\s*runner_tags:`, string(data),
+		"deprecated runner_tags key must not be marshaled")
+	assert.Contains(t, string(data), "fullsend-agent")
+}
+
+func TestMarshal_DoesNotMutateReceiver(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:                  "https://gitlab.example.com",
+			DeprecatedRunnerTags: []string{"fullsend-agent"},
+			Repos:                []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+
+	_, err := m.Marshal()
+	require.NoError(t, err)
+
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, []string{"fullsend-agent"}, m.GitLab.DeprecatedRunnerTags,
+		"Marshal must not clear the caller's DeprecatedRunnerTags")
+	assert.Empty(t, m.GitLab.AgentRunnerTags,
+		"Marshal must not migrate the caller's AgentRunnerTags in place")
+
+	_, err = MarshalWithHeader(m)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"fullsend-agent"}, m.GitLab.DeprecatedRunnerTags,
+		"MarshalWithHeader must not clear the caller's DeprecatedRunnerTags")
+	assert.Empty(t, m.GitLab.AgentRunnerTags,
+		"MarshalWithHeader must not migrate the caller's AgentRunnerTags in place")
+}
+
+func TestLoadManifest_GitHubRunnerTags_RejectedByOperatorKey(t *testing.T) {
+	// github.runner_tags is never a legitimate key (runner_tags is a
+	// GitLab-only alias), but parsing must not silently migrate it onto
+	// agent_runner_tags before Validate runs — the error must name the
+	// key the operator actually wrote.
+	manifest := `
+version: 1
+github:
+  runner_tags:
+    - some-tag
+  repos:
+    - name: acme/repo
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(manifest), 0644))
+
+	m, err := LoadManifest(context.Background(), path)
+	require.NoError(t, err)
+
+	err = m.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `github.repos[acme/x].runtime "nope"`)
+	assert.Contains(t, err.Error(), "github.runner_tags is not supported")
+	assert.NotContains(t, err.Error(), "agent_runner_tags")
+}
+
+func TestValidate_GitHubRejectsRunnerTagFields(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  PlatformConfig
+		want string
+	}{
+		{
+			name: "agent_runner_tags",
+			cfg:  PlatformConfig{AgentRunnerTags: []string{"x"}, Repos: []RepoEntry{{Name: "acme/repo"}}},
+			want: "github.agent_runner_tags is not supported",
+		},
+		{
+			name: "control_runner_tags",
+			cfg:  PlatformConfig{ControlRunnerTags: []string{"x"}, Repos: []RepoEntry{{Name: "acme/repo"}}},
+			want: "github.control_runner_tags is not supported",
+		},
+		{
+			name: "runner_tags",
+			cfg:  PlatformConfig{DeprecatedRunnerTags: []string{"x"}, Repos: []RepoEntry{{Name: "acme/repo"}}},
+			want: "github.runner_tags is not supported",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.cfg
+			m := Manifest{Version: 1, GitHub: &cfg}
+			err := m.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+		})
+	}
+}
+
+func TestGitLabControlRunnerTags_NilManifest(t *testing.T) {
+	assert.Nil(t, gitlabAgentRunnerTags(nil))
+	assert.Nil(t, gitlabControlRunnerTags(nil))
+	assert.Nil(t, gitlabAgentRunnerTags(&Manifest{}))
+	assert.Nil(t, gitlabControlRunnerTags(&Manifest{}))
+	migrateDeprecatedRunnerTags(nil)
+}
+
+func TestMarshalWithHeader(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			Repos: []RepoEntry{
+				{Name: "acme/api"},
+			},
+		},
+	}
+
+	data, err := MarshalWithHeader(m)
+	require.NoError(t, err)
+
+	s := string(data)
+	assert.Contains(t, s, "# Generated by fullsend on")
+	assert.Contains(t, s, "# Review and adjust before running fullsend repos install.")
+	assert.Contains(t, s, "version: 1")
+	assert.Contains(t, s, "acme/api")
 }

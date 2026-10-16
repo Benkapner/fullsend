@@ -5,7 +5,8 @@ through the layered config system introduced by
 [ADR 0069](../../ADRs/0069-ready-made-configuration-presets.md) Decision 2.
 
 For initial setup instructions, see
-[Configuring GitHub](../getting-started/configuring-github.md). For advanced
+[Configuring GitHub](../getting-started/configuring-github.md) or
+[Configuring GitLab](../getting-started/configuring-gitlab.md). For advanced
 installation variants, see [Advanced Setup](advanced-setup.md).
 
 ## Overview
@@ -33,6 +34,67 @@ code defaults (compiled into fullsend)
 
 Existing installations without `config.base.yaml` are unaffected — the
 overlay falls through directly to code defaults.
+
+`fullsend github setup --config` commits the preset as `config.base.yaml`
+and writes only explicitly passed persistent setup flags into
+`config.yaml`. Required values such as `inference.project` may come from
+the preset alone; CLI flags override the same keys without rewriting the
+preset file. Passing a persistent flag whose normalized value already
+matches the inherited base or compiled default still writes the overlay
+key and warns that the value is now pinned locally — it will not pick up
+later changes from that lower layer. Delete the key from `config.yaml`
+to inherit again. Omitted flags and per-run flags do not pin.
+
+`fullsend repos install` uses the same preset implementation. Declare a
+default source in `defaults.config_base.source` (optional
+`defaults.config_base.sha256`) or override it per repository with
+`config_base`. The `none` sentinel disables inheritance. Convergence writes the fetched bytes to
+`config.base.yaml`; this preset-application step never edits the overlay
+itself (see below for managed-configuration convergence, which does rewrite the
+overlay on drift). With no resolved preset (none declared, or `none`), the
+desired state is no `config.base.yaml`: an existing file, including a
+zero-byte one, is drift, and `repos install` and convergence stop that
+repository before any write until you declare a `config_base` source or
+remove the file. With a declared preset, an existing base must be a valid
+per-repo layer and is compared byte-for-byte; before it is replaced, the
+current effective configuration (overlay over installed base) is compared
+with the proposed one (proposed overlay over the declared preset), and an
+implicit security relaxation is rejected — a preset source change alone is
+not an explicit declaration. `repos status` checks both layers for every
+manifest repository, including before first install. See
+[Repo Management — Configuration presets](../getting-started/repo-management.md#configuration-presets).
+
+Fleet manifests may also declare managed configuration via
+`defaults.config`, `github.config`, `gitlab.config`, and per-repository
+`config` ([ADR 0122](../../ADRs/0122-declarative-repo-configuration.md)),
+resolved in that order above `config_base` and code defaults; a forge
+section's `config` applies only to that forge's repositories.
+Those blocks are not `config_base` presets: `config` is a sparse overlay
+written to `.fullsend/config.yaml`, while `config_base` copies a preset
+byte-for-byte to `.fullsend/config.base.yaml`. Managed blocks use this
+same schema (every field, including `runtime` and
+`allowed_remote_resources`) and the per-field merge rules below. The former
+sibling `runtime` / `allowed_remote_resources` keys under `defaults` and
+repository entries are rejected. Managed configuration is
+not an opt-in: every repository selected from the manifest has a managed
+`config.yaml`, with or without a `config` key. Every managed file carries an
+ownership marker; a pre-existing `config.yaml` that lacks the marker requires
+adoption — `repos status` reports "managed configuration (adoption
+required)" with the proposed `repos.yaml` entry, the file difference and the
+effective layered-configuration change instead of ordinary drift, and
+install/convergence stop before any write (including for a fresh install) and
+leave that file untouched until it is adopted. Once a file carries
+the marker, `repos install` writes the canonical sparse configuration,
+`repos status` reports whole-file managed-configuration drift, and
+convergence rewrites a drifted file unless the candidate would become less
+restrictive than the current effective configuration without an explicit
+manifest declaration. That comparison uses the overlay → base →
+code-defaults accessor chain, including omitted-key fallthrough, and layers
+the proposed overlay on the proposed (declared) preset rather than the
+installed base; an absent base is an empty layer, so adding a preset is
+compared too. A pristine first install (no installation, no overlay and no
+base) has nothing to compare against and inherits the preset. See
+[Repo Management — Managed configuration](../getting-started/repo-management.md#managed-configuration).
 
 ### Marshal behavior
 
@@ -74,6 +136,7 @@ the overlay → base → code defaults chain.
 | `version` | `string` | Scalar override | `"1"` |
 | `runtime` | `string` | Scalar override | `"claude"` |
 | `kill_switch` | `*bool` | Scalar override | `false` (inactive) |
+| `keep_history` | `*bool` | Scalar override | `true` (history appended) |
 | `roles` | `[]string` | Replace if set | `PerRepoDefaultRoles()` |
 | `agents` | `[]AgentEntry` | Keyed merge by `DerivedName()` | `nil` (none) |
 | `allowed_remote_resources` | `[]string` | Union with deny-all | `DefaultAllowedRemoteResources()` |
@@ -84,18 +147,37 @@ the overlay → base → code defaults chain.
 | `inference.project` | `string` (nested) | Scalar override | `""` (empty) |
 | `inference.region` | `string` (nested) | Scalar override | `"global"` |
 | `inference.wif_provider` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.openai.audience` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.openai.identity_provider_id` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.openai.service_account_id` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.gateway.url` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.gateway.audience` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.gateway.auth` | `string` (nested) | Scalar override | `""` (empty; means `oidc`) |
+| `inference.gateway.models` / `inference.gateway.models_file` | `map` / `string` (nested) | Model list replaced as one unit | `nil` (none) |
+| `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
 | `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
+| `authorization` | `[]AuthorizationProvider` | Overlay only (not layered) | `nil` |
 
-### Per-agent `runtime`, `model`, `effort` on `agents:` entries
+`authorization` is overlay-only: setting it in `config.base.yaml` has no
+effect, so each repo must opt in explicitly.
 
-An `agents:` entry may set `runtime`, `model` and `effort` for that agent. An
-enabled entry without `source:` is an *override-only* entry that tunes a
+### Per-agent `runtime`, `model`, `effort`, `subagents` on `agents:` entries
+
+An `agents:` entry may set `runtime`, `model`, `effort` and `subagents` for
+that agent. The `ref` field records the branch or tag that was resolved when
+the agent was adopted via `agent add`; `agent update` re-resolves against
+this ref instead of the default branch when it is present (empty for
+SHA-pinned or legacy entries).
+
+An enabled entry without `source:` is an *override-only* entry that tunes a
 built-in agent by name (or, in an overlay, a custom agent registered in the
-base layer). The keyed merge by `DerivedName()` carries the three settings
-field by field: the overlay's non-empty value wins, an empty value inherits
-the parent's. There is no way to unset a parent's value from the overlay
-short of restating the entry.
+base layer). The keyed merge by `DerivedName()` carries the four settings
+field by field: for `runtime`, `model` and `effort` the overlay's non-empty
+value wins and an empty value inherits the parent's. `subagents` uses
+per-key merge: overlay entries override or tombstone (`~`) individual
+persona keys while unstated keys inherit from the parent. There is no way to
+unset a parent's scalar value from the overlay short of restating the entry.
 
 ```yaml
 # config.base.yaml (preset)
@@ -122,13 +204,28 @@ unset, the accessor falls through to the base layer, then to code defaults.
 - **`version`**: Schema version string. Unset (`""`) falls through to parent.
   Code default is `"1"`.
 - **`runtime`**: Agent runtime identifier. Unset (`""`) falls through to
-  parent. Code default is `"claude"`. Valid values: `claude`, `pi`, `dummy`.
+  parent. Code default is `"claude"`. Valid values: `claude`, `pi`, `codex`,
+  `opencode`, `dummy`, `dummy-playback`.
 - **`kill_switch`**: Pointer to bool (`*bool`). Using a pointer allows
   distinguishing between three states:
   - `nil` (key omitted) — unset, falls through to parent.
   - `*false` (explicit `kill_switch: false`) — locally set to inactive.
     Does **not** fall through.
   - `*true` (explicit `kill_switch: true`) — locally set to active.
+- **`keep_history`**: Pointer to bool (`*bool`). Controls whether sticky
+  comment updates (from `post-review`, `post-comment`, and
+  `issues post-comment`) append the previous body as a collapsed
+  "Previous run" `<details>` block. Uses the same three-state pointer
+  semantics as `kill_switch`:
+  - `nil` (key omitted) — unset, falls through to parent.
+    Code default is `true` (history appended, preserving existing
+    behavior).
+  - `*true` (explicit `keep_history: true`) — updates collapse old
+    content into history blocks.
+  - `*false` (explicit `keep_history: false`) — updates replace the
+    comment body in-place with no history. Useful when accumulated
+    "Previous run" blocks add unwanted noise (e.g., when comments are
+    synced to Jira where `<details>` does not render as collapsible).
 
 ### `mint_url` and `inference` — scalar override (ADR 0069 Decision 1)
 
@@ -139,8 +236,8 @@ unset (`""`) falls through to parent, then to code default
 
 **`inference`** groups inference backend settings under a single YAML key
 (`inference:`) using the `PerRepoInferenceConfig` struct. Each subfield
-(`provider`, `project`, `region`, `wif_provider`) resolves independently
-through scalar override semantics:
+(`provider`, `project`, `region`, `wif_provider`, and the three under
+`openai`) resolves independently through scalar override semantics:
 
 - **`inference.provider`**: Inference provider identifier (e.g. `"vertex"`).
   Unset (`""`) falls through to parent, then to code default `"vertex"`.
@@ -150,10 +247,32 @@ through scalar override semantics:
   through to parent, then to code default `"global"`.
 - **`inference.wif_provider`**: Full WIF provider resource name. Unset (`""`)
   falls through to parent (no code default — must be provided by the installer).
+- **`inference.openai.{audience,identity_provider_id,service_account_id}`**:
+  the OpenAI Workload Identity identifiers for GPT on pi or codex (ADR 0092), written
+  by `fullsend github setup --openai-*`; they can also come from configuration
+  presets or managed config, and `fullsend repos install` validates them for
+  `openai-wif` repos. Each resolves independently through
+  the layers; a run needs all three from one source. The `FULLSEND_OPENAI_*`
+  runner variables, when any is set, replace the resolved block entirely.
+- **`inference.gateway.{url,audience,auth}`**: the inference gateway
+  credential route (ADR 0137), written by `fullsend github setup
+  --inference-gateway-*`. `auth` selects the credential mode, `oidc` (the
+  default) or `api-key` (ADR 0138). In the `oidc` mode the runner owns the
+  route when the resolved block is complete and the run has a forge OIDC
+  endpoint. In the `api-key` mode it owns the route on every run, local
+  runs included (see the
+  [config reference](../../reference/config-reference.md)).
+  Each resolves independently through the layers, so an org preset can carry
+  `url` and `audience` while each repository opts in its own models or its
+  own `auth`. The resolved block needs `url`, plus `audience` in the `oidc`
+  mode. There is no runner-variable override.
+- **`inference.gateway.models` / `inference.gateway.models_file`**: the
+  gateway model list. The two forms are one unit: a layer that sets either
+  replaces the inherited list, so the forms never combine across layers.
 
 The `inference` pointer itself (`*PerRepoInferenceConfig`) uses nil to mean
 "no local inference settings" — if the entire `inference:` key is omitted
-from YAML, all four subfields fall through to the parent layer. If the key
+from YAML, all subfields fall through to the parent layer. If the key
 is present, each subfield is checked independently.
 
 Example:
@@ -178,14 +297,60 @@ inference:
 #   inference.wif_provider: ...base... (from base)
 ```
 
+`fullsend repos install` resolves `mint_url`, `inference.project`,
+`inference.region`, and `inference.wif_provider` the same way from the
+managed configuration layered over the declared preset (the layers it
+commits), and uses the declared values for the installed
+`FULLSEND_MINT_URL` and `FULLSEND_GCP_REGION` variables and the
+`FULLSEND_GCP_PROJECT_ID` / `FULLSEND_GCP_WIF_PROVIDER` secrets, so the
+committed configuration and the repository variables agree. Install, dry
+run and `repos status` use the same values. The code-default `global`
+region is not treated as declared: without a declared `inference.region`,
+install keeps an existing `FULLSEND_GCP_REGION`. See
+[Effective infrastructure values](../../cli/repos.md#effective-infrastructure-values).
+
+### `models.aliases` — per-key merge
+
+`models.aliases` overrides fullsend's pinned model alias table per key
+(#6882). Keys are the existing alias vocabulary (`opus`, `sonnet`,
+`haiku`, `fable`); values are model ids or `provider/id` specs validated
+with `ValidModelRef`, and never another alias name — bare or as the id
+segment of a `provider/id` spec (aliases resolve once, so `sonnet: opus`
+or `sonnet: anthropic-vertex/opus` would reach the provider as the
+literal id `opus`). An unknown key is a config validation error.
+
+Merge is per key across layers: an overlay that sets `fable` inherits
+the base's `sonnet` entry without restating it. A `nil` Models block
+(key omitted from YAML) falls through to the parent layer. Validation
+runs on the merged map, so a bad key in `config.base.yaml` fails an
+overlay write (and `fullsend run`) even when the overlay omits
+`models:`.
+
+```yaml
+# config.base.yaml
+models:
+  aliases:
+    sonnet: claude-sonnet-5
+
+# config.yaml (overlay)
+models:
+  aliases:
+    fable: claude-fable-5-1
+
+# Effective: sonnet → claude-sonnet-5 (from base), fable → claude-fable-5-1 (from overlay),
+# opus and haiku → fleet defaults (compiled-in).
+```
+
 ### `tracker` — scalar override
 
 **`tracker`** stores the default issue tracker for `fullsend issues`
 commands (`github`, `gitlab`, or `jira`). Unset (`""`) means no default
 — `--tracker` is required on every `fullsend issues` invocation. When
-set, it is used as the default for `--tracker` on both `fullsend issues
-get` and `fullsend issues post-comment`; an explicit `--tracker` flag
-overrides it. Distinct from `forge`: a repo's hosting forge does not
+set, it is used as the default for `--tracker` on `fullsend issues
+get`, `fullsend issues post-comment`, and `fullsend issues link` (`link`
+supports only Jira, so a `github` or `gitlab` default makes it fail with a
+not-supported error unless `--tracker jira` is passed); an
+explicit `--tracker` flag overrides it. Distinct from `forge`: a repo's hosting forge does not
 imply its issue tracker (e.g. a GitHub-hosted repo may track issues in
 Jira).
 
@@ -258,8 +423,9 @@ agents:
 
 ### `allowed_remote_resources` — union with deny-all
 
-This field controls which URL prefixes are allowed for remote agent sources
-and base composition. It uses special three-way semantics:
+This field controls which URL prefixes are allowed for remote resources
+(agents, policies, skills, plugins, profiles, providers, and base
+composition). It uses special three-way semantics:
 
 | Overlay value | Behavior |
 |---------------|----------|
@@ -320,6 +486,44 @@ The `status_notifications` field uses the same replace-if-set semantics as
 - Non-nil — replaces the parent value entirely, including nested
   `comment.start`/`comment.completion` settings.
 
+### `authorization` — provider list
+
+The `authorization` field is a list of authorization providers that
+supplement the default collaborator-API permission check. Native GitHub
+collaborator-API auth always runs implicitly; the list names additional
+backends. Currently one provider is supported:
+
+- `owners_file` — the dispatch routing logic checks the repo-root
+  `OWNERS` file (and `OWNERS_ALIASES` if present) before falling back
+  to the GitHub collaborator API. OWNERS approvers get write-equivalent
+  access; reviewers get triage-equivalent. If the user is not listed in
+  OWNERS, authorization falls through to the collaborator API — OWNERS
+  never blocks a collaborator who isn't in the file. An entry that names
+  an `OWNERS_ALIASES` key matches only that alias's members. A login
+  equal to any alias key never matches, and nested aliases are not
+  expanded.
+
+Both the bash routing path (built-in stages) and the Go harness-dispatch
+path (custom agents) consult OWNERS. The Go path admits write-level roles
+only, so a reviewer's triage-level grant covers built-in observation stages
+(`/fs-triage`, `/fs-review`) but not custom agents. A missing or malformed `OWNERS`
+file, or a malformed `OWNERS_ALIASES` file, fails closed: the OWNERS check is
+skipped and authorization falls through to the collaborator API.
+
+v1 limitation: only the repo-root flat `approvers`/`reviewers` lists
+are read. Prow `filters:` blocks and nested per-directory OWNERS files
+are not supported.
+
+Example:
+
+```yaml
+authorization:
+  - provider: owners_file
+```
+
+See [ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
+for the full design rationale.
+
 ## Code defaults reference
 
 When neither the overlay nor the base layer sets a field, the following
@@ -330,6 +534,7 @@ compiled-in defaults apply:
 | `version` | `"1"` |
 | `runtime` | `"claude"` |
 | `kill_switch` | `false` (inactive) |
+| `keep_history` | `true` (history appended) |
 | `roles` | `["triage", "coder", "review", "fix", "retro", "prioritize"]` |
 | `agents` | `nil` (none configured) |
 | `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]` |
@@ -340,14 +545,23 @@ compiled-in defaults apply:
 | `inference.project` | `""` (empty — must be provided) |
 | `inference.region` | `"global"` |
 | `inference.wif_provider` | `""` (empty — must be provided) |
+| `models.aliases` | `nil` (fleet alias table compiled into the runtimes) |
 | `create_issues` | `nil` |
 | `status_notifications` | `nil` |
+| `authorization` | `nil` |
 
 ## Related
 
+- [Config Reference](../../reference/config-reference.md) — canonical
+  user-facing reference for every `.fullsend/config.yaml` field.
+- [Configuration source inventory](../../contributing/config-source-inventory.md)
+  — which source wins for each setting, including workflow variables that
+  still override the files.
 - [ADR 0069 — Ready-made configuration presets](../../ADRs/0069-ready-made-configuration-presets.md)
   — the architectural decision that introduced layered configuration.
 - [ADR 0033 — Per-repo installation mode](../../ADRs/0033-per-repo-installation-mode.md)
   — per-repo config file location and format.
 - [Configuring GitHub](../getting-started/configuring-github.md) — initial
+  per-repo setup guide.
+- [Configuring GitLab](../getting-started/configuring-gitlab.md) — initial
   per-repo setup guide.

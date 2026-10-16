@@ -7,9 +7,11 @@ sandbox, the credentials, and the verdict.
 | Runtime | Use it for | Status |
 |---|---|---|
 | **[`claude`](runtimes/claude.md)** | Production agent runs (Claude Code) | Default |
-| **[`pi`](runtimes/pi.md)** | Second runtime, opt-in per org/repo — Claude, Grok and Gemini | Supported for `triage`, `prioritize`, `code`, `fix` |
+| **[`pi`](runtimes/pi.md)** | Second runtime, opt-in per repo — Claude, Grok and Gemini on Vertex; GPT via OpenAI WIF (wired, not yet exercised live) | Supported for all roles |
+| **[`codex`](runtimes/codex.md)** | Third runtime, opt-in per repo or agent — OpenAI models via the same secretless credential path (wired, not yet exercised live), or Responses-capable models through an inference gateway (`gateway/<model>`) | Opt-in |
+| **[`opencode`](runtimes/opencode.md)** | Fourth runtime, opt-in per repo or agent — reads `AGENTS.md` natively | Experimental; read-only agents (`triage`, `prioritize`) until the security-hook adapter lands (#7824) |
 | `dummy` | Behaviour tests — scripted ops, no inference | Internal |
-| `opencode` | Not yet functional | Stub |
+| `dummy-playback` | Behaviour tests — replays canned agent results from a playlist, no inference | Internal |
 
 Pick one with `runtime:` in `.fullsend/config.yaml`, or per run with `--runtime`.
 
@@ -33,6 +35,7 @@ sequenceDiagram
   R->>S: .env, host files
   R->>S: Bootstrap
   R->>S: OIDC token (4-min refresh)
+  R->>S: clean up stray processes (between iterations)
   R->>S: Run (per iteration)
   S->>A: start + hook wiring
   loop tool-use loop
@@ -45,20 +48,31 @@ sequenceDiagram
   R->>R: verdict, metrics.json
 ```
 
-## Choosing between claude and pi
+## Choosing a runtime
 
-| | Claude Code | pi |
-|---|---|---|
-| Models | Anthropic on Vertex | Claude, **Grok** and **Gemini** on Vertex |
-| Sub-agents | Native (`Agent` tool) | Not wired — agents execute sub-agent definitions inline ([#6527](https://github.com/fullsend-ai/fullsend/issues/6527)) |
-| Fallback model chain | `FULLSEND_FALLBACK_MODELS`, tried in order | Ignored with a warning |
-| Roles | All | `review`/`retro` stay on Claude Code — they rely on sub-agent rosters |
-| Effort | `--effort low..max` | `--thinking`, same levels (`high` when unset) |
-| Security controls | Full matrix | Full matrix; stricter on failed-call sanitizing |
+<a id="choosing-between-claude-and-pi"></a>
 
-Both run unattended in the same sandbox, on the same WIF credentials, behind the same egress
-allowlist. Choose `pi` when you want a non-Anthropic model; stay on `claude` when you need
-sub-agents or a fallback chain.
+| | Claude Code | pi | codex |
+|---|---|---|---|
+| Models | Anthropic on Vertex; any Messages-capable model through an [inference gateway](runtimes/claude.md#inference-gateway-route) (`gateway/<model>`) | Claude, **Grok** and **Gemini** on Vertex; **GPT** via OpenAI WIF (opt-in, [not yet exercised live](runtimes/pi.md#models-and-providers)) | **GPT**, via OpenAI WIF ([not yet exercised live](runtimes/codex.md#not-yet-exercised)); any Responses-capable model through an [inference gateway](runtimes/codex.md#models-through-an-inference-gateway-experimental) (`gateway/<model>`, experimental) |
+| Sub-agents | Native (`Agent` tool) | `Agent`/`Task` via a fullsend extension | Not available |
+| Default alias models | `opus`/`sonnet`/`haiku` → `claude-*-5-5`, passed as the id; `fable` by Claude Code's own table; sub-agent frontmatter resolved by Claude Code | `opus`/`sonnet`/`haiku` → `claude-*-5-5`, `fable` → `claude-fable-5-1`, children included | Not applicable — OpenAI models only |
+| Fallback model chain | Alias requests retried by the runner when Vertex does not serve the model (Claude Code's own "model not available" result naming the model, or Vertex's [two 404/403 messages](runtimes/claude.md#models)): `FULLSEND_FALLBACK_MODELS`, else the alias's built-in chain (`opus` → `claude-opus-4-6`, `sonnet` → `claude-sonnet-4-6`, `haiku` → `claude-haiku-4-5`); only an explicit `FULLSEND_FALLBACK_MODELS` is also passed as `--fallback-model`, never the built-in chain; pinned ids, retargets and sub-agents fail loudly | The same chain, same provider only; sub-agent children asking for an alias use its built-in chain; pinned ids and retargets fail loudly | Ignored with a warning |
+| Roles | All | All; `review`/`retro` at `--thinking medium` by default | Same recommendation as before — no sub-agent roster on codex |
+| Effort | `--effort low..max` | `--thinking`, same levels (`high` when unset) | `model_reasoning_effort`, same levels |
+| Tools | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist | Shell + `apply_patch` only; `tools:` is recorded, not enforced (the allowlist hook is opt-in) |
+| Security controls | Full matrix | Full matrix; stricter on failed-call sanitizing | Full matrix; post-tool hooks detect and block but cannot rewrite output |
+| Inference gateway route (`gateway/<model>`, [ADR 0137](ADRs/0137-inference-gateway-credential-route.md)) | Runner-owned `ANTHROPIC_BASE_URL`, cleared and re-exported after `.env`; credential via an `apiKeyHelper` on a re-seeded token file (`oidc`) or an `ANTHROPIC_AUTH_TOKEN` placeholder (`api-key`), sent as `Authorization: Bearer` in both modes (`oidc` also copies it into `x-api-key`); no model list; needs a block ([details](runtimes/claude.md#inference-gateway-route)) | `gateway/<model>` through the runner-loaded inference-gateway extension; Responses, Messages or Chat Completions | `gateway/<model>` through a runner-owned `fullsend-gateway` provider in the digest-guarded `config.toml`; Responses only. On every runtime the sandbox holds only the run-scoped provider's placeholder |
+| Cost in `metrics.json` | Reported | Reported | Not reported — codex sends none |
+| Content capture (Level 3) | Text, reasoning, tool calls with their arguments, and tool results (correlating ids); the retry prompt under `feedback_mode: append` | Text, reasoning, tool calls (no correlating ids) — pi's parser emits no ids, arguments or tool results yet ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)); the retry prompt, as on Claude | Text, reasoning, tool calls (no correlating ids) — codex's parser emits no ids, arguments or tool results ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)); the retry prompt, as on Claude |
+| Tool spans (`execute_tool`) | One per id-bearing tool call (server-side tools get none), up to 1,024 per iteration, a child of the iteration's `agent` span, timed at receipt | None — the parser emits no call ids ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) | None — the parser emits no call ids ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) |
+
+All four run unattended in the same sandbox, behind the same egress allowlist. Choose `pi` when you
+want a non-Anthropic model, several vendors from one runtime, or its `Agent`/`Task` sub-agent roster.
+Choose `codex` when you want OpenAI models specifically and codex's shell-centric way of working.
+Choose `opencode` for an experimental open-source runtime backed by configurable providers; it is
+currently limited to read-only agents (`triage`, `prioritize`) until the security-hook adapter
+lands ([#7824](https://github.com/fullsend-ai/fullsend/issues/7824)).
 
 ## Selecting a runtime and model
 
@@ -82,7 +96,7 @@ flowchart LR
 | Setting | Flag | Env | Config (per-agent) | Config (repo-wide) |
 |---|---|---|---|---|
 | Runtime | `--runtime` | `FULLSEND_RUNTIME` | `runtime:` on the agent's `agents:` entry | `runtime:` in `.fullsend/config.yaml` (repo default) |
-| Model | `--model` | `FULLSEND_MODEL` (`FULLSEND_PI_MODEL` is a lower-precedence alias on pi) | `model:` on the agent's `agents:` entry | harness `model:`, then agent frontmatter `model:` |
+| Model | `--model` | `FULLSEND_MODEL` (`FULLSEND_PI_MODEL` on pi and `FULLSEND_CODEX_MODEL` on codex are lower-precedence aliases) | `model:` on the agent's `agents:` entry | harness `model:`, then agent frontmatter `model:`; `models.aliases` in `.fullsend/config.yaml` remaps the alias any of these resolve to |
 | Effort | `--effort` | `FULLSEND_EFFORT` | `effort:` on the agent's `agents:` entry | harness `effort:` |
 
 In CI these are repository variables of the same name, plain or role-prefixed
@@ -94,9 +108,9 @@ the agent's `agents:` entry in `.fullsend/config.yaml` instead. Harness `env.run
 ### Per-agent runtime, model and effort
 
 The `agents:` list is the per-agent place in `config.yaml`: an entry names an agent and can set
-its `runtime`, `model` and `effort`. A built-in agent (`triage`, `code`, `review`, `fix`, `retro`,
-`prioritize`) is tuned with a name-only entry; a custom agent carries the settings on its
-`source:` entry.
+its `runtime`, `model`, `effort` and `subagents`. A built-in agent (`triage`, `code`, `review`,
+`fix`, `retro`, `prioritize`) is tuned with a name-only entry; a custom agent carries the settings
+on its `source:` entry.
 
 ```yaml
 runtime: pi                    # repo default for agents that set none
@@ -107,14 +121,18 @@ agents:
     runtime: claude
     model: sonnet
     effort: high
+  - name: review
+    subagents:
+      default: haiku           # personas that name no model, and children that name no persona
+      correctness: opus
   - source: https://raw.githubusercontent.com/acme/agents/<sha>/harness/lint.yaml#sha256=…
     model: haiku
 ```
 
 Or from the CLI, which validates the entry before writing it:
 
-1. `fullsend agent set code --fullsend-dir .fullsend --runtime claude --model sonnet --effort high`
-2. `fullsend agent list --fullsend-dir .fullsend` shows the settings next to each agent —
+1. `fullsend agent set code --runtime claude --model sonnet --effort high`
+2. `fullsend agent list` shows the settings next to each agent —
    `code  (built-in)  [runtime=claude model=sonnet effort=high]`, or the `source:` path for a custom
    agent.
 3. The next `fullsend run code` names the entry as the source —
@@ -156,8 +174,10 @@ silently shadowed. Bump the workflow's fullsend pin to a version that carries pe
 *before* adding them: an older pinned CLI rejects an enabled `agents:` entry without a `source`,
 whereas a current CLI validates the settings on every run.
 
-Set the runtime per repo with `fullsend github setup <owner/repo> --runtime pi`. Repos on pi need a
-sandbox image that carries `PI_VERSION`.
+Set the runtime per repo with `fullsend github setup <owner/repo> --runtime pi` (GitHub). For GitLab,
+set `runtime:` in a `repos.yaml` config section (`defaults.config`, `gitlab.config`, or the entry's `config`) and run `fullsend repos install`; do not edit the managed `.fullsend/config.yaml` directly — see
+[Choosing a runtime](guides/getting-started/choosing-a-runtime.md). Repos on pi need a
+sandbox image that carries `PI_VERSION`; repos on codex need one that carries `CODEX_VERSION`.
 
 ## Models
 
@@ -167,9 +187,28 @@ On pi, a model is `provider/id` — aliases and bare ids still work, and the pro
 `FULLSEND_PI_PROVIDER` (default `anthropic-vertex`). pi reaches Claude, Gemini **and** Grok, each
 through its own provider; see [Pi › Models and providers](runtimes/pi.md#models-and-providers).
 
+On codex, a model is an OpenAI id — `openai/<id>` or the bare id — or `gateway/<model>` when an
+`inference.gateway` block applies
+([Codex › Models through an inference gateway](runtimes/codex.md#models-through-an-inference-gateway-experimental)). The Claude aliases above do
+**not** apply: codex serves the OpenAI Responses API only, so `opus` and friends are refused rather
+than remapped to a GPT model. Because the fleet harnesses say `model: opus`, a repo moving to codex
+names its model either once on the runner with `FULLSEND_CODEX_MODEL=openai/gpt-5.6-luna` or per
+agent with `model: openai/<id>` on the `agents:` entry — no harness needs editing either way. See
+[Codex › Models](runtimes/codex.md#models).
+
 Harness `model:` and `agents:` entry `model:` values accept provider-qualified `provider/id` syntax
-(e.g. `google-vertex/gemini-3.7-flash`). On pi, a harness can also select a provider with a bare
+(e.g. `google-vertex/gemini-3.8-flash`). On pi, a harness can also select a provider with a bare
 `model:` plus `FULLSEND_PI_PROVIDER`.
+
+### Per-repo alias overrides
+
+Point an alias at a different model for one repo with `models.aliases` in `.fullsend/config.yaml`
+— `sonnet: claude-sonnet-5` changes `sonnet` and leaves the other aliases alone. Works on both
+runtimes; the override applies to the parent run and to sub-agent dispatch on pi (children
+resolve aliases through the same merged table). See [Pi › Per-repo alias
+overrides](runtimes/pi.md#per-repo-alias-overrides) for the syntax and what the plan block shows,
+and [Claude Code › Models](runtimes/claude.md#models) for the one limit there (sub-agent `model:`
+frontmatter is not remapped).
 
 ## Where the selection appears
 
@@ -178,27 +217,34 @@ Harness `model:` and `agents:` entry `model:` values accept provider-qualified `
 | Run plan block | `Runtime: <name> (from <source>)` next to Model and Effort; `<source>` is the flag, the variable, or `<config path>` (suffixed ` agents.<name>` when the agent's entry decided) |
 | stderr | `runtime: selected "<name>" from <source>` |
 | Status comment / `::notice::` | `Runtime · Model: <requested → reported> · Effort · Cost` |
-| OTel span | `fullsend.runtime`, next to `gen_ai.request.model` |
+| OTel span | `fullsend.runtime` (harness), `gen_ai.system` / `gen_ai.provider.name` (serving endpoint of the model used), next to `gen_ai.request.model` |
 | `metrics.json` | `runtime`, `requested_runtime`, `runtime_source`, `requested_model`, `override_source` |
 
-`requested_model` is what was handed to the runtime after overrides, and `override_source` says where
-it came from — so a silent override is visible after the fact. The reported model is the
+`requested_model` is the model after the per-run overrides (an alias stays the alias name) and
+`override_source` says where it came from, with `, remapped by <config path> models.aliases`
+appended when a per-repo alias override applied — so a silent override is visible after the fact.
+The reported model is the
 provider-stripped id (`claude-opus-4-6`); for a provider whose ids are publisher-qualified it keeps
 that segment (`xai/grok-4.6`), since that is the wire id.
 
 ## Harness config keys per runtime
 
 Harness keys are runtime-neutral in YAML; each runtime owns the translation.
+Test-only runtimes (`dummy`, `dummy-playback`) ignore all harness config keys
+and are omitted from this table.
 
-| Harness key | Claude Code | pi |
-|---|---|---|
-| `model` | `--model` | alias table, then `provider/id`; see [Models](#models) |
-| `effort` | `--effort` | `--thinking` (superset of the harness levels; `high` when unset) |
-| `tools:` | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist |
-| `skills` | `CLAUDE_CONFIG_DIR/skills/` | `PI_CODING_AGENT_DIR/skills/`, discovered natively |
-| `plugins` | Marketplace layout | Unsupported — warned and skipped |
-| `security.sandbox_hooks` | `hooks.json` via `--settings` | Hook scripts + manifest + adapter extension |
-| `validation_loop.feedback_mode` | Replaces the prompt on retry | Same |
+| Harness key | Claude Code | pi | codex | OpenCode |
+|---|---|---|---|---|
+| `model` | `--model` | alias table (merged with `models.aliases`), then `provider/id`; see [Models](#models) | `--model <id>`; OpenAI ids and `gateway/<model>` only | alias table, then `provider/model` (default provider `google-vertex-anthropic`); passthrough for `provider/model` |
+| `effort` | `--effort` | `--thinking` (superset of the harness levels; `high` when unset) | `model_reasoning_effort` (same levels) | `--variant` (model reasoning variant) |
+| `tools:` | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist | No native allowlist. `Bash(...)` lists are recorded but not enforced, entries with no codex tool are dropped with a warning, and the tool-allowlist hook is opt-in (`FULLSEND_TOOL_ALLOWLIST`) | agent frontmatter `permission:` record (`{toolID: "allow"\|"deny"}`); Claude names mapped to OpenCode IDs; per-argument Bash restrictions collapse to plain `bash` with a warning; restrict commands with a policy pattern map |
+| `skills` | `CLAUDE_CONFIG_DIR/skills/` | `PI_CODING_AGENT_DIR/skills/`, discovered natively | `CODEX_HOME/skills/`, discovered natively | `OPENCODE_CONFIG_DIR/skills/`, discovered natively |
+| `plugins` | Loads the `plugin.json` directories (marketplace layout) | Loads the extension directories: uploaded to `PI_CODING_AGENT_DIR/extensions/`, tree-hash preflight, `-e` ([Plugins](runtimes/pi.md#plugins-pi-extensions), ADR 0094) | Unsupported — warned and skipped | Unsupported — warned and skipped |
+| `security.sandbox_hooks` | `hooks.json` via `--settings` | Hook scripts + manifest + adapter extension | `hooks.json` + adapter script under `CODEX_HOME` | Not wired yet (#7824) |
+| `validation_loop.feedback_mode` | Replaces the prompt on retry | Same | Same | Same (`RunParams.Prompt` honored) |
+
+On OpenCode the `OPENCODE_CONFIG_CONTENT` policy must allow every tool the agent needs: without a
+TTY, OpenCode rejects any tool call the policy does not allow ([OpenCode](runtimes/opencode.md)).
 
 Full per-key detail, including the exact `--tools` mapping and allowlist parsing rules, is in
 [Implementing an agent runtime](contributing/runtime-implementation.md).
@@ -207,6 +253,8 @@ Full per-key detail, including the exact `--tools` mapping and allowlist parsing
 
 - [Claude Code](runtimes/claude.md) — models, fallback chains, behaviour notes
 - [Pi](runtimes/pi.md) — models and providers, behaviour differences, troubleshooting
+- [Codex](runtimes/codex.md) — OpenAI models, behaviour differences, troubleshooting
+- [OpenCode](runtimes/opencode.md) — local setup, models, limits, troubleshooting
 - [Implementing an agent runtime](contributing/runtime-implementation.md) — security matrix, interfaces, hook contract, sandbox layout
 - [Running agents locally](guides/user/running-agents-locally.md) — step-by-step local runs
 - [architecture.md](architecture.md) — where the runtime sits

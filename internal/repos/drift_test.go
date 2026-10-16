@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/poll"
 )
 
 func TestCheckFileContentDrift_MatchingContent(t *testing.T) {
@@ -76,6 +77,29 @@ func TestCheckFileContentDrift_SkipsConfigYaml(t *testing.T) {
 	}
 	if len(drifted) != 0 {
 		t.Errorf("expected 0 drifted files (config.yaml skipped), got %d", len(drifted))
+	}
+}
+
+func TestCheckFileContentDrift_SkipsConfigBaseYaml(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["owner/repo/.fullsend/config.base.yaml"] = []byte("old base")
+
+	expected := []forge.TreeFile{
+		{Path: ".fullsend/config.base.yaml", Content: []byte("new base")},
+	}
+
+	ghFC := GitHubForgeConfig()
+	ghFC.Client = fc
+
+	drifted, err := CheckFileContentDrift(
+		context.Background(), fc, "owner", "repo",
+		ghFC, ForgeGitHub, expected,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(drifted) != 0 {
+		t.Errorf("expected 0 drifted files (config.base.yaml skipped), got %d", len(drifted))
 	}
 }
 
@@ -215,8 +239,7 @@ func TestCheckOrphanFiles_DetectsOrphan(t *testing.T) {
 func TestCheckOrphanVars_NoOrphans(t *testing.T) {
 	fc := forge.NewFakeClient()
 	// Only managed variables exist.
-	fc.VariableValues["owner/repo/FULLSEND_PER_REPO_INSTALL"] = "true"
-	fc.VariableValues["owner/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["owner/repo/"+forge.VarMintURL] = "https://mint.example.com"
 
 	cfg := InstallConfig{Forge: ForgeGitHub, MintURL: "https://mint.example.com"}
 	orphans, err := CheckOrphanVars(
@@ -233,8 +256,7 @@ func TestCheckOrphanVars_NoOrphans(t *testing.T) {
 
 func TestCheckOrphanVars_DetectsOrphan(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.VariableValues["owner/repo/FULLSEND_PER_REPO_INSTALL"] = "true"
-	fc.VariableValues["owner/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["owner/repo/"+forge.VarMintURL] = "https://mint.example.com"
 	// This variable is not in the managed set for GitHub.
 	fc.VariableValues["owner/repo/FULLSEND_OLD_FEATURE"] = "enabled"
 
@@ -254,10 +276,31 @@ func TestCheckOrphanVars_DetectsOrphan(t *testing.T) {
 	}
 }
 
+func TestCheckOrphanVars_PerRepoGuardVarFlaggedAsOrphan(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.VariableValues["owner/repo/"+forge.VarMintURL] = "https://mint.example.com"
+	// Guard variable from a previous install should be flagged as orphan.
+	fc.VariableValues["owner/repo/"+forge.PerRepoGuardVar] = "true"
+
+	cfg := InstallConfig{Forge: ForgeGitHub, MintURL: "https://mint.example.com"}
+	orphans, err := CheckOrphanVars(
+		context.Background(), fc, "owner", "repo",
+		cfg, "https://mint.example.com",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 1 {
+		t.Fatalf("expected 1 orphan var, got %d", len(orphans))
+	}
+	if orphans[0].Name != forge.PerRepoGuardVar {
+		t.Errorf("orphan name = %q, want %q", orphans[0].Name, forge.PerRepoGuardVar)
+	}
+}
+
 func TestCheckOrphanVars_IgnoresNonFullsendVars(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.VariableValues["owner/repo/FULLSEND_PER_REPO_INSTALL"] = "true"
-	fc.VariableValues["owner/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["owner/repo/"+forge.VarMintURL] = "https://mint.example.com"
 	// Non-FULLSEND variable should be ignored.
 	fc.VariableValues["owner/repo/MY_CUSTOM_VAR"] = "value"
 
@@ -271,5 +314,194 @@ func TestCheckOrphanVars_IgnoresNonFullsendVars(t *testing.T) {
 	}
 	if len(orphans) != 0 {
 		t.Errorf("expected 0 orphan vars (non-FULLSEND ignored), got %d", len(orphans))
+	}
+}
+
+func TestCheckOrphanVars_GitLabSecretsNotFlagged(t *testing.T) {
+	fc := forge.NewFakeClient()
+	// Set all managed GitLab variables.
+	fc.VariableValues["owner/repo/"+forge.VarLastPollAtFast] = "2025-01-01T00:00:00Z"
+	fc.VariableValues["owner/repo/"+forge.VarLastPollAtFull] = "2025-01-01T00:00:00Z"
+	fc.VariableValues["owner/repo/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarFailedKeysFull] = "{}"
+	// On GitLab, secrets are stored as CI/CD variables and returned by
+	// ListRepoVariables — they must not be flagged as orphans.
+	fc.VariableValues["owner/repo/"+forge.SecretGCPProjectID] = "my-project"
+	fc.VariableValues["owner/repo/"+forge.SecretGCPWIFProvider] = "projects/123/locations/global/workloadIdentityPools/pool/providers/prov"
+	fc.VariableValues["owner/repo/"+forge.SecretForgeToken] = "glpat-secret"
+	fc.VariableValues["owner/repo/"+forge.SecretDispatch] = "dispatch-secret"
+
+	cfg := InstallConfig{Forge: ForgeGitLab}
+	orphans, err := CheckOrphanVars(
+		context.Background(), fc, "owner", "repo",
+		cfg, "",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Errorf("expected 0 orphan vars, got %d: %v", len(orphans), orphans)
+	}
+}
+
+func TestCheckOrphanVars_GitLabRetiredVarsNotFlagged(t *testing.T) {
+	fc := forge.NewFakeClient()
+	for _, name := range gitlabRetiredLegacyVars {
+		fc.VariableValues["owner/repo/"+name] = "leftover"
+	}
+	fc.VariableValues["owner/repo/"+forge.SecretDispatch] = "dispatch-secret"
+
+	cfg := InstallConfig{Forge: ForgeGitLab}
+	orphans, err := CheckOrphanVars(
+		context.Background(), fc, "owner", "repo",
+		cfg, "",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Errorf("retired vars must not be flagged as orphans, got %d: %v", len(orphans), orphans)
+	}
+}
+
+// The webhook fast path's trigger token and webhook secret are managed
+// variables, so status does not report them, while an unknown FULLSEND_
+// variable on the same project still is an orphan.
+func TestCheckOrphanVars_GitLabWebhookVarsManagedButGenuineOrphanReported(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.VariableValues["owner/repo/"+forge.SecretTriggerToken] = "trigger"
+	fc.VariableValues["owner/repo/"+forge.SecretWebhookSecret] = "webhook"
+	fc.VariableValues["owner/repo/FULLSEND_UNKNOWN_LEFTOVER"] = "x"
+
+	orphans, err := CheckOrphanVars(context.Background(), fc, "owner", "repo", InstallConfig{Forge: ForgeGitLab}, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 1 || orphans[0].Name != "FULLSEND_UNKNOWN_LEFTOVER" {
+		t.Errorf("expected only the genuine orphan, got %v", orphans)
+	}
+}
+
+func TestCheckOrphanFiles_GitLabDispatchStubIsOrphan(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["owner/repo/"+fullsendPipelineInclude] = []byte("---\n# fullsend-ref: v2.5.0\n")
+	fc.FileContents["owner/repo/"+fullsendDispatchInclude] = []byte("---\n# fullsend-ref: v2.5.0\n")
+
+	expected := []forge.TreeFile{
+		{Path: fullsendPipelineInclude, Content: []byte("---\n# fullsend-ref: v2.5.0\n")},
+	}
+
+	glFC := GitLabForgeConfig()
+	glFC.Client = fc
+
+	orphans, err := CheckOrphanFiles(
+		context.Background(), fc, "owner", "repo",
+		glFC, ForgeGitLab, expected,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var found bool
+	for _, o := range orphans {
+		if o.Path == fullsendDispatchInclude {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected leftover %s to be reported as an orphan, got %v", fullsendDispatchInclude, orphans)
+	}
+}
+
+func TestCheckOrphanFiles_GitLabPollStateBranchesNotScaffoldPaths(t *testing.T) {
+	for _, branch := range gitlabPollStateBranches {
+		for _, p := range ScaffoldPathsForForge(ForgeGitLab) {
+			if p == branch {
+				t.Errorf("poll-state branch %q must not be a managed scaffold path", branch)
+			}
+		}
+		for _, p := range GitLabForgeConfig().WorkflowPaths {
+			if p == branch {
+				t.Errorf("poll-state branch %q must not be a workflow path", branch)
+			}
+		}
+		if branch != poll.PollStateBranchSlash && branch != poll.PollStateBranchEvents {
+			t.Errorf("unexpected managed poll-state branch %q", branch)
+		}
+	}
+	if len(gitlabPollStateBranches) != 2 {
+		t.Errorf("gitlabPollStateBranches = %d, want 2", len(gitlabPollStateBranches))
+	}
+}
+
+func TestCheckOrphanVars_GitLabDetectsGenuineOrphan(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.VariableValues["owner/repo/"+forge.VarLastPollAtFast] = "2025-01-01T00:00:00Z"
+	fc.VariableValues["owner/repo/"+forge.VarLastPollAtFull] = "2025-01-01T00:00:00Z"
+	fc.VariableValues["owner/repo/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarFailedKeysFull] = "{}"
+	fc.VariableValues["owner/repo/"+forge.SecretGCPProjectID] = "my-project"
+	fc.VariableValues["owner/repo/"+forge.SecretGCPWIFProvider] = "projects/123/..."
+	fc.VariableValues["owner/repo/"+forge.SecretForgeToken] = "glpat-secret"
+	// A genuinely unknown variable should be flagged.
+	fc.VariableValues["owner/repo/FULLSEND_BOGUS"] = "value"
+
+	cfg := InstallConfig{Forge: ForgeGitLab}
+	orphans, err := CheckOrphanVars(
+		context.Background(), fc, "owner", "repo",
+		cfg, "",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 1 {
+		t.Fatalf("expected 1 orphan var, got %d: %v", len(orphans), orphans)
+	}
+	if orphans[0].Name != "FULLSEND_BOGUS" {
+		t.Errorf("orphan name = %q, want %q", orphans[0].Name, "FULLSEND_BOGUS")
+	}
+}
+
+// The removed unverified-variable-scope acceptance setting is no longer
+// special: a value left on a project is an ordinary orphan.
+func TestCheckOrphanVars_GitLabObsoleteScopeAcceptanceIsOrphan(t *testing.T) {
+	const obsolete = "FULLSEND_GITLAB_ACCEPT_UNVERIFIED_VARIABLE_SCOPES"
+	fc := forge.NewFakeClient()
+	fc.VariableValues["owner/repo/"+obsolete] = "instance"
+
+	orphans, err := CheckOrphanVars(context.Background(), fc, "owner", "repo", InstallConfig{Forge: ForgeGitLab}, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 1 || orphans[0].Name != obsolete {
+		t.Errorf("orphans = %v, want only %s", orphans, obsolete)
+	}
+}
+
+// Repos installed before #7902 have one space before the version comment;
+// that alone must not count as content drift.
+func TestCheckFileContentDrift_IgnoresCommentSpacing(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["owner/repo/.github/workflows/fullsend.yaml"] = []byte(
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123 # v2.1.0\n")
+	expected := []forge.TreeFile{{
+		Path:    ".github/workflows/fullsend.yaml",
+		Content: []byte("    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123  # v2.1.0\n"),
+	}}
+
+	ghFC := GitHubForgeConfig()
+	ghFC.Client = fc
+
+	drifted, err := CheckFileContentDrift(context.Background(), fc, "owner", "repo", ghFC, ForgeGitHub, expected)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(drifted) != 0 {
+		t.Errorf("expected 0 drifted files, got %d", len(drifted))
 	}
 }

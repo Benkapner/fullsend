@@ -1,20 +1,24 @@
+---
+description: How the fullsend prioritize agent scores GitHub issues with the RICE framework and produces ranked, reasoned priority scores.
+---
+
 # Prioritize Agent
 
 ![Prioritize agent icon](icons/prioritize.png)
 
-Scores a GitHub issue using the RICE framework (Reach, Impact, Confidence, Effort) and produces structured scores with reasoning for project board ranking.
+Scores a GitHub issue using the RICE framework (Reach, Impact, Confidence, Effort) and produces structured scores with reasoning for project board ranking when a project board is configured.
 
 ## How the agent works
 
 Triggered on a schedule (the prioritize scheduler polls the project board for unscored issues) or on-demand via `/fs-prioritize`.
 
-The prioritize agent fetches the issue and all its context, then evaluates it across the four RICE dimensions. It can invoke customer-research skills to gather additional signal about reach and impact. The output is a structured JSON result with per-dimension scores and written reasoning, which the post-script uses to update the project board.
+The prioritize agent fetches the issue and all its context, then evaluates it across the four RICE dimensions. It can invoke customer-research skills to gather additional signal about reach and impact. The output is a structured JSON result with per-dimension scores and written reasoning. The post-script always publishes the RICE reasoning comment; when a project number is supplied, it also updates the project board.
 
 ## How it helps
 
 - Issues are ranked consistently using the same framework, reducing bias from whoever happens to see them first.
 - Scoring reasoning is transparent and auditable — anyone can read why an issue was ranked the way it was.
-- Project boards stay sorted by value, so humans can focus on the highest-impact work first.
+- When configured, project boards stay sorted by value, so humans can focus on the highest-impact work first.
 
 ## Commands
 
@@ -28,11 +32,15 @@ The `/fs-prioritize` command does not accept arguments. It scores the issue
 using the current content, comments, and any available `customer-research`
 skill data.
 
+Project board configuration is optional for on-demand runs. Without a project
+number, the agent still posts the RICE score and reasoning comment but skips
+the project board update.
+
 ## Control labels
 
 The prioritize agent does not apply or consume control labels. It reads the
-issue content and produces a structured score — the post-script updates the
-project board directly.
+issue content and produces a structured score. The post-script publishes the
+score and reasoning comment, and updates the project board when configured.
 
 ## Configuration and extension
 
@@ -62,14 +70,14 @@ about it" (Reach 2.0), instead of guessing from the issue text alone.
 The prioritize agent can be triggered automatically by a scheduler workflow
 that polls a GitHub Project board for unscored issues. This scheduler
 is **not managed by fullsend** — it is bespoke org-level automation that you
-create manually in your `{org}/.fullsend` repo.
+create manually in a repository of your choice.
 
 #### Prerequisites
 
 - A GitHub Projects (v2) board with a numeric **RICE Score** field.
   Run `scripts/setup-prioritize.sh` to create the field if it does not
-  exist. The script is installed to the `.fullsend` repo by org-mode
-  scaffold; per-repo orgs can find it in the fullsend source tree at
+  exist. The script is not installed into target repos; find it in the
+  fullsend source tree at
   `internal/scaffold/fullsend-repo/scripts/setup-prioritize.sh`.
 - `prioritize.yml` installed in every target repo (handled by `repos install`).
 - The scheduler passes `project_number` to each target repo's

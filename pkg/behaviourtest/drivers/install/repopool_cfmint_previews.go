@@ -16,8 +16,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/pkg/e2etest"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
 )
 
 // cfmintConfig holds parameters for the CF mint driver. This is an
@@ -26,10 +27,14 @@ import (
 type cfmintConfig struct {
 	pemDir            string
 	suiteName         string
-	allowedOrgs       string
 	perRepoWIFRepos   string
 	workflowHostRepos string
 	appSet            string
+	// statusGitHubGroup is the ORG/TEAM passed as --status-github-group
+	// (with --status-auth=oidc,github), so members of the pool org's
+	// mint-status team can query /v1/status with a GitHub user token.
+	// Empty leaves status auth at the CLI default (OIDC only).
+	statusGitHubGroup string
 }
 
 // NewRepoPoolCFMintPreviews is a Factory that deploys a CF preview
@@ -41,7 +46,8 @@ type cfmintConfig struct {
 // BEHAVIOUR_SUITE_NAME (default "bt"), and app set from
 // BEHAVIOUR_APP_SET (default "fullsend-test"). Pool size defaults to
 // DefaultPoolSize. WIF and workflow-host repo lists are computed from
-// the org and pool size.
+// the org and pool size; the workflow-host list also carries each
+// slot's mint-probe host (see buildWorkflowHostRepoList).
 func NewRepoPoolCFMintPreviews(
 	org string,
 	client forge.Client,
@@ -63,10 +69,10 @@ func NewRepoPoolCFMintPreviews(
 	cfg := cfmintConfig{
 		pemDir:            pemDir,
 		suiteName:         envSuiteName(),
-		allowedOrgs:       "", // per-repo mode — no org-level allowlist
 		perRepoWIFRepos:   buildRepoList(org, poolSize),
-		workflowHostRepos: buildRepoList(org, poolSize),
+		workflowHostRepos: buildWorkflowHostRepoList(org, poolSize),
 		appSet:            envAppSet(),
+		statusGitHubGroup: mintStatusGitHubGroup(org),
 	}
 
 	md, err := newCFMintDriver(client, token, binary, gcpProjectID, logf, cfg)
@@ -74,15 +80,20 @@ func NewRepoPoolCFMintPreviews(
 		return nil, fmt.Errorf("cfmint factory: creating mint driver: %w", err)
 	}
 
-	return buildCFMintDriver(org, md, client, token, binary, gcpProjectID, poolSize, logf)
+	// playbackSetupOpts returns normal "dummy"-runtime opts unless
+	// PLAYBACK_RUNTIME is set in the environment, in which case this same
+	// factory backs a playback suite (see NewPlaybackDriver) instead of
+	// the standard behaviour suite.
+	return buildCFMintDriverWithOpts(org, md, client, token, binary, gcpProjectID, poolSize, playbackSetupOpts(), logf)
 }
 
 // Compile-time check: NewRepoPoolCFMintPreviews satisfies Factory.
 var _ Factory = NewRepoPoolCFMintPreviews
 
-// buildCFMintDriver deploys the mint and constructs the composed driver.
-// Extracted from NewRepoPoolCFMintPreviews so the deploy → compose path
-// can be tested with a fake mintDriver.
+// buildCFMintDriver deploys the mint and constructs the composed driver
+// with the standard vendored-mode GitHubSetupOpts. Extracted from
+// NewRepoPoolCFMintPreviews so the deploy → compose path can be tested
+// with a fake mintDriver.
 func buildCFMintDriver(
 	org string,
 	md mintDriver,
@@ -91,6 +102,23 @@ func buildCFMintDriver(
 	poolSize int,
 	logf func(string, ...any),
 ) (Driver, error) {
+	return buildCFMintDriverWithOpts(org, md, client, token, binary, gcpProjectID, poolSize, common.DefaultGitHubSetupOpts(), logf)
+}
+
+// buildCFMintDriverWithOpts is like buildCFMintDriver but accepts the
+// GitHubSetupOpts to install with, so a playback-runtime caller can
+// install repos with the dummy-playback runtime and its tracking-issue
+// hook instead of the normal dummy runtime.
+func buildCFMintDriverWithOpts(
+	org string,
+	md mintDriver,
+	client forge.Client,
+	token, binary, gcpProjectID string,
+	poolSize int,
+	setupOpts common.GitHubSetupOpts,
+	logf func(string, ...any),
+) (Driver, error) {
+	setupOpts.AppSet = envAppSet()
 	ctx := context.Background()
 	mintURL, err := md.Install(ctx, org)
 	if err != nil {
@@ -102,10 +130,18 @@ func buildCFMintDriver(
 		MintURL:      mintURL,
 		GCPProjectID: gcpProjectID,
 	}
-	ens := newRepoEnsurer(e2eCfg, client, token, binary, logf)
+	ens, err := newRepoEnsurerWithOpts(e2eCfg, client, token, binary, setupOpts, logf,
+		playbackInstallHooks(setupOpts, logf))
+	if err != nil {
+		return nil, fmt.Errorf("cfmint factory: %w", err)
+	}
 
 	// Construct and return the composed driver.
-	return newComposedDriver(org, md, ens, poolSize, logf)
+	d, err := newComposedDriver(org, md, ens, poolSize, logf)
+	if err != nil {
+		return nil, err
+	}
+	return withRateLimitReporter(withMintURL(d, mintURL), client), nil
 }
 
 // cfmintMintDriver deploys a CF Worker preview mint and uses the derived
@@ -210,11 +246,10 @@ func GenerateCFMintPreviewAlias() (string, error) {
 // CFMintDeployArgs builds the CLI arguments for `fullsend mint deploy --platform=cloudflare`.
 // Exported so unit tests can verify arg construction without shelling out.
 //
-// --allowed-orgs and --workflow-host-repos are always passed (even when
-// empty) so the CLI sees them as explicitly changed. The CLI uses
+// --per-repo-wif-repos and --workflow-host-repos are always passed (even
+// when empty) so the CLI sees them as explicitly changed. The CLI uses
 // "flag changed" semantics: omitted flags preserve existing Worker
-// bindings, while explicitly-empty values clear them. For per-repo
-// mode the caller should set AllowedOrgs to "" to avoid dual-enrollment.
+// bindings, while explicitly-empty values clear them.
 func CFMintDeployArgs(alias, workerName string, cfg cfmintConfig) []string {
 	args := []string{
 		"mint", "deploy",
@@ -222,14 +257,24 @@ func CFMintDeployArgs(alias, workerName string, cfg cfmintConfig) []string {
 		"--preview", alias,
 		"--worker-name", workerName,
 		"--pem-dir", cfg.pemDir,
-		"--allowed-orgs", cfg.allowedOrgs,
 		"--per-repo-wif-repos", cfg.perRepoWIFRepos,
 		"--workflow-host-repos", cfg.workflowHostRepos,
 	}
 	if cfg.appSet != "" {
 		args = append(args, "--app-set", cfg.appSet)
 	}
+	args = appendStatusAuthArgs(args, cfg.statusGitHubGroup)
 	return args
+}
+
+// appendStatusAuthArgs appends the flags that enable GitHub user-token
+// auth on the mint's /v1/status for members of group (ORG/TEAM). OIDC
+// status auth stays enabled. An empty group appends nothing.
+func appendStatusAuthArgs(args []string, group string) []string {
+	if group == "" {
+		return args
+	}
+	return append(args, "--status-auth", "oidc,github", "--status-github-group", group)
 }
 
 // CFMintTeardownArgs builds the CLI arguments for `fullsend mint delete --platform=cloudflare`.
@@ -310,6 +355,13 @@ func envSuiteName() string {
 	return "bt"
 }
 
+// envConfigPreset returns the optional config base layer preset path or
+// URL from BEHAVIOUR_CONFIG_PRESET. Empty when unset, so github setup
+// is invoked without --config.
+func envConfigPreset() string {
+	return os.Getenv("BEHAVIOUR_CONFIG_PRESET")
+}
+
 // envAppSet returns the app set for PEM bootstrap from env or a default.
 func envAppSet() string {
 	if v := os.Getenv("BEHAVIOUR_APP_SET"); v != "" {
@@ -337,6 +389,21 @@ func buildRepoList(org string, poolSize int) string {
 	repos := make([]string, poolSize)
 	for i := range poolSize {
 		repos[i] = fmt.Sprintf("%s/test-repo-%02d", org, i+1)
+	}
+	return strings.Join(repos, ",")
+}
+
+// buildWorkflowHostRepoList constructs the mint's WORKFLOW_HOST_REPOS
+// for a pool: every org/test-repo-NN plus its per-slot mint-probe host
+// org/test-repo-NN-mint-host (MintProbeHostRepoSuffix). Only the pool
+// repos are enrolled callers (PER_REPO_WIF_REPOS); the probe hosts are
+// workflow hosts only, so a reusable workflow there can mint for the
+// leased repo that calls it but never on its own behalf.
+func buildWorkflowHostRepoList(org string, poolSize int) string {
+	repos := make([]string, 0, 2*poolSize)
+	for i := range poolSize {
+		name := fmt.Sprintf("%s/test-repo-%02d", org, i+1)
+		repos = append(repos, name, name+MintProbeHostRepoSuffix)
 	}
 	return strings.Join(repos, ",")
 }

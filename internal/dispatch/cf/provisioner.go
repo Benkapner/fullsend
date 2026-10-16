@@ -98,7 +98,7 @@ type Config struct {
 	PreviewAlias string
 
 	// EnvVars are non-secret environment variables to set on the Worker
-	// (e.g. ROLE_APP_IDS, ALLOWED_ORGS).
+	// (e.g. ROLE_APP_IDS, PER_REPO_WIF_REPOS).
 	EnvVars map[string]string
 
 	// Secrets are secret values to bind to the Worker during deploy.
@@ -261,7 +261,7 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 			// Bootstrap: create an empty durable Worker script shell
 			// so wrangler versions upload can target it. The bootstrap
 			// deploy intentionally sets NO env vars — mint configuration
-			// (ALLOWED_ORGS, PER_REPO_WIF_REPOS, etc.) applies only to
+			// (PER_REPO_WIF_REPOS, ROLE_APP_IDS, etc.) applies only to
 			// the preview version deployed immediately after. This
 			// prevents dual-enrollment when a later per-repo preview
 			// inherits env vars from the durable script via --keep-vars.
@@ -663,8 +663,7 @@ func validateSourceDir(dir string) error {
 // PEM key. Follows the convention <ROLE>_APP_PEM with hyphens mapped
 // to underscores (CF secret names must be valid JS identifiers).
 func pemSecretName(role string) string {
-	mapped := mintcore.PemSecretRole(role)
-	return strings.ToUpper(strings.ReplaceAll(mapped, "-", "_")) + "_APP_PEM"
+	return mintcore.RoleIdentifier(mintcore.PemSecretRole(role)) + "_APP_PEM"
 }
 
 // ValidateWorkerName checks if a string is a valid CF Worker name.
@@ -898,9 +897,9 @@ func (r *LiveWranglerRunner) deployDurable(ctx context.Context, sourceDir, worke
 // Preview deploys do NOT use --keep-vars. Each preview version must be
 // self-contained: only the --var env vars and --secrets-file PEMs passed
 // in this deploy are applied. Without this isolation, sequential preview
-// uploads (e.g. both → per-repo → per-org) would inherit env vars from
-// the prior preview via --keep-vars, causing cross-preview contamination
-// (per-repo preview ends up with per-org's ALLOWED_ORGS, etc.).
+// uploads to different aliases would inherit env vars from the prior
+// preview via --keep-vars, causing cross-preview contamination (one
+// preview ends up with another's PER_REPO_WIF_REPOS, etc.).
 //
 // Durable deploys DO use --keep-vars (see deployDurable) so that secrets
 // stored via StoreAgentPEM are not wiped on redeploy.

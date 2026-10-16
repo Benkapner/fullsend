@@ -266,7 +266,7 @@ allowed_remote_resources:
 	require.NoError(t, err)
 	require.NoError(t, h2.ResolveRelativeTo(dir))
 
-	lockResult, err := resolveFromLock(h2, entry, dir, printer)
+	lockResult, err := resolveFromLock(h2, entry, dir, nil, printer)
 	require.NoError(t, err)
 
 	// Verify the round-trip: agent resolved as file, skill resolved as directory.
@@ -574,7 +574,7 @@ func TestResolveFromLock_Success(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -601,7 +601,7 @@ func TestResolveFromLock_MissingCache(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, t.TempDir(), printer)
+	_, err := resolveFromLock(h, entry, t.TempDir(), nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in cache")
 }
@@ -630,7 +630,7 @@ func TestResolveFromLock_SkillSlots(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 2)
 
@@ -658,7 +658,7 @@ func TestResolveFromLock_TransitiveDeps(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -692,7 +692,7 @@ func TestResolveFromLock_DiamondDependency(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -726,7 +726,7 @@ func TestResolveFromLock_OverrideSlots(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -765,7 +765,7 @@ func TestResolveFromLock_OverrideSlotsPreservesExisting(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 2)
 
@@ -795,7 +795,7 @@ func TestResolveFromLock_OverrideDoesNotCorruptSource(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, printer)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 
 	assert.Equal(t, "skills/pr-review", h.Skills[0].Source)
@@ -836,7 +836,7 @@ func TestResolveFromLock_DirectoryType(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -879,7 +879,7 @@ func TestResolveFromLock_DirectoryTypeScript(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -922,7 +922,7 @@ func TestResolveFromLock_EmptyTypeDefaultsToFile(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 	assert.Equal(t, "file", lockResult.Deps[0].Type, "empty Type should default to file for backward compatibility")
@@ -948,7 +948,7 @@ func TestResolveFromLock_TransitivePolicySkipped(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -981,7 +981,7 @@ func TestResolveFromLock_NoPartialMutation(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, printer)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 
 	// Harness should be unchanged — no partial mutations.
@@ -1055,7 +1055,7 @@ func TestResolveFromLock_BaseFieldNoOp(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 
 	// All three deps should be returned (base, agent, skill).
@@ -1119,7 +1119,7 @@ func TestResolveFromLock_AgentSourceNoOp(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 
 	// All three deps should be returned.
@@ -1158,7 +1158,7 @@ func TestResolveFromLock_ValidationLoopSchema(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 2)
 
@@ -1294,8 +1294,8 @@ func TestRunLock_URLRefsNoOrgConfigError(t *testing.T) {
 }
 
 func TestRunLock_MalformedOrgConfig(t *testing.T) {
-	// A malformed config.yaml should produce a warning but not prevent
-	// local-only harnesses from locking.
+	// An existing config.yaml that fails to load must be reported rather
+	// than treated as absent, even for a local-only harness.
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -1312,7 +1312,8 @@ func TestRunLock_MalformedOrgConfig(t *testing.T) {
 
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "simple", dir, "", false, resolveFlags{}, printer)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing config.yaml")
 }
 
 func TestRunLock_MalformedOrgConfigWithURLRefs(t *testing.T) {
@@ -1502,7 +1503,7 @@ func TestResolveFromLock_ProfileReconstruction(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 	require.Len(t, lockResult.Profiles, 1)
@@ -1563,7 +1564,7 @@ func TestResolveFromLock_ProfileSymlinkError(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err = resolveFromLock(h, entry, root, printer)
+	_, err = resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "naming cached profile")
 }
@@ -1594,7 +1595,7 @@ func TestResolveFromLock_ProfileEmptyID(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, printer)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "has no id")
 }
@@ -1623,7 +1624,7 @@ func TestResolveFromLock_ProviderReconstruction(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Providers, 1)
 	assert.Equal(t, "my-provider", lockResult.Providers[0].Def.Name)
@@ -1655,7 +1656,7 @@ func TestResolveFromLock_ProviderMissingName(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, printer)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "has no name")
 }
@@ -1684,7 +1685,7 @@ func TestResolveFromLock_ProviderMissingType(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, printer)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "has no type")
 }
@@ -1713,7 +1714,7 @@ func TestResolveFromLock_ProviderLiteralCredentialWarning(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 	assert.NotEmpty(t, lockResult.Deps[0].Warning)
@@ -1745,10 +1746,45 @@ func TestResolveFromLock_RejectsDisallowedURL(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, printer)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no longer in allowed_remote_resources")
 	assert.Contains(t, err.Error(), "example.com")
+}
+
+func TestResolveFromLock_OrgAllowlistFallback(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/agents/code.md", agentContent))
+
+	entry := &lock.HarnessLock{
+		Source: "harness/code.yaml",
+		SHA256: "abc",
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "agent",
+				URL:    "https://example.com/agents/code.md",
+				SHA256: agentHash,
+			},
+		},
+	}
+
+	// Harness-level allowlist does NOT cover example.com, but the org-level
+	// allowlist does. The fallback should allow the URL.
+	h := &harness.Harness{
+		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
+		AllowedRemoteResources: []string{"https://other-domain.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, []string{"https://example.com/"}, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+	assert.Equal(t, "agent", lockResult.Deps[0].Field)
+	assert.Equal(t, agentHash, lockResult.Deps[0].SHA256)
+	assert.True(t, lockResult.Deps[0].CacheHit)
 }
 
 func TestResolveFromLock_EmptyAllowlistDeniesURLs(t *testing.T) {
@@ -1776,7 +1812,7 @@ func TestResolveFromLock_EmptyAllowlistDeniesURLs(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, printer)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no longer in allowed_remote_resources")
 }
@@ -1809,12 +1845,12 @@ func TestResolveFromLock_PluginMalformedFieldError(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Plugins:                []string{"https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + treeHash},
+		Plugins:                []harness.PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + treeHash}},
 		AllowedRemoteResources: []string{"https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err = resolveFromLock(h, entry, root, printer)
+	_, err = resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot parse plugin index")
 }
@@ -1846,12 +1882,12 @@ func TestResolveFromLock_PluginOutOfRangeError(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Plugins:                []string{"https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + treeHash},
+		Plugins:                []harness.PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + treeHash}},
 		AllowedRemoteResources: []string{"https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err = resolveFromLock(h, entry, root, printer)
+	_, err = resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "out of range")
 }
@@ -1888,17 +1924,17 @@ func TestResolveFromLock_PluginExecutablePermissions(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Plugins:                []string{"https://github.com/org/repo/tree/main/plugins/exec-plugin#sha256=" + treeHash},
+		Plugins:                []harness.PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/exec-plugin#sha256=" + treeHash}},
 		AllowedRemoteResources: []string{"https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
 	// Verify plugin files have executable permissions.
-	scriptPath := filepath.Join(h.Plugins[0], "scripts", "init.sh")
+	scriptPath := filepath.Join(h.Plugins[0].Path, "scripts", "init.sh")
 	info, statErr := os.Stat(scriptPath)
 	require.NoError(t, statErr)
 	assert.True(t, info.Mode()&0o100 != 0,
@@ -1935,18 +1971,18 @@ func TestResolveFromLock_PluginSlots(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Plugins:                []string{"https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + treeHash},
+		Plugins:                []harness.PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + treeHash}},
 		AllowedRemoteResources: []string{"https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
 	assert.Equal(t, "directory", lockResult.Deps[0].Type)
-	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0]), "plugin basename must be the real plugin name, not 'tree'")
-	assert.False(t, harness.IsURL(h.Plugins[0]))
+	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0].Path), "plugin basename must be the real plugin name, not 'tree'")
+	assert.False(t, harness.IsURL(h.Plugins[0].Path))
 }
 
 func TestResolveFromLock_PluginSharedURLWithSkill(t *testing.T) {
@@ -1979,26 +2015,26 @@ func TestResolveFromLock_PluginSharedURLWithSkill(t *testing.T) {
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
 		Skills:                 []harness.SkillEntry{{Source: sharedURL + "#sha256=" + treeHash}},
-		Plugins:                []string{sharedURL + "#sha256=" + treeHash},
+		Plugins:                []harness.PluginSpec{{Path: sharedURL + "#sha256=" + treeHash}},
 		AllowedRemoteResources: []string{"https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
 	assert.Len(t, h.Skills, 1, "skill should survive lock replay")
 	assert.Len(t, h.Plugins, 1, "plugin should survive lock replay when sharing URL with skill")
-	assert.False(t, harness.IsURL(h.Plugins[0]), "plugin should be resolved to a local path")
-	assert.Equal(t, "shared-dir", filepath.Base(h.Plugins[0]))
+	assert.False(t, harness.IsURL(h.Plugins[0].Path), "plugin should be resolved to a local path")
+	assert.Equal(t, "shared-dir", filepath.Base(h.Plugins[0].Path))
 }
 
 func TestResolveFromLock_PluginRawContentURL(t *testing.T) {
-	// Base-composed plugins use raw.githubusercontent.com URLs ending in
-	// /plugin.json. resolveFromLock must parse these via ParseRawContentURL
-	// (not ParseForgeURL, which rejects non-github.com hosts) to extract
-	// the plugin directory name.
+	// Legacy base-composed plugin locks use raw.githubusercontent.com URLs
+	// ending in /plugin.json. resolveFromLock must parse these via
+	// ParseRawContentURL (not ParseForgeURL, which rejects non-github.com
+	// hosts) to extract the plugin directory name.
 	manifestJSON := []byte(`{"name": "gopls-lsp"}`)
 	pluginFiles := map[string][]byte{
 		"plugin.json": manifestJSON,
@@ -2026,28 +2062,29 @@ func TestResolveFromLock_PluginRawContentURL(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Plugins:                []string{"plugins/gopls-lsp"},
+		Plugins:                []harness.PluginSpec{{Path: "plugins/gopls-lsp"}},
 		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
-	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0]),
+	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0].Path),
 		"plugin basename must be derived from the URL directory, not the marker file")
-	assert.False(t, harness.IsURL(h.Plugins[0]))
-	assert.FileExists(t, filepath.Join(h.Plugins[0], "plugin.json"))
+	assert.False(t, harness.IsURL(h.Plugins[0].Path))
+	assert.FileExists(t, filepath.Join(h.Plugins[0].Path, "plugin.json"))
 }
 
 func TestResolveFromLock_SkillRawContentURL(t *testing.T) {
 	// Base-composed skills use raw.githubusercontent.com URLs ending in
 	// /SKILL.md (see fetchBaseSkill). resolveFromLock must strip the marker
 	// file to derive the skill directory name — otherwise every skill is
-	// materialized under a directory literally named "SKILL.md", which
-	// becomes the sandbox upload basename and collides across skills. Two
-	// skills reproduce the collision the fix exists to prevent.
+	// materialized under a directory literally named "SKILL.md", the
+	// identity fallback and the bootstrap log label, which collides for
+	// skills whose SKILL.md declares no valid name. Two skills reproduce
+	// the collision the fix exists to prevent.
 	putSkill := func(t *testing.T, root, slug string) lock.DependencyEntry {
 		t.Helper()
 		skillMD := []byte("---\nname: " + slug + "\n---\n")
@@ -2082,7 +2119,7 @@ func TestResolveFromLock_SkillRawContentURL(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 2)
 	require.Len(t, h.Skills, 2)
@@ -2090,7 +2127,7 @@ func TestResolveFromLock_SkillRawContentURL(t *testing.T) {
 	assert.Equal(t, "pr-review", filepath.Base(h.Skills[0].Source),
 		"skill basename must be derived from the URL directory, not the SKILL.md marker file")
 	assert.Equal(t, "code-review", filepath.Base(h.Skills[1].Source),
-		"skills must keep distinct basenames — identical ones collide on sandbox upload")
+		"skills must keep distinct basenames — the basename is the identity fallback when SKILL.md declares no valid name")
 	for _, s := range h.Skills {
 		assert.False(t, harness.IsURL(s.Source))
 		assert.FileExists(t, filepath.Join(s.Source, "SKILL.md"))
@@ -2139,7 +2176,7 @@ func TestResolveFromLock_ForgeScopedSkillNoMutation(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -2189,7 +2226,7 @@ func TestResolveFromLock_OverlayScopedSkillNoMutation(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -2230,7 +2267,7 @@ func TestResolveFromLock_OverlayScriptNoMutation(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -2272,7 +2309,7 @@ func TestResolveFromLock_OverlayProviderParsed(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -2316,7 +2353,7 @@ func TestResolveFromLock_OverlayProfileParsed(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -2362,7 +2399,7 @@ func TestResolveFromLock_SkillRepoRootURLRejected(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err = resolveFromLock(h, entry, root, printer)
+	_, err = resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "skills[0]: URL must point to a directory inside the repo, not the repo root")
 }
@@ -2395,12 +2432,12 @@ func TestResolveFromLock_PluginInvalidBasenameRejected(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Plugins:                []string{"plugins/bad.name"},
+		Plugins:                []harness.PluginSpec{{Path: "plugins/bad.name"}},
 		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err = resolveFromLock(h, entry, root, printer)
+	_, err = resolveFromLock(h, entry, root, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "contains invalid characters")
 }
@@ -2435,6 +2472,12 @@ func TestLockTreeDirName(t *testing.T) {
 			name:  "raw plugin.json marker stripped",
 			field: "plugins[0]",
 			url:   "https://raw.githubusercontent.com/org/repo/abc123/plugins/gopls-lsp/plugin.json",
+			want:  "gopls-lsp",
+		},
+		{
+			name:  "raw plugin directory URL uses directory basename",
+			field: "plugins[0]",
+			url:   "https://raw.githubusercontent.com/org/repo/abc123/plugins/gopls-lsp/",
 			want:  "gopls-lsp",
 		},
 		{
@@ -2501,7 +2544,7 @@ func TestResolveFromLock_LocalPathsSurviveStrip(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, printer)
+	_, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 
 	// Local-path profile must survive the strip.
@@ -2550,7 +2593,7 @@ func TestResolveFromLock_ProfileAndProviderReconstruction(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Profiles, 1)
 	assert.Equal(t, "anthropic", lockResult.Profiles[0].ID)

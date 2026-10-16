@@ -397,6 +397,209 @@ func TestSetEntityProperty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// GetCommentProperty — found and not-found
+// ---------------------------------------------------------------------------
+
+func TestGetCommentProperty_Found(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/comment/10001/properties/fullsend.sticky-marker", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"key":   "fullsend.sticky-marker",
+			"value": "<!-- fullsend:triage-agent -->",
+		})
+	})
+
+	val, err := client.GetCommentProperty(ctx, "PROJ-1", "10001", "fullsend.sticky-marker")
+	require.NoError(t, err)
+
+	var stored string
+	require.NoError(t, json.Unmarshal(val, &stored))
+	assert.Equal(t, "<!-- fullsend:triage-agent -->", stored)
+}
+
+func TestGetCommentProperty_NotFound(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	handlerCalled := false
+	mux.HandleFunc("/rest/api/3/comment/10001/properties/missing", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusNotFound, map[string]any{
+			"errorMessages": []string{"Property 'missing' not found"},
+		})
+	})
+
+	_, err := client.GetCommentProperty(ctx, "PROJ-1", "10001", "missing")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, forge.ErrNotFound), "expected forge.ErrNotFound, got: %v", err)
+	assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
+}
+
+// ---------------------------------------------------------------------------
+// SetCommentProperty
+// ---------------------------------------------------------------------------
+
+func TestSetCommentProperty(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/comment/10001/properties/fullsend.sticky-marker", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+
+		var body string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, "<!-- fullsend:triage-agent -->", body)
+
+		w.WriteHeader(http.StatusOK)
+	})
+
+	err := client.SetCommentProperty(ctx, "PROJ-1", "10001", "fullsend.sticky-marker", "<!-- fullsend:triage-agent -->")
+	require.NoError(t, err)
+}
+
+func TestSetCommentProperty_Error(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/comment/10001/properties/fullsend.sticky-marker", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusForbidden, map[string]any{
+			"errorMessages": []string{"Forbidden"},
+		})
+	})
+
+	err := client.SetCommentProperty(ctx, "PROJ-1", "10001", "fullsend.sticky-marker", "marker-value")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "set comment property")
+}
+
+// ---------------------------------------------------------------------------
+// CreateCommentWithProperties
+// ---------------------------------------------------------------------------
+
+func TestCreateCommentWithProperties(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-1/comment", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+
+		var req struct {
+			Body       map[string]any    `json:"body"`
+			Properties []CommentProperty `json:"properties"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		require.Len(t, req.Properties, 1)
+		assert.Equal(t, "fullsend.sticky-marker", req.Properties[0].Key)
+
+		writeJSON(t, w, http.StatusCreated, Comment{
+			ID:      "10001",
+			Body:    req.Body,
+			Created: "2024-01-01T00:00:00.000+0000",
+		})
+	})
+
+	props := []CommentProperty{
+		{Key: "fullsend.sticky-marker", Value: json.RawMessage(`"<!-- fullsend:triage-agent -->"`)},
+	}
+	comment, err := client.CreateCommentWithProperties(ctx, "PROJ-1", "hello world", props)
+	require.NoError(t, err)
+	assert.Equal(t, "10001", comment.ID)
+}
+
+// ---------------------------------------------------------------------------
+// LinkIssues
+// ---------------------------------------------------------------------------
+
+func TestLinkIssues(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	handlerCalled := false
+	mux.HandleFunc("/rest/api/3/issueLink", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+
+		var req map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.Equal(t, map[string]any{
+			"type":         map[string]any{"name": "Blocks"},
+			"inwardIssue":  map[string]any{"key": "PROJ-123"},
+			"outwardIssue": map[string]any{"key": "OTHER-456"},
+		}, req)
+
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	err := client.LinkIssues(ctx, "PROJ-123", "OTHER-456", "Blocks")
+	require.NoError(t, err)
+	assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
+}
+
+func TestLinkIssues_Error(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issueLink", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusNotFound, map[string]any{
+			"errorMessages": []string{"No issue link type with name 'Nope' found."},
+		})
+	})
+
+	err := client.LinkIssues(ctx, "PROJ-123", "PROJ-456", "Nope")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "link PROJ-123 to PROJ-456 (Nope)")
+	assert.Contains(t, err.Error(), "No issue link type")
+	assert.True(t, errors.Is(err, forge.ErrNotFound), "expected forge.ErrNotFound, got: %v", err)
+}
+
+// ---------------------------------------------------------------------------
+// DeleteComment
+// ---------------------------------------------------------------------------
+
+func TestDeleteComment(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-1/comment/50001", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodDelete, r.Method)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	err := client.DeleteComment(ctx, "PROJ-1", "50001")
+	require.NoError(t, err)
+}
+
+func TestDeleteComment_NotFound(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-1/comment/99999", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusNotFound, map[string]any{
+			"errorMessages": []string{"Comment does not exist."},
+		})
+	})
+
+	err := client.DeleteComment(ctx, "PROJ-1", "99999")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete comment")
+}
+
+// ---------------------------------------------------------------------------
 // DeleteEntityProperty
 // ---------------------------------------------------------------------------
 
@@ -576,6 +779,61 @@ func TestGetIssue(t *testing.T) {
 	assert.Equal(t, "PROJ-42", issue.Key)
 	assert.Equal(t, "Test issue", issue.Fields.Summary)
 	assert.Equal(t, "new", issue.Fields.Status.StatusCategory.Key)
+}
+
+func TestGetIssue_IssueTypeAndCustomFields(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-43", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id":  "10043",
+			"key": "PROJ-43",
+			"fields": map[string]any{
+				"summary":           "Typed issue",
+				"issuetype":         map[string]any{"id": "10001", "name": "Bug", "subtask": false},
+				"customfield_10875": "https://github.com/acme/widgets/pull/7",
+				"customfield_12345": map[string]any{"value": "High"},
+				"customfield_99999": nil,
+				"priority":          map[string]any{"name": "Major"},
+			},
+		})
+	})
+
+	issue, err := client.GetIssue(ctx, "PROJ-43")
+	require.NoError(t, err)
+	assert.Equal(t, "Typed issue", issue.Fields.Summary)
+	require.NotNil(t, issue.Fields.IssueType)
+	assert.Equal(t, "Bug", issue.Fields.IssueType.Name)
+	assert.Equal(t, "10001", issue.Fields.IssueType.ID)
+	assert.Equal(t, map[string]json.RawMessage{
+		"customfield_10875": json.RawMessage(`"https://github.com/acme/widgets/pull/7"`),
+		"customfield_12345": json.RawMessage(`{"value":"High"}`),
+		"customfield_99999": json.RawMessage(`null`),
+	}, issue.Fields.CustomFields, "only customfield_* keys are collected, values kept verbatim")
+}
+
+func TestIssueFields_UnmarshalJSON(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no custom fields leaves map nil", func(t *testing.T) {
+		var f IssueFields
+		require.NoError(t, json.Unmarshal([]byte(`{"summary":"s","labels":["a"]}`), &f))
+		assert.Equal(t, "s", f.Summary)
+		assert.Nil(t, f.IssueType)
+		assert.Nil(t, f.CustomFields)
+	})
+
+	t.Run("invalid standard field type", func(t *testing.T) {
+		var f IssueFields
+		assert.Error(t, json.Unmarshal([]byte(`{"summary":123}`), &f))
+	})
+
+	t.Run("non-object", func(t *testing.T) {
+		var f IssueFields
+		assert.Error(t, json.Unmarshal([]byte(`["x"]`), &f))
+	})
 }
 
 func TestGetIssue_NotFound(t *testing.T) {

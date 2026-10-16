@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -205,6 +206,174 @@ func TestForgeClient_UpdateComment_InvalidID(t *testing.T) {
 	}
 }
 
+func TestForgeClient_DeleteComment(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	c := NewForgeClient(fc)
+	ctx := context.Background()
+
+	created, err := c.CreateComment(ctx, "acme/widgets", 42, "to be deleted")
+	if err != nil {
+		t.Fatalf("CreateComment returned error: %v", err)
+	}
+
+	if err := c.DeleteComment(ctx, "acme/widgets", 42, created.ID); err != nil {
+		t.Fatalf("DeleteComment returned error: %v", err)
+	}
+
+	comments, err := c.ListComments(ctx, "acme/widgets", 42)
+	if err != nil {
+		t.Fatalf("ListComments returned error: %v", err)
+	}
+	if len(comments) != 0 {
+		t.Errorf("expected 0 comments after delete, got %d", len(comments))
+	}
+}
+
+func TestForgeClient_DeleteComment_InvalidID(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+
+	err := c.DeleteComment(context.Background(), "acme/widgets", 42, "not-a-number")
+	if err == nil {
+		t.Fatal("DeleteComment with non-numeric ID should return an error")
+	}
+}
+
+func TestForgeClient_DeleteComment_InvalidProject(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+
+	err := c.DeleteComment(context.Background(), "invalid", 42, "1")
+	if err == nil {
+		t.Fatal("DeleteComment with invalid project should return an error")
+	}
+}
+
+func TestForgeClient_AddIssueReaction(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+	ctx := context.Background()
+
+	id, err := c.AddIssueReaction(ctx, "acme/widgets", 42, "eyes")
+	if err != nil {
+		t.Fatalf("AddIssueReaction returned error: %v", err)
+	}
+	if id == 0 {
+		t.Error("AddIssueReaction returned zero ID")
+	}
+	if len(fc.AddedReactions) != 1 || fc.AddedReactions[0].Content != "eyes" {
+		t.Errorf("unexpected reactions: %+v", fc.AddedReactions)
+	}
+}
+
+func TestForgeClient_AddIssueReaction_InvalidProject(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+
+	_, err := c.AddIssueReaction(context.Background(), "invalid", 42, "eyes")
+	if err == nil {
+		t.Fatal("AddIssueReaction with invalid project should return an error")
+	}
+}
+
+func TestForgeClient_DeleteIssueReaction(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+	ctx := context.Background()
+
+	id, err := c.AddIssueReaction(ctx, "acme/widgets", 42, "eyes")
+	if err != nil {
+		t.Fatalf("AddIssueReaction returned error: %v", err)
+	}
+
+	if err := c.DeleteIssueReaction(ctx, "acme/widgets", 42, id); err != nil {
+		t.Fatalf("DeleteIssueReaction returned error: %v", err)
+	}
+}
+
+func TestForgeClient_DeleteIssueReaction_InvalidProject(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+
+	err := c.DeleteIssueReaction(context.Background(), "invalid", 42, 1)
+	if err == nil {
+		t.Fatal("DeleteIssueReaction with invalid project should return an error")
+	}
+}
+
+func TestForgeClient_AddCommentReaction(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+	ctx := context.Background()
+
+	id, err := c.AddCommentReaction(ctx, "acme/widgets", 42, "100", "+1")
+	if err != nil {
+		t.Fatalf("AddCommentReaction returned error: %v", err)
+	}
+	if id == 0 {
+		t.Error("AddCommentReaction returned zero ID")
+	}
+	if len(fc.AddedCommentReactions) != 1 || fc.AddedCommentReactions[0].Content != "+1" {
+		t.Errorf("unexpected comment reactions: %+v", fc.AddedCommentReactions)
+	}
+}
+
+func TestForgeClient_AddCommentReaction_InvalidID(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+
+	_, err := c.AddCommentReaction(context.Background(), "acme/widgets", 42, "not-a-number", "+1")
+	if err == nil {
+		t.Fatal("AddCommentReaction with non-numeric comment ID should return an error")
+	}
+}
+
+func TestForgeClient_AddCommentReaction_InvalidProject(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+
+	_, err := c.AddCommentReaction(context.Background(), "invalid", 42, "100", "+1")
+	if err == nil {
+		t.Fatal("AddCommentReaction with invalid project should return an error")
+	}
+}
+
+func TestForgeClient_DeleteCommentReaction(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+	ctx := context.Background()
+
+	id, err := c.AddCommentReaction(ctx, "acme/widgets", 42, "100", "+1")
+	if err != nil {
+		t.Fatalf("AddCommentReaction returned error: %v", err)
+	}
+
+	if err := c.DeleteCommentReaction(ctx, "acme/widgets", 42, "100", id); err != nil {
+		t.Fatalf("DeleteCommentReaction returned error: %v", err)
+	}
+}
+
+func TestForgeClient_DeleteCommentReaction_InvalidID(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+
+	err := c.DeleteCommentReaction(context.Background(), "acme/widgets", 42, "not-a-number", 1)
+	if err == nil {
+		t.Fatal("DeleteCommentReaction with non-numeric comment ID should return an error")
+	}
+}
+
+func TestForgeClient_DeleteCommentReaction_InvalidProject(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+
+	err := c.DeleteCommentReaction(context.Background(), "invalid", 42, "100", 1)
+	if err == nil {
+		t.Fatal("DeleteCommentReaction with invalid project should return an error")
+	}
+}
+
 // staticClient is a minimal tracker.Client implementation used to verify
 // the interface shape independent of the forge adapter.
 type staticClient struct{}
@@ -219,6 +388,64 @@ func (staticClient) CreateComment(_ context.Context, _ string, _ int, _ Body) (*
 func (staticClient) UpdateComment(_ context.Context, _ string, _ int, _ string, _ Body) error {
 	return nil
 }
+func (staticClient) DeleteComment(_ context.Context, _ string, _ int, _ string) error {
+	return nil
+}
 
 var _ Client = staticClient{}
 var _ Client = (*ForgeClient)(nil)
+var _ Reactor = (*ForgeClient)(nil)
+var _ Mover = (*ForgeClient)(nil)
+
+// TestMoveIssue_NotSupported pins the one thing the move stubs promise:
+// consumers type-assert to Mover and then branch on IsNotSupported, so a
+// stub returning an error that doesn't wrap the sentinel would break them
+// silently. Delete the relevant case as each tracker gains a real move.
+func TestMoveIssue_NotSupported(t *testing.T) {
+	jc, err := NewFakeJiraClient("https://acme.atlassian.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name           string
+		mover          Mover
+		source, target string
+	}{
+		{"ForgeClient", NewForgeClient(forge.NewFakeClient()), "acme/widgets", "acme/gadgets"},
+		{"JiraClient", jc, "PROJ", "OTHER"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := tt.mover.MoveIssue(context.Background(), tt.source, 42, tt.target)
+			if res != nil || !IsNotSupported(err) {
+				t.Fatalf("MoveIssue = %+v, %v; want a nil result and an IsNotSupported error", res, err)
+			}
+		})
+	}
+}
+
+func TestForgeClient_AuthenticatedUser(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-ai-review[bot]"
+	got, err := NewForgeClient(fc).AuthenticatedUser(context.Background())
+	if err != nil || got != "fullsend-ai-review[bot]" {
+		t.Fatalf("AuthenticatedUser() = %q, %v; want the forge login", got, err)
+	}
+
+	fc.Errors = map[string]error{"GetAuthenticatedUser": errors.New("401")}
+	if _, err := NewForgeClient(fc).AuthenticatedUser(context.Background()); err == nil {
+		t.Fatal("AuthenticatedUser() must return the forge error")
+	}
+}
+
+func TestIsNotSupported(t *testing.T) {
+	if !IsNotSupported(ErrNotSupported) {
+		t.Error("IsNotSupported(ErrNotSupported) = false, want true")
+	}
+	if !IsNotSupported(errors.Join(errors.New("wrapped"), ErrNotSupported)) {
+		t.Error("IsNotSupported must see through wrapped errors")
+	}
+	if IsNotSupported(errors.New("other")) {
+		t.Error("IsNotSupported(other) = true, want false")
+	}
+}

@@ -10,7 +10,7 @@ For agent-specific configuration using skills, see
 
 ## What to put in AGENTS.md
 
-`AGENTS.md` is the [open standard](https://agentskills.io/) that any agent
+`AGENTS.md` is the [open standard](https://agents.md/) that any agent
 tool can discover. The recommended approach is to keep your `CLAUDE.md`
 lightweight and have it point at `AGENTS.md`:
 
@@ -125,8 +125,8 @@ takes precedence.
 
 ### Injection handling
 
-When the target repo has no AGENTS.md, fullsend injects an org-level default
-from the config repo. When the repo has AGENTS.md but no CLAUDE.md, fullsend
+When the target repo has no AGENTS.md, fullsend injects a fallback `AGENTS.md`
+from the configured fullsend content directory. When the repo has AGENTS.md but no CLAUDE.md, fullsend
 injects a bridge CLAUDE.md that points to AGENTS.md. Both injected files are
 hidden from git so agents don't accidentally commit them.
 
@@ -148,5 +148,7 @@ prompt injection before the agent starts.
 
 ## See also
 
-- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
+- [Customizing Agents](customizing-overview.md) — overview of all customization approaches
+- [Configuring with Skills](customizing-with-skills.md) — agent-specific domain knowledge
+- [Default, derived, and custom agents](default-vs-custom.md)
   — `AGENTS.md` configuration keeps you in "configured default agent" territory

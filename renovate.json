@@ -47,6 +47,14 @@
       "groupName": "cloudflare-workers"
     },
     {
+      "description": "Red Hat rebuilds the UBI 10 base images (images/runner/Containerfile) almost daily. Group their digest bumps into one PR and only open it on Mondays (UTC) to cut the daily churn of protected-path PRs (#8187). Tag/version bumps are not affected.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["/^registry\\.access\\.redhat\\.com\\/ubi10\\//"],
+      "matchUpdateTypes": ["digest"],
+      "groupName": "ubi10 base images",
+      "schedule": ["* * * * 1"]
+    },
+    {
       "description": "After cosign version bump, verify the new binary's sigstore signature and update COSIGN_SHA256",
       "matchPackageNames": ["sigstore/cosign"],
       "automerge": false,
@@ -72,8 +80,18 @@
       "automerge": false
     },
     {
-      "description": "pi-anthropic-vertex is pinned by tag + tarball SHA256 and tracks specific pi versions; a bump needs the checksum refreshed and its compat.json checked against PI_VERSION (#6464)",
-      "matchPackageNames": ["twoGiants/pi-anthropic-vertex"],
+      "description": "Vendored pi-anthropic-vertex extension (fullsend-ai/pi-anthropic-vertex, #7019): tag pin + manual SHA256 refresh from the release notes.",
+      "matchPackageNames": ["fullsend-ai/pi-anthropic-vertex"],
+      "automerge": false
+    },
+    {
+      "description": "Vendored pi-inference-gateway extension (fullsend-ai/pi-inference-gateway, #8262): tag pin + manual SHA256 refresh from the release notes.",
+      "matchPackageNames": ["fullsend-ai/pi-inference-gateway"],
+      "automerge": false
+    },
+    {
+      "description": "codex minor bumps change the `codex exec --json` wire shape and the hook payloads, so the stream fixtures under internal/runtime/testdata/codex and the hook adapter must be re-verified before a pin move lands, even for patch/pin updates — the same reason pi is not automerged (#6920)",
+      "matchPackageNames": ["@openai/codex"],
       "automerge": false
     }
   ],
@@ -100,6 +118,18 @@
     },
     {
       "customType": "regex",
+      "description": "Track the OpenShell version copies in the local agents guide (install snippet and supervisor image example) so they bump in the same openshell group PR as openshell-version.sh (#4808).",
+      "managerFilePatterns": ["/^docs/guides/user/running-agents-locally\\.md$/"],
+      "matchStrings": [
+        "export OPENSHELL_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "ghcr\\.io/nvidia/openshell/supervisor:(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "NVIDIA/OpenShell",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
       "description": "Track the gcloud CLI version pin in the runner image. GCLOUD_SHA256_{AMD64,ARM64} must be refreshed manually from https://cloud.google.com/sdk/docs/install — the runner-image PR build fails on checksum mismatch until they are.",
       "managerFilePatterns": ["/^images/runner/Containerfile$/"],
       "matchStrings": [
@@ -108,6 +138,19 @@
       "depNameTemplate": "gcr.io/google.com/cloudsdktool/google-cloud-cli",
       "datasourceTemplate": "docker",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the Go toolchain version pin baked into the code and runner sandbox images (images/code/Containerfile and images/runner/Containerfile, which must stay in sync per their own comments). GO_SHA256_{AMD64,ARM64} in both files must be refreshed manually from https://go.dev/dl/?mode=json — the image build fails on checksum mismatch until they are.",
+      "managerFilePatterns": [
+        "/^images/code/Containerfile$/",
+        "/^images/runner/Containerfile$/"
+      ],
+      "matchStrings": [
+        "ARG GO_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "golang",
+      "datasourceTemplate": "golang-version"
     },
     {
       "customType": "regex",
@@ -131,18 +174,18 @@
     },
     {
       "customType": "regex",
-      "description": "Track the pi-anthropic-vertex extension tag pinned in the sandbox image (#6464). PI_ANTHROPIC_VERTEX_SHA256 must be refreshed manually (sha256sum of the GitHub tag tarball) — the sandbox-image PR build fails on checksum mismatch until it is — and the new tag's pi compatibility (sync/compat.json upstream) must be checked against PI_VERSION.",
+      "description": "Track the pi-anthropic-vertex extension tag pinned in the sandbox image (fullsend-ai/pi-anthropic-vertex, #7019). Refresh PI_ANTHROPIC_VERTEX_SHA256 by hand from the release notes \u2014 the image build fails on checksum mismatch until then. The extension's own CI matrix (pinned PI_VERSION + latest pi) is the compatibility check.",
       "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
       "matchStrings": [
         "ARG PI_ANTHROPIC_VERTEX_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
       ],
-      "depNameTemplate": "twoGiants/pi-anthropic-vertex",
+      "depNameTemplate": "fullsend-ai/pi-anthropic-vertex",
       "datasourceTemplate": "github-tags",
       "extractVersionTemplate": "^v(?<version>.*)$"
     },
     {
       "customType": "regex",
-      "description": "Track the pi-xai-vertex extension tag pinned in the sandbox image (#6571). PI_XAI_VERTEX_SHA256 must be refreshed manually (sha256sum of the GitHub tag tarball) — the sandbox-image PR build fails on checksum mismatch until it is. Unlike pi-anthropic-vertex this extension mirrors no pi internals, so there is no sync/compat.json to re-check; confirm its peerDependencies floor still covers PI_VERSION instead.",
+      "description": "Track the pi-xai-vertex extension tag pinned in the sandbox image (#6571). PI_XAI_VERTEX_SHA256 must be refreshed manually (sha256sum of the GitHub tag tarball) — the sandbox-image PR build fails on checksum mismatch until it is. Like pi-anthropic-vertex this extension mirrors no pi internals, so there is no sync/compat.json to re-check; confirm its peerDependencies floor still covers PI_VERSION instead (declared only — it installs with --omit=peer, so nothing enforces the floor at build time).",
       "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
       "matchStrings": [
         "ARG PI_XAI_VERTEX_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
@@ -153,12 +196,54 @@
     },
     {
       "customType": "regex",
+      "description": "Track the pi-inference-gateway extension tag pinned in the sandbox image (fullsend-ai/pi-inference-gateway, #8262). PI_INFERENCE_GATEWAY_SHA256 must be refreshed manually from the release notes (sha256sum of the GitHub tag tarball) — the sandbox-image PR build fails on checksum mismatch until it is. Like the Vertex extensions it mirrors no pi internals; the extension's own CI matrix (pinned PI_VERSION + latest pi) is the compatibility check.",
+      "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
+      "matchStrings": [
+        "ARG PI_INFERENCE_GATEWAY_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "fullsend-ai/pi-inference-gateway",
+      "datasourceTemplate": "github-tags",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the ripgrep pin in the sandbox image (pi's grep backend). Not automerged: RIPGREP_SHA256_{AMD64,ARM64} must be refreshed by hand from the release's .tar.gz.sha256 assets; the image build fails on a mismatch until they are.",
+      "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
+      "matchStrings": [
+        "ARG RIPGREP_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "BurntSushi/ripgrep",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the fd pin in the sandbox image (pi's find backend). Not automerged: FD_SHA256_{AMD64,ARM64} must be refreshed by hand (fd publishes no checksum assets, so the value is sha256sum of the release tarball); the image build fails on a mismatch until they are.",
+      "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
+      "matchStrings": [
+        "ARG FD_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "sharkdp/fd",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
       "description": "Track pi CLI version pin in the sandbox image (#6464). Bumps must re-verify the pi stream parser fixtures — the --mode json wire shape changed within a minor before (0.84.0).",
       "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
       "matchStrings": [
         "ARG PI_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
       ],
       "depNameTemplate": "@earendil-works/pi-coding-agent",
+      "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the Codex CLI version pin in the sandbox image (#6920). The OpenShell base image ships its own @openai/codex under the same npm prefix, so the pinned install replaces it and the build asserts `codex --version`; a bump must re-verify the codex stream parser fixtures once they land (#6920).",
+      "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
+      "matchStrings": [
+        "ARG CODEX_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "@openai/codex",
       "datasourceTemplate": "npm"
     },
     {

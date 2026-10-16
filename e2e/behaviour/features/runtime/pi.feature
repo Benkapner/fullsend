@@ -24,6 +24,7 @@ Feature: pi runtime runs an agent unattended
       slug: fullsend-ai-pi-smoke
       model: haiku
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
       trigger: |
         event.entity.kind == "work_item"
         && event.transition.kind == "label_changed"
@@ -34,8 +35,9 @@ Feature: pi runtime runs an agent unattended
       # host files, and the project/region env is inlined here because the
       # scaffold ships no gcp-vertex.env. ${VAR} expands from the runner
       # environment set by setup-gcp.
-      profiles:
-        - profiles/fullsend-vertex-ai.yaml
+      openshell:
+        profiles:
+          - profiles/fullsend-vertex-ai.yaml
       providers:
         - providers/vertex-ai.yaml
       host_files:
@@ -72,5 +74,6 @@ Feature: pi runtime runs an agent unattended
     When the issue is labeled "ready-for-pi-smoke"
     Then the harness "pi-smoke" workflow completes successfully
     And the run selected the "pi" runtime
+    And the run used model "claude-haiku-5-5" without a fallback
     And the pi session transcript records at least one tool call
     And the run metrics report tokens

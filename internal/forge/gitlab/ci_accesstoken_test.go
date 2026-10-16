@@ -3,8 +3,10 @@ package gitlab
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -63,9 +65,9 @@ func TestListProjectAccessTokens(t *testing.T) {
 	mux.HandleFunc("/api/v4/projects/mygroup%2Fmyproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodGet, r.Method)
 		writeJSON(t, w, http.StatusOK, []map[string]any{
-			{"id": 1, "name": "fullsend-bot", "active": true},
+			{"id": 1, "name": "fullsend-bot", "active": true, "expires_at": "2027-09-21", "user_id": 42},
 			{"id": 2, "name": "deploy-token", "active": true},
-			{"id": 3, "name": "fullsend-bot", "active": false},
+			{"id": 3, "name": "fullsend-bot", "active": false, "revoked": true},
 		})
 	})
 
@@ -74,8 +76,42 @@ func TestListProjectAccessTokens(t *testing.T) {
 	require.Len(t, tokens, 3)
 	assert.Equal(t, "fullsend-bot", tokens[0].Name)
 	assert.True(t, tokens[0].Active)
+	assert.Equal(t, "2027-09-21", tokens[0].ExpiresAt)
+	assert.Equal(t, 42, tokens[0].UserID)
 	assert.Equal(t, "deploy-token", tokens[1].Name)
 	assert.False(t, tokens[2].Active)
+	assert.True(t, tokens[2].Revoked)
+}
+
+func TestListProjectAccessTokens_Paginates(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	handlerCalled := false
+	mux.HandleFunc("/api/v4/projects/mygroup%2Fmyproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		page, err := strconv.Atoi(r.URL.Query().Get("page"))
+		require.NoError(t, err)
+		switch page {
+		case 1:
+			tokens := make([]map[string]any, 100)
+			for i := range tokens {
+				tokens[i] = map[string]any{"id": i + 1, "name": "token", "active": true}
+			}
+			writeJSON(t, w, http.StatusOK, tokens)
+		case 2:
+			writeJSON(t, w, http.StatusOK, []map[string]any{{"id": 101, "name": "last", "active": true}})
+		default:
+			t.Fatalf("unexpected page %d", page)
+		}
+	})
+
+	tokens, err := client.ListProjectAccessTokens(ctx, "mygroup", "myproject")
+	require.NoError(t, err)
+	assert.True(t, handlerCalled)
+	assert.Len(t, tokens, 101)
+	assert.Equal(t, 101, tokens[len(tokens)-1].ID)
 }
 
 func TestRevokeProjectAccessToken(t *testing.T) {
@@ -89,6 +125,36 @@ func TestRevokeProjectAccessToken(t *testing.T) {
 
 	err := client.RevokeProjectAccessToken(ctx, "mygroup", "myproject", 1)
 	require.NoError(t, err)
+}
+
+// A not-found, forbidden, or unsupported later page means tokens were already
+// discovered: the listing is incomplete and must not keep a classification
+// that callers read as "no tokens".
+func TestListProjectAccessTokens_LaterPageFailureIsIncomplete(t *testing.T) {
+	for name, status := range map[string]int{"forbidden": http.StatusForbidden, "not found": http.StatusNotFound} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			mux.HandleFunc("/api/v4/projects/mygroup%2Fmyproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("page") != "1" {
+					writeJSON(t, w, status, map[string]any{"message": "denied"})
+					return
+				}
+				page := make([]map[string]any, 100)
+				for i := range page {
+					page[i] = map[string]any{"id": i + 1, "name": "fullsend-coder", "active": true}
+				}
+				writeJSON(t, w, http.StatusOK, page)
+			})
+
+			got, err := client.ListProjectAccessTokens(context.Background(), "mygroup", "myproject")
+			require.Error(t, err)
+			assert.Nil(t, got)
+			assert.ErrorContains(t, err, "incomplete")
+			assert.False(t, forge.IsForbidden(err))
+			assert.False(t, forge.IsNotFound(err))
+			assert.False(t, forge.IsNotSupported(err))
+		})
+	}
 }
 
 func TestListProjectAccessTokens_Error(t *testing.T) {

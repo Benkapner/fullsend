@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // fakeMintDriver is a test double for mintDriver.
@@ -42,6 +44,12 @@ func TestNewComposedDriver_InvalidCapacity(t *testing.T) {
 	assert.Contains(t, err.Error(), "capacity must be positive")
 }
 
+func TestNewComposedDriver_NilEnsurer(t *testing.T) {
+	_, err := newComposedDriver("org", &fakeMintDriver{}, nil, 1, t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ensurer must not be nil")
+}
+
 func TestComposedDriver_AllocateAndDeallocate(t *testing.T) {
 	e := newFakeEnsurer()
 	mint := &fakeMintDriver{}
@@ -59,11 +67,58 @@ func TestComposedDriver_AllocateAndDeallocate(t *testing.T) {
 	// Deallocate the repo.
 	err = d.DeallocateRepo(ctx, name)
 	require.NoError(t, err)
+	assert.Equal(t, int32(1), e.deleteCalls.Load(), "deallocate should delete the leased repo")
 
 	// Re-allocate should succeed.
 	name2, err := d.AllocateRepo(ctx)
 	require.NoError(t, err)
 	assert.NotEmpty(t, name2)
+}
+
+func TestComposedDriver_ReallocateAfterDeallocateReensures(t *testing.T) {
+	e := newFakeEnsurer()
+	mint := &fakeMintDriver{}
+
+	d, err := newComposedDriver("org", mint, e, 1, t.Logf)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	name, err := d.AllocateRepo(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), e.calls.Load())
+
+	require.NoError(t, d.DeallocateRepo(ctx, name))
+	assert.Equal(t, int32(1), e.deleteCalls.Load())
+
+	name2, err := d.AllocateRepo(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, name, name2, "capacity-1 pool should reissue the same name")
+	assert.Equal(t, int32(2), e.calls.Load(), "re-acquire should re-ensure after cache invalidation")
+}
+
+func TestComposedDriver_DeallocateDeleteError_ReturnsNameToPool(t *testing.T) {
+	e := newFakeEnsurer()
+	e.deleteErr = fmt.Errorf("delete boom")
+	mint := &fakeMintDriver{}
+
+	d, err := newComposedDriver("org", mint, e, 1, t.Logf)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	name, err := d.AllocateRepo(ctx)
+	require.NoError(t, err)
+
+	// Delete failure is logged, not returned — the slot must not leak.
+	err = d.DeallocateRepo(ctx, name)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), e.deleteCalls.Load())
+
+	name2, err := d.AllocateRepo(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, name, name2)
+	assert.Equal(t, int32(2), e.calls.Load(), "failed delete still invalidates the ensure cache")
 }
 
 func TestComposedDriver_DeallocateUnknownName(t *testing.T) {
@@ -76,6 +131,7 @@ func TestComposedDriver_DeallocateUnknownName(t *testing.T) {
 	err = d.DeallocateRepo(context.Background(), "unknown-repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not an outstanding lease")
+	assert.Equal(t, int32(0), e.deleteCalls.Load(), "unknown name must not be deleted")
 }
 
 func TestComposedDriver_DoubleDeallocate(t *testing.T) {
@@ -92,11 +148,13 @@ func TestComposedDriver_DoubleDeallocate(t *testing.T) {
 	// First deallocate succeeds.
 	err = d.DeallocateRepo(ctx, name)
 	require.NoError(t, err)
+	assert.Equal(t, int32(1), e.deleteCalls.Load())
 
 	// Second deallocate fails.
 	err = d.DeallocateRepo(ctx, name)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "double-release")
+	assert.Equal(t, int32(1), e.deleteCalls.Load(), "double-release must not delete again")
 }
 
 func TestComposedDriver_AllocateBlocksUntilDeallocate(t *testing.T) {
@@ -188,6 +246,26 @@ func TestComposedDriver_FinalizeWithOutstanding(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "outstanding lease")
 	assert.True(t, mint.teardownCalled, "mint teardown should still be called")
+	assert.Equal(t, int32(1), e.deleteCalls.Load(), "Finalize should best-effort delete leaked leases")
+}
+
+func TestComposedDriver_FinalizeDeleteErrorStillReturnsLeakErr(t *testing.T) {
+	mint := &fakeMintDriver{}
+	e := newFakeEnsurer()
+	e.deleteErr = fmt.Errorf("delete boom")
+
+	d, err := newComposedDriver("org", mint, e, 2, t.Logf)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	_, err = d.AllocateRepo(ctx)
+	require.NoError(t, err)
+
+	err = d.Finalize(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outstanding lease")
+	assert.Equal(t, int32(1), e.deleteCalls.Load(), "Finalize should still attempt delete even though it fails")
+	assert.True(t, mint.teardownCalled, "mint teardown should still be called")
 }
 
 func TestComposedDriver_FinalizeJoinsErrors(t *testing.T) {
@@ -253,4 +331,43 @@ type failingEnsurer struct {
 
 func (f *failingEnsurer) EnsureRepo(_ context.Context, _, _ string) error {
 	return f.err
+}
+
+func (f *failingEnsurer) DeleteRepo(_ context.Context, _, _ string) error {
+	return nil
+}
+
+// rateReportingClient is a forge.Client that also reports a fixed
+// rate-limit observation.
+type rateReportingClient struct {
+	forge.Client
+	rl   forge.RateLimit
+	seen bool
+}
+
+func (c *rateReportingClient) RateLimit() (forge.RateLimit, bool) { return c.rl, c.seen }
+
+func TestComposedDriver_SamplesRateLimitOnAllocateAndDeallocate(t *testing.T) {
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	e := newFakeEnsurer()
+	d, err := newComposedDriver("org", &fakeMintDriver{}, e, 2, logf)
+	require.NoError(t, err)
+
+	// A client without a reporter, or one that has observed nothing yet, samples nothing.
+	withRateLimitReporter(d, &rateReportingClient{})
+	name, err := d.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, d.DeallocateRepo(context.Background(), name))
+	for _, l := range lines {
+		assert.NotContains(t, l, "rate limit")
+	}
+
+	withRateLimitReporter(d, &rateReportingClient{seen: true, rl: forge.RateLimit{Limit: 5000, Remaining: 42, Reset: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Resource: "core"}})
+	lines = nil
+	name, err = d.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, d.DeallocateRepo(context.Background(), name))
+	assert.Contains(t, lines, "[driver] rate limit after allocating org/"+name+": remaining=42/5000 reset=2026-01-01T00:00:00Z resource=core")
+	assert.Contains(t, lines, "[driver] rate limit after deallocating org/"+name+": remaining=42/5000 reset=2026-01-01T00:00:00Z resource=core")
 }

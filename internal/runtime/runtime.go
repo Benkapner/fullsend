@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -20,6 +21,49 @@ type RunMetrics struct {
 	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
 	Model                    string  `json:"model"`
+	// PerModelUsage breaks the totals above down by the model spec that
+	// spent them. Runtimes that dispatch sub-agents fill it — pi's Agent
+	// tool with one entry per child model plus the parent's own, claude
+	// with one entry per model id from the result's modelUsage — so a run
+	// whose cost is dominated by children is legible in metrics.json;
+	// runtimes without sub-agents leave it nil and the totals stand alone.
+	PerModelUsage map[string]ModelUsage `json:"per_model_usage,omitempty"`
+	// FallbackFrom lists, in the order they were tried, the models the run
+	// moved off before Model took over (#8426): models the Vertex project
+	// did not serve, and on Claude Code any model its own --fallback-model
+	// handling left (a "model_fallback" event, for example on overload).
+	// Empty when the first model ran.
+	FallbackFrom []string `json:"fallback_from,omitempty"`
+	// FallbackReasons says why the run moved off each FallbackFrom entry,
+	// at the same index: "not_served" when the runner retried because the
+	// Vertex project does not serve the model, "claude_code:<trigger>"
+	// when Claude Code switched itself (its model_fallback trigger, for
+	// example "claude_code:last_resort"). Add entries with recordFallback
+	// so the two stay aligned.
+	FallbackReasons []string `json:"fallback_reasons,omitempty"`
+}
+
+// ModelUsage is one model's token and cost contribution to a run. Requests
+// counts the agent invocations attributed to the model (one for the parent
+// iteration, one per sub-agent call); the claude runtime has no source for
+// it and leaves it zero.
+type ModelUsage struct {
+	Requests                 int     `json:"requests"`
+	InputTokens              int     `json:"input_tokens"`
+	OutputTokens             int     `json:"output_tokens"`
+	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
+	CostUSD                  float64 `json:"cost_usd"`
+}
+
+// Add accumulates other into u.
+func (u *ModelUsage) Add(other ModelUsage) {
+	u.Requests += other.Requests
+	u.InputTokens += other.InputTokens
+	u.OutputTokens += other.OutputTokens
+	u.CacheCreationInputTokens += other.CacheCreationInputTokens
+	u.CacheReadInputTokens += other.CacheReadInputTokens
+	u.CostUSD += other.CostUSD
 }
 
 // DefaultAgentPrompt is the prompt handed to the agent CLI when RunParams
@@ -36,12 +80,20 @@ type RunParams struct {
 	Effort        string
 	// FallbackModels is the ordered overload/retirement fallback chain
 	// (FULLSEND_FALLBACK_MODELS). Claude Code passes it as --fallback-model;
-	// runtimes without the capability ignore it with a warning.
+	// runtimes without the capability ignore it with a warning. On Claude
+	// Code and pi it also replaces an alias's built-in chain
+	// (ImplicitFallbackModels) when the alias is not served.
 	FallbackModels []string
 	RepoDir        string
 	FullsendDir    string
-	PluginDirs     []string
-	Debug          string
+	// PluginDirs are the sandbox-side directories Claude Code is pointed at
+	// with --plugin-dir, one per Claude-format plugin the runner uploaded.
+	PluginDirs []string
+	// Plugins are the harness's declared plugins (host paths and formats),
+	// the same list Bootstrap received. PiRuntime.Run re-hashes the pi-format
+	// entries to render the sandbox preflight; other runtimes ignore them.
+	Plugins []PluginInput
+	Debug   string
 	// HooksSettingsPath, if set, is passed as --settings so Claude Code
 	// loads the runner's hook wiring regardless of its working directory.
 	HooksSettingsPath string
@@ -59,6 +111,28 @@ type RunParams struct {
 	// retries this field exists to remove. Runtime support is tracked in the
 	// key support matrix in docs/runtimes.md.
 	Prompt string
+	// Forge is the forge platform identifier ("github" or "gitlab").
+	// Empty defaults to "github". Used by runtimes that need
+	// forge-specific environment variable resolution.
+	Forge string
+	// ModelAliases holds per-repo model alias overrides from
+	// .fullsend/config.yaml models.aliases (#6882). When a harness or
+	// agent model value is an alias key present in this map, the
+	// runtime translates it to the mapped id before passing it to the
+	// underlying CLI. An empty or nil map means no overrides; the
+	// runtime's compiled-in alias table is used as-is.
+	ModelAliases map[string]string
+	// ForgeClient is an authenticated forge.Client for the current Forge
+	// platform, used by runtimes that need to call forge APIs from the
+	// orchestrator process itself (as opposed to the agent's own tool use
+	// inside the sandbox). Per the forge-abstraction rule (AGENTS.md,
+	// docs/contributing/forge-abstraction.md), any such call must go
+	// through this client rather than shelling out to `gh`/`glab`. May be
+	// nil when no token could be resolved; callers must treat that as
+	// "forge operations unavailable" rather than failing outright, mirroring
+	// the fail-closed-but-non-fatal handling already used for the playback
+	// tracking comment.
+	ForgeClient forge.Client
 }
 
 // TranscriptError holds extracted error information from a runtime transcript.
@@ -89,9 +163,14 @@ func (te TranscriptError) DisplayMessage() string {
 // Runtime is an agent execution backend (LLM tool-use loop) inside the sandbox.
 type Runtime interface {
 	Name() string
-	// System returns the OTEL GenAI `gen_ai.system` value (the model vendor) for
-	// this runtime, e.g. "anthropic". Kept on the runtime so telemetry stays
-	// runtime-agnostic rather than hardcoding a vendor in the CLI (ADR 0050).
+	// System returns a fallback OTEL GenAI provider identity (gen_ai.system /
+	// gen_ai.provider.name) when the runtime does not implement
+	// ProviderResolver. Single-vendor runtimes return the model vendor
+	// (e.g. "anthropic"). Multi-provider runtimes must implement
+	// ProviderResolver so the agent span reports the serving endpoint for
+	// the model actually used (#7245); System() is then unused on agent
+	// spans. Kept on the runtime so telemetry stays runtime-agnostic rather
+	// than hardcoding a vendor in the CLI (ADR 0050).
 	System() string
 	ConfigDir() string
 	WorkspaceDir() string
@@ -107,7 +186,7 @@ type Backend struct {
 	Transcripts TranscriptHandler
 }
 
-// Default returns the Claude Code backend. Prefer ResolveFromConfig for org-aware selection.
+// Default returns the Claude Code backend. Prefer ResolveFromPerRepoConfig for config-aware selection.
 func Default() Backend {
 	r := ClaudeRuntime{}
 	return Backend{Runtime: r, Transcripts: r}
@@ -157,4 +236,52 @@ func WantsClaudeMDBridge(rt Runtime) bool {
 		return b.NeedsClaudeMDBridge()
 	}
 	return false
+}
+
+// HomeInstructionsBridger is implemented by runtimes that do not read the
+// target repo's AGENTS.md natively and load instructions from a file of their
+// own instead. HomeAgentsMDPath is where the runner copies the repo's
+// AGENTS.md (or the injected org-level one) inside the sandbox.
+type HomeInstructionsBridger interface {
+	HomeAgentsMDPath() string
+}
+
+// HomeAgentsMDPath returns rt's HomeAgentsMDPath, or "" for runtimes that
+// read AGENTS.md themselves.
+func HomeAgentsMDPath(rt Runtime) string {
+	if b, ok := rt.(HomeInstructionsBridger); ok {
+		return b.HomeAgentsMDPath()
+	}
+	return ""
+}
+
+// ProviderResolver is an optional Runtime extension for multi-provider
+// backends. ProviderFor returns the OTEL GenAI provider identity
+// (gen_ai.system / gen_ai.provider.name) for the model that run will call,
+// using the same resolution as the inference request. model is the runner-
+// resolved value (flag > env > agents: entry > harness model:); agentModel
+// is the agent definition's frontmatter model: and is only consulted when
+// model is empty (no runner-resolved model); aliases are the repo's
+// models.aliases. The identity is the serving endpoint (the pi provider
+// prefix after translatePiModel), not the model publisher: a Claude id on
+// Vertex is "anthropic-vertex", not "anthropic". That matches how the run
+// authenticates and which catalog a downstream consumer should look up.
+// Single-vendor runtimes omit this; GenAISystemFor falls back to System().
+//
+// Return a non-empty lowercase provider identifier (alphanumeric plus
+// hyphen, e.g. "anthropic-vertex", "openai"). Return "" to fall back to
+// System().
+type ProviderResolver interface {
+	ProviderFor(model, agentModel string, aliases map[string]string) string
+}
+
+// GenAISystemFor returns the OTEL GenAI provider identity for rt and the
+// given model. A ProviderResolver is preferred; otherwise System() is used.
+func GenAISystemFor(rt Runtime, model, agentModel string, aliases map[string]string) string {
+	if r, ok := rt.(ProviderResolver); ok {
+		if provider := r.ProviderFor(model, agentModel, aliases); provider != "" {
+			return provider
+		}
+	}
+	return rt.System()
 }

@@ -14,8 +14,8 @@ Deploy and manage the OIDC token mint service. The mint exchanges GitHub Actions
 | `fullsend mint delete` | Tear down mint infrastructure (GCP or Cloudflare) |
 | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |
 | `fullsend mint remove-role <role>` | Remove a role from the mint |
-| `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint |
-| `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
+| `fullsend mint enroll <owner/repo>` | Register a repo in the mint |
+| `fullsend mint unenroll <owner/repo>` | Remove a repo from the mint |
 | `fullsend mint workflow-host add <owner/repo>` | Add a repo to the workflow-host allow-list |
 | `fullsend mint workflow-host remove <owner/repo>` | Remove a repo from the workflow-host allow-list |
 | `fullsend mint workflow-host list` | List the workflow-host allow-list |
@@ -36,7 +36,9 @@ fullsend mint deploy \
   --region "us-central1"
 ```
 
-The CLI automatically detects when the deployed function source is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure and org registration.
+The CLI automatically detects when the deployed function source is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure.
+
+`mint deploy` does not enroll any organization or repository. Per-org enrollment (bare-org `mint enroll <org>` / `mint unenroll <org>`) and the Cloudflare `--allowed-orgs` flag have been removed; enroll each repository with `fullsend mint enroll <owner/repo>`. See [Cleaning up legacy per-org mint state](../guides/infrastructure/mint-administration.md#cleaning-up-legacy-per-org-mint-state) for removing leftover org entries from existing mints.
 
 Use `--public` to deploy a **public mint** (`PER_REPO_WIF_REPOS=*` with permissive WIF). Public mints accept any org that calls upstream reusable workflows in `fullsend-ai/fullsend`; org enrollment is not required. Unlike standalone JWKS mints, GCF-hosted public mints still need permissive WIF for the STS exchange path.
 
@@ -94,7 +96,7 @@ Authentication (one of):
 
 Example: `--per-repo-wif-repos=` clears `PER_REPO_WIF_REPOS` without requiring `wrangler delete` first.
 
-**Preview deploys** do **not** use `--keep-vars`. Each preview version is self-contained — only the `--var` env vars and `--secrets-file` PEMs passed in the deploy command are applied. This prevents cross-preview contamination when deploying multiple preview aliases in sequence (e.g. `both` → `per-repo` → `per-org`). `ALLOWED_WORKFLOW_FILES` defaults to `*` on preview when `--allowed-workflow-files` is omitted, so previews are usable out of the box (mintcore deny-alls workflow refs when the env var is unset). Pass an explicit value to restrict.
+**Preview deploys** do **not** use `--keep-vars`. Each preview version is self-contained — only the `--var` env vars and `--secrets-file` PEMs passed in the deploy command are applied. This prevents cross-preview contamination when deploying multiple preview aliases in sequence (e.g. `bt-run-41` → `bt-run-42`). `ALLOWED_WORKFLOW_FILES` defaults to `*` on preview when `--allowed-workflow-files` is omitted, so previews are usable out of the box (mintcore deny-alls workflow refs when the env var is unset). Pass an explicit value to restrict.
 
 ### Flags
 
@@ -105,7 +107,7 @@ Example: `--per-repo-wif-repos=` clears `PER_REPO_WIF_REPOS` without requiring `
 | `--region` | `us-central1` | Cloud region for the function (GCP only) |
 | `--pem-dir` | | Directory containing `{role}.pem` files for PEM bootstrap |
 | `--app-set` | `fullsend-ai` | App set name for PEM bootstrap |
-| `--roles` | _(default roles)_ | Comma-separated role names to bootstrap with `--pem-dir`. Overrides the default set. Example: `--roles=fullsend,triage,coder,review,retro,prioritize,e2e` |
+| `--roles` | _(default roles)_ | Comma-separated role names to bootstrap with `--pem-dir`. Overrides the default set. Example: `--roles=fullsend,triage,coder,review,retro,prioritize`. The `e2e` role is internal-only and not intended for user configuration |
 | `--public` | `false` | Deploy public mint (`PER_REPO_WIF_REPOS=*`). Mutually exclusive with `--per-repo-wif-repos` on Cloudflare |
 | `--status-auth` | `oidc` | Comma-separated status auth modes. Each non-oidc mode selects a Go build tag. Modes: `oidc`, `github`. `oidc` is always compiled in; `github` requires `--status-github-group` |
 | `--status-github-group` | | `ORG/TEAM` slug for GitHub status auth (required when `github` mode enabled). Example: `--status-github-group=acme/platform-team` |
@@ -114,7 +116,6 @@ Example: `--per-repo-wif-repos=` clears `PER_REPO_WIF_REPOS` without requiring `
 | `--skip-deploy` | `false` | Skip code upload, reuse existing function (GCP only) |
 | `--worker-name` | `fullsend-mint` | Cloudflare Worker script name (Cloudflare only) |
 | `--preview` | `""` | Preview alias for `wrangler versions upload` (Cloudflare only). Example: `--preview=bt-run-42` |
-| `--allowed-orgs` | | Comma-separated allowed GitHub orgs (Cloudflare only, sets `ALLOWED_ORGS`). Omit to preserve existing; set to `""` to clear |
 | `--per-repo-wif-repos` | | Comma-separated per-repo WIF repos (Cloudflare only, sets `PER_REPO_WIF_REPOS`). Mutually exclusive with `--public` |
 | `--workflow-host-repos` | | Comma-separated workflow host repos (Cloudflare only, sets `WORKFLOW_HOST_REPOS`). Omit to preserve existing; set to `""` to clear |
 | `--allowed-workflow-files` | | Comma-separated workflow file basenames (Cloudflare only, sets `ALLOWED_WORKFLOW_FILES`). Durable: omit to preserve existing binding; set to `""` to clear. Preview: defaults to `*` when omitted (all basenames allowed) |
@@ -228,15 +229,7 @@ Pass `--keep-pem` to preserve the PEM secret in Secret Manager.
 
 ## `mint enroll`
 
-Registers a GitHub organization or repository in the mint's allowed list, enabling it to request tokens.
-
-```bash
-fullsend mint enroll <org> \
-  --project "<GCP_PROJECT>" \
-  --region "us-central1"
-```
-
-Per-repo mode:
+Registers a GitHub repository in the mint's `PER_REPO_WIF_REPOS` allow-list, enabling it to request tokens. Only `owner/repo` targets are accepted; a bare org argument is rejected with an error because org enrollment was removed with per-org installation.
 
 ```bash
 fullsend mint enroll <owner/repo> \
@@ -248,17 +241,19 @@ Enrollment creates the WIF provider needed for OIDC verification only — it doe
 
 ## `mint unenroll`
 
-Removes an organization or repository from the mint's allowed list.
+Removes a repository from the mint's `PER_REPO_WIF_REPOS` list. By default the repository's dedicated WIF provider is disabled; pass `--delete-provider` to delete it permanently.
 
 ```bash
-fullsend mint unenroll <org|owner/repo> \
+fullsend mint unenroll <owner/repo> \
   --project "<GCP_PROJECT>" \
   --region "us-central1"
 ```
 
+Like `mint enroll`, `mint unenroll` accepts only `owner/repo` targets. Bare-org unenrollment has been removed and a bare org argument is rejected with an error. To remove leftover org entries from `ALLOWED_ORGS` or the shared WIF provider condition on an existing mint, follow [Cleaning up legacy per-org mint state](../guides/infrastructure/mint-administration.md#cleaning-up-legacy-per-org-mint-state).
+
 ## `mint workflow-host`
 
-Manages the `WORKFLOW_HOST_REPOS` allow-list that controls which repositories may host workflows calling the mint for per-repo callers. Per-org callers are not affected.
+Manages the `WORKFLOW_HOST_REPOS` allow-list that controls which repositories may host workflows calling the mint. The check applies to every admitted caller; the upstream `fullsend-ai/fullsend` is always accepted, and there is no implicit `{org}/.fullsend` host.
 
 ### `mint workflow-host add`
 
@@ -296,7 +291,32 @@ Read-only — makes no changes.
 
 ## `mint status`
 
-Inspects the mint's current state: deployed function, registered roles, enrolled orgs, and PEM health.
+Inspects the mint's current state. Two modes of operation:
+
+### API-based mode (`--mint-url`)
+
+Queries GET `/v1/status` on the mint service using auto-discovered GitHub
+credentials. Tries GitHub Actions OIDC first, then falls back to
+`GH_TOKEN` / `GITHUB_TOKEN` / `gh auth token`. No cloud IAM required.
+
+The `GH_TOKEN` / `GITHUB_TOKEN` / `gh auth token` fallback only works
+against a mint that was deployed with `--status-auth=github
+--status-github-group=ORG/TEAM` (see [Enabling optional
+validators](../guides/infrastructure/infrastructure-reference.md#status-endpoint)).
+A default mint (OIDC-only) always rejects it with HTTP 401 — only GitHub
+Actions OIDC succeeds against a default deployment.
+
+```bash
+fullsend mint status --mint-url "https://mint.example.com"
+```
+
+When `FULLSEND_MINT_URL` is set and `--mint-url` is not provided,
+the API-based mode is used automatically.
+
+### GCP-based mode (`--project`)
+
+Reads mint state directly from GCP infrastructure (Cloud Function metadata,
+Secret Manager). Requires GCP viewer IAM roles.
 
 ```bash
 fullsend mint status \
@@ -304,7 +324,8 @@ fullsend mint status \
   --region "us-central1"
 ```
 
-Optionally filter to a specific org:
+Optionally filter to a specific org (GCP-based mode only). The command
+warns when no repository under that org is in `PER_REPO_WIF_REPOS`:
 
 ```bash
 fullsend mint status <org> \
@@ -312,7 +333,21 @@ fullsend mint status <org> \
   --region "us-central1"
 ```
 
+When `--mint-url` is provided, `--project` is ignored and the API-based path
+is used. When `FULLSEND_MINT_URL` is set and `--project` is also provided,
+the command returns an error to prevent silent mode ambiguity — either unset
+the env var or pass `--mint-url=` (empty) to force GCP-based mode. Omitting
+`--project` does not select GCP-based mode; it leaves API-based mode as the
+active path whenever `FULLSEND_MINT_URL` is set. The `[org]` argument is not
+supported in API-based mode.
+
 Read-only — makes no changes.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--mint-url` | `$FULLSEND_MINT_URL` | Mint service URL for API-based status |
+| `--project` | | GCP project ID (for direct infrastructure queries) |
+| `--region` | `us-central1` | GCP region (GCP-based mode only) |
 
 ## `mint token`
 
@@ -331,6 +366,7 @@ fullsend mint token \
 | `--repos` | | Comma-separated repository names |
 | `--mint-url` | `$FULLSEND_MINT_URL` | Mint service URL |
 | `--audience` | `fullsend-mint` | OIDC audience |
+| `--level` | `write` | Privilege level name (e.g. `read`, `write`). Both the CLI and server default to `write` when omitted (temporary compatibility default). The value is passed through to the mint — if the role does not define the requested level, the mint returns an error |
 
 ## See also
 

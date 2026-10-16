@@ -11,12 +11,14 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
 	"github.com/fullsend-ai/fullsend/internal/jirapoll"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/poll"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 func newPollCmd() *cobra.Command {
@@ -42,14 +44,19 @@ func newPollCmd() *cobra.Command {
 				return runJiraPoll(cmd, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir)
 			}
 
-			if forgeFlag != "gitlab" {
-				return fmt.Errorf("poll command supports --forge gitlab or --input-driver jira-poll (got forge=%q, input-driver=%q)", forgeFlag, inputDriver)
+			if inputDriver == "gitlab-webhook" {
+				return runGitLabWebhook(cmd, projectPath, gitlabURL, fullsendDir)
 			}
 
-			forgeToken := os.Getenv("FULLSEND_FORGE_TOKEN")
-			if forgeToken == "" {
-				return fmt.Errorf("FULLSEND_FORGE_TOKEN is required")
+			if forgeFlag != "gitlab" {
+				return fmt.Errorf("poll command supports --forge gitlab, --input-driver jira-poll, or --input-driver gitlab-webhook (got forge=%q, input-driver=%q)", forgeFlag, inputDriver)
 			}
+
+			sel, forgeToken, err := resolveGitLabPollerCredential(os.Getenv)
+			if err != nil {
+				return err
+			}
+			logGitLabRoleDiagnostics(sel, ui.New(cmd.ErrOrStderr()))
 
 			if projectPath == "" {
 				projectPath = os.Getenv("CI_PROJECT_PATH")
@@ -61,7 +68,7 @@ func newPollCmd() *cobra.Command {
 			// Resolve poll mode from flag or environment variable.
 			mode := modeFlag
 			if mode == "" {
-				mode = os.Getenv("FULLSEND_POLL_MODE")
+				mode = os.Getenv(forge.VarPollMode)
 			}
 			if mode != "" && mode != "slash" && mode != "events" {
 				return fmt.Errorf("invalid poll mode %q: must be \"slash\" or \"events\"", mode)
@@ -75,7 +82,7 @@ func newPollCmd() *cobra.Command {
 
 			botUserID, err := pollClient.GetAuthenticatedUserID(cmd.Context())
 			if err != nil {
-				return fmt.Errorf("resolve bot user ID: %w", err)
+				return wrapGitLabAuthFailure(sel, fmt.Errorf("resolve bot user ID: %w", err))
 			}
 
 			// Build the event router from config + agents-repo known agents.
@@ -102,13 +109,13 @@ func newPollCmd() *cobra.Command {
 			}
 
 			poller := poll.New(pollClient, router, projectPath, opts)
-			return poller.Run(cmd.Context())
+			return wrapGitLabAuthFailure(sel, poller.Run(cmd.Context()))
 		},
 	}
 
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", "Forge platform (gitlab)")
-	cmd.Flags().StringVar(&inputDriver, "input-driver", "", "Poll input driver (jira-poll)")
-	cmd.Flags().StringVar(&projectPath, "project", "", "GitLab project path (default: $CI_PROJECT_PATH)")
+	cmd.Flags().StringVar(&inputDriver, "input-driver", "", "Poll input driver (jira-poll or gitlab-webhook)")
+	cmd.Flags().StringVar(&projectPath, "project", "", "GitLab project path (default: $CI_PROJECT_PATH for --forge gitlab; required for --input-driver gitlab-webhook)")
 	cmd.Flags().StringVar(&gitlabURL, "gitlab-url", "https://gitlab.com", "GitLab instance URL")
 	cmd.Flags().StringVar(&outputPath, "output", "", "Path to write dispatches JSON (jira-poll only; ignored by --forge gitlab)")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
@@ -150,6 +157,72 @@ func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRe
 
 	poller := jirapoll.New(jiraClient, matcher, opts)
 	return poller.Run(cmd.Context())
+}
+
+// runGitLabWebhook is the gitlab-webhook input driver (ADR 0125): it
+// reads the native webhook body from GitLab's file-type TRIGGER_PAYLOAD
+// variable and dispatches the validated, routed events through the
+// poller's dispatch spine with the poller-role credential, deduplicated
+// against the poller's per-mode state (see poll.Poller.RunWebhook).
+//
+// The project path must be passed explicitly with --project: unlike the
+// cron poll path there is no CI_PROJECT_PATH fallback, because a trigger
+// caller can override that variable and the dispatcher job pins the
+// project from its CI_JOB_TOKEN job record instead.
+func runGitLabWebhook(cmd *cobra.Command, projectPath, gitlabURL, fullsendDir string) error {
+	sel, forgeToken, err := resolveGitLabPollerCredential(os.Getenv)
+	if err != nil {
+		return err
+	}
+	logGitLabRoleDiagnostics(sel, ui.New(cmd.ErrOrStderr()))
+
+	if projectPath == "" {
+		return fmt.Errorf("--project is required for --input-driver gitlab-webhook")
+	}
+
+	pipelineRef := os.Getenv("CI_COMMIT_REF_NAME")
+	if pipelineRef == "" {
+		pipelineRef = os.Getenv("CI_DEFAULT_BRANCH")
+	}
+	if pipelineRef == "" {
+		return fmt.Errorf("CI_COMMIT_REF_NAME or CI_DEFAULT_BRANCH is required for pipeline dispatch")
+	}
+
+	payloadPath := os.Getenv("TRIGGER_PAYLOAD")
+	if payloadPath == "" {
+		return fmt.Errorf("TRIGGER_PAYLOAD is required for --input-driver gitlab-webhook")
+	}
+	raw, err := poll.ReadWebhookPayloadFile(payloadPath)
+	if err != nil {
+		return err
+	}
+
+	glClient, err := gitlab.New(forgeToken, gitlab.WithBaseURL(gitlabURL))
+	if err != nil {
+		return fmt.Errorf("create GitLab client: %w", err)
+	}
+	pollClient := gitlab.NewPollClient(glClient)
+
+	botUserID, err := pollClient.GetAuthenticatedUserID(cmd.Context())
+	if err != nil {
+		return wrapGitLabAuthFailure(sel, fmt.Errorf("resolve bot user ID: %w", err))
+	}
+
+	router, err := buildRouter(fullsendDir)
+	if err != nil {
+		return fmt.Errorf("build event router: %w", err)
+	}
+
+	opts := poll.Options{
+		BotUserID:      botUserID,
+		GitLabURL:      gitlabURL,
+		PipelineRef:    pipelineRef,
+		PollJobURL:     os.Getenv("CI_JOB_URL"),
+		DispatchSecret: os.Getenv("FULLSEND_DISPATCH_SECRET"),
+	}
+
+	poller := poll.New(pollClient, router, projectPath, opts)
+	return wrapGitLabAuthFailure(sel, poller.RunWebhook(cmd.Context(), raw))
 }
 
 // jiraPollArgs holds resolved arguments for runJiraPoll after env-var fallbacks.

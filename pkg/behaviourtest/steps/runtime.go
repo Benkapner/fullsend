@@ -34,7 +34,16 @@ func registerRuntimeSteps(sc *godog.ScenarioContext) {
 		return ctx, givenRepositoryRuntime(world.FromContext(ctx), name)
 	})
 	sc.Step(`^a pi agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
-		return ctx, givenPiAgent(world.FromContext(ctx), name, doc)
+		return ctx, givenRuntimeAgent(world.FromContext(ctx), name, doc)
+	})
+	sc.Step(`^a codex agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
+		return ctx, givenRuntimeAgent(world.FromContext(ctx), name, doc)
+	})
+	sc.Step(`^a claude agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
+		return ctx, givenRuntimeAgent(world.FromContext(ctx), name, doc)
+	})
+	sc.Step(`^an opencode agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
+		return ctx, givenRuntimeAgent(world.FromContext(ctx), name, doc)
 	})
 	sc.Step(`^the repository agents are configured with:$`, func(ctx context.Context, doc string) (context.Context, error) {
 		return ctx, givenRepositoryAgentSettings(world.FromContext(ctx), doc)
@@ -48,11 +57,20 @@ func registerRuntimeSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the run requested model "([^"]+)" from "([^"]+)" and the provider reported a "([^"]+)" model$`, func(ctx context.Context, requested, source, reported string) (context.Context, error) {
 		return ctx, assertRunModelFrom(world.FromContext(ctx), requested, source, reported)
 	})
+	sc.Step(`^the run used model "([^"]+)" without a fallback$`, func(ctx context.Context, model string) (context.Context, error) {
+		return ctx, assertRunUsedModelWithoutFallback(world.FromContext(ctx), model)
+	})
 	sc.Step(`^the run metrics report tokens$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, assertRunMetricsReportTokens(world.FromContext(ctx))
 	})
+	sc.Step(`^the run metrics report tokens unless the requested model is "([^"]+)"$`, func(ctx context.Context, model string) (context.Context, error) {
+		return ctx, assertRunMetricsReportTokensUnless(world.FromContext(ctx), model)
+	})
 	sc.Step(`^the pi session transcript records at least one tool call$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, assertPiTranscriptHasToolCall(world.FromContext(ctx))
+	})
+	sc.Step(`^the codex output stream records at least one tool call$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, assertCodexStreamHasToolCall(world.FromContext(ctx))
 	})
 }
 
@@ -109,14 +127,18 @@ func givenRepositoryRuntime(w *world.World, name string) error {
 // runtime can be told to write a schema-valid result file deterministically.
 var fixturePlaceholder = regexp.MustCompile(`\{\{fixture:([^}]+)\}\}`)
 
-// givenPiAgent commits a complete agent definition (frontmatter + body) to
-// `.fullsend/agents/<name>.md` on the enrolled repo. The custom-harness
-// step commits a placeholder for any relative `agent:` path (the per-repo
-// scaffold ships no agents — fleet agents are URL-sourced), which is fine
-// under the dummy runtime but gives a real runtime no task; this step runs
-// after it and replaces the placeholder with a body whose tool use is
-// deliberate, so the transcript assertions are grounded.
-func givenPiAgent(w *world.World, name, doc string) error {
+// givenRuntimeAgent commits a complete agent definition (frontmatter +
+// body) to `.fullsend/agents/<name>.md` on the enrolled repo. The
+// custom-harness step commits a placeholder for any relative `agent:` path
+// (the per-repo scaffold ships no agents — fleet agents are URL-sourced),
+// which is fine under the dummy runtime but gives a real runtime no task;
+// this step runs after it and replaces the placeholder with a body whose
+// tool use is deliberate, so the transcript assertions are grounded.
+//
+// Nothing here is runtime-specific: the "a pi agent", "a codex agent" and
+// "a claude agent" steps all land here, and the step wording only says
+// which runtime the scenario is exercising.
+func givenRuntimeAgent(w *world.World, name, doc string) error {
 	if w.Org == "" || w.RepoName == "" {
 		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before agent operations")
 	}
@@ -218,7 +240,7 @@ func givenRepositoryAgentSettings(w *world.World, doc string) error {
 		if st.Effort != "" {
 			effort = st.Effort
 		}
-		agents = config.UpsertAgentSettings(agents, name, runtimeName, model, effort)
+		agents = config.UpsertAgentSettings(agents, name, runtimeName, model, effort, nil)
 	}
 	cfg.SetAgents(agents)
 	if err := config.ValidateAgentEntries(cfg.AgentEntries(), cfg.AllowedResources()); err != nil {
@@ -276,8 +298,11 @@ type runMetrics struct {
 	OverrideSource string `json:"override_source"`
 	// NumTurns is 0 when the agent process produced no events (for pi,
 	// metrics.model is the resolved id echoed back, not a provider reply).
-	NumTurns   int `json:"num_turns"`
-	TokenUsage struct {
+	NumTurns int `json:"num_turns"`
+	// FallbackFrom lists the models the run moved off before Model took
+	// over; empty when the first model ran.
+	FallbackFrom []string `json:"fallback_from"`
+	TokenUsage   struct {
 		Input  int `json:"input"`
 		Output int `json:"output"`
 	} `json:"token_usage"`
@@ -357,6 +382,29 @@ func assertRunModelFrom(w *world.World, requested, source, reported string) erro
 	return nil
 }
 
+// assertRunUsedModelWithoutFallback requires the model that answered to be
+// exactly want (pi records the bare id, not provider/id) and no fallback_from:
+// the alias resolved to a model the project serves, so the run did not
+// quietly move to an older one.
+func assertRunUsedModelWithoutFallback(w *world.World, want string) error {
+	m, err := readRunMetrics(w)
+	if err != nil {
+		return err
+	}
+	if m.Model != want {
+		return fmt.Errorf("metrics.json model = %q, want %q", m.Model, want)
+	}
+	if len(m.FallbackFrom) > 0 {
+		return fmt.Errorf("metrics.json fallback_from = %q, want none (model %q was reached by falling back)", m.FallbackFrom, m.Model)
+	}
+	// As in assertRunModelFrom: model is recorded before the first reply,
+	// so require a turn to know the model answered.
+	if m.NumTurns <= 0 {
+		return fmt.Errorf("metrics.json num_turns = %d, want > 0 (model %q was resolved but never answered)", m.NumTurns, m.Model)
+	}
+	return nil
+}
+
 func assertRunMetricsReportTokens(w *world.World) error {
 	m, err := readRunMetrics(w)
 	if err != nil {
@@ -364,6 +412,26 @@ func assertRunMetricsReportTokens(w *world.World) error {
 	}
 	if m.TokenUsage.Input <= 0 || m.TokenUsage.Output <= 0 {
 		return fmt.Errorf("metrics.json token_usage = %+v, want input and output > 0", m.TokenUsage)
+	}
+	return nil
+}
+
+// assertRunMetricsReportTokensUnless is assertRunMetricsReportTokens, except
+// that a run whose requested model is exempt may report zero tokens as long
+// as it recorded a turn (num_turns > 0). A failed turn also counts, so pair
+// it with steps that prove the model answered (a successful workflow and a
+// recorded tool call). It is for a model whose usage the gateway delivers
+// after the finish chunk, which codex then records as 0.
+func assertRunMetricsReportTokensUnless(w *world.World, exempt string) error {
+	m, err := readRunMetrics(w)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(m.RequestedModel, exempt) {
+		return assertRunMetricsReportTokens(w)
+	}
+	if m.NumTurns <= 0 {
+		return fmt.Errorf("metrics.json num_turns = %d, want > 0 (no turn recorded for model %q)", m.NumTurns, m.RequestedModel)
 	}
 	return nil
 }
@@ -409,6 +477,137 @@ func assertPiTranscriptHasToolCall(w *world.World) error {
 		return fmt.Errorf("%d pi session transcript(s) under %s but none records a toolCall", sessions, w.ArtifactDir)
 	}
 	return nil
+}
+
+// assertCodexStreamHasToolCall requires a tee'd `codex exec --json` stream
+// (output.jsonl) that records a completed command_execution item: the agent
+// ran a shell command through codex. The rollout session transcripts codex
+// writes are extracted alongside it, but the --json stream is the artifact
+// whose shape fullsend owns, so the assertion reads that.
+//
+// With security enabled the run refuses to start unless the fullsend hook
+// wiring under CODEX_HOME is present and intact, so a tool call in such a
+// run was mediated by the adapter; this step does not inspect hook output
+// itself.
+func assertCodexStreamHasToolCall(w *world.World) error {
+	if err := ensureRunArtifacts(w, "metrics.json"); err != nil {
+		return err
+	}
+	var streams, withToolCall int
+	err := filepath.WalkDir(w.ArtifactDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Base(path) != "output.jsonl" {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if !isCodexStreamFile(data) {
+			return nil
+		}
+		streams++
+		hasCall, scanErr := codexStreamHasCompletedCommand(data)
+		if scanErr != nil {
+			return fmt.Errorf("reading %s: %w", path, scanErr)
+		}
+		if hasCall {
+			withToolCall++
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if streams == 0 {
+		return fmt.Errorf("no codex output.jsonl stream under %s", w.ArtifactDir)
+	}
+	if withToolCall == 0 {
+		return fmt.Errorf("%d codex stream(s) under %s but none records a command_execution item", streams, w.ArtifactDir)
+	}
+	return nil
+}
+
+// codexStreamEvent is the envelope every line of a `codex exec --json`
+// capture carries, plus the item fields these assertions read. `item.details`
+// is serde-flattened upstream, so the item type sits next to its id.
+type codexStreamEvent struct {
+	Type string `json:"type"`
+	Item struct {
+		Type   string `json:"type"`
+		Status string `json:"status"`
+	} `json:"item"`
+}
+
+// codexStreamLines yields each line of a capture that parses as a top-level
+// codex event. Parsing beats substring matching here for the same reason it
+// does in the production parser: a marker can appear inside another
+// envelope's payload or inside quoted tool output, where it means nothing.
+//
+// A scan error (a line past the buffer, an unreadable file) is returned
+// rather than swallowed: silently yielding the lines read so far would turn
+// a truncated read into "the agent ran no tools", which is a wrong assertion
+// failure rather than an honest one.
+func codexStreamLines(data []byte) ([]codexStreamEvent, error) {
+	var out []codexStreamEvent
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var evt codexStreamEvent
+		if json.Unmarshal(line, &evt) != nil || evt.Type == "" {
+			continue
+		}
+		out = append(out, evt)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scanning codex stream: %w", err)
+	}
+	return out, nil
+}
+
+// codexStreamHasCompletedCommand requires a command_execution item that
+// actually reached item.completed with status "completed". An item.started
+// carries the same item type, and a declined or failed command is a tool call
+// the agent did not get to make — neither proves the agent ran a tool.
+func codexStreamHasCompletedCommand(data []byte) (bool, error) {
+	events, err := codexStreamLines(data)
+	if err != nil {
+		return false, err
+	}
+	for _, evt := range events {
+		if evt.Type == "item.completed" &&
+			evt.Item.Type == "command_execution" &&
+			evt.Item.Status == "completed" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// isCodexStreamFile reports whether the JSONL is a `codex exec --json`
+// capture, by the top-level type of a line rather than a substring scan.
+// codex's rollout session files use session_meta/response_item/event_msg
+// envelopes whose inner names are underscored (item_completed), so they
+// cannot match; nor can a codex event name nested inside another payload.
+func isCodexStreamFile(data []byte) bool {
+	events, err := codexStreamLines(data)
+	if err != nil {
+		return false
+	}
+	for _, evt := range events {
+		switch evt.Type {
+		case "thread.started", "turn.started", "turn.completed", "turn.failed",
+			"item.started", "item.updated", "item.completed":
+			return true
+		}
+	}
+	return false
 }
 
 func isPiSessionFile(data []byte) bool {

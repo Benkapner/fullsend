@@ -5,10 +5,11 @@ Complete reference for all fields available in a fullsend harness YAML file. For
 ```yaml
 # ── Required ──────────────────────────────────────────────────
 agent: agents/my-agent.md           # Path to agent definition
-role: my-agent                      # Role name (lowercase letter first, then a-z, 0-9, _, -; no double hyphens)
+role: triage                        # A role the mint serves (built-in on the hosted mint); not the agent's name. Format: lowercase letter first, then a-z, 0-9, _, -; no double hyphens
+policy: policies/base.yaml          # Sandbox policy; required
 
 # ── Identity & metadata ──────────────────────────────────────
-slug: my-org-my-role                # GitHub App identity (convention: <org>-<role>)
+slug: my-org-my-role                # Install-time App discovery (convention: <org>-<role>); not read by the mint
 description: One-line summary       # Human-readable description
 doc: docs/agents/my-agent.md        # Source-repo-only; not resolved at runtime
 trigger: "event.entity.kind == 'work_item'"  # Optional CEL expression over NormalizedEvent (see CEL Triggers Reference)
@@ -18,19 +19,24 @@ base: harness/common-base.yaml      # Inherit from another harness (local or URL
 
 # ── Sandbox ───────────────────────────────────────────────────
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
-policy: policies/base.yaml          # Sandbox policy (filesystem, landlock, process)
 model: opus                         # LLM model override
 effort: high                        # Reasoning effort (low, medium, high, xhigh, max); claude runtime only
 readonly_repo: false                # Mount repo as read-only in sandbox
 providers:                           # Network access via provider profiles
-  - vertex-ai                       # References providers/vertex-ai.yaml
-  - github                          # References providers/github.yaml
+  - vertex-ai                       # Bare builtin name: resolves to fullsend's embedded definition
+  - github                          # Same; or a providers/<name>.yaml path for a local/custom definition
 
 # ── Skills & plugins ──────────────────────────────────────────
 skills:
   - skills/my-skill                  # Local path or URL with #sha256=...
-plugins:
-  - plugins/gopls-lsp                # Local path or URL with #sha256=...
+plugins:                             # Directories a runtime loads (ADR 0094)
+  - plugins/gopls-lsp                # Claude plugin (plugin.json); Claude Code loads it
+  - extensions/go-diagnostics        # pi extension (index.* or package.json entry point)
+  - path: extensions/pi-fff          # Object form only when env or runtime options are needed
+    env:
+      FFF_MULTIGREP: "1"             # Exported before the runtime starts (code-loaded entries)
+    pi:
+      args: ["--fff-mode", "override"] # Flags the extension registers with pi.registerFlag
 openshell:                           # OpenShell sandbox profiles
   profiles:
     - https://example.com/profile.yaml#sha256=abc...
@@ -38,11 +44,19 @@ openshell:                           # OpenShell sandbox profiles
 # ── Scripts (local paths only) ────────────────────────────────
 pre_script: scripts/pre-my-agent.sh
 post_script: scripts/post-my-agent.sh
-agent_input: inputs/my-input.md     # File passed as initial input to the agent
+agent_input: inputs/my-agent/        # Local directory of files passed as agent input
+
+# ── Mint privilege per run-stage (ADR 0073) ───────────────────
+privilege_levels:
+  pre_script: write                 # host-side deterministic automation
+  runtime: read                     # LLM sandbox / validation_loop inherit this
+  post_script: write
+  # default: write                  # used for unlisted stages; omitted field = write everywhere
 
 # ── Validation ────────────────────────────────────────────────
 validation_loop:
   script: scripts/validate-output-schema.sh
+  preflight_check: 'python3 -c "import jsonschema"'  # Literal sh -c command (NOT a script path); runs before sandbox creation
   max_iterations: 2
   feedback_mode: append              # "none" (default) or "append" — append the
                                      # previous iteration's validation failure to
@@ -67,7 +81,8 @@ runner_env:                          # ⚠ Deprecated: use env.runner instead
   MY_VAR: "${MY_VAR}"
 
 # ── Timeouts ──────────────────────────────────────────────────
-timeout_minutes: 20
+timeout_minutes: 20                  # Per-iteration budget (default 30); exported to
+                                     # the sandbox as FULLSEND_TIMEOUT_MINUTES
 sandbox_timeout_seconds: 300         # 30-600
 
 # ── Remote resources ──────────────────────────────────────────
@@ -84,7 +99,7 @@ api_servers:                         # Host-side REST proxies exposed to sandbox
     env:                             # Env vars for the server process
       API_KEY: "${API_KEY}"
 
-# ── Conditional overrides (CEL-guarded, first-match-wins) ────
+# ── Conditional overrides (CEL-guarded, merge-all-matching) ──
 overlays:
 - when: 'event.source.system == "jira" && runtime.forge == "github"'
   pre_script: scripts/pre-jira-on-gh.sh
@@ -97,12 +112,12 @@ overlays:
   pre_script: scripts/pre-gh.sh
   post_script: scripts/post-gh.sh
   skills: [skills/github-specific]    # Merged with top-level
-  providers: [providers/github.yaml]  # Concatenated with top-level
+  providers: [providers/myorg-github.yaml]  # Concatenated with top-level
   openshell:
-    profiles: [profiles/github.yaml]  # Concatenated with top-level
+    profiles: [profiles/myorg-github.yaml]  # Concatenated with top-level
   host_files:                         # Overlay-specific host files
     - src: env/github.env
-      dest: /run/secrets/forge.env
+      dest: /sandbox/workspace/.env.d/forge.env
   env:
     runner:
       GH_TOKEN: "${GH_TOKEN}"
@@ -126,21 +141,90 @@ security:
 
 Most fields are self-explanatory from the inline comments above. This section expands on fields where additional context helps.
 
-**`role`** — The agent's identity within fullsend. Dispatch uses the role to match config-registered agents to built-in defaults (same-name config agents take precedence). The role also determines which GitHub App credentials the mint service issues.
+**`role`** — The agent's identity within fullsend. Dispatch uses the role to match config-registered agents to built-in defaults (same-name config agents take precedence). The role also determines which GitHub App credentials **and permissions** the mint service issues. It must be a role the mint serves: on the hosted mint that is the fixed built-in set (`triage`, `coder`, `review`, `retro`, `prioritize`, `fullsend`); custom roles require your own mint. An unserved role returns `403`. See [Custom Agent Identity](../guides/user/custom-agent-identity.md).
 
-**`slug`** — Maps to a GitHub App installation. The `<org>-<role>` convention keeps slugs unique when multiple orgs share a mint. For custom GitHub App identity, see [Custom Agent Identity](../guides/user/custom-agent-identity.md).
+**`privilege_levels`** — Maps run-stages to named mint privilege levels so the LLM sandbox can receive a narrower token than host-side scripts. Keys: `pre_script`, `runtime`, `post_script`, and `default` (covers unlisted stages). `validation_loop` is not a key — it inherits `runtime` because it shares that stage's security context. Level names are lowercase identifiers (`read` and `write` on every role; custom roles may define more). When the field is omitted, every stage gets `write`, matching pre-ADR-0073 behavior. The runner mints the `runtime` token **before** provider credential expansion and `host_files` with `expand: true`, remints around `pre_script` when that stage differs, and remints for `post_script` after sandbox teardown. A remint failure is fatal (aborts the run) whenever the configured stage level differs from the currently active token's level; it is non-fatal — falling back to the existing token — only when the levels match (a same-level expiry refresh). **Top level only** — it is not a `ForgeConfig` field, so a `privilege_levels` key placed under `overlays:`/`forge:` is silently ignored; only `base:` composition (see the merge table below) can override it. See [ADR 0073](../ADRs/0073-named-mint-privilege-levels.md).
+
+**`slug`** — Install-time hint used by `fullsend github setup` to find or name the GitHub App. The `<org>-<role>` convention keeps slugs unique when multiple orgs share a mint. The **mint does not read `slug`** when issuing a token — identity and permissions come from `role`, so changing `slug` alone changes neither. For a custom GitHub App identity, see [Custom Agent Identity](../guides/user/custom-agent-identity.md).
 
 **`doc`** — Path to a human-readable document describing the agent's purpose and design. Resolved in the source repo only; the runtime ignores it. Useful for documentation indexes and discoverability.
 
 **`validation_loop.feedback_mode`** — Controls how validation script output reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation failure is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
 
+**`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). A second run happens only when the agent finished and its output failed validation; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
+
+**`validation_loop.preflight_check`** — A host-dependency probe run before sandbox creation as a literal `sh -c` command ([ADR 0128](../ADRs/0128-preflight-check-literal-command.md)). It uses the host process's working directory and is not resolved through the resource-fetch pipeline. Prefer a self-contained probe such as `python3 -c "import jsonschema"`; a relative script command works only if its file is present in that host working directory.
+
+**`env.runner`** — Variables passed to host-side scripts (`pre_script`, `post_script`,
+`validation_loop.script` and `validation_loop.preflight_check`), layered over the `fullsend run`
+process environment. A few named workflow secrets are **not** inherited from that environment:
+`JIRA_TOKEN`, `JIRA_USER_EMAIL`, and the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` /
+`OTEL_EXPORTER_OTLP_*_HEADERS` (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`). A script
+receives one only when the harness declares it, e.g. `JIRA_TOKEN: "${JIRA_TOKEN}"` under
+`env.runner`. `fullsend run` itself still reads them for its own Jira client and trace export.
+Earlier releases passed them to every script unconditionally; a harness whose scripts read
+`JIRA_TOKEN` or `JIRA_USER_EMAIL` without declaring them must add them to `env.runner`. Scripts
+always run with `PYTHONDONTWRITEBYTECODE=1`, overriding any `env.runner` value, so bytecode never
+breaks the hash-verified fetch cache.
+
+`env.runner` values never reach the sandbox. Each value is expanded with `${NAME}` after `base:` composition and overlays are resolved. Names come from the runner's environment and, on GitHub, from the `FULLSEND_GITHUB_RUNNER_SECRETS` object ([ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md)). A name in that object wins over a runner variable of the same name. In CI the composite action stages the object in a mode 0600 file and `fullsend run` deletes it after reading, so the object is never in the environment of `fullsend run` or of any process it starts. Keys the harness does not reference reach no script. A referenced value reaches the script as an ordinary environment variable, and scripts run as the job user. With the object unset, expansion behaves as before.
+
+These rules make a run fail before `pre_script` starts:
+
+- **Refused names.** A key in the object may not be a runner-owned name. That covers `GH_WORKFLOW_TOKEN`, the OIDC request variables, provider-only keys such as `OPENAI_API_KEY`, the `FULLSEND_*`, `GITHUB_*`, `ACTIONS_*`, `RUNNER_*`, `CI_*`, `LD_*`, `OTEL_*`, `GOOGLE_*` and `CLOUDSDK_*` families, the minted role tokens (`GH_TOKEN`, `PUSH_TOKEN`, `PUSH_TOKEN_SOURCE`, `REVIEW_TOKEN`, `GITLAB_TOKEN`), `PATH`, and the sandbox-reserved names (`HOME`, `SHELL`, `TRACEPARENT`, …), and every name the reusable workflow sets on the `fullsend run` step, such as the named `JIRA_TOKEN`, `JIRA_USER_EMAIL` and `JIRA_BASE_URL` on `harness-run`. An `env.runner` key with one of those names may not receive a value from the object either.
+- **Host side only.** The object's names may be referenced only from `env.runner` values. A reference from `env.sandbox`, `runner_env`, a provider's `credentials` or `config`, a `host_files` `src`, the content of a `host_files` entry with `expand: true`, or a `validation_loop` field is a validation error.
+- **Overlays.** An overlay that references one of the object's names may be guarded only by `runtime.forge` and `config`. An overlay that reads `event` or any other `runtime` field is refused, even when it does not match. This rule is interim until [ADR 0112](../ADRs/0112-overlays-may-set-any-harness-field.md)'s guarded-field check is implemented; until then an event-guarded overlay can still swap `pre_script`, `post_script` or `validation_loop`, and so choose which script receives a referenced value.
+- **Shape.** The value must be a JSON object whose values are strings, with no duplicate keys and no `null` values. Each value must be at least as long as the redactor's minimum (currently 8 characters), so it can be redacted. Errors name the offending key, never its value.
+
+`fullsend run` masks each value, and each line of a multi-line value, in the GitHub Actions log. It also registers the value, its lines and its JSON-escaped form for redaction from pre-script failure detail and validation feedback. Both match exact strings: a value a script transforms (base64, URL-encoded, a substring) is not hidden, and a line shorter than that minimum is masked but not redacted.
+
+These rules cover names in the GitHub object only. GitLab is unchanged: each secret is its own masked CI/CD variable, `${NAME}` reads it directly, and no name is refused there (keeping fullsend's own credentials out of GitLab host-side scripts is tracked in [#8146](https://github.com/fullsend-ai/fullsend/issues/8146)). For setup, see [Building custom agents § Pass secrets to host-side scripts](../guides/user/building-custom-agents.md#pass-secrets-to-host-side-scripts-github).
+
+**`agent_input`** — A local directory, not a file. When a URL `base:` harness declares it, the inherited value is cleared rather than fetched; supply the directory in the child harness if needed. See [Harness field semantic types](../contributing/harness-fields.md#semantic-types-adr-0127).
+
+**`host_files[].dest`** — An absolute path under `/sandbox/` or `/tmp/`. Paths the runner writes or puts on `PATH` ahead of the image are refused when the harness loads: `/sandbox/workspace/.env`, the runner and runtime binaries in `/sandbox/workspace/bin` (`claude`, `codex`, `pi`, `opencode`, `fullsend`, `fullsend-check-output`), and anything under `/sandbox/claude-config`, `/sandbox/codex-config`, `/sandbox/pi-config`, `/sandbox/workspace/.fullsend`, `/sandbox/workspace/.security`, `/sandbox/.venv` or `/sandbox/go/bin`. A `dest` containing a `..` path component is refused as well. The same rule applies to `host_files` under `overlays:`, `forge:` and inherited from `base:`. On Claude and pi runs `/sandbox/workspace/bin` is last on the agent's `PATH`, so a file there adds a command but does not replace one the image provides. Codex runs restore the `PATH` from before `.env`, so `/sandbox/workspace/bin` and `.env.d` additions are not on the codex agent's `PATH`. See [Adding executables](../guides/user/customizing-agents.md#adding-executables).
+
+**`.env.d` host files** — A `host_files` entry with a `dest` in `/sandbox/workspace/.env.d/` ending in `.env` is sourced as shell in the agent launch shell, before the runtime starts. Treat these files like `pre_script`: they run whatever they contain. `host_files` can also place configuration that tools load, such as git config or shell rc files; that is trusted like `pre_script` too. After the `.env.d` files run, on Claude and pi runs the runner puts its own `PATH` back in front. Claude runs then unset `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `NODE_OPTIONS`, `NODE_PATH` and `BUN_OPTIONS`; codex runs unset the same names except `BUN_OPTIONS`. Setting those there has no effect on the agent of those runtimes.
+
+
+**`policy`** — Path or pinned URL of the sandbox policy. Required at `fullsend run`; fullsend ships no default. A child that omits `policy:` still passes if it inherits one from `base:`. A local file that unmarshals to no fields (comments only) is rejected with the path named. Commit a copy of the fleet policy from [fullsend-ai/agents](https://github.com/fullsend-ai/agents), or set `policy:` to its URL with a `#sha256=` hash under `allowed_remote_resources`; `fullsend agent new` writes both the file and the field for a new agent.
+
+**`timeout_minutes`** — Wall-clock budget for one agent iteration, default 30. The runner ends the iteration and sweeps the processes the agent left running in the sandbox (best effort) when it is spent, and a killed iteration ends the run with `agent timed out after <elapsed> without completing (timeout: <budget>)` unless its output validates anyway. Before every iteration the runner writes the budget as `FULLSEND_TIMEOUT_MINUTES`, the kill time as `FULLSEND_ITERATION_DEADLINE` (Unix seconds), and the current agent span as `TRACEPARENT` into the agent's environment — see [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline). Those names are reserved: an `env.sandbox` entry with any of them is dropped.
+
 **`security.fail_mode`** — Determines what happens when a pre-run security scan finds issues or fails to complete. `closed` (default): the run aborts on scan failure or critical findings. `open`: the run continues with a warning. Omitting the `security` block is equivalent to `fail_mode: closed`.
 
 **`allow_runtime_fetch`** — When `true`, the agent can fetch remote resources (skills, plugins, profiles) at runtime rather than only at harness resolution time. Fetched URLs must still be covered by `allowed_remote_resources`.
 
+**`plugins`** — Directories a runtime loads. Which runtime loads an entry follows from the directory, not from the key: a directory with `plugin.json` at its root or `.claude-plugin/plugin.json` is a Claude plugin and Claude Code loads it; anything else must be a directory pi's `-e` loader resolves an entry point in, and pi loads it as an extension ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)). Each runtime names and skips the entries in the other format, so one list works whichever runtime the org configures.
+
+Sourcing is the `skills:` rule: a path in the harness repository, or a forge tree URL pinned with `#sha256=`. `npm:`/`git:`/`ssh:` sources are rejected — pi would fetch them from the network at startup, which the sandbox cannot do.
+
+Each entry is a path string, or `{path, env, pi}`. `env` (exported before the runtime starts) and the `pi:` block apply only to an entry a runtime loads as code; on a Claude plugin they are a validation error, not a silent drop.
+
+Validation rejects an entry that breaks any of these rules:
+
+- **Format** — the directory is a Claude plugin (`plugin.json` at its root or `.claude-plugin/plugin.json`, checked first) or one pi would load. A directory that is neither is rejected: Claude Code would ignore it and pi would exit 1 or load nothing.
+- **Names** — `a-z`, `A-Z`, `0-9`, `_`, `-`; no duplicate paths, and no duplicate basenames across entries (the second upload would replace the first in the sandbox).
+- **Sources** — `npm:`/`git:`/`ssh:` sources and `..` segments are rejected; a URL entry must carry `#sha256=` and point at a forge `/tree/` directory.
+- **Tree contents** — regular files and directories only (no symlinks or special files), with names free of newlines, carriage returns and backslashes; the injection scan reads every text file, and a symlink would carry its target into the sandbox unscanned.
+
+A pi-format entry must also satisfy pi's own loader rule:
+
+- **Entry point** — `index.js`/`index.ts`/`index.mjs`/`index.cjs`, or a `package.json` `main` pointing at an existing file, or a `package.json` `"pi": {"extensions": [...]}` list.
+- **A `pi` object wins outright** — pi then loads only what `pi.extensions` names, never `index.*` or `main`, so `{"pi": {}}` or an unresolvable `pi.extensions` loads *nothing*, silently, with pi exiting 0.
+- **No package layout** — an `extensions/`, `prompts/`, `skills/` or `themes/` entry (a plain file of that name counts) makes pi read the directory as a package and ignore `index.js`; use `pi.extensions` instead.
+- **Containment** — a `pi.extensions` or `main` entry that is absolute or climbs out with `..` is rejected, in a nested `package.json` as well as the top one; pi resolves both with no containment check.
+- **Glob entries** (`*`, `?`) are matched against the tree, so a pattern selecting nothing is rejected; `**` and brace patterns are accepted unevaluated, `[...]` is a literal file name to pi, and a leading `!` is a *disable* pattern — a `pi.extensions` made only of `!` entries is rejected.
+- **`package.json`** — a UTF-8 byte-order mark is stripped before parsing, as pi strips it.
+- **Reserved names** — not `fullsend-hooks`, `fullsend-agent`, `fullsend-edit-repair`, `anthropic-vertex` or `xai-vertex`, which the runner owns. An entry also must not register a tool named `edit`: pi rejects two extensions that register the same tool name, and the runner's own `fullsend-edit-repair` extension already registers `edit` whenever the agent has the edit tool.
+- **`pi.args`** — flags the extension registered with `pi.registerFlag`, each `--flag` or `--flag=value` (pi has no single-dash options), never one of pi's own option names, with no value starting with `-` or `@`. One bare word may follow a `--flag` written without `=`; any other bare word is prompt text pi would prepend to the agent's prompt.
+- **`env` keys** match `^[A-Z_][A-Z0-9_]*$` and may not name the interpreter environment (`PATH`, `HOME`, `TMPDIR`, `ENV`, `BASH_ENV`, `SHELL`, `IFS`, `CDPATH`, `PROMPT_COMMAND`, `LD_*`, `DYLD_*`, `PYTHON*`, `NODE_*`, `SSL_*`, `JITI_*`, `GIT_*`, `JAVA_TOOL_OPTIONS`, `RUBYOPT`, `PERL5OPT`), a credential- or proxy-shaped name (`*_API_KEY`, `*_TOKEN`, `*_SECRET*`, `*_PROXY`), a trust-store or resolver name (`HOSTALIASES`, `OPENSSL_CONF`, `SSLKEYLOGFILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GOPROXY`, `GOFLAGS`), or a runner/provider family (`PI_*`, `FULLSEND_*`, `TIRITH_*`, `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*`, `ANTHROPIC_*`, `XAI_*`, `OPENAI_*`, `AZURE_*`, `AWS_*`, `CLOUD_ML_REGION`).
+
+`plugins` is a top-level field only: it is not part of `ForgeConfig`, so a `plugins:` key under `forge:` or `overlays:` is silently ignored. Walkthrough for the pi side: [Pi § Plugins (pi extensions)](../runtimes/pi.md#plugins-pi-extensions). Rationale and run-time mechanics: [Runtime Implementation § Pi extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
+
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
-**`api_servers`** — Host-side HTTP servers that run outside the sandbox and are exposed to it via port forwarding. Use these to give an agent access to APIs that require credentials the sandbox should not hold -- the server script runs on the trusted runner with full env access, while the sandbox connects to `localhost:<port>`.
+**`api_servers`** — Planned host-side HTTP servers outside the sandbox, exposed to it via port forwarding; server startup is not yet implemented. The intended design would keep API credentials on the trusted runner rather than inside the sandbox.
 
 ## Deprecated fields
 
@@ -162,21 +246,24 @@ Most fields are self-explanatory from the inline comments above. This section ex
 
 ## Field merge rules (for `base` and `overlays`)
 
-Overlays use first-match-wins: exactly one overlay (or none) applies to any
-given event. When an agent needs config from multiple concerns (e.g.
-JIRA-specific scripts *and* GitHub-specific runner env), create a combined
-entry. More-specific entries go first; broader fallbacks go last.
+Overlays use merge-all-matching: every overlay whose `when` evaluates to true
+is applied in declaration order, with later matches taking precedence over
+earlier ones for scalar fields. Cross-concern scenarios (e.g. JIRA-specific
+scripts *and* GitHub-specific runner env) can use separate overlay entries.
+More-specific entries go last so they override broader defaults.
 
 | Field type | Behavior |
 |-----------|----------|
 | Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
-| `skills` | Merged with deduplication by basename (child overrides base) |
+| `skills` | Merged with deduplication by skill identity (declared `SKILL.md` name when on disk, otherwise basename). Child overrides a matching base entry; sibling nested dirs that share a leaf name are kept; two entries with one identity in a single list are both kept and fail at bootstrap |
 | `providers`, `openshell.profiles` | Concatenated (base + child); also applies per matched overlay |
-| `plugins`, `api_servers` | Concatenated (base + child) |
+| `plugins`, `api_servers` | Concatenated (base + child); each entry keeps its own `env`/`pi` |
 | `host_files` | Concatenated; child overrides by `dest` |
 | `env`, `runner_env` (deprecated) | Merged; child keys win |
-| `validation_loop`, `security` | Child replaces entirely |
-| `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own) |
+| `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Top-level only — not a `ForgeConfig` field, so this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
+| `validation_loop` | Field-level merge; child/overlay non-zero values win, omitted fields inherit |
+| `security` | Child replaces entirely |
+| `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution |
 
 ## Referencing resources: local vs. remote
 
@@ -191,6 +278,8 @@ agent: https://raw.githubusercontent.com/org/repo/<sha>/agents/lint.md#sha256=ab
 ```
 
 **Scripts are local-only** — `pre_script`, `post_script`, and `validation_loop.script` must be local paths (they run on the trusted runner). Exception: scripts declared in a `base` harness fetched via URL are allowed.
+
+**`validation_loop.preflight_check` is a command, not a script resource** — The runner expands `${VAR}` references from its permitted host environment, then passes the result to `sh -c` on the host; it does not fetch or stage a file named by the command. Do not interpolate untrusted values or credentials, even within shell quotes: on failure or timeout the expanded command currently appears in diagnostics.
 
 ## See also
 

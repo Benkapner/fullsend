@@ -14,9 +14,16 @@ func Resolve(name string) (Backend, error) {
 	case "", "claude":
 		r := ClaudeRuntime{}
 		return Backend{Runtime: r, Transcripts: r}, nil
+	case "codex":
+		r := CodexRuntime{}
+		return Backend{Runtime: r, Transcripts: r}, nil
 	case "dummy":
 		// Selected only via explicit per-repo/org config (behaviour test orgs).
 		r := DummyRuntime{}
+		return Backend{Runtime: r, Transcripts: r}, nil
+	case "dummy-playback":
+		// Replays canned results from a playlist (behaviour test orgs).
+		r := DummyPlaybackRuntime{}
 		return Backend{Runtime: r, Transcripts: r}, nil
 	case "opencode":
 		r := OpenCodeRuntime{}
@@ -27,21 +34,6 @@ func Resolve(name string) (Backend, error) {
 	default:
 		return Backend{}, fmt.Errorf("unknown runtime %q: must be one of %s", name, strings.Join(config.ValidRuntimes(), ", "))
 	}
-}
-
-// ResolveFromConfig selects the runtime backend from org config defaults.
-// The runtime name is validated against [config.ValidRuntimes] before
-// resolution so that stub runtimes registered in [Resolve] for dev/testing
-// cannot be activated through config files.
-func ResolveFromConfig(cfg config.OrgConfigReader) (Backend, error) {
-	rt := "claude"
-	if cfg != nil && cfg.OrgRepoDefaults().Runtime != "" {
-		rt = cfg.OrgRepoDefaults().Runtime
-	}
-	if err := validateConfigRuntime(rt); err != nil {
-		return Backend{}, err
-	}
-	return Resolve(rt)
 }
 
 // ResolveFromPerRepoConfig selects the runtime backend from per-repo config.
@@ -90,9 +82,9 @@ func ResolveForAgent(agents []config.AgentEntry, repoRuntime, agent string) (Bac
 }
 
 // validateConfigRuntime checks that rt is in the set of user-facing
-// runtimes allowed in config files.  Stub runtimes (e.g. "opencode")
-// are intentionally excluded from [config.ValidRuntimes] so they
-// cannot be activated through org or per-repo config.
+// runtimes allowed in config files. Runtimes not yet in
+// [config.ValidRuntimes] are resolvable via [Resolve] for dev/testing but
+// cannot be activated through per-repo config.
 func validateConfigRuntime(rt string) error {
 	valid := config.ValidRuntimes()
 	if !slices.Contains(valid, rt) {

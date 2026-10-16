@@ -1,7 +1,9 @@
 package runtime
 
-// streamBufSize is the bufio.Reader buffer size used by both NDJSON stream
-// parsers (Claude and OpenCode). Lines exceeding this size are skipped.
+// streamBufSize is the bufio.Reader buffer size used by every NDJSON stream
+// parser (Claude, pi, codex, OpenCode). Lines exceeding this size are
+// skipped; the Claude parser still reports an oversized tool_result line's
+// call id (ToolResultEvent.Oversized).
 const streamBufSize = 1024 * 1024 // 1 MiB
 
 // AgentEvent is the normalized event interface for runtime-agnostic rendering.
@@ -14,6 +16,9 @@ type AgentEvent interface {
 type InitEvent struct {
 	Model   string
 	Version string
+	// SessionID is the runtime's session id when the stream reports one
+	// (Claude Code's init event); empty otherwise.
+	SessionID string
 }
 
 func (InitEvent) agentEvent() {}
@@ -32,16 +37,55 @@ type TextEvent struct {
 
 func (TextEvent) agentEvent() {}
 
-// ToolUseEvent is emitted when a tool invocation completes.
+// ToolUseEvent reports a tool call. The Claude Code parser emits it when
+// it reads the line carrying the call's complete arguments (written ahead
+// of the call's result; the tool may already be running by then); the pi,
+// codex and OpenCode parsers emit it when the call has finished — codex
+// once per changed path of a file_change item, so one apply_patch can
+// yield several. Not every call yields one: a Claude Code server_tool_use
+// block on an assistant line (the path production takes) and a tool_use
+// line beyond streamBufSize emit nothing.
+// ID is the tool call identifier from the runtime stream; it is empty
+// when the parser passes none through — pi and codex (#7414), OpenCode,
+// and a Claude Code server-side tool reported from stream_event blocks,
+// whose result never arrives as a tool_result.
 // Name is the raw tool name from the runtime stream.
 // Summary is a one-line context string from extractSafeContext; it is
 // empty for tools not recognized by that function.
+// Arguments is the call's input as the stream carried it: JSON text,
+// unredacted, for the Level 3 content collector only — the renderer does
+// not print it. It is not checked here: input assembled from stream_event
+// deltas stops growing at maxToolInputSize and can be incomplete JSON.
+// Empty when the wire carried no input, and from the pi and codex
+// parsers (#7414) and the OpenCode parser.
 type ToolUseEvent struct {
-	Name    string
-	Summary string
+	ID        string
+	Name      string
+	Summary   string
+	Arguments string
 }
 
 func (ToolUseEvent) agentEvent() {}
+
+// ToolResultEvent carries the result of a completed tool invocation.
+// ID is the tool call identifier from the runtime stream (matches
+// ToolUseEvent.ID); Result is the raw result text; IsError reports a
+// failed call, as set on the wire; Partial reports that non-text
+// content (for example image blocks) was skipped while flattening, so
+// Result is a fragment of what the wire carried; Oversized reports that
+// the result's stream line exceeded streamBufSize and was skipped, so
+// only ID is known — Result is empty and IsError is unknown, not false.
+// Only the Claude runtime emits it today — see the runtime support
+// matrix in docs/runtimes.md.
+type ToolResultEvent struct {
+	ID        string
+	Result    string
+	IsError   bool
+	Partial   bool
+	Oversized bool
+}
+
+func (ToolResultEvent) agentEvent() {}
 
 // TokensEvent carries incremental token usage counters.
 type TokensEvent struct {
@@ -66,6 +110,10 @@ type ResultEvent struct {
 	ReasoningTokens          int
 	CacheCreationInputTokens int
 	CacheReadInputTokens     int
+	// PerModelUsage breaks the token totals and cost down by model id.
+	// Only the claude parser fills it (from the result's modelUsage); it is
+	// nil otherwise.
+	PerModelUsage map[string]ModelUsage
 }
 
 func (ResultEvent) agentEvent() {}
@@ -87,3 +135,28 @@ type RetryEvent struct {
 }
 
 func (RetryEvent) agentEvent() {}
+
+// ModelFallbackEvent reports that the runtime itself switched models
+// mid-session: Claude Code's --fallback-model chain answering for a model
+// that failed. From is the model that failed, To the one that took over.
+type ModelFallbackEvent struct {
+	From    string
+	To      string
+	Trigger string
+}
+
+func (ModelFallbackEvent) agentEvent() {}
+
+// PluginErrorEvent reports a plugin the runtime failed to load at startup.
+// Only the Claude parser emits it, once per entry of the init event's
+// plugin_errors. Type is the runtime's error category (an open set);
+// Path is empty when the runtime does not name a directory (Claude Code
+// before 2.1.283, or an entry that is not a --plugin-dir load failure).
+type PluginErrorEvent struct {
+	Plugin  string
+	Type    string
+	Path    string
+	Message string
+}
+
+func (PluginErrorEvent) agentEvent() {}

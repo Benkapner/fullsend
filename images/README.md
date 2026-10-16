@@ -16,7 +16,7 @@ ghcr.io/nvidia/openshell-community/sandboxes/base  (upstream, multi-arch)
 
 | Image | Directory | Description |
 |-------|-----------|-------------|
-| `fullsend-sandbox` | [`images/sandbox/`](sandbox/) | Base sandbox with Claude Code, jq, acli, gitleaks, tirith, pre-commit, and gitlint. |
+| `fullsend-sandbox` | [`images/sandbox/`](sandbox/) | Base sandbox with Claude Code, pi, Codex, ripgrep + fd (pi grep/find backends), jq, acli, gitleaks, tirith, pre-commit, and gitlint. |
 | `fullsend-code` | [`images/code/`](code/) | Extends `fullsend-sandbox` with Go toolchain and scan-secrets wrapper. Used by the code-implementation agent. |
 
 Both images are built for **linux/amd64** and **linux/arm64**.
@@ -82,25 +82,38 @@ regardless of trigger event.
 
 ## How images are built
 
-The workflow has two jobs that run sequentially:
+Each image is built per platform on a native runner (`ubuntu-24.04` for
+`linux/amd64`, `ubuntu-24.04-arm` for `linux/arm64`), then a merge job
+publishes the multi-arch index. The jobs run in this order:
 
-1. **`build-base`** builds `fullsend-sandbox` from `images/sandbox/Containerfile`.
-   On push/dispatch, it pushes the multi-arch manifest list and outputs the
-   immutable digest (`@sha256:...`) for the next job.
+1. **`build-base`** builds `fullsend-sandbox` from `images/sandbox/Containerfile`,
+   one leg per platform. On push/dispatch each leg pushes its image by digest.
 
-2. **`build-code`** builds `fullsend-code` from `images/code/Containerfile`,
-   passing the base image reference as `--build-arg BASE_IMAGE=<ref>`.
-   On push/dispatch it uses the digest from step 1.  On PRs (where no
-   digest is available because nothing was pushed), it falls back to the
-   `:dev` tag on the registry.
+2. **`merge-base`** waits for both legs, publishes the multi-arch index under
+   the release tags with `docker buildx imagetools create`, and outputs the
+   index's immutable digest (`@sha256:...`) for the next job. It refuses to
+   publish unless both platform digests are present.
 
-Cross-platform builds use [QEMU](https://github.com/docker/setup-qemu-action)
-for user-mode emulation and [Docker Buildx](https://github.com/docker/setup-buildx-action)
-with GitHub Actions cache (`type=gha`).
+3. **`build-code`** builds `fullsend-code` from `images/code/Containerfile`,
+   one leg per platform, passing the base image reference as
+   `--build-arg BASE_IMAGE=<ref>`. On push/dispatch it uses the digest from
+   `merge-base`. On PRs (where nothing was pushed), it falls back to the
+   `:dev` tag on the registry. Each leg smoke-tests its own image.
+
+4. **`merge-code`** publishes the `fullsend-code` index once both legs pass.
+
+`runner-image.yml` follows the same pattern with `build-runner` and
+`merge-runner`.
+
+No QEMU is involved, and nothing is pulled from Docker Hub:
+[Docker Buildx](https://github.com/docker/setup-buildx-action) uses the
+`docker-container` driver with a pinned BuildKit image from `mirror.gcr.io`
+(the `docker` driver cannot push by digest), and the GitHub Actions cache
+(`type=gha`, one scope per platform).
 
 ### PR build and the `:dev` fallback
 
-PR builds set `push: false`, so `build-base` produces no registry digest.
+PR builds do not push, so `merge-base` has no registry digest to output.
 The `build-code` job needs a base image reference to build against.  It
 falls back to `fullsend-sandbox:dev` — a multi-arch image that is always
 kept current by non-PR builds.
@@ -138,11 +151,14 @@ Every binary downloaded during the build is **version-pinned** and
 | ProtectAI DeBERTa model (runner) | `PROTECTAI_MODEL_REV` + per-file SHA256 | `sha256sum -c` |
 | libtokenizers (runner) | `TOKENIZERS_VERSION` + `TOKENIZERS_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | Gitleaks | `GITLEAKS_VERSION` + `GITLEAKS_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
+| ripgrep | `RIPGREP_VERSION` + `RIPGREP_SHA256_{AMD64,ARM64}` | `sha256sum -c` + version assertion |
+| fd | `FD_VERSION` + `FD_SHA256_{AMD64,ARM64}` | `sha256sum -c` + version assertion |
 | Tirith | `TIRITH_VERSION` + `TIRITH_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | Go toolchain | `GO_VERSION` + `GO_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | Claude Code | `CLAUDE_CODE_VERSION` ARG + npm version pin | npm registry integrity check |
 | pi (opt-in runtime, #6464) | `PI_VERSION` ARG + npm version pin (`--ignore-scripts`; package ships `npm-shrinkwrap.json`) | npm registry integrity check |
-| pi-anthropic-vertex extension (#6464) | `PI_ANTHROPIC_VERTEX_VERSION` (git tag) + `PI_ANTHROPIC_VERTEX_SHA256` of the GitHub tag tarball; deps via `npm ci --omit=dev --omit=peer --ignore-scripts` from the vendored `package-lock.json` (29 packages; that lockfile is **not** renovate-managed, so advisories in it surface only when the tag is bumped — run `npm audit --omit=dev --omit=peer` in the extension dir when reviewing a bump) | `sha256sum -c` + npm registry integrity check |
+| Codex (opt-in runtime, #6920) | `CODEX_VERSION` ARG + npm version pin; replaces the `@openai/codex` the OpenShell base image installs under the same npm prefix | npm registry integrity check + `codex --version` assertion against the pin |
+| pi-anthropic-vertex extension (#6464; fullsend-owned since #7019) | `PI_ANTHROPIC_VERTEX_VERSION` (git tag) + `PI_ANTHROPIC_VERTEX_SHA256` of the tag tarball; deps via `npm ci --omit=dev --omit=peer --ignore-scripts` from the vendored lockfile (26 packages: `google-auth-library` and its tree). The lockfile is not Renovate-managed here — run `npm audit --omit=dev --omit=peer` in the extension dir when reviewing a bump | `sha256sum -c` + npm registry integrity check |
 | acli | `ACLI_VERSION` + `ACLI_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | pre-commit, gitlint, pyyaml | pip version pins | pip integrity check |
 | UBI 10 base + go-toolset builder (runner) | Manifest list digest (`@sha256:...`) | Immutable OCI content hash (anonymous pull, no subscription) |

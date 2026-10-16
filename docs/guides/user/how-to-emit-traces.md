@@ -7,6 +7,13 @@ are written to the `run-telemetry.jsonl` file that gets uploaded into an artifac
 in the workflow. Fullsend is able to send traces to a remote OpenTelemetry-compatible
 endpoint.
 
+When the same `OTEL_EXPORTER_OTLP_*` configuration is set,
+`fullsend eval-measure` also exports newly written scores as
+`gen_ai.evaluation.result` span events on that endpoint (fail-open; local
+`eval-measurements.jsonl` always wins). See
+[Eval Measurements](../infrastructure/eval-measurements.md) for the score
+contract and carrier details.
+
 Follow this guide to configure a GitHub repository or organization to send traces
 to a backend like MLflow, Jaeger, Grafana Tempo, etc.
 
@@ -44,7 +51,11 @@ to a backend like MLflow, Jaeger, Grafana Tempo, etc.
    - Bearer token: `Authorization=Bearer%20<token>`
    - Basic auth: `Authorization=Basic%20<base64 of user:password>`
 
-    `%20` is the encoding for space, don't use spaces directly.
+   `%20` is the encoding for space, don't use spaces directly.
+
+   ::: warning Use `=` not `:`
+   OpenTelemetry headers must be written in `key=value` format, **not** standard HTTP header syntax (`key: value`). Entries with `:` instead of `=` (e.g. `Authorization: Bearer <token>`) will fail fullsend's header validation and prevent traces from exporting to the remote endpoint.
+   :::
 
 4. Set the authentication header as a GitHub Actions secret on the repository.
 
@@ -113,14 +124,34 @@ to a backend like MLflow, Jaeger, Grafana Tempo, etc.
 ## Capture conversation content
 
 Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` to add the agent's
-text, reasoning, and tool calls to each `agent` span, in the local file and
-at the endpoint. Content is redacted for secrets and bounded per iteration,
-but may still contain proprietary code or PII — make sure your backend's
+text, reasoning, tool calls, and their arguments and results — when the
+runtime's stream provides them; Claude runs do — to each `agent` span, in the
+local file and
+at the endpoint. A retry that carries validation feedback also records the
+prompt the runner composed. Content is redacted for secrets and bounded per iteration;
+a string that held a terminal colour or title code or tag characters, as most
+coloured CLI output does, or that was not valid UTF-8 or held the replacement character (U+FFFD), is recorded as `***` whole, and so is a retry
+prompt the runner sanitized, or cut at its size bound while it held compatibility
+characters or a URL with userinfo, a query or a fragment; feedback cut otherwise is still recorded. Content may still contain proprietary code or PII:
+tool arguments carry the commands an agent ran and the paths and patterns it used.
+A `Write`, `Edit` or `NotebookEdit` body, an `Agent` or `WebFetch` prompt and the
+input of MCP tools are not recorded as arguments, though a tool's result can quote
+what it wrote and a call's summary keeps the first 120 characters of its input;
+a `Bash` command is recorded whole (up to 8 KiB) and can embed the file content
+it writes. A URL in the record has its userinfo, query and fragment masked, as
+written in a command, text or JSON; the developer guide's tracing page lists the
+forms it does not read. Make sure your backend's
 access controls fit before enabling it.
 
 ```bash
 gh variable set OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT --body "true" --repo <owner/repo>
 ```
+
+With the `claude` runtime, id-bearing tool calls are visible at every level as
+`execute_tool` child spans of each `agent` span (tool name, call id, timing,
+error) — that is metadata, not content, and this variable does not affect
+it. The pi and codex runtimes emit none yet (see
+[Runtimes](../../runtimes.md)).
 
 ## Disable trace export
 
@@ -152,6 +183,9 @@ gh variable set OTEL_SDK_DISABLED --body "false" --repo <owner/repo>
 
 ## See also
 
+- [Eval Measurements](../infrastructure/eval-measurements.md): local score
+  JSONL and optional OTLP `gen_ai.evaluation.result` export on the same
+  `OTEL_EXPORTER_OTLP_*` path as agent traces
 - [Tracing with MLflow](tracing-with-mlflow.md): experiment routing, Basic
   auth encoding, org-level organization, and cost column caveats
 - [Tracing Reference](../infrastructure/distributed-tracing.md): span

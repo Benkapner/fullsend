@@ -24,6 +24,13 @@ func NewForgeClient(fc forge.Client) *ForgeClient {
 	return &ForgeClient{forge: fc}
 }
 
+// AuthenticatedUser returns the login the underlying forge client is
+// authenticated as, so a caller can tell the bot's own comments from
+// anyone else's.
+func (c *ForgeClient) AuthenticatedUser(ctx context.Context) (string, error) {
+	return c.forge.GetAuthenticatedUser(ctx)
+}
+
 // GetIssue implements Client by splitting project into owner/repo for the
 // underlying forge call.
 func (c *ForgeClient) GetIssue(ctx context.Context, project string, number int) (*Issue, error) {
@@ -95,6 +102,78 @@ func (c *ForgeClient) UpdateComment(ctx context.Context, project string, number 
 		return fmt.Errorf("tracker: comment ID %q is not numeric: %w", commentID, err)
 	}
 	return wrapNotFound(c.forge.UpdateIssueComment(ctx, owner, repo, id, string(body)))
+}
+
+// DeleteComment implements Client by splitting project into owner/repo for
+// the underlying forge call.
+func (c *ForgeClient) DeleteComment(ctx context.Context, project string, number int, commentID string) error {
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return err
+	}
+	id, err := strconv.Atoi(commentID)
+	if err != nil {
+		return fmt.Errorf("tracker: comment ID %q is not numeric: %w", commentID, err)
+	}
+	return wrapNotFound(c.forge.DeleteIssueComment(ctx, owner, repo, id))
+}
+
+// AddIssueReaction implements Reactor by splitting project into owner/repo
+// for the underlying forge call.
+func (c *ForgeClient) AddIssueReaction(ctx context.Context, project string, number int, content string) (int64, error) {
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return 0, err
+	}
+	return c.forge.AddIssueReaction(ctx, owner, repo, number, content)
+}
+
+// DeleteIssueReaction implements Reactor by splitting project into
+// owner/repo for the underlying forge call.
+func (c *ForgeClient) DeleteIssueReaction(ctx context.Context, project string, number int, reactionID int64) error {
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return err
+	}
+	return c.forge.DeleteIssueReaction(ctx, owner, repo, number, reactionID)
+}
+
+// AddCommentReaction implements Reactor by splitting project into
+// owner/repo for the underlying forge call.
+func (c *ForgeClient) AddCommentReaction(ctx context.Context, project string, number int, commentID string, content string) (int64, error) {
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return 0, err
+	}
+	id, err := strconv.Atoi(commentID)
+	if err != nil {
+		return 0, fmt.Errorf("tracker: comment ID %q is not numeric: %w", commentID, err)
+	}
+	return c.forge.AddIssueCommentReaction(ctx, owner, repo, id, content)
+}
+
+// DeleteCommentReaction implements Reactor by splitting project into
+// owner/repo for the underlying forge call.
+func (c *ForgeClient) DeleteCommentReaction(ctx context.Context, project string, number int, commentID string, reactionID int64) error {
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return err
+	}
+	id, err := strconv.Atoi(commentID)
+	if err != nil {
+		return fmt.Errorf("tracker: comment ID %q is not numeric: %w", commentID, err)
+	}
+	return c.forge.DeleteIssueCommentReaction(ctx, owner, repo, id, reactionID)
+}
+
+// MoveIssue implements Mover. Both forge-backed trackers have a native
+// move — GitHub's GraphQL transferIssue mutation, GitLab's
+// POST /projects/:id/issues/:iid/move — but neither is exposed on
+// forge.Client yet, so there is nothing for this adapter to delegate to.
+// It reports ErrNotSupported rather than reporting a move it did not
+// perform.
+func (c *ForgeClient) MoveIssue(_ context.Context, sourceProject string, number int, targetProject string) (*MoveResult, error) {
+	return nil, fmt.Errorf("move issue %s#%d to %s: %w", sourceProject, number, targetProject, ErrNotSupported)
 }
 
 // wrapNotFound translates a forge.ErrNotFound-satisfying error into one

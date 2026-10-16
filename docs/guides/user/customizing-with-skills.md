@@ -60,6 +60,12 @@ Instructions the agent follows when this skill is invoked.
 Skills can reference companion scripts and data files in the same directory,
 giving agents the ability to dynamically gather information at runtime.
 
+This repository also includes workflow-oriented skills exposed as portable
+slash commands. For example, [`/nextwork`](../../../skills/nextwork/SKILL.md)
+builds a readiness queue, while
+[`/adr-corner`](../../../skills/adr-corner/SKILL.md) inventories open pull
+requests that change Architecture Decision Records.
+
 ## Adding skills to your repository
 
 Place skills in `.agents/skills/` in your target repository and symlink
@@ -87,8 +93,9 @@ architecture constraints — without modifying any fullsend configuration.
 
 Repo skills **extend** the agent's skill set. They do not replace built-in
 skills. If a repo skill has the same name as a built-in skill, the built-in
-version takes precedence and the repo version is silently ignored. Use a
-unique name to ensure your skill is discoverable.
+version takes precedence and the repo version is ignored. Fullsend warns about
+the collision before the agent starts. Use a unique name to extend the agent,
+or intentionally replace it through [`base:` harness composition](#overriding-built-in-skills).
 
 ### Skill precedence
 
@@ -104,7 +111,8 @@ Personal (CLAUDE_CONFIG_DIR/skills/)  >  Project (.claude/skills/)
 
 A repo skill with a novel name (no collision) is always available. A repo
 skill with a name matching a built-in skill is shadowed — the agent never
-sees it.
+sees it. Fullsend logs a warning naming the shadowed skill and the supported
+extension and override paths.
 
 ### Extension points
 
@@ -120,10 +128,32 @@ To intentionally **replace** a built-in skill with your own version, use
 `base:` composition and config-driven agent registration. Register the
 agent in `config.yaml` with a harness that uses `base:` to inherit from the
 upstream harness, and include your replacement skill in the `skills:` list.
-The directory name must match the built-in skill name exactly.
+The replacement's skill identity — its declared `SKILL.md` `name:` when the
+directory is on disk, otherwise its directory basename — must match the
+built-in skill's identity exactly.
+
+> **Declare the built-in's name in your override.** A built-in skill's
+> identity is its declared `SKILL.md` `name:`, which is not always its
+> directory basename: `skills/issue-labels/github` declares `issue-labels`.
+> Your override replaces it when its own `SKILL.md` declares `issue-labels`,
+> whatever its directory is called. Relative `skills:` entries are resolved
+> against the `.fullsend` directory before the match.
 
 See [Bring Your Own Agent](bring-your-own-agent.md) for the full
 composition model and config-driven registration.
+
+> **Compatibility note:** Skill identity (and the sandbox destination a
+> skill uploads to) now follows the declared `SKILL.md` `name:` when one is
+> present, not just the directory basename. If an existing built-in or
+> custom skill's declared `name:` differs from its directory name, its
+> sandbox path and override-matching behavior change starting with this
+> release. Also, entries in a single harness's `skills:` list no longer
+> replace each other when they share an identity (previously the later one
+> won); only a child entry replacing a base entry overrides, and any
+> remaining duplicate destination now fails at bootstrap. A skill's
+> destination name, declared or directory, must be a single path segment of
+> letters, digits, `.`, `-` and `_` that does not start with a dot; bootstrap
+> rejects any other name.
 
 ### Built-in skills
 
@@ -171,7 +201,7 @@ For the full procedure, use the contributor skill
 `skills/author-fullsend-augmentations/`).
 
 Bring Your Own Agent covers the same decision frame in
-[Tuning agents with augmentation skills](bring-your-own-agent.md#tuning-agents-with-augmentation-skills).
+[Tuning agents with augmentation skills](customizing-agents.md#tuning-agents-with-augmentation-skills).
 
 > **Planned:** Per-file overrides inside skill directories
 > ([#6158](https://github.com/fullsend-ai/fullsend/issues/6158)) will make
@@ -181,15 +211,19 @@ Bring Your Own Agent covers the same decision frame in
 
 - **Don't duplicate AGENTS.md content in skills.** If an instruction applies
   to all agents, put it in `AGENTS.md`. Skills are for agent-specific behavior.
-- **Don't reuse a built-in skill directory name** unless you intend a
-  supported whole-skill override path — same-named project skills are
+- **Don't reuse a built-in skill's identity** (its declared `SKILL.md`
+  `name:`, or directory name when there is no `SKILL.md`) unless you intend a
+  supported whole-skill override path — same-identity project skills are
   shadowed by built-ins (see [Skill precedence](#skill-precedence)).
 
 ## See also
 
+- [`fullsend agent new`](../../cli/agent.md#agent-new) — generate a custom agent that can then mount these skills
+
+- [Customizing Agents](customizing-overview.md) — overview of all customization approaches
 - [Bring Your Own Agent](bring-your-own-agent.md) — building, registering, and
-  [tuning existing agents](bring-your-own-agent.md#tuning-agents-with-augmentation-skills)
+  [tuning existing agents](customizing-agents.md#tuning-agents-with-augmentation-skills)
 - [`author-fullsend-augmentations`](../../../skills/author-fullsend-augmentations/SKILL.md)
   — discovery-driven authoring procedure for augmentations and sub-agents
-- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
+- [Default, derived, and custom agents](default-vs-custom.md)
   — adding skills keeps you in "configured default agent" territory

@@ -142,6 +142,14 @@ profile types that were also URL-resolved. Local-path providers are excluded
 from this check (via the `FromURL` origin marker on `ResolvedProvider`) because
 their profile types may be gateway-resident.
 
+> **Note (#7095):** `checkProviderProfileIntegrity` now validates all providers
+> uniformly — it does not read `FromURL`, so local-path providers are not
+> excluded from this check as the paragraph above describes. Directory-only
+> profile satisfaction was removed; every provider (URL-resolved or
+> local-path) must reference a profile type that is listed in
+> `openshell.profiles` (or inherited via `base:` composition) to satisfy this
+> check.
+
 ## Security
 
 Same controls as ADR 0070 and ADR 0038. Local file paths are confined to the
@@ -166,3 +174,15 @@ Fully backwards-compatible with ADR 0070:
 - The `IsProviderPath` heuristic introduces a naming constraint: bare provider
   names must not contain `/` or end with `.yaml`/`.yml` (existing provider names
   already follow this convention).
+
+> **Note (#7268):** A bare provider name that fullsend ships (`vertex-ai`,
+> `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`,
+> `atlassian-cloud`, `openai`) now resolves to the definition embedded in the
+> binary when no other definition is found, and its `fullsend-<name>` profile
+> is imported from the embedded copy with no `openshell.profiles` entry. These
+> names and profile ids are reserved for the embedded copies. For one release,
+> a harness that still uses its own copy under a reserved name or id (a
+> `providers/` file, a path or URL entry, or an `openshell.profiles` entry)
+> keeps that copy live and gets a warning with the migration; a later release
+> makes it an error. `fullsend-openai` stays an error, as before. Paths and
+> URLs remain full overrides under their own, non-reserved names and ids.

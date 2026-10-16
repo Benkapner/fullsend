@@ -39,20 +39,24 @@ type Factory func(
 // Driver owns mint/environment lifecycle and test-repo allocation for
 // behaviour tests. The suite constructs exactly one Driver via a Factory
 // and threads it through World; scenarios call AllocateRepo to lease a
-// ready repo and DeallocateRepo to return it. Finalize tears down
-// suite-scoped resources and reclaims any outstanding leases.
+// ready repo and DeallocateRepo to delete it and return the name.
+// Finalize tears down suite-scoped resources and reclaims any
+// outstanding leases.
 //
 // Implementations must be safe for concurrent use by multiple godog
 // scenarios (GODOG_CONCURRENCY > 1).
 type Driver interface {
-	// AllocateRepo leases a slot and makes that repo ready (create if
-	// missing, install if needed). Blocks until a slot is free or ctx
-	// is cancelled. Returns the repo name only (org is fixed for the
-	// driver / World).
+	// AllocateRepo leases a slot and makes that repo ready (delete and
+	// recreate if it already exists, then install). Blocks until a slot
+	// is free or ctx is cancelled. Returns the repo name only (org is
+	// fixed for the driver / World).
 	AllocateRepo(ctx context.Context) (repoName string, err error)
 
-	// DeallocateRepo returns a previously allocated repo. Errors on
-	// unknown name or double-release.
+	// DeallocateRepo deletes the leased repository (best-effort) and
+	// returns the name to the pool. Errors on unknown name or
+	// double-release. Called after scenario cleanup and debug
+	// collection so leftover base-repo state cannot leak to the next
+	// lessee.
 	DeallocateRepo(ctx context.Context, repoName string) error
 
 	// Finalize always tears down suite-scoped resources (e.g. preview
@@ -69,6 +73,16 @@ type Driver interface {
 	Capacity() int
 }
 
+// MintURLReporter is an optional Driver interface reporting the URL of
+// the mint the driver deployed or was configured with. It is separate
+// from Driver so external Driver implementations keep compiling; steps
+// that need the mint address (the CLI mint status scenarios) fail with
+// an explanatory error on a driver without it.
+type MintURLReporter interface {
+	// MintURL returns the suite's mint URL, or "" when none is known.
+	MintURL() string
+}
+
 // CLIRunnerFunc is the signature for running a fullsend CLI command.
 // The default implementation is e2etest.TryRunCLI. Inject a custom
 // function in tests to avoid shelling out.
@@ -78,8 +92,8 @@ const (
 	// PerRepoTriageWorkflow is the workflow path for per-repo triage.
 	PerRepoTriageWorkflow = "fullsend.yaml"
 
-	// PerRepoAgentWorkflow is the reusable workflow for the triage agent.
-	PerRepoAgentWorkflow = "reusable-triage.yml"
+	// PerRepoAgentWorkflow is the per-repo shim workflow that runs the agent.
+	PerRepoAgentWorkflow = "fullsend.yaml"
 
 	// PerRepoAgentArtifact is the upload-artifact name for triage output.
 	PerRepoAgentArtifact = "fullsend-triage"
@@ -87,4 +101,26 @@ const (
 	// DefaultPoolSize is the number of test-repo-NN repos in a pool org.
 	// Drivers use this as the default capacity when no override is set.
 	DefaultPoolSize = 12
+
+	// MintProbeHostRepoSuffix names the per-slot repository that hosts
+	// the reusable mint-probe workflow of the GitHub mint scope
+	// scenarios: test-repo-NN + suffix. The CF mint drivers list these
+	// names in the mint's WORKFLOW_HOST_REPOS next to the pool repos, so
+	// a workflow hosted there is an approved workflow host while staying
+	// a different repository from the leased test-repo-NN that calls it.
+	// The repositories themselves are created and deleted per scenario.
+	MintProbeHostRepoSuffix = "-mint-host"
+
+	// MintStatusTeamSlug is the slug of the team in each pool org (and
+	// the STAGE org) whose members may call the mint's /v1/status with
+	// a GitHub user token. The CF mint drivers deploy their mint with
+	// --status-auth=oidc,github --status-github-group=ORG/<slug>; the
+	// team itself is created by hack/setup-new-e2e-org.sh.
+	MintStatusTeamSlug = "mint-status"
 )
+
+// mintStatusGitHubGroup returns the --status-github-group value for a
+// pool org's mint: ORG/MintStatusTeamSlug.
+func mintStatusGitHubGroup(org string) string {
+	return org + "/" + MintStatusTeamSlug
+}

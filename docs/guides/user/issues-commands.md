@@ -1,8 +1,8 @@
 # Issue Commands
 
 Read and write issue content across GitHub, GitLab, and Jira from
-custom agent scripts using `fullsend issues get` and
-`fullsend issues post-comment`.
+custom agent scripts using `fullsend issues get`,
+`fullsend issues post-comment`, and `fullsend issues link`.
 
 ## When to use
 
@@ -14,6 +14,8 @@ GitHub-sourced events. Use these commands when:
   comments) from any tracker as structured JSON.
 - You need **sticky comments** (find-and-update-by-marker) on a
   non-GitHub tracker.
+- A workflow depends on **typed issue links** in Jira (for example, a
+  bug that blocks a task).
 
 ## `fullsend issues get`
 
@@ -39,6 +41,43 @@ fullsend issues get \
   --jira-email you@example.com
 ```
 
+The output JSON has `number`, `title`, `body`, `url`, `labels`, and
+`comments`. For Jira, it also always includes `issue_type` (for example
+`"Bug"`, `"Story"`, or `"Task"`).
+
+To read Jira custom fields, pass their field IDs with `--fields`. The
+raw value of each requested field appears under `custom_fields`. A
+requested field that is unset or missing from the issue is `null`:
+
+```bash
+fullsend issues get \
+  --tracker jira \
+  --project PROJ \
+  --number 101 \
+  --fields customfield_10875,customfield_12345
+```
+
+```json
+{
+  "number": 101,
+  "title": "Widget is broken",
+  "body": "...",
+  "url": "https://myteam.atlassian.net/browse/PROJ-101",
+  "labels": [],
+  "issue_type": "Bug",
+  "custom_fields": {
+    "customfield_10875": "https://github.com/acme/widgets/pull/7",
+    "customfield_12345": null
+  },
+  "comments": []
+}
+```
+
+Values keep the shape Jira returns, so select-list or user fields are
+objects, not strings. GitHub and GitLab output has no `issue_type` or
+`custom_fields`. For those trackers, `--fields` prints a warning and is
+otherwise ignored.
+
 ### Flags
 
 | Flag | Required | Description |
@@ -49,14 +88,21 @@ fullsend issues get \
 | `--token` | No | API token (default: env var per tracker) |
 | `--jira-url` | Jira only | Jira instance URL (default: `$JIRA_BASE_URL`) |
 | `--jira-email` | Jira only | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
-| `--fullsend-dir` | No | Path to `.fullsend` config directory (sources a default `--tracker` from its `config.yaml`) |
+| `--fields` | Jira only | Comma-separated Jira custom field IDs (`customfield_<digits>`) to include under `custom_fields`. Repeatable. |
+| `--fullsend-dir` | No | Path to `.fullsend` config directory (sources defaults from its `config.yaml` when flags are omitted) |
 
 ## `fullsend issues post-comment`
 
-Posts a comment with a hidden HTML marker on an issue. On re-runs,
-finds the existing comment by its marker and edits in-place, collapsing
-old content into `<details>` blocks. This prevents comment flooding
-on re-runs.
+Posts a comment with a sticky marker on an issue. On re-runs, finds
+the existing comment by its marker and its own author (see
+[Trust model](#trust-model)) and edits in-place. By default,
+old content is collapsed into `<details>` blocks to preserve history;
+set `keep_history: false` in config.yaml (or pass `--keep-history=false`)
+to replace the body with no history.
+This prevents comment flooding on re-runs. For GitHub and GitLab, the marker is embedded as an invisible
+HTML comment in the body. For Jira, the marker is stored as a comment
+entity property (Jira has no HTML comments, so a body-embedded marker
+would be visible to users).
 
 ```bash
 echo "Triage complete. See PR #99." | fullsend issues post-comment \
@@ -75,19 +121,62 @@ echo "Triage complete. See PR #99." | fullsend issues post-comment \
 | `--tracker` | Yes (unless config default set) | Tracker backend: `github`, `gitlab`, or `jira` |
 | `--project` | Yes | Project identifier: `owner/repo` (GitHub/GitLab) or project key (Jira) |
 | `--number` | Yes | Issue number (must be a positive integer) |
-| `--marker` | Yes | Hidden HTML marker for idempotent updates (e.g. `<!-- fullsend:my-agent -->`) |
+| `--marker` | Yes | Sticky marker for idempotent updates (e.g. `<!-- fullsend:my-agent -->`). GitHub/GitLab: hidden HTML comment in body. Jira: comment entity property. |
 | `--result` | No | Path to comment body file, or `-` for stdin (default: `-`) |
 | `--token` | No | API token (default: env var per tracker) |
 | `--jira-url` | Jira only | Jira instance URL (default: `$JIRA_BASE_URL`) |
 | `--jira-email` | Jira only | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
-| `--dry-run` | No | Print what would be posted without making API calls |
-| `--fullsend-dir` | No | Path to `.fullsend` config directory (sources a default `--tracker` from its `config.yaml`) |
+| `--dry-run` | No | Print what would be posted without posting or editing anything |
+| `--keep-history` | No | Append previous content as collapsed history blocks (default: `true`; set `false` to replace in-place) |
+| `--only-if-exists` | No | Update an existing comment with this marker but never create one. Use it for an all-clear result, so a findings comment from an earlier run is updated in place (the old findings are kept as collapsed history unless `--keep-history=false`) while a clean first run posts nothing. Only a comment whose author is exactly the identity posting matches; if that identity cannot be resolved, the command fails without posting. |
+| `--fullsend-dir` | No | Path to `.fullsend` config directory (sources defaults from its `config.yaml` when flags are omitted) |
 
-### Jira marker constraints
+### Jira marker storage
 
-For `--tracker jira`, the `--marker` value must not contain `\`, `*`,
-`_`, `` ` ``, `[`, `]`, or `&`. Jira's markdown round-trip escapes
-these characters, which would break marker re-detection on later runs.
+For `--tracker jira`, the `--marker` value is stored as an invisible
+comment entity property rather than embedded in the visible comment
+body. Jira's ADF format has no HTML comment equivalent, so
+body-embedded markers would be visible to users. Because the marker
+lives in a property, character restrictions do not apply — any
+characters valid in the `--marker` flag are fine for Jira.
+
+## `fullsend issues link`
+
+Creates a typed link from the `--from` issue to the `--to` issue. Only
+Jira supports typed issue links; GitHub and GitLab have no first-class
+equivalent, so `--tracker github` and `--tracker gitlab` fail with a
+"not supported" error.
+
+```bash
+fullsend issues link \
+  --tracker jira \
+  --from PROJ-123 \
+  --to PROJ-456 \
+  --type Blocks \
+  --jira-url https://myteam.atlassian.net \
+  --jira-email you@example.com
+```
+
+`--from` and `--to` are Jira issue keys (`PROJECT-NUMBER`); the two
+issues may be in different projects. `--type` is the Jira link type
+name, such as `Blocks`, `Relates`, or `Cloners`. Link type names are
+instance-specific, so the CLI passes `--type` through without
+validating it; an unknown name fails with Jira's error. The link is
+created in the type's outward direction: the example above records that
+`PROJ-123` blocks `PROJ-456`.
+
+### Flags
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--tracker` | Yes (unless config default set) | Tracker backend: `github`, `gitlab`, or `jira` (only `jira` supports links) |
+| `--from` | Yes | Source issue key (e.g. `PROJ-123`) |
+| `--to` | Yes | Target issue key (e.g. `PROJ-456`) |
+| `--type` | Yes | Link type name (e.g. `Blocks`), passed through verbatim |
+| `--token` | No | API token (default: env var per tracker) |
+| `--jira-url` | If env var unset | Jira instance URL (default: `$JIRA_BASE_URL`) |
+| `--jira-email` | If env var unset | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
+| `--fullsend-dir` | No | Path to `.fullsend` config directory (sources a default `--tracker` from its `config.yaml` when the flag is omitted) |
 
 ## Config-based default tracker
 
@@ -105,13 +194,26 @@ for how the `tracker` field resolves through the config overlay chain.
 
 ## Trust model
 
-Marker-based comment lookup does not verify the comment author. In a
-trusted CI environment (the intended deployment) this is safe because
-only the bot writes marker-bearing comments. If untrusted users can
-post issue comments containing your marker string, they could cause
-the bot to edit their comment instead of creating its own. Do not use
-this command in environments where untrusted users can write arbitrary
-issue comments bearing your marker.
+An existing comment is edited only when it carries the marker **and**
+its author is exactly the identity the command posts as: the login on
+GitHub and GitLab, where markers are hidden HTML comments in the body,
+and the account ID (from `GET /myself`) on Jira, where markers are
+comment entity properties. Display names and login shapes are never
+trusted. A comment anyone else wrote with the same marker, as body text
+or as a comment property on their own comment, is ignored, never edited.
+Anyone who can edit the command's own comments (a repository maintainer,
+or a Jira user with Edit All Comments) is still trusted: their edits are
+kept as history when the comment is next updated.
+
+If that identity cannot be resolved after a short retry, the command
+fails with an error naming the cause and posts or edits nothing, with or
+without `--only-if-exists`. Posting a new comment instead would leave the
+earlier one behind with content no later run updates. To recover:
+
+1. Rerun the command. A transient API failure clears on its own.
+2. If it fails again, check that the token can read its own identity:
+   `GET /user` (or the GraphQL `viewer`) on GitHub, `GET /user` on
+   GitLab, `GET /myself` on Jira.
 
 ## Environment variables
 

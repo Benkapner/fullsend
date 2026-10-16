@@ -17,6 +17,19 @@ func envMap(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
+func TestRuntimeModelEnv(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, envPiModel, runtimeModelEnv("pi"))
+	assert.Equal(t, envCodexModel, runtimeModelEnv("codex"))
+
+	// Runtimes without a knob get none. dummy-playback in particular could
+	// never have one: a hyphen is not legal in an environment variable name.
+	for _, name := range []string{"claude", "dummy", "dummy-playback", "opencode", ""} {
+		assert.Empty(t, runtimeModelEnv(name), "runtime %q should have no model alias", name)
+	}
+}
+
 func TestResolveRunOverrides_Precedence(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -71,6 +84,54 @@ func TestResolveRunOverrides_Precedence(t *testing.T) {
 			runtime: "claude",
 			want:    runOverrides{runtime: "pi", runtimeSource: envRuntime, model: "opus", modelSource: envPiModel},
 		},
+		{
+			name:    "FULLSEND_CODEX_MODEL is an alias on codex",
+			env:     map[string]string{envCodexModel: "openai/gpt-5.6-luna"},
+			runtime: "codex",
+			want:    runOverrides{model: "openai/gpt-5.6-luna", modelSource: envCodexModel},
+		},
+		{
+			name:    "FULLSEND_CODEX_MODEL is ignored on claude",
+			env:     map[string]string{envCodexModel: "openai/gpt-5.6-luna"},
+			runtime: "claude",
+			want:    runOverrides{},
+		},
+		{
+			name: "FULLSEND_MODEL beats FULLSEND_CODEX_MODEL on codex",
+			env:  map[string]string{envModel: "openai/gpt-5.6-sol", envCodexModel: "openai/gpt-5.6-luna", envRuntime: "codex"},
+			want: runOverrides{runtime: "codex", runtimeSource: envRuntime, model: "openai/gpt-5.6-sol", modelSource: envModel},
+		},
+		{
+			name:  "--model beats FULLSEND_CODEX_MODEL on codex",
+			flags: runOverrideFlags{model: "openai/gpt-5.6-sol"},
+			env:   map[string]string{envCodexModel: "openai/gpt-5.6-luna", envRuntime: "codex"},
+			want: runOverrides{
+				runtime: "codex", runtimeSource: envRuntime,
+				model: "openai/gpt-5.6-sol", modelSource: sourceFlagModel,
+			},
+		},
+		{
+			name:    "runtime override gates the codex alias",
+			env:     map[string]string{envCodexModel: "openai/gpt-5.6-luna", envRuntime: "codex"},
+			runtime: "claude",
+			want: runOverrides{
+				runtime: "codex", runtimeSource: envRuntime,
+				model: "openai/gpt-5.6-luna", modelSource: envCodexModel,
+			},
+		},
+		{
+			name: "each runtime alias is scoped to its own runtime",
+			env:  map[string]string{envPiModel: "opus", envCodexModel: "openai/gpt-5.6-luna"},
+			// Both set; only the selected runtime's alias is read.
+			runtime: "codex",
+			want:    runOverrides{model: "openai/gpt-5.6-luna", modelSource: envCodexModel},
+		},
+		{
+			name:    "the codex alias does not apply on pi",
+			env:     map[string]string{envPiModel: "opus", envCodexModel: "openai/gpt-5.6-luna"},
+			runtime: "pi",
+			want:    runOverrides{model: "opus", modelSource: envPiModel},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,10 +145,10 @@ func TestResolveRunOverrides_Precedence(t *testing.T) {
 
 func TestResolveRunOverrides_InvalidRuntime(t *testing.T) {
 	t.Parallel()
-	_, err := resolveRunOverrides(runOverrideFlags{runtime: "opencode"}, envMap(nil), "")
+	_, err := resolveRunOverrides(runOverrideFlags{runtime: "nonexistent"}, envMap(nil), "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--runtime flag")
-	assert.Contains(t, err.Error(), `invalid runtime "opencode"`)
+	assert.Contains(t, err.Error(), `invalid runtime "nonexistent"`)
 
 	_, err = resolveRunOverrides(runOverrideFlags{}, envMap(map[string]string{envRuntime: "nope"}), "")
 	require.Error(t, err)
@@ -177,29 +238,9 @@ agents:
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", backend.Runtime.Name())
 	assert.Equal(t, sourceFlagRuntime, source)
-
-	// Org configs honour agents: entries too.
-	orgData := []byte(`# fullsend organization configuration
-version: "1"
-dispatch:
-  platform: github
-defaults:
-  roles: [triage]
-  runtime: dummy
-repos: {}
-agents:
-  - name: triage
-    runtime: claude
-`)
-	backend, err = resolveBackendFromConfigData(orgData, "triage")
-	require.NoError(t, err)
-	assert.Equal(t, "claude", backend.Runtime.Name())
-	backend, err = resolveBackendFromConfigData(orgData, "code")
-	require.NoError(t, err)
-	assert.Equal(t, "dummy", backend.Runtime.Name())
 }
 
-func TestResolveBackend_PerAgentRuntimeRejectsStub(t *testing.T) {
+func TestResolveBackend_PerAgentRuntimeRejectsUnknown(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config.yaml")
@@ -207,18 +248,18 @@ func TestResolveBackend_PerAgentRuntimeRejectsStub(t *testing.T) {
 version: "1"
 agents:
   - name: code
-    runtime: opencode
+    runtime: nonexistent
 `), 0o644))
 
 	// `fullsend run` never calls Validate() on the config it loads, so the
-	// per-agent runtime must be checked against ValidRuntimes here — a stub
+	// per-agent runtime must be checked against ValidRuntimes here — an unknown
 	// runtime cannot be activated through an agents: entry any more than
 	// through the repo-wide key.
 	_, _, err := resolveBackend(runOverrides{}, cfg, "code")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errResolvingRuntime)
 	assert.Contains(t, err.Error(), "agents.code")
-	assert.Contains(t, err.Error(), `invalid runtime "opencode"`)
+	assert.Contains(t, err.Error(), `invalid runtime "nonexistent"`)
 
 	backend, _, err := resolveBackend(runOverrides{}, cfg, "triage")
 	require.NoError(t, err)
@@ -403,4 +444,21 @@ func TestResolveBackend_ConfigReadErrorSurfaces(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, sourceFlagRuntime, source)
 	assert.Empty(t, backend.Runtime)
+}
+
+// TestAliasOverrideSource pins the metrics.json override_source shape when
+// models.aliases remaps the effective model (#6882): the alias's own source
+// stays first and the remap is a suffix, for every base modelOverrideSource
+// can return.
+func TestAliasOverrideSource(t *testing.T) {
+	t.Parallel()
+	const cfg = ".fullsend/config.yaml"
+	for _, base := range []string{"--model flag", "FULLSEND_MODEL", cfg + " agents.code", sourceHarness, sourceDefault} {
+		assert.Equal(t, base, aliasOverrideSource(base, false, cfg), "no remap leaves %q alone", base)
+		assert.Equal(t, base+", remapped by "+cfg+" models.aliases", aliasOverrideSource(base, true, cfg), "remap suffixes %q", base)
+	}
+	// modelOverrideSource never yields "", so the suffix form is the only
+	// remapped shape; the composition in runAgent has no other branch.
+	assert.NotEmpty(t, modelOverrideSource(runOverrides{}, ""))
+	assert.NotEmpty(t, modelOverrideSource(runOverrides{}, "sonnet"))
 }

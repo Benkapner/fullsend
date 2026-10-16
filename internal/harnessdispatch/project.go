@@ -10,7 +10,7 @@ import (
 // ProjectExecutionRef maps a matched harness and event to an execution ref.
 // Harness role values must be registered in the mint service ALLOWED_ROLES policy;
 // custom role names pass harness validation but fail token minting with HTTP 403
-// until mint enrollment is extended for the org.
+// until mint enrollment is extended for the repo.
 func ProjectExecutionRef(agentName string, role string, event *normevent.Event) (ExecutionRef, error) {
 	payload, err := buildEventPayload(event)
 	if err != nil {
@@ -73,6 +73,16 @@ func buildEventPayload(event *normevent.Event) (map[string]any, error) {
 			"body": event.Transition.Comment.Body,
 		}
 	}
+
+	// Embed the complete normalized event so fullsend run can recover it
+	// for CEL overlay resolution without a separate --event-file or
+	// workflow input. The underscore prefix distinguishes it from legacy
+	// GitHub-shaped fields that downstream consumers rely on (#6748).
+	normMap, err := event.ToMap()
+	if err != nil {
+		return nil, fmt.Errorf("converting normalized event to map: %w", err)
+	}
+	out["_normalized_event"] = normMap
 
 	return out, nil
 }

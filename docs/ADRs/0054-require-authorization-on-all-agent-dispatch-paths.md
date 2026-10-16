@@ -27,6 +27,19 @@ Related: [#877](https://github.com/fullsend-ai/fullsend/issues/877)
 (agents must not model their own authority limitations — this ADR
 implements the platform-level enforcement that principle requires).
 
+Living contract:
+[Authorization Contract v1](../normative/authorization/v1/)
+consolidates the normative rules from this ADR and subsequent
+implementation changes into a single reference for dispatch
+implementations, forge adapters, and harness authors.
+
+Bot identity resolution and the boundary between registered bot dispatch and
+the preserved GitHub label handoff exception are decided in [ADR 0107](0107-bot-identity-resolution-for-dispatch-authorization.md).
+
+[ADR 0098](0098-entity-first-harness-evaluation.md) extends this decision for
+Fullsend-originated entity discovery without a prompting event. Event-backed
+dispatch remains subject to this ADR's actor authorization gate.
+
 ## Context
 
 The dispatch routing logic (`dispatch.yml` / `reusable-dispatch.yml`)
@@ -123,7 +136,7 @@ push access to the repository."
 | `pull_request_target.ready_for_review` | PR author | Yes (same branch as opened/synchronize) |
 | `pull_request_target.closed` | Closer | Already implicit (requires write access) |
 | `pull_request_review.submitted` | Reviewer | Already gated (requires review-bot authorship) |
-| `issue_comment` (needs-info re-triage) | Commenter | Weaker gate: `author_association != NONE` or issue author (intentional — allows clarification from external reporters) |
+| `issue_comment` (needs-info re-triage) | Commenter | ~~Weaker gate: `author_association != NONE` or issue author (intentional — allows clarification from external reporters)~~ Removed in [#6740](https://github.com/fullsend-ai/fullsend/issues/6740) — automatic needs-info re-triage replaced by explicit `/fs-triage` command |
 
 For external contributors (issues opened or PRs submitted by
 non-members), the agent does not fire automatically. A maintainer can
@@ -188,6 +201,43 @@ permission list, not by bypassing the check.
 > `pull_request_target.closed` → retro stays intentionally ungated so
 > any closer can trigger read-only lifecycle accounting. This follows
 > the extension path above rather than bypassing the check.
+
+> **Note (2026-08-10, [#6042](https://github.com/fullsend-ai/fullsend/issues/6042)):**
+> Prow-based repositories (e.g., OpenShift) use OWNERS files rather than
+> GitHub collaborator roles to define contributor authority.
+> `has_repo_permission` now supports an opt-in OWNERS-file authorization
+> path: when `owners_file` is listed in the `authorization` providers in
+> `.fullsend/config.yaml`, the function checks the repo-root `OWNERS`
+> (and `OWNERS_ALIASES`) before falling back to the collaborator API.
+> OWNERS approvers get write-equivalent access; reviewers get
+> triage-equivalent. The sparse-checkout pins to the base branch SHA for
+> PR-scoped events (`pull_request_target`, `pull_request_review`) and the
+> default-branch head otherwise, so PR authors cannot self-authorize by
+> modifying OWNERS in their PR.
+> This follows the extension path above (extending the allowed permission
+> sources in `has_repo_permission`) rather than bypassing the check.
+> OWNERS auth applies to both built-in stages (bash routing) and the
+> harness/custom-agent dispatch path (`internal/harnessdispatch`), where
+> `owners.Resolve` computes an effective role for the `IsAuthorized`
+> gate without mutating the original event.
+>
+> OWNERS reviewer access (triage-equivalent) applies to built-in
+> bash-routed stages only (e.g. `/fs-triage`, `/fs-review`). Custom
+> harness dispatch requires write-level access — OWNERS approver or
+> GitHub write+ collaborator — because `IsAuthorized` gates all
+> harness triggers at the write level.
+>
+> v1 limitation: only repo-root flat `approvers`/`reviewers` lists are
+> read. Prow `filters:` blocks and nested per-directory OWNERS files
+> are not supported.
+
+> **Note (2026-09-27, ADR 0107):** Non-label bot authorization is being
+> migrated from `[bot]` naming and transition-specific exceptions to
+> provider-backed exact bot-role resolution. The existing GitHub label-added
+> authorization remains a permanent exception: provider-positive bot
+> classification is required, but the forge's accepted label mutation remains
+> sufficient platform evidence and no bot-role lookup or label allowlist is
+> introduced.
 
 ## Consequences
 

@@ -9,7 +9,9 @@
 # allowlisted FULLSEND_* override variables are exported too, so a repo can
 # switch a role's runtime/model/effort with a repository variable instead of
 # a pull request. A role-prefixed variable (TRIAGE_FULLSEND_MODEL) wins over
-# the plain one (FULLSEND_MODEL). Values must be single-line and limited to
+# the plain one (FULLSEND_MODEL). AGENT_PREFIX is the role identifier plus '_'
+# (uppercase, hyphens mapped to underscores: ci-check → CI_CHECK_). Values must
+# be single-line and limited to
 # the characters a model id / runtime name can contain; anything else is
 # skipped with a warning. fullsend validates the values themselves.
 # The whole variable map is passed (not individual keys) because the
@@ -40,9 +42,10 @@ done < <(compgen -e | sort -u)
 
 # Override passthrough from repository variables (optional).
 if [[ -n "${FULLSEND_REPO_VARS:-}" ]]; then
-  # FULLSEND_PI_MODEL is the pre-#6526 pi-only name, honoured by the CLI as a
-  # lower-precedence alias of FULLSEND_MODEL on pi runs.
-  override_keys=(FULLSEND_RUNTIME FULLSEND_MODEL FULLSEND_EFFORT FULLSEND_FALLBACK_MODELS FULLSEND_PI_PROVIDER FULLSEND_PI_MODEL)
+  # FULLSEND_PI_MODEL and FULLSEND_CODEX_MODEL are the runtime-scoped model
+  # names, each honoured by the CLI as a lower-precedence alias of
+  # FULLSEND_MODEL when that runtime is the one selected.
+  override_keys=(FULLSEND_RUNTIME FULLSEND_MODEL FULLSEND_EFFORT FULLSEND_FALLBACK_MODELS FULLSEND_PI_PROVIDER FULLSEND_PI_MODEL FULLSEND_CODEX_MODEL)
   for key in "${override_keys[@]}"; do
     # Role-prefixed first, then plain. jq -r yields "" when absent.
     value="$(printf '%s' "${FULLSEND_REPO_VARS}" | jq -r --arg k "${AGENT_PREFIX}${key}" --arg p "${key}" '(.[$k] // .[$p] // "") | tostring')"

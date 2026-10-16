@@ -17,7 +17,24 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
+// clearOTLPEnv keeps Measure*/eval-measure tests hermetic when CI injects
+// OTEL_EXPORTER_OTLP_* org vars (same pattern as evalmeasure/export_otlp_test).
+func clearOTLPEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "")
+	t.Setenv("OTEL_SDK_DISABLED", "")
+	t.Setenv("TRACEPARENT", "")
+	t.Setenv("TRACESTATE", "")
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	t.Setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "")
+}
+
 func TestEvalMeasureCmd_ScoresFixture(t *testing.T) {
+	clearOTLPEnv(t)
 	out := t.TempDir()
 	telemetryPath := filepath.Join("..", "evalmeasure", "testdata", "complete.jsonl")
 	registry := filepath.Join("..", "evalmeasure", "testdata", "sample-registry.yaml")
@@ -71,6 +88,7 @@ func TestEvalMeasureCmd_MissingRequiredFlags(t *testing.T) {
 }
 
 func TestEvalMeasureCmd_OutputDirIgnoresNestedTelemetry_LegacyFormat(t *testing.T) {
+	clearOTLPEnv(t)
 	fsDir := t.TempDir()
 	outBase := t.TempDir()
 	runDir := filepath.Join(outBase, "agent-triage-1-1")
@@ -113,6 +131,7 @@ func TestEvalMeasureCmd_OutputDirIgnoresNestedTelemetry_LegacyFormat(t *testing.
 // YAML: a local FULLSEND_DIR eval/measurements/<agent>.yaml must produce
 // eval-measurements.jsonl.
 func TestEvalMeasureCmd_LocalFullsendDirManifestProducesJSONL_LegacyFormat(t *testing.T) {
+	clearOTLPEnv(t)
 	fsDir := t.TempDir()
 	outBase := t.TempDir()
 	runDir := filepath.Join(outBase, "agent-triage-2-2")
@@ -147,6 +166,7 @@ func TestEvalMeasureCmd_LocalFullsendDirManifestProducesJSONL_LegacyFormat(t *te
 }
 
 func TestEvalMeasureCmd_OutputDirIgnoresNestedTelemetry_NewFormat(t *testing.T) {
+	clearOTLPEnv(t)
 	fsDir := t.TempDir()
 	outBase := t.TempDir()
 	runDir := filepath.Join(outBase, "fs-tri-aabbccddee00")
@@ -185,6 +205,7 @@ func TestEvalMeasureCmd_OutputDirIgnoresNestedTelemetry_NewFormat(t *testing.T) 
 }
 
 func TestEvalMeasureCmd_LocalFullsendDirManifestProducesJSONL_NewFormat(t *testing.T) {
+	clearOTLPEnv(t)
 	fsDir := t.TempDir()
 	outBase := t.TempDir()
 	runDir := filepath.Join(outBase, "fs-tri-1122334455ff")
@@ -230,6 +251,7 @@ func writeTwoTraceTelemetry(t *testing.T) string {
 }
 
 func TestRunEvalMeasure_ErrorIncludesPartialResults(t *testing.T) {
+	clearOTLPEnv(t)
 	out := t.TempDir()
 	telem := writeTwoTraceTelemetry(t)
 	registry := filepath.Join("..", "evalmeasure", "testdata", "sample-registry.yaml")
@@ -255,6 +277,7 @@ func TestRunEvalMeasure_ErrorIncludesPartialResults(t *testing.T) {
 }
 
 func TestEvalMeasureCmd_ErrorPrintsPartialFromFailingFile(t *testing.T) {
+	clearOTLPEnv(t)
 	out := t.TempDir()
 	telem := writeTwoTraceTelemetry(t)
 	ctx := evalmeasure.WithPersistHook(context.Background(), func() {
@@ -281,6 +304,7 @@ func TestEvalMeasureCmd_ErrorPrintsPartialFromFailingFile(t *testing.T) {
 }
 
 func TestEvalMeasureCmd_ErrorDoesNotPrintWrote(t *testing.T) {
+	clearOTLPEnv(t)
 	out := filepath.Join(t.TempDir(), "not-a-dir")
 	require.NoError(t, os.WriteFile(out, []byte("x"), 0o644))
 
@@ -300,6 +324,7 @@ func TestEvalMeasureCmd_ErrorDoesNotPrintWrote(t *testing.T) {
 }
 
 func TestEvalMeasureCmd_SkipWhenNoTelemetry(t *testing.T) {
+	clearOTLPEnv(t)
 	cmd := newRootCmd()
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
@@ -315,6 +340,7 @@ func TestEvalMeasureCmd_SkipWhenNoTelemetry(t *testing.T) {
 }
 
 func TestEvalMeasureCmd_WarnsOnCorruptTelemetryLine(t *testing.T) {
+	clearOTLPEnv(t)
 	out := t.TempDir()
 	good, err := os.ReadFile(filepath.Join("..", "evalmeasure", "testdata", "complete.jsonl"))
 	require.NoError(t, err)
@@ -336,6 +362,7 @@ func TestEvalMeasureCmd_WarnsOnCorruptTelemetryLine(t *testing.T) {
 }
 
 func TestEvalMeasureCmd_WarnsOnIncompleteParse(t *testing.T) {
+	clearOTLPEnv(t)
 	out := t.TempDir()
 	good, err := os.ReadFile(filepath.Join("..", "evalmeasure", "testdata", "complete.jsonl"))
 	require.NoError(t, err)
@@ -427,6 +454,51 @@ func TestEvalMeasureFetchContext(t *testing.T) {
 	assert.True(t, opts2.FetchPolicy.Offline)
 }
 
+func TestEvalMeasureFetchContext_RejectedConfigDeniesRemote(t *testing.T) {
+	printer := ui.New(io.Discard)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	tests := []struct {
+		name    string
+		file    string
+		content string
+	}{
+		{
+			name:    "org-shaped config with explicit deny-all",
+			file:    "config.yaml",
+			content: "version: \"1\"\ndefaults:\n  roles: [coder]\nrepos:\n  api:\n    enabled: true\nallowed_remote_resources: []\n",
+		},
+		{
+			name:    "malformed yaml",
+			file:    "config.yaml",
+			content: "allowed_remote_resources: [\n",
+		},
+		{
+			name:    "base-only deny-all",
+			file:    "config.base.yaml",
+			content: "allowed_remote_resources: []\n",
+		},
+		{
+			name:    "malformed base-only config",
+			file:    "config.base.yaml",
+			content: "{{invalid yaml",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, tt.file), []byte(tt.content), 0o644))
+
+			opts, _ := evalMeasureFetchContext(dir, false, printer)
+			assert.NotNil(t, opts.OrgAllowlist)
+			assert.Empty(t, opts.OrgAllowlist,
+				"an existing but unloadable config must fail closed, not fall back to the default allowlist")
+		})
+	}
+}
+
 func TestResolveEvalMeasureRegistry_LocalOverride(t *testing.T) {
 	fsDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(fsDir, "eval", "measurements"), 0o755))
@@ -483,6 +555,7 @@ func TestResolveEvalMeasureRegistry_RejectsPathAgent(t *testing.T) {
 }
 
 func TestEvalMeasureCmd_TelemetryWithoutRegistry(t *testing.T) {
+	clearOTLPEnv(t)
 	cmd := newRootCmd()
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
@@ -514,4 +587,26 @@ func TestPrintMeasurementResults_SkipAndNoWroteOnError(t *testing.T) {
 		Label:   evalmeasure.LabelFail,
 	}}, false)
 	assert.NotContains(t, buf.String(), "Wrote")
+}
+
+func TestRunEvalMeasure_OTLPFailWarns(t *testing.T) {
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+	out := t.TempDir()
+	telemetryPath := filepath.Join("..", "evalmeasure", "testdata", "complete.jsonl")
+	registry := filepath.Join("..", "evalmeasure", "testdata", "sample-registry.yaml")
+	var buf bytes.Buffer
+	results, skipped, err := runEvalMeasure(context.Background(), ui.New(&buf), evalMeasureOpts{
+		telemetryPath: telemetryPath,
+		registryPath:  registry,
+		outDir:        out,
+	})
+	require.NoError(t, err)
+	assert.False(t, skipped)
+	require.NotEmpty(t, results)
+	assert.Contains(t, buf.String(), "OTLP score export failed")
+	assert.Contains(t, buf.String(), "otlp export failed for all",
+		"transport failure must not claim N/M row-construction success")
+	_, statErr := os.Stat(filepath.Join(out, evalmeasure.MeasurementsFile))
+	require.NoError(t, statErr, "local JSONL must still be written")
 }

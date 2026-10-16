@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -21,10 +22,59 @@ type FakeJiraClient struct {
 	Issues   map[string]*jira.Issue
 	Comments map[string][]jira.Comment
 
+	// CommentProperties maps "issueKey/commentID" to a map of
+	// propertyKey -> value, mirroring Jira's per-comment entity
+	// property store.
+	CommentProperties map[string]map[string]json.RawMessage
+
 	CreatedBody      string
 	UpdatedIssueKey  string
 	UpdatedCommentID string
 	UpdatedBody      string
+
+	// PropertyError, when non-nil, is returned by SetCommentProperty
+	// to simulate permission failures.
+	PropertyError error
+
+	// UpdateError, when non-nil, is returned by UpdateComment to
+	// simulate update failures.
+	UpdateError error
+
+	// Myself is the account GetMyself returns and new comments are
+	// authored by; the zero value means FakeJiraBot. MyselfError, when
+	// non-nil, is returned by GetMyself.
+	Myself      jira.User
+	MyselfError error
+
+	// Links records every LinkIssues call in order. LinkError, when
+	// non-nil, is returned by LinkIssues instead of recording the link.
+	Links     []FakeJiraLink
+	LinkError error
+}
+
+// FakeJiraLink is an issue link recorded by FakeJiraClient.LinkIssues.
+type FakeJiraLink struct {
+	Type         string
+	InwardIssue  string
+	OutwardIssue string
+}
+
+// FakeJiraBot is the account a FakeJiraClient posts as by default.
+var FakeJiraBot = jira.User{AccountID: "fake-bot-account-id", DisplayName: "fullsend-bot"}
+
+func (f *FakeJiraClient) myself() jira.User {
+	if f.Myself.AccountID == "" && f.Myself.DisplayName == "" {
+		return FakeJiraBot
+	}
+	return f.Myself
+}
+
+func (f *FakeJiraClient) GetMyself(_ context.Context) (*jira.User, error) {
+	if f.MyselfError != nil {
+		return nil, f.MyselfError
+	}
+	me := f.myself()
+	return &me, nil
 }
 
 func (f *FakeJiraClient) GetIssue(_ context.Context, issueIDOrKey string) (*jira.Issue, error) {
@@ -36,10 +86,30 @@ func (f *FakeJiraClient) GetIssue(_ context.Context, issueIDOrKey string) (*jira
 }
 
 func (f *FakeJiraClient) ListComments(_ context.Context, issueIDOrKey string) ([]jira.Comment, error) {
-	return f.Comments[issueIDOrKey], nil
+	comments := f.Comments[issueIDOrKey]
+	// Attach properties to each comment, mirroring the
+	// ?expand=properties behavior of the real API.
+	result := make([]jira.Comment, len(comments))
+	copy(result, comments)
+	for i := range result {
+		propKey := issueIDOrKey + "/" + result[i].ID
+		if props, ok := f.CommentProperties[propKey]; ok {
+			for k, v := range props {
+				result[i].Properties = append(result[i].Properties, jira.CommentProperty{
+					Key:   k,
+					Value: v,
+				})
+			}
+		}
+	}
+	return result, nil
 }
 
-func (f *FakeJiraClient) CreateComment(_ context.Context, issueIDOrKey, body string) (*jira.Comment, error) {
+func (f *FakeJiraClient) CreateComment(ctx context.Context, issueIDOrKey, body string) (*jira.Comment, error) {
+	return f.CreateCommentWithProperties(ctx, issueIDOrKey, body, nil)
+}
+
+func (f *FakeJiraClient) CreateCommentWithProperties(_ context.Context, issueIDOrKey, body string, properties []jira.CommentProperty) (*jira.Comment, error) {
 	f.CreatedBody = body
 	adf, err := jira.MarkdownToADF(body) // mirrors Jira echoing back the ADF it stored
 	if err != nil {
@@ -48,17 +118,35 @@ func (f *FakeJiraClient) CreateComment(_ context.Context, issueIDOrKey, body str
 	comment := jira.Comment{
 		ID:      fmt.Sprintf("%d", len(f.Comments[issueIDOrKey])+1),
 		Body:    adf,
-		Author:  jira.User{DisplayName: "fullsend-bot"},
+		Author:  f.myself(),
 		Created: "2026-08-06T00:00:00.000+0000",
 	}
 	if f.Comments == nil {
 		f.Comments = make(map[string][]jira.Comment)
 	}
 	f.Comments[issueIDOrKey] = append(f.Comments[issueIDOrKey], comment)
+
+	// Store properties if provided.
+	if len(properties) > 0 {
+		if f.CommentProperties == nil {
+			f.CommentProperties = make(map[string]map[string]json.RawMessage)
+		}
+		propKey := issueIDOrKey + "/" + comment.ID
+		if f.CommentProperties[propKey] == nil {
+			f.CommentProperties[propKey] = make(map[string]json.RawMessage)
+		}
+		for _, p := range properties {
+			f.CommentProperties[propKey][p.Key] = p.Value
+		}
+	}
+
 	return &comment, nil
 }
 
 func (f *FakeJiraClient) UpdateComment(_ context.Context, issueIDOrKey, commentID, body string) error {
+	if f.UpdateError != nil {
+		return f.UpdateError
+	}
 	f.UpdatedIssueKey = issueIDOrKey
 	f.UpdatedCommentID = commentID
 	f.UpdatedBody = body
@@ -75,6 +163,44 @@ func (f *FakeJiraClient) UpdateComment(_ context.Context, issueIDOrKey, commentI
 	return nil
 }
 
+func (f *FakeJiraClient) SetCommentProperty(_ context.Context, issueIDOrKey, commentID, propertyKey string, value any) error {
+	if f.PropertyError != nil {
+		return f.PropertyError
+	}
+	if f.CommentProperties == nil {
+		f.CommentProperties = make(map[string]map[string]json.RawMessage)
+	}
+	propKey := issueIDOrKey + "/" + commentID
+	if f.CommentProperties[propKey] == nil {
+		f.CommentProperties[propKey] = make(map[string]json.RawMessage)
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	f.CommentProperties[propKey][propertyKey] = raw
+	return nil
+}
+
+func (f *FakeJiraClient) DeleteComment(_ context.Context, issueIDOrKey, commentID string) error {
+	comments := f.Comments[issueIDOrKey]
+	for i, c := range comments {
+		if c.ID == commentID {
+			f.Comments[issueIDOrKey] = append(comments[:i], comments[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("delete comment %s on %s: %w", commentID, issueIDOrKey, forge.ErrNotFound)
+}
+
+func (f *FakeJiraClient) LinkIssues(_ context.Context, inwardIssueKey, outwardIssueKey, linkTypeName string) error {
+	if f.LinkError != nil {
+		return f.LinkError
+	}
+	f.Links = append(f.Links, FakeJiraLink{Type: linkTypeName, InwardIssue: inwardIssueKey, OutwardIssue: outwardIssueKey})
+	return nil
+}
+
 var _ jiraClient = (*FakeJiraClient)(nil)
 
 // NewFakeJiraClient returns a tracker.Client backed by an in-memory fake
@@ -84,4 +210,16 @@ var _ jiraClient = (*FakeJiraClient)(nil)
 // Jira instance.
 func NewFakeJiraClient(baseURL string) (*JiraClient, error) {
 	return NewJiraClient(&FakeJiraClient{}, baseURL)
+}
+
+// NewFakeJiraClientWithFake returns both the tracker.Client and the
+// underlying FakeJiraClient, giving tests access to the fake's control
+// fields (e.g. PropertyError for permission failure simulation).
+func NewFakeJiraClientWithFake(baseURL string) (*JiraClient, *FakeJiraClient, error) {
+	fc := &FakeJiraClient{}
+	tc, err := NewJiraClient(fc, baseURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	return tc, fc, nil
 }

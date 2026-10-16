@@ -14,42 +14,59 @@ Behaviour tests isolate forge-specific code behind drivers so Gherkin scenarios 
 v1 reference implementations:
 
 - `pkg/behaviourtest/drivers/scm/github/`
+- `pkg/behaviourtest/drivers/scm/gitlab/`
 - `pkg/behaviourtest/drivers/ci/githubactions/`
+- `pkg/behaviourtest/drivers/ci/gitlabci/`
 - `pkg/behaviourtest/drivers/install/repopool_cfmint_previews.go` (RepoPoolCFMintPreviews)
+- `pkg/behaviourtest/drivers/install/repopool_cfmint_stage.go` (RepoPoolCFMintStage)
 - `pkg/behaviourtest/drivers/install/repopool_external_mint.go` (RepoPoolExternalMint)
+- `pkg/behaviourtest/drivers/install/common/setup.go` (shared helpers: `RunGitHubSetup`, `ResolveInferenceWIFProvider`, `InferenceStatusWIFProvider`, `ProvisionInference`)
 
 ## Runner configuration
 
 Set when starting the suite (not in feature files):
 
 ```
-BEHAVIOUR_SCM=github              # future: gitlab, forgejo
-BEHAVIOUR_CI=githubactions        # future: tekton, gitlabci
+BEHAVIOUR_SCM=github              # also: gitlab; future: forgejo
+BEHAVIOUR_CI=githubactions        # also: gitlabci; future: tekton
 BEHAVIOUR_INSTALL_MODE=per-repo   # v1 default and only supported value
+BEHAVIOUR_CONFIG_PRESET=          # optional local path or HTTPS URL forwarded as github setup --config
+PLAYBACK_RUNTIME=                 # unset: normal "dummy" runtime; "dummy-playback": installs with playback tracking hooks (see behaviour-testing.md)
 ENVIRONMENT=dev                   # mint/infra target: dev (default) or stage
 ```
 
-The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a pool org via `pkg/e2etest`, runs pre-install cleanup, calls an `install.Factory` (e.g. `install.NewRepoPoolCFMintPreviews(...)`) to get a unified `install.Driver` that owns mint deploy, pool allocation, repo ensure, and teardown. The suite constructs SCM and CI drivers, then runs godog with `pkg/behaviourtest/suite.InitScenario`. `InitScenario` clones a template `*world.World` per scenario. When a scenario calls "Given the enrolled test repository", `Driver.AllocateRepo` leases a unique repo name and ensures it is created and installed. `Driver.DeallocateRepo` returns the name in the After hook. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases. Unsupported `BEHAVIOUR_INSTALL_MODE` or `ENVIRONMENT` values fail at suite startup. `ENVIRONMENT` is `dev` or `stage` (empty defaults to `dev`).
+The suite in `e2e/behaviour/suite_test.go` (or an external runner) calls `behaviourtest.RunSuite`, which acquires a pool org via `internal/e2etest`, runs pre-install cleanup, selects an `install.Factory` from `ENVIRONMENT` (e.g. `install.NewRepoPoolCFMintPreviews(...)`) to get a unified `install.Driver` that owns mint deploy, pool allocation, repo ensure, and teardown, constructs SCM and CI drivers from `BEHAVIOUR_SCM` / `BEHAVIOUR_CI`, and runs godog with `pkg/behaviourtest/suite.InitScenario`. `InitScenario` clones a template `*world.World` per scenario. When a scenario calls "Given the enrolled test repository", `Driver.AllocateRepo` leases a unique repo name and ensures it is created and installed from a clean base (delete+recreate if it already exists). `Driver.DeallocateRepo` deletes the leased repo and returns the name in the After hook, after scenario cleanup and debug collection. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases. Unsupported `BEHAVIOUR_INSTALL_MODE` or `ENVIRONMENT` values fail at suite startup. `ENVIRONMENT` is `dev` or `stage` (empty defaults to `dev`).
 
 ### Install driver (unified)
 
-The suite uses a single unified `install.Driver` constructed via `install.Factory` (e.g. `install.NewRepoPoolCFMintPreviews` or `install.NewRepoPoolExternalMint`). Each concrete driver owns the full lifecycle:
+The suite uses a single unified `install.Driver` constructed via `install.Factory`. The suite selects the factory based on `ENVIRONMENT`:
 
-1. Deploys the mint (RepoPoolCFMintPreviews: CF Worker preview; RepoPoolExternalMint: pre-configured URL).
+| Environment | Factory | Mint | Org | Install mode |
+|-------------|---------|------|-----|-------------|
+| `dev` (default) | `NewRepoPoolCFMintPreviews` | CF Worker preview (ephemeral per run) | Pool org (`halfsend-NN`) | Vendored binary |
+| `stage` | `NewRepoPoolCFMintStage` | Durable CF Worker at `stage-mint.fullsend.sh` | `halfsend` | Non-vendored, `--fullsend-ref=main` |
+
+Each concrete driver owns the full lifecycle:
+
+1. Deploys the mint (RepoPoolCFMintPreviews: CF Worker preview; RepoPoolCFMintStage: durable Worker with custom domain; RepoPoolExternalMint: pre-configured URL).
 2. Manages an internal channel-based pool of repo names (`test-repo-01` … `test-repo-12`).
-3. Lazily creates and installs numbered pool repos on demand via an internal ensurer (concurrent-safe via singleflight).
+3. Lazily creates and installs numbered pool repos on demand via an internal ensurer (concurrent-safe via singleflight), and deletes them when the lease is released so the next lessee cannot inherit leftover state.
 4. Exposes `AllocateRepo` / `DeallocateRepo` / `Finalize` / `Capacity`.
 
-The Factory takes the allocated org name plus runtime dependencies (forge client, token, CLI binary, GCP project, logger). Driver-specific inputs (PEMs, allowlists, pool size, mint URL) come from env or are computed inside the driver. The suite does not construct or thread pool, ensurer, or mint driver types directly — all internal lifecycle is encapsulated inside the concrete driver returned by the factory. Default concurrency is `driver.Capacity()`; `GODOG_CONCURRENCY` overrides it (warn, do not fail, if concurrency > Capacity).
+The Factory takes the allocated org name plus runtime dependencies (forge client, token, CLI binary, GCP project, logger). Driver-specific inputs (PEMs, allowlists, pool size, mint URL, optional `BEHAVIOUR_CONFIG_PRESET`) come from env or are computed inside the driver. When `BEHAVIOUR_CONFIG_PRESET` is set, `github setup` receives `--config <value>` and omits `--runtime dummy` so the preset's `runtime: dummy` is inherited rather than pinned in the overlay. The suite does not construct or thread pool, ensurer, or mint driver types directly — all internal lifecycle is encapsulated inside the concrete driver returned by the factory. Default concurrency is `driver.Capacity()`; `GODOG_CONCURRENCY` overrides it (warn, do not fail, if concurrency > Capacity).
 
-Pool orgs must already have shared GitHub Apps, org-level mint enrollment, and per-repo mint enrollment for each numbered repo (one-time GCP admin step on the hosted mint project). The driver does not run `fullsend admin install` or `fullsend mint enroll`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+Pool orgs must already have the six `fullsend-test-*` role apps and the production `fullsend-ai-e2e` app installed, plus per-repo mint enrollment for each numbered repo (one-time GCP admin step on the hosted mint project). The driver does not run `fullsend admin install` or `fullsend mint enroll`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
-`Finalize` (RepoPoolCFMintPreviews) abandons the preview alias via `fullsend mint delete --platform=cloudflare` and reclaims any outstanding leases with an error. The RepoPoolExternalMint driver's teardown is a no-op.
+The two CF mint drivers compute the mint's allowlists from the org and pool size on every deploy: `--per-repo-wif-repos` lists the pool repos (`<org>/test-repo-NN`), and `--workflow-host-repos` lists the pool repos plus each slot's mint-probe host `<org>/test-repo-NN-mint-host` (`install.MintProbeHostRepoSuffix`). The probe hosts are workflow hosts only, never enrolled callers; the [GitHub mint scope scenarios](behaviour-testing.md#github-mint-scope-scenarios) create and delete them per scenario. Because both lists are deploy flags, a change takes effect on the next suite run's mint deploy, with no GCP enrollment step.
+
+Both CF mint drivers also deploy with `--status-auth oidc,github --status-github-group <org>/mint-status` (`install.MintStatusTeamSlug`), so members of the org's `mint-status` team can query the mint's status with a GitHub user token (see [Mint status team](e2e-testing.md#mint-status-team)). Every driver that builds on the shared pool driver, including RepoPoolExternalMint, reports its mint URL through the optional `install.MintURLReporter` interface. The [CLI mint status scenarios](behaviour-testing.md#cli-mint-status-scenarios) use both.
+
+`Finalize` (RepoPoolCFMintPreviews) abandons the preview alias via `fullsend mint delete --platform=cloudflare` and reclaims any outstanding leases with an error. The RepoPoolCFMintStage driver's teardown is a no-op (the durable Worker persists across runs). The RepoPoolExternalMint driver's teardown is a no-op.
 
 ## Adding an SCM driver
 
 1. Implement `scm.Driver` in `pkg/behaviourtest/drivers/scm/<vendor>/`.
-2. Register the driver in the suite runner when `BEHAVIOUR_SCM=<vendor>`.
+2. Register the driver in `behaviourtest.RunSuite` when `BEHAVIOUR_SCM=<vendor>`.
 3. Document the env var value here.
 4. Add `@skip:<vendor>` tags on scenarios that cannot run until the driver is complete.
 
@@ -57,9 +74,52 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
 
 ## Adding a CI driver
 
-1. Implement `ci.Driver` — `WaitForWorkflow`, `FindCompletedWorkflowRun`, `AssertNoWorkflow`, `GetRunLogs`, `DownloadArtifacts`, `DownloadNamedArtifactFromRun`, `DownloadNamedArtifactAfter`, `WaitForHarnessAgent`, `WaitForFailedHarnessAgent`, `AssertNoHarnessAgentArtifact`, `CountHarnessDispatches`.
-2. Map forge `WorkflowRun` types to portable polling logic; reuse patterns from `e2e/admin/admin_test.go`.
-3. Register in suite init for the matching `BEHAVIOUR_CI` value.
+1. Implement `ci.Driver` — `WaitForWorkflow`, `FindCompletedWorkflowRun`, `AssertNoWorkflow`, `GetRunLogs`, `DownloadArtifacts`, `DownloadNamedArtifactFromRun`, `DownloadNamedArtifactAfter`, `WaitForHarnessAgent`, `WaitForHarnessAgentRound`, `WaitForFailedHarnessAgent`, `AssertNoHarnessAgentArtifact`, `CountHarnessDispatches`.
+2. Also implement the optional `ci.RunLister` interface (`ListRecentRuns`). A failed scenario's After hook uses it to save the logs of runs that no step resolved before the leased repository is deleted. Without it, only the run a step resolved has its logs collected.
+3. Also implement the optional `ci.EmptyMatrixWaiter` interface (`WaitForHarnessEmptyMatrix`). The `the harness dispatch completes with an empty matrix` step needs it to assert that a harness run succeeded without dispatching any agent.
+4. Map forge `WorkflowRun` types to portable polling logic; reuse patterns from the GitHub Actions driver in `pkg/behaviourtest/drivers/ci/githubactions/`.
+5. Register in `behaviourtest.RunSuite` for the matching `BEHAVIOUR_CI` value.
+
+## Adding an install driver
+
+1. **Discover existing env vars.** Read `.github/workflows/e2e.yml` for
+   secrets and env vars already wired into the BT job (search for `env:`
+   blocks in the behaviour test step). Use existing vars — e.g.,
+   `TEST_*_PEM` for role PEMs, `TEST_CLOUDFLARE_*` for CF credentials —
+   rather than inventing new ones. Cross-reference
+   [e2e-testing.md](e2e-testing.md#test-github-apps) for the full
+   secrets inventory and app-to-PEM mapping.
+2. **Discover CLI flag surface.** Read the CLI source for the commands
+   your driver will invoke (e.g., `internal/cli/mint.go` for
+   `mint deploy`, `internal/cli/mint_delete.go` for `mint delete`).
+   Check the full flag surface — especially optional flags like
+   `--worker-name`, `--workflow-host-repos`,
+   `--per-repo-wif-repos`, `--app-set`, and `--pem-dir`. Ensure deploy
+   and teardown commands receive symmetric identifying flags (e.g., both
+   `mint deploy` and `mint delete` need `--worker-name` if the Worker
+   name is non-default).
+3. **Handle app set.** Test PEMs belong to the `fullsend-test` app set,
+   not the default `fullsend-ai`. Pass `--app-set fullsend-test`
+   explicitly when deploying with test PEMs. Omitting this causes the
+   CLI to validate PEMs against the wrong GitHub Apps.
+4. **Implement `install.Driver`** in a new file under
+   `pkg/behaviourtest/drivers/install/`. Each driver variant lives in
+   the same package (e.g., `repopool_cfmint_previews.go`,
+   `repopool_external_mint.go`) behind the shared `install.Driver`
+   interface. Place common helpers shared across drivers in
+   `install/common/` (e.g., `RunGitHubSetup`, `ResolveInferenceWIFProvider`).
+5. **Register the driver** in `behaviourtest.RunSuite` (`installFactoryFor`
+   in `pkg/behaviourtest/select.go`). Install driver selection is keyed by
+   `ENVIRONMENT`, not `BEHAVIOUR_INSTALL_MODE`.
+6. **Use `repopool_external_mint.go`** (~71 lines) as the minimal
+   reference implementation. For a more complex example showing CLI arg
+   construction, preview alias generation, and teardown semantics, see
+   `repopool_cfmint_previews.go`.
+7. **Export CLI arg builders.** Export functions like `DeployArgs` and
+   `TeardownArgs` so unit tests can verify arg construction without
+   shelling out to the real CLI.
+8. **Document the new driver** here — add the env var value and any new
+   secrets or configuration required.
 
 ## Step definitions
 
@@ -69,10 +129,11 @@ Steps use `w.Org` and `w.RepoName` (the allocated repo name) plus per-repo const
 
 ## Testing drivers
 
-Prefer unit tests with `httptest` for REST helpers. Optional smoke scenarios against live backends mirror admin e2e credentials (`GITHUB_TOKEN`, halfsend org pool).
+Prefer unit tests with `httptest` for REST helpers. Optional smoke scenarios against live backends use the behaviour suite's credentials (`GITHUB_TOKEN`, halfsend org pool).
 
 ## Future backends checklist
 
-- [ ] GitLab SCM driver + `@skip:gitlab` tag removal
-- [ ] Tekton or GitLab CI driver
+- [x] GitLab SCM driver (implemented; `@skip:gitlab` tag removal pending)
+- [x] GitLab CI driver (implemented; suite wiring currently uses a GitHub-backed `forge.Client` — not yet live-testable against real GitLab backends)
+- [ ] Tekton CI driver
 - [ ] Non-GitHub install backends

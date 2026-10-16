@@ -1,3 +1,7 @@
+---
+description: How the fullsend fix agent reads PR review feedback, implements targeted fixes, runs tests and linters, and commits the result.
+---
+
 # Fix Agent
 
 ![Fix agent icon](icons/coder.png)
@@ -21,9 +25,9 @@ The fix agent has two operating modes with different primary inputs:
 
 | Input | Source | How it gets there |
 |-------|--------|-------------------|
-| Review body | Latest `CHANGES_REQUESTED` review from the review bot | Pre-fetched on the runner before the sandbox starts, injected as `review-body.txt` |
+| Review body | Latest `CHANGES_REQUESTED` review from a review bot | Pre-fetched on the runner before the sandbox starts, injected as `review-body.txt` |
 | PR diff | `gh pr diff` inside the sandbox | Agent calls this to understand what code changed |
-| Repository checkout | Full repo at PR HEAD | Checked out on the runner, mounted into the sandbox |
+| Repository checkout | Full repo at PR/MR HEAD | Checked out on the runner, mounted into the sandbox |
 | Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Read from the checkout inside the sandbox |
 
 **Human-triggered** (`/fs-fix [instruction]`):
@@ -34,10 +38,37 @@ The fix agent has two operating modes with different primary inputs:
 | PR diff | `gh pr diff` inside the sandbox | Same as bot-triggered |
 | Repository checkout | Full repo at PR HEAD | Same as bot-triggered |
 | Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Same as bot-triggered |
-| Review body (if any) | Prior review bot `CHANGES_REQUESTED` review | Still injected as `review-body.txt`, but human instruction takes precedence |
+| Review body (if any) | Prior `CHANGES_REQUESTED` review from a review bot | Still injected as `review-body.txt`, but human instruction takes precedence |
 
 When a human instruction is present, it supersedes the review body as the
 primary directive.
+
+On GitLab, dispatch pipelines run from the repository default branch, so
+the fix job fetches the MR source SHA into `target-repo/` and points
+`--target-repo` there before `fullsend run`. Trusted `.fullsend/` config
+continues to be read from the default-branch working tree. Fetching the
+source branch without checking it out is not sufficient: the sandbox
+inherits the runner checkout, and the agent cannot recover the reviewed
+revision from inside the sandbox.
+
+**GitLab fork and cross-project MRs:** the job-level fork gate (`IS_FORK`)
+still denies both the **code** and **fix** agents outright on a
+fork/cross-project dispatch. Code opens a new MR against the target
+project and has no analogous validated source revision to check out.
+Fix is denied for a different reason: although the pre-script
+(`checkout-mr-source.sh`) already resolves the MR's source project,
+branch, and head SHA through `fullsend resolve-mr-source` (never
+trusting the job's `IS_FORK` pipeline variable or any other unverified
+CI variable), fetches and checks out that exact revision — fetching
+from the source project even when it differs from the target project —
+and runs a pre-push safety gate, `fullsend check-protected-branch`,
+against the resolved source project and branch before the fix agent
+ever runs, the runner-side post-script that actually pushes the
+resulting fix commit still targets this job's own project and branch
+rather than the validated source project. A validated checkout alone is
+not enough to make a fork/cross-project fix dispatch safe to publish, so
+the `IS_FORK` gate stays in place for `fix` until a source-targeted
+publish path ships in a follow-up PR (#7814).
 
 ### What the agent does not read
 
@@ -88,6 +119,8 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
   across bot and human triggers.
 - When a bot-triggered run is approaching the bot cap, the agent applies the
   `needs-human` label.
+- When the cap is exceeded, the run fails before the sandbox starts and the
+  status comment shows the escalation message (a human can still `/fs-fix`).
 - Each `/fs-fix` comment cancels any in-flight fix run for the same PR and
   starts a new one.
 
@@ -117,11 +150,16 @@ direct control over what to fix:
   ([details](#links-and-urls-in-instructions))
 
 The fix agent also triggers automatically when the [review agent](review.md) submits a
-"changes requested" review on a same-repo PR (fork PRs are blocked).
+"changes requested" review on a same-repo PR (fork PRs are blocked). On GitHub
+this is the native `pull_request_review` event; on GitLab it is a poller-routed
+MR note that contains `<!-- fullsend:changes-requested -->`.
 
-For **PRs authored by the fullsend code agent** (`fullsend-ai-coder[bot]`),
-automatic fixing happens with no extra setup — the fix agent responds to review
-feedback out of the box. PRs from other bots (e.g., Renovate) require the
+For **PRs authored by the fullsend code agent** (`fullsend-ai-coder[bot]`), or
+by the configured app-set coder (`${FULLSEND_APP_SET}-coder[bot]`), automatic
+fixing happens with no extra setup — the fix agent responds to review feedback
+out of the box. In `gh pr view --json author` output, the configured coder is
+identified as `app/${FULLSEND_APP_SET}-coder` and must also have
+`.author.is_bot == true`. PRs from other bots (e.g., Renovate) require the
 `fullsend-fix` label; without it, the bot-triggered fix run is dispatched but
 the eligibility check exits early with a warning. See
 [Bot identities](../contributing/bot-identities.md) for how the eligibility
@@ -137,12 +175,23 @@ automatic (bot-triggered) runs.
 further bot-triggered fix runs. Human-triggered `/fs-fix` commands still work.
 Remove the label or use `/fs-fix` to re-engage.
 
+**GitLab scope note:** on GitLab, the dispatch router enforces the
+`fullsend-no-fix` stop valve for the changes-requested MR-note path
+described above. The `fullsend-fix` opt-in gate for human-authored and
+non-coder-bot MRs — enforced on GitHub by
+[`check-fix-eligibility.sh`](../../.github/scripts/check-fix-eligibility.sh) —
+is not yet implemented for GitLab: the router does not currently have
+enough MR-author identity information to distinguish the fullsend code
+agent from other authors. Until that parity lands, bot-triggered fix
+runs on GitLab MRs are gated only by `fullsend-no-fix`, not by
+`fullsend-fix`.
+
 ## Control labels
 
 | Label | Meaning |
 |-------|---------|
-| `fullsend-fix` | Enables automatic bot-triggered fix runs on human-authored PRs and PRs from bots other than the fullsend code agent. Without this label, the fix agent only runs when explicitly invoked via `/fs-fix`. PRs authored by `fullsend-ai-coder[bot]` are always eligible without this label. |
-| `fullsend-no-fix` | Prevents bot-triggered fix runs on this PR. Applied by `/fs-fix-stop`. Human `/fs-fix` commands are unaffected. Takes priority over `fullsend-fix`. |
+| `fullsend-fix` | Enables automatic bot-triggered fix runs on human-authored PRs and PRs from bots other than the fullsend code agent. Without this label, the fix agent only runs when explicitly invoked via `/fs-fix`. PRs authored by `fullsend-ai-coder[bot]` are always eligible without this label. **GitLab:** not yet enforced — see the scope note above. |
+| `fullsend-no-fix` | Prevents bot-triggered fix runs on this PR. Applied by `/fs-fix-stop`. Human `/fs-fix` commands are unaffected. Takes priority over `fullsend-fix`. Enforced on both GitHub and GitLab. |
 | `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when a bot-triggered fix iteration reaches the warning threshold. |
 
 ## Configuration and extension

@@ -1647,7 +1647,7 @@ func TestResolveHarness_PluginDirFetchAndCache(t *testing.T) {
 	root := t.TempDir()
 	h := &harness.Harness{
 		Agent:                  "/local/agents/test.md",
-		Plugins:                []string{forgeSkillURL("plugins/gopls-lsp", treeHash)},
+		Plugins:                []harness.PluginSpec{{Path: forgeSkillURL("plugins/gopls-lsp", treeHash)}},
 		AllowedRemoteResources: []string{testForgeBase},
 	}
 
@@ -1662,21 +1662,21 @@ func TestResolveHarness_PluginDirFetchAndCache(t *testing.T) {
 	assert.Equal(t, treeHash, result.Deps[0].SHA256)
 	assert.False(t, result.Deps[0].CacheHit)
 
-	// Verify h.Plugins[0] is a local directory path (not a URL) whose
+	// Verify h.Plugins[0].Path is a local directory path (not a URL) whose
 	// basename is the plugin directory name from the URL.
-	assert.False(t, harness.IsURL(h.Plugins[0]))
-	info, err := os.Stat(h.Plugins[0])
+	assert.False(t, harness.IsURL(h.Plugins[0].Path))
+	info, err := os.Stat(h.Plugins[0].Path)
 	require.NoError(t, err)
 	assert.True(t, info.IsDir())
-	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0]),
+	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0].Path),
 		"plugin path basename should be the plugin directory name from the URL")
 
 	// Verify files are inside the cached directory.
-	got, err := os.ReadFile(filepath.Join(h.Plugins[0], "plugin.json"))
+	got, err := os.ReadFile(filepath.Join(h.Plugins[0].Path, "plugin.json"))
 	require.NoError(t, err)
 	assert.Equal(t, manifestJSON, got)
 
-	gotInit, err := os.ReadFile(filepath.Join(h.Plugins[0], "scripts", "init.sh"))
+	gotInit, err := os.ReadFile(filepath.Join(h.Plugins[0].Path, "scripts", "init.sh"))
 	require.NoError(t, err)
 	assert.Equal(t, initSh, gotInit)
 }
@@ -1684,7 +1684,7 @@ func TestResolveHarness_PluginDirFetchAndCache(t *testing.T) {
 func TestResolveHarness_PluginLocalPassThrough(t *testing.T) {
 	h := &harness.Harness{
 		Agent:   "/abs/path/agents/test.md",
-		Plugins: []string{"/abs/path/plugins/gopls-lsp"},
+		Plugins: []harness.PluginSpec{{Path: "/abs/path/plugins/gopls-lsp"}},
 	}
 
 	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
@@ -1692,7 +1692,7 @@ func TestResolveHarness_PluginLocalPassThrough(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Empty(t, result.Deps)
-	assert.Equal(t, "/abs/path/plugins/gopls-lsp", h.Plugins[0])
+	assert.Equal(t, "/abs/path/plugins/gopls-lsp", h.Plugins[0].Path)
 }
 
 func TestResolveHarness_PluginMixedLocalAndURL(t *testing.T) {
@@ -1704,9 +1704,9 @@ func TestResolveHarness_PluginMixedLocalAndURL(t *testing.T) {
 	root := t.TempDir()
 	h := &harness.Harness{
 		Agent: "/local/agents/test.md",
-		Plugins: []string{
-			"/local/plugins/local-plugin",
-			forgeSkillURL("plugins/remote-plugin", pluginHash),
+		Plugins: []harness.PluginSpec{
+			{Path: "/local/plugins/local-plugin"},
+			{Path: forgeSkillURL("plugins/remote-plugin", pluginHash)},
 		},
 		AllowedRemoteResources: []string{testForgeBase},
 	}
@@ -1719,10 +1719,10 @@ func TestResolveHarness_PluginMixedLocalAndURL(t *testing.T) {
 	require.Len(t, result.Deps, 1)
 
 	// Local plugin unchanged.
-	assert.Equal(t, "/local/plugins/local-plugin", h.Plugins[0])
+	assert.Equal(t, "/local/plugins/local-plugin", h.Plugins[0].Path)
 	// Remote plugin resolved to a local directory path.
-	assert.False(t, harness.IsURL(h.Plugins[1]))
-	assert.Equal(t, "remote-plugin", filepath.Base(h.Plugins[1]))
+	assert.False(t, harness.IsURL(h.Plugins[1].Path))
+	assert.Equal(t, "remote-plugin", filepath.Base(h.Plugins[1].Path))
 }
 
 func TestResolveHarness_PluginHashMismatch(t *testing.T) {
@@ -1737,7 +1737,7 @@ func TestResolveHarness_PluginHashMismatch(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "/local/agents/test.md",
-		Plugins:                []string{forgeSkillURL("plugins/tampered", wrongHash)},
+		Plugins:                []harness.PluginSpec{{Path: forgeSkillURL("plugins/tampered", wrongHash)}},
 		AllowedRemoteResources: []string{testForgeBase},
 	}
 
@@ -1757,7 +1757,7 @@ func TestResolveHarness_PluginNonForgeURLRejected(t *testing.T) {
 	fakeHash := strings.Repeat("a", 64)
 	h := &harness.Harness{
 		Agent:                  "/local/agents/test.md",
-		Plugins:                []string{fmt.Sprintf("%s/plugins/gopls-lsp#sha256=%s", srv.URL, fakeHash)},
+		Plugins:                []harness.PluginSpec{{Path: fmt.Sprintf("%s/plugins/gopls-lsp#sha256=%s", srv.URL, fakeHash)}},
 		AllowedRemoteResources: []string{srv.URL + "/"},
 	}
 
@@ -1767,6 +1767,32 @@ func TestResolveHarness_PluginNonForgeURLRejected(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "supported forge")
+}
+
+// TestResolveHarness_SameTreeDifferentOptions: two entries that resolve to
+// one directory are deduped only when their env/pi options agree; a
+// differing pair is an error rather than a silent drop of the second's
+// options. An absent env and an empty one are the same options.
+func TestResolveHarness_SameTreeDifferentOptions(t *testing.T) {
+	dir := t.TempDir()
+	plugin := filepath.Join(dir, "ext")
+	require.NoError(t, os.MkdirAll(plugin, 0o755))
+
+	same := &harness.Harness{Agent: "agents/test.md", Role: "test", Plugins: []harness.PluginSpec{
+		{Path: plugin, Env: map[string]string{}},
+		{Path: plugin},
+	}}
+	_, err := ResolveHarness(context.Background(), same, ResolveOpts{WorkspaceRoot: dir})
+	require.NoError(t, err)
+	assert.Len(t, same.Plugins, 1, "identical options dedupe to one entry")
+
+	differ := &harness.Harness{Agent: "agents/test.md", Role: "test", Plugins: []harness.PluginSpec{
+		{Path: plugin},
+		{Path: plugin, Pi: &harness.PiPluginOptions{Args: []string{"--x"}}},
+	}}
+	_, err = ResolveHarness(context.Background(), differ, ResolveOpts{WorkspaceRoot: dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "different env/pi options")
 }
 
 func TestResolveHarness_LocalProvidersUnchanged(t *testing.T) {
@@ -1850,7 +1876,7 @@ func TestResolveHarness_PluginSharedURLWithSkill(t *testing.T) {
 	h := &harness.Harness{
 		Agent:                  "/local/agents/test.md",
 		Skills:                 []harness.SkillEntry{{Source: sharedURL}},
-		Plugins:                []string{sharedURL},
+		Plugins:                []harness.PluginSpec{{Path: sharedURL}},
 		AllowedRemoteResources: []string{testForgeBase},
 	}
 
@@ -1870,7 +1896,7 @@ func TestResolveHarness_PluginSharedURLWithSkill(t *testing.T) {
 
 	// Both should point to valid local directories.
 	assert.False(t, harness.IsURL(h.Skills[0].Source))
-	assert.False(t, harness.IsURL(h.Plugins[0]))
+	assert.False(t, harness.IsURL(h.Plugins[0].Path))
 }
 
 // TestResolveHarness_PluginRepoRootURLRejected verifies that a plugin URL
@@ -1890,7 +1916,7 @@ func TestResolveHarness_PluginRepoRootURLRejected(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "/local/agents/test.md",
-		Plugins:                []string{repoRootURL},
+		Plugins:                []harness.PluginSpec{{Path: repoRootURL}},
 		AllowedRemoteResources: []string{testForgeBase},
 	}
 
@@ -1918,7 +1944,7 @@ func TestResolveHarness_PluginDirExecutablePermissions(t *testing.T) {
 	root := t.TempDir()
 	h := &harness.Harness{
 		Agent:                  "/local/agents/test.md",
-		Plugins:                []string{forgeSkillURL("plugins/exec-plugin", treeHash)},
+		Plugins:                []harness.PluginSpec{{Path: forgeSkillURL("plugins/exec-plugin", treeHash)}},
 		AllowedRemoteResources: []string{testForgeBase},
 	}
 
@@ -1930,7 +1956,7 @@ func TestResolveHarness_PluginDirExecutablePermissions(t *testing.T) {
 	require.Len(t, h.Plugins, 1)
 
 	// Verify the script file has executable permissions.
-	scriptPath := filepath.Join(h.Plugins[0], "scripts", "init.sh")
+	scriptPath := filepath.Join(h.Plugins[0].Path, "scripts", "init.sh")
 	info, err := os.Stat(scriptPath)
 	require.NoError(t, err)
 	assert.True(t, info.Mode()&0o100 != 0,
@@ -2061,6 +2087,7 @@ func TestResolveHarness_LocalProfile(t *testing.T) {
 	require.Len(t, result.Profiles, 1)
 	assert.Equal(t, "test-profile", result.Profiles[0].ID)
 	assert.Equal(t, profilePath, result.Profiles[0].LocalPath)
+	assert.False(t, result.Profiles[0].FromURL, "a workspace profile is not URL content")
 
 	// Profiles slice should be cleared after resolution
 	assert.Nil(t, h.OpenShell.Profiles)
@@ -2089,10 +2116,39 @@ func TestResolveHarness_LocalAbsProvider(t *testing.T) {
 	assert.Equal(t, "test-provider", result.Providers[0].Def.Name)
 	assert.Equal(t, "custom", result.Providers[0].Def.Type)
 	assert.Equal(t, providerPath, result.Providers[0].LocalPath)
+	assert.False(t, result.Providers[0].FromURL, "a workspace provider is not URL content")
 
 	// Bare provider name kept in h.Providers
 	require.Len(t, h.Providers, 1)
 	assert.Equal(t, "bare-provider-name", h.Providers[0])
+}
+
+// TestResolveHarness_CacheProvider_FromURL: a URL base harness's relative
+// provider entry is rewritten by composition to a content-cache path; it is
+// URL content, so it is marked FromURL like a directly URL-resolved one.
+func TestResolveHarness_CacheProvider_FromURL(t *testing.T) {
+	root := t.TempDir()
+
+	providerContent := []byte("name: test-provider\ntype: custom\n")
+	require.NoError(t, fetch.CachePut(root, "https://example.com/providers/test-provider.yaml", providerContent))
+	cachePath, err := fetch.CachePath(root, fetch.ComputeSHA256(providerContent))
+	require.NoError(t, err)
+	contentPath := filepath.Join(cachePath, "content")
+
+	h := &harness.Harness{
+		Agent:     "/abs/path/agents/test.md",
+		Providers: []string{contentPath},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, result.Providers, 1)
+	assert.Equal(t, "test-provider", result.Providers[0].Def.Name)
+	assert.Equal(t, contentPath, result.Providers[0].LocalPath)
+	assert.True(t, result.Providers[0].FromURL)
 }
 
 func TestParseProviderDef(t *testing.T) {
@@ -2251,6 +2307,8 @@ func TestResolveHarness_LocalProfile_CachePathGetsYAMLExtension(t *testing.T) {
 		"cache-sourced profile should get .yaml extension, got %s", result.Profiles[0].LocalPath)
 	assert.NotEqual(t, contentPath, result.Profiles[0].LocalPath,
 		"extensionless cache path should have been renamed")
+	assert.True(t, result.Profiles[0].FromURL,
+		"a cache path holds URL content (a URL base harness's relative entry), not a repository file")
 
 	// Verify the symlinked file has the right content
 	got, err := os.ReadFile(result.Profiles[0].LocalPath)
@@ -2450,4 +2508,143 @@ func TestResolveHarness_ProviderOutsideWorkspace(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "outside workspace root")
+}
+
+func TestResolveHarness_PolicyURL_OrgAllowlist(t *testing.T) {
+	policyContent := []byte("sandbox policy yaml")
+	policyHash := fetch.ComputeSHA256(policyContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(policyContent)
+	}))
+
+	root := t.TempDir()
+	policyURL := fmt.Sprintf("%s/policies/readonly.yaml#sha256=%s", srv.URL, policyHash)
+	// No harness-level AllowedRemoteResources — only org-level.
+	h := &harness.Harness{
+		Agent:  "/local/agents/test.md",
+		Policy: policyURL,
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Deps, 1)
+	assert.Equal(t, policyHash, result.Deps[0].SHA256)
+
+	got, err := os.ReadFile(h.Policy)
+	require.NoError(t, err)
+	assert.Equal(t, policyContent, got)
+}
+
+func TestResolveHarness_AgentURL_OrgAllowlist(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(agentContent)
+	}))
+
+	root := t.TempDir()
+	agentURL := fmt.Sprintf("%s/agents/code.md#sha256=%s", srv.URL, agentHash)
+	// No harness-level AllowedRemoteResources — only org-level.
+	h := &harness.Harness{
+		Agent: agentURL,
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Deps, 1)
+	assert.Equal(t, agentHash, result.Deps[0].SHA256)
+	assert.False(t, harness.IsURL(h.Agent))
+}
+
+func TestResolveHarness_SkillDirURL_OrgAllowlist(t *testing.T) {
+	reg := newSkillRegistry()
+	skillHash := reg.register("skills/review", map[string][]byte{
+		"SKILL.md": []byte("# Review Skill"),
+	})
+
+	root := t.TempDir()
+	// No harness-level AllowedRemoteResources — only org-level.
+	h := &harness.Harness{
+		Agent:  "/local/agents/test.md",
+		Skills: []harness.SkillEntry{{Source: forgeSkillURL("skills/review", skillHash)}},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+		OrgAllowlist:  []string{testForgeBase},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Deps, 1)
+	assert.Equal(t, "directory", result.Deps[0].Type)
+}
+
+func TestResolveHarness_URLNotInEitherAllowlist(t *testing.T) {
+	agentContent := []byte("agent")
+	agentHash := fetch.ComputeSHA256(agentContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(agentContent)
+	}))
+
+	agentURL := fmt.Sprintf("%s/agents/code.md#sha256=%s", srv.URL, agentHash)
+	h := &harness.Harness{
+		Agent:                  agentURL,
+		AllowedRemoteResources: []string{"https://other-domain.com/"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{"https://another-domain.com/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+}
+
+func TestResolveHarness_MixedAllowlists(t *testing.T) {
+	agentContent := []byte("agent prompt")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	policyContent := []byte("policy yaml")
+	policyHash := fetch.ComputeSHA256(policyContent)
+
+	srv, fetchPolicy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agents/code.md":
+			w.Write(agentContent)
+		case "/policies/ro.yaml":
+			w.Write(policyContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	root := t.TempDir()
+	// Agent URL covered by harness-level allowlist, policy URL covered
+	// by org-level allowlist only.
+	h := &harness.Harness{
+		Agent:                  fmt.Sprintf("%s/agents/code.md#sha256=%s", srv.URL, agentHash),
+		Policy:                 fmt.Sprintf("%s/policies/ro.yaml#sha256=%s", srv.URL, policyHash),
+		AllowedRemoteResources: []string{srv.URL + "/agents/"},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   fetchPolicy,
+		OrgAllowlist:  []string{srv.URL + "/policies/"},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Deps, 2)
+	assert.Equal(t, "agent", result.Deps[0].Field)
+	assert.Equal(t, "policy", result.Deps[1].Field)
 }

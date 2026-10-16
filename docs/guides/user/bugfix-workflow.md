@@ -42,7 +42,7 @@ These labels track where an issue is in the pipeline:
 |-------|---------|-------------------|
 | `blocked` | Progress depends on another issue or PR | Triage comment links to the blocker; re-triage on edit checks if blocker is resolved |
 | `duplicate` | Same issue already tracked elsewhere | Issue closed, link to canonical issue |
-| `needs-info` | Missing information | Triage comment explains what's needed; add a comment or edit the issue body to fix |
+| `needs-info` | Missing information | Triage comment explains what's needed; add a comment with the requested details and use `/fs-triage` to re-trigger triage |
 | `feature` | Issue categorized as a feature request | Waits for human prioritization before coding |
 | `triaged` | Triage passed but not auto-promoted | Waits for human review (applies to features and uncategorized issues) |
 | `ready-to-code` | Triage passed (bug, docs, performance) | Code agent picks it up |
@@ -51,6 +51,14 @@ These labels track where an issue is in the pipeline:
 | `requires-manual-review` | Reviewers disagreed or flagged security concerns | Human must decide |
 
 Labels are mutually exclusive where it matters — the pipeline enforces this. You generally don't need to manage labels manually.
+
+On PRs, a separate set of control labels governs the [fix agent](../../agents/fix.md#control-labels). These are not pipeline state — you apply `fullsend-fix` or `fullsend-no-fix` to steer fix runs, and the fix agent applies `needs-human` when it needs you:
+
+| Label | Meaning | What happens next |
+|-------|---------|-------------------|
+| `fullsend-fix` | Opts a PR in to automatic fix runs (manual `/fs-fix` works without it) | Bot-triggered fixes run on review feedback; code-agent PRs are always eligible without it |
+| `fullsend-no-fix` | Stops bot-triggered fix runs; applied by `/fs-fix-stop` | Takes priority over `fullsend-fix`; human `/fs-fix` still works. Remove the label to re-enable |
+| `needs-human` | The fix loop is approaching its iteration cap | A human should give direction, e.g. `/fs-fix <instruction>` or push commits |
 
 ### Slash commands
 
@@ -69,7 +77,10 @@ Authorization is verified via the collaborator permission API and is
 stage-dependent: `/fs-triage` and `/fs-review` accept triage-level
 permission or higher; `/fs-code`, `/fs-fix`, `/fs-retro`, and
 `/fs-fix-stop` require write-level permission or higher (admin,
-maintain, or write). Bot-to-bot agent handoffs are not affected because
+maintain, or write). In a repo that enables `owners_file`
+[authorization](../../reference/config-reference.md#authorization),
+`OWNERS` approvers can run every command and reviewers can run
+`/fs-triage` and `/fs-review`. Bot-to-bot agent handoffs are not affected because
 they use label-based triggers, not slash commands.
 
 ### What to expect from agent PRs
@@ -114,7 +125,7 @@ The triage agent:
 4. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
 5. **Hands off.** Labels `ready-to-code` with a summary comment.
 
-**If triage gets it wrong:** Add a comment with the missing information, or edit the issue body. Edits to the title or body trigger triage automatically. You can also use `/fs-triage` to force a fresh run — this clears previous triage labels and re-evaluates, building on any prior triage analysis rather than discarding it.
+**If triage gets it wrong:** Add a comment with the missing information, or edit the issue body. Edits to the title or body trigger triage automatically. You can also use `/fs-triage` to force a fresh run — this clears previous triage labels and re-evaluates, building on any prior triage analysis rather than discarding it. For `needs-info` issues, use `/fs-triage` after providing the requested clarification to re-trigger triage.
 
 ### Stage 2: Code
 
@@ -126,7 +137,7 @@ The code agent:
 2. **Branches and implements.** Creates a branch, writes the fix following repo conventions.
 3. **Tests iteratively.** Runs the test suite, incorporates triage-provided tests if present, writes new tests if needed. Iterates until tests pass.
 4. **Opens a PR.** Links the issue, describes the changes.
-5. **Handles CI failures.** Fetches failing check logs, fixes issues, pushes again. Repeats until all required checks pass (up to a configurable cap, default defined in `config.yaml` as `defaults.max_implementation_retries`).
+5. **Handles CI failures.** Fetches failing check logs, fixes issues, pushes again. Repeats until all required checks pass (up to a fixed retry cap).
 6. **Hands off to review.** The PR creation or push triggers review dispatch automatically via `pull_request_target`.
 
 ### Stage 3: Review

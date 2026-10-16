@@ -44,6 +44,24 @@ type OIDCProviderConfig struct {
 type WIFProviderInfo struct {
 	AttributeCondition string
 	AllowedAudiences   []string
+	IssuerURI          string
+	// State is the provider's lifecycle state ("ACTIVE" or "DELETED").
+	// providers.get returns soft-deleted providers with HTTP 200 and
+	// State "DELETED" rather than 404, so a non-nil WIFProviderInfo does
+	// not by itself mean the provider can exchange tokens.
+	State string
+	// Disabled reports whether the provider has been disabled. A disabled
+	// provider cannot exchange tokens.
+	Disabled bool
+}
+
+// WIFProviderStateActive is the State of a provider that is not soft-deleted.
+const WIFProviderStateActive = "ACTIVE"
+
+// Usable reports whether the provider can exchange tokens: not disabled and
+// not soft-deleted. An absent State is treated as active.
+func (i *WIFProviderInfo) Usable() bool {
+	return !i.Disabled && (i.State == "" || i.State == WIFProviderStateActive)
 }
 
 // FunctionInfo holds metadata about a deployed Cloud Function.
@@ -76,6 +94,10 @@ type ServiceRevisionInfo struct {
 	RecentRevisions []RevisionSummary
 	// TrafficEnvVars holds the env vars from the traffic-serving revision.
 	TrafficEnvVars map[string]string
+	// TrafficEnvVarsFromTemplate is true when TrafficEnvVars were taken from
+	// the service template because the traffic-serving revision could not be
+	// read. Such values may not reflect what the mint is actually serving.
+	TrafficEnvVarsFromTemplate bool
 }
 
 // RevisionSummary is a brief snapshot of a Cloud Run revision.
@@ -204,7 +226,8 @@ func (c *LiveGCFClient) getPollDelay() func(time.Duration) <-chan time.Time {
 	return time.After
 }
 
-// CreateServiceAccount creates a new service account.
+// CreateServiceAccount creates a new service account. Retries on HTTP 429
+// (quota exhaustion) with exponential backoff via doWIFRequestWithRetry.
 func (c *LiveGCFClient) CreateServiceAccount(ctx context.Context, projectID, saName, displayName string) error {
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/serviceAccounts",
 		url.PathEscape(projectID))
@@ -222,7 +245,7 @@ func (c *LiveGCFClient) CreateServiceAccount(ctx context.Context, projectID, saN
 	}
 	payload := string(payloadBytes)
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, payload)
+	resp, err := c.doWIFRequestWithRetry(ctx, http.MethodPost, reqURL, payload)
 	if err != nil {
 		return fmt.Errorf("creating service account: %w", err)
 	}
@@ -259,7 +282,8 @@ func (c *LiveGCFClient) DeleteServiceAccount(ctx context.Context, projectID, saE
 	return nil
 }
 
-// CreateWIFPool creates a new WIF pool.
+// CreateWIFPool creates a new WIF pool. Retries on HTTP 429 (quota
+// exhaustion) with exponential backoff via doWIFRequestWithRetry.
 func (c *LiveGCFClient) CreateWIFPool(ctx context.Context, projectNumber, poolID, displayName string) error {
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools?workloadIdentityPoolId=%s",
 		url.PathEscape(projectNumber), url.QueryEscape(poolID))
@@ -269,7 +293,7 @@ func (c *LiveGCFClient) CreateWIFPool(ctx context.Context, projectNumber, poolID
 	}
 	payload := string(payloadBytes)
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, payload)
+	resp, err := c.doWIFRequestWithRetry(ctx, http.MethodPost, reqURL, payload)
 	if err != nil {
 		return fmt.Errorf("creating WIF pool: %w", err)
 	}
@@ -390,7 +414,10 @@ func (c *LiveGCFClient) GetWIFProvider(ctx context.Context, projectNumber, poolI
 
 	var provider struct {
 		AttributeCondition string `json:"attributeCondition"`
+		State              string `json:"state"`
+		Disabled           bool   `json:"disabled"`
 		OIDC               struct {
+			IssuerURI        string   `json:"issuerUri"`
 			AllowedAudiences []string `json:"allowedAudiences"`
 		} `json:"oidc"`
 	}
@@ -401,6 +428,9 @@ func (c *LiveGCFClient) GetWIFProvider(ctx context.Context, projectNumber, poolI
 	return &WIFProviderInfo{
 		AttributeCondition: provider.AttributeCondition,
 		AllowedAudiences:   provider.OIDC.AllowedAudiences,
+		IssuerURI:          provider.OIDC.IssuerURI,
+		State:              provider.State,
+		Disabled:           provider.Disabled,
 	}, nil
 }
 
@@ -1960,6 +1990,7 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 			envVars[e.Name] = e.Value
 		}
 		info.TrafficEnvVars = envVars
+		info.TrafficEnvVarsFromTemplate = true
 	}
 
 	return info, nil
@@ -2031,7 +2062,7 @@ func (c *LiveGCFClient) waitForIAMOperation(ctx context.Context, body io.Reader)
 		return nil
 	}
 	if op.Name == "" {
-		return nil
+		return fmt.Errorf("IAM operation returned no name and is not done")
 	}
 	if !operationNamePattern.MatchString(op.Name) {
 		return fmt.Errorf("invalid IAM operation name format: %q", op.Name)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -130,7 +131,7 @@ host_files:
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /sandbox/workspace/.gcp-credentials.json
   - src: /etc/ssl/certs/ca-certificates.crt
-    dest: /etc/ssl/certs/ca-certificates.crt
+    dest: /sandbox/workspace/ca-certificates.crt
   - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
@@ -147,7 +148,7 @@ host_files:
 	assert.Equal(t, "/sandbox/workspace/.gcp-credentials.json", h.HostFiles[0].Dest)
 	assert.False(t, h.HostFiles[0].Expand)
 	assert.Equal(t, "/etc/ssl/certs/ca-certificates.crt", h.HostFiles[1].Src)
-	assert.Equal(t, "/etc/ssl/certs/ca-certificates.crt", h.HostFiles[1].Dest)
+	assert.Equal(t, "/sandbox/workspace/ca-certificates.crt", h.HostFiles[1].Dest)
 	assert.False(t, h.HostFiles[1].Expand)
 	assert.Equal(t, "env/gcp-vertex.env", h.HostFiles[2].Src)
 	assert.Equal(t, "/sandbox/workspace/.env.d/gcp-vertex.env", h.HostFiles[2].Dest)
@@ -554,6 +555,72 @@ func TestValidateRunnerEnvWith_ChecksEnvSandbox(t *testing.T) {
 	assert.Contains(t, err.Error(), "ALSO_MISSING")
 }
 
+func TestValidateRunnerEnvWith_ReportsAllMissingVars(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		HostFiles: []HostFile{
+			{Src: "${MISSING_VAR}", Dest: "/tmp/first"},
+		},
+		ValidationLoop: &ValidationLoop{
+			Schema: "${MISSING_DIR}/result.json",
+		},
+		Env: &EnvConfig{
+			Runner: map[string]string{
+				"KEY": "${MISSING_VAR}",
+			},
+			Sandbox: map[string]string{
+				"KEY":     "${ALSO_MISSING}",
+				"SET_KEY": "${SET_VAR}",
+			},
+		},
+	}
+
+	lookup := func(key string) (string, bool) {
+		if key == "SET_VAR" {
+			return "val", true
+		}
+		return "", false
+	}
+	err := h.ValidateRunnerEnvWith(lookup)
+	require.Error(t, err)
+	message := err.Error()
+	assert.Contains(t, message, "3 unresolved host variable(s):")
+
+	assert.Contains(t, message, "env.runner[KEY]")
+	assert.Contains(t, message, "env.sandbox[KEY]")
+	assert.Contains(t, message, "host_files[0].src")
+	assert.Contains(t, message, "validation_loop.schema")
+
+	assert.Contains(t, message, "ALSO_MISSING")
+	assert.Contains(t, message, "MISSING_DIR")
+	assert.Contains(t, message, "MISSING_VAR")
+	assert.NotContains(t, message, "SET_VAR")
+
+	alsoMissing := strings.Index(message, "ALSO_MISSING")
+	missingDir := strings.Index(message, "MISSING_DIR")
+	missingVar := strings.Index(message, "MISSING_VAR")
+	assert.Less(t, alsoMissing, missingDir)
+	assert.Less(t, missingDir, missingVar)
+}
+
+func TestValidateRunnerEnvWith_DoesNotPrintFieldValues(t *testing.T) {
+	const databaseUser = "agent-user"
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &EnvConfig{
+			Runner: map[string]string{
+				"DATABASE_URL": "postgres://" + databaseUser + "@${DB_HOST}/agent_state",
+			},
+		},
+	}
+
+	err := h.ValidateRunnerEnvWith(func(string) (string, bool) { return "", false })
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), databaseUser)
+}
+
 func TestValidateRunnerEnvWith_EnvAllSet(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
@@ -673,7 +740,7 @@ func TestValidate_ModelValid(t *testing.T) {
 		"claude-sonnet-4-6@default",
 		"claude-sonnet-4-6@20250514",
 		"claude-opus-4-1@20250805",
-		"google-vertex/gemini-3.7-flash",
+		"google-vertex/gemini-3.8-flash",
 		"xai-vertex/xai/grok-4.6",
 		"anthropic-vertex/claude-opus-4-6",
 	} {
@@ -840,6 +907,7 @@ func TestValidateFilesExist_MissingSkill(t *testing.T) {
 
 	h := &Harness{
 		Agent:  agentFile,
+		Policy: writeTestPolicy(t, dir),
 		Skills: []SkillEntry{{Source: "/nonexistent/skill"}},
 	}
 	err := h.ValidateFilesExist()
@@ -853,7 +921,8 @@ func TestValidateFilesExist_SkipsVarPaths(t *testing.T) {
 	require.NoError(t, os.WriteFile(agentFile, []byte("agent"), 0o644))
 
 	h := &Harness{
-		Agent: agentFile,
+		Agent:  agentFile,
+		Policy: writeTestPolicy(t, dir),
 		HostFiles: []HostFile{
 			{Src: "${SOME_VAR}", Dest: "/tmp/dest"},
 		},
@@ -870,7 +939,8 @@ func TestValidateFilesExist_SkipsSchemaVarPaths(t *testing.T) {
 	require.NoError(t, os.WriteFile(scriptFile, []byte("#!/bin/bash"), 0o755))
 
 	h := &Harness{
-		Agent: agentFile,
+		Agent:  agentFile,
+		Policy: writeTestPolicy(t, dir),
 		ValidationLoop: &ValidationLoop{
 			Script: scriptFile,
 			Schema: "${FULLSEND_DIR}/schemas/result.schema.json",
@@ -887,7 +957,8 @@ func TestValidateFilesExist_MissingSchema(t *testing.T) {
 	require.NoError(t, os.WriteFile(scriptFile, []byte("#!/bin/bash"), 0o755))
 
 	h := &Harness{
-		Agent: agentFile,
+		Agent:  agentFile,
+		Policy: writeTestPolicy(t, dir),
 		ValidationLoop: &ValidationLoop{
 			Script: scriptFile,
 			Schema: "/nonexistent/schema.json",
@@ -902,7 +973,7 @@ func TestValidate_PluginNameValid(t *testing.T) {
 	h := &Harness{
 		Agent:   "agents/test.md",
 		Role:    "test",
-		Plugins: []string{"plugins/gopls-lsp", "plugins/my_plugin-2"},
+		Plugins: []PluginSpec{{Path: "plugins/gopls-lsp"}, {Path: "plugins/my_plugin-2"}},
 	}
 	require.NoError(t, h.Validate())
 }
@@ -912,7 +983,7 @@ func TestValidate_PluginNameInvalid(t *testing.T) {
 		h := &Harness{
 			Agent:   "agents/test.md",
 			Role:    "test",
-			Plugins: []string{"plugins/" + name},
+			Plugins: []PluginSpec{{Path: "plugins/" + name}},
 		}
 		err := h.Validate()
 		require.Error(t, err, "expected error for plugin name %q", name)
@@ -923,16 +994,17 @@ func TestValidate_PluginNameInvalid(t *testing.T) {
 func TestResolveRelativeTo_Plugins(t *testing.T) {
 	h := &Harness{
 		Agent:   "agents/test.md",
-		Plugins: []string{"plugins/gopls-lsp"},
+		Plugins: []PluginSpec{{Path: "plugins/gopls-lsp"}},
 	}
 	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
-	assert.Equal(t, []string{"/base/dir/plugins/gopls-lsp"}, h.Plugins)
+	require.Len(t, h.Plugins, 1)
+	assert.Equal(t, "/base/dir/plugins/gopls-lsp", h.Plugins[0].Path)
 }
 
 func TestResolveRelativeTo_PluginTraversalRejected(t *testing.T) {
 	h := &Harness{
 		Agent:   "agents/test.md",
-		Plugins: []string{"../../etc/evil"},
+		Plugins: []PluginSpec{{Path: "../../etc/evil"}},
 	}
 	err := h.ResolveRelativeTo("/base/dir")
 	require.Error(t, err)
@@ -1036,7 +1108,8 @@ func TestValidateFilesExist_MissingPlugin(t *testing.T) {
 
 	h := &Harness{
 		Agent:   agentFile,
-		Plugins: []string{"/nonexistent/plugin"},
+		Policy:  writeTestPolicy(t, dir),
+		Plugins: []PluginSpec{{Path: "/nonexistent/plugin"}},
 	}
 	err := h.ValidateFilesExist()
 	require.Error(t, err)
@@ -1049,7 +1122,8 @@ func TestValidateFilesExist_SkipsOptionalPaths(t *testing.T) {
 	require.NoError(t, os.WriteFile(agentFile, []byte("agent"), 0o644))
 
 	h := &Harness{
-		Agent: agentFile,
+		Agent:  agentFile,
+		Policy: writeTestPolicy(t, dir),
 		HostFiles: []HostFile{
 			{Src: "/tmp/does-not-exist-yet.env", Dest: "/tmp/dest", Optional: true},
 		},
@@ -1106,6 +1180,7 @@ func TestValidateFilesExist_BareProviderNameSkipped(t *testing.T) {
 
 	h := &Harness{
 		Agent:     agentFile,
+		Policy:    writeTestPolicy(t, dir),
 		Providers: []string{"fullsend-github"},
 	}
 	require.NoError(t, h.ValidateFilesExist())
@@ -1449,12 +1524,12 @@ func TestHasURLReferences(t *testing.T) {
 		},
 		{
 			name: "URL plugin",
-			h:    Harness{Agent: "agents/test.md", Plugins: []string{"https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=abc"}},
+			h:    Harness{Agent: "agents/test.md", Plugins: []PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=abc"}}},
 			want: true,
 		},
 		{
 			name: "local plugin only",
-			h:    Harness{Agent: "agents/test.md", Plugins: []string{"gopls-lsp"}},
+			h:    Harness{Agent: "agents/test.md", Plugins: []PluginSpec{{Path: "gopls-lsp"}}},
 			want: false,
 		},
 		{
@@ -1787,6 +1862,96 @@ forge:
 	require.NoError(t, err)
 	require.NotNil(t, h.ValidationLoop)
 	assert.Equal(t, "scripts/validate-gh.sh", h.ValidationLoop.Script)
+}
+
+func TestLoadWithOpts_ForgePartialValidationLoopInheritsScript(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: scripts/validate.sh
+  max_iterations: 5
+  feedback_mode: append
+  schema: schemas/base.json
+forge:
+  github:
+    validation_loop:
+      schema: schemas/gh.json
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
+	require.NoError(t, err)
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "scripts/validate.sh", h.ValidationLoop.Script)
+	assert.Equal(t, "schemas/gh.json", h.ValidationLoop.Schema)
+	assert.Equal(t, 5, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode)
+}
+
+func TestLoadWithOpts_ForgePartialValidationLoopRejectsWithoutTopScript(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    validation_loop:
+      schema: schemas/gh.json
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	_, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validation_loop.script is required")
+}
+
+func TestLoadWithOpts_OverlayPartialValidationLoopRejectsWithoutTopScript(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+overlays:
+- when: 'runtime.forge == "github"'
+  validation_loop:
+    schema: schemas/gh.json
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	_, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validation_loop.script is required")
+}
+
+func TestLoadWithOpts_OverlayPartialValidationLoopInheritsScript(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: scripts/validate.sh
+  max_iterations: 5
+  feedback_mode: append
+  schema: schemas/base.json
+overlays:
+- when: 'runtime.forge == "github"'
+  validation_loop:
+    schema: schemas/gh.json
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
+	require.NoError(t, err)
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "scripts/validate.sh", h.ValidationLoop.Script)
+	assert.Equal(t, "schemas/gh.json", h.ValidationLoop.Schema)
+	assert.Equal(t, 5, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode)
 }
 
 func TestLoadWithOpts_PlatformNotConfigured(t *testing.T) {
@@ -2131,7 +2296,7 @@ func TestValidateResourceTypes_PluginURLRequiresHash(t *testing.T) {
 	h := &Harness{
 		Agent:   "agents/test.md",
 		Role:    "test",
-		Plugins: []string{"https://github.com/org/repo/tree/main/plugins/gopls-lsp"},
+		Plugins: []PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/gopls-lsp"}},
 	}
 	err := h.ValidateResourceTypes()
 	require.Error(t, err)
@@ -2142,7 +2307,7 @@ func TestValidateResourceTypes_PluginLocalNamePassesThrough(t *testing.T) {
 	h := &Harness{
 		Agent:   "agents/test.md",
 		Role:    "test",
-		Plugins: []string{"gopls-lsp"},
+		Plugins: []PluginSpec{{Path: "gopls-lsp"}},
 	}
 	err := h.ValidateResourceTypes()
 	require.NoError(t, err)
@@ -2152,8 +2317,8 @@ func TestValidateResourceTypes_PluginURLWithHashValid(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "test",
-		Plugins: []string{
-			"https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Plugins: []PluginSpec{
+			{Path: "https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 		},
 	}
 	err := h.ValidateResourceTypes()
@@ -2164,8 +2329,8 @@ func TestValidateResourceTypes_PluginNonForgeURLRejected(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "test",
-		Plugins: []string{
-			"https://example.com/plugins/gopls-lsp#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Plugins: []PluginSpec{
+			{Path: "https://example.com/plugins/gopls-lsp#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 		},
 	}
 	err := h.ValidateResourceTypes()
@@ -2177,8 +2342,8 @@ func TestValidateResourceTypes_PluginNonGitHubForgeRejected(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "test",
-		Plugins: []string{
-			"https://gitlab.com/org/repo/-/tree/main/plugins/gopls-lsp#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Plugins: []PluginSpec{
+			{Path: "https://gitlab.com/org/repo/-/tree/main/plugins/gopls-lsp#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 		},
 	}
 	err := h.ValidateResourceTypes()
@@ -2201,8 +2366,8 @@ func TestValidateResourceTypes_PluginBlobURLRejected(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "test",
-		Plugins: []string{
-			"https://github.com/org/repo/blob/main/plugins/gopls-lsp/init.sh#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Plugins: []PluginSpec{
+			{Path: "https://github.com/org/repo/blob/main/plugins/gopls-lsp/init.sh#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 		},
 	}
 	err := h.ValidateResourceTypes()
@@ -2225,8 +2390,8 @@ func TestValidateResourceTypes_PluginRepoRootURLRejected(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "test",
-		Plugins: []string{
-			"https://github.com/org/myplugin/tree/main#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Plugins: []PluginSpec{
+			{Path: "https://github.com/org/myplugin/tree/main#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 		},
 	}
 	err := h.ValidateResourceTypes()
@@ -2283,7 +2448,11 @@ func TestHasURLDirResources(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := &Harness{Skills: tt.skills, Plugins: tt.plugins}
+			plugins := make([]PluginSpec, 0, len(tt.plugins))
+			for _, p := range tt.plugins {
+				plugins = append(plugins, PluginSpec{Path: p})
+			}
+			h := &Harness{Skills: tt.skills, Plugins: plugins}
 			assert.Equal(t, tt.want, h.HasURLDirResources())
 		})
 	}
@@ -2473,4 +2642,15 @@ overlays:
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+}
+
+func TestParseProviderDef(t *testing.T) {
+	def, err := ParseProviderDef([]byte("name: openai\ntype: fullsend-openai\ncredentials:\n  OPENAI_API_KEY: \"\"\n"))
+	require.NoError(t, err)
+	assert.Equal(t, "openai", def.Name)
+	assert.Equal(t, "fullsend-openai", def.Type)
+	_, err = ParseProviderDef([]byte("type: x\n"))
+	require.Error(t, err)
+	_, err = ParseProviderDef([]byte("name: bad name\ntype: x\n"))
+	require.Error(t, err)
 }

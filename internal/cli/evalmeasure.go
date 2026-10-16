@@ -35,14 +35,19 @@ func newEvalMeasureCmd() *cobra.Command {
 		Long: `Parse run-telemetry.jsonl, score with an agents measurement manifest,
 and write eval-measurements.jsonl beside the telemetry artifact.
 
+When OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is
+set (same env as agent traces, ADR 0050), newly written scores are also
+exported as OTLP span events (gen_ai.evaluation.result) on the scored
+trace. Export is fail-open: local JSONL always wins.
+
 The binary resolves the manifest (local FULLSEND_DIR override, else a
 SHA-pinned fetch from fullsend-ai/agents — same pin, allowlist, hash, and
 audit as harness fallback). Platform telemetry is the file at the top of
 each run directory; nested iteration-N/output/ copies are ignored.
 
 Remote backends are not selected by fullsend: scores are a portable local
-JSONL artifact. When portable OTLP score export lands, it will reuse the
-same OTEL_EXPORTER_OTLP_* configuration as agent traces (ADR 0050 / 0087).
+JSONL artifact plus optional OTLP on the shared OTEL_* path (ADR 0087).
+No vendor score adapters (MLflow Assessments, Phoenix SDK, …) in core.
 
 Exit 0 when scores fail — measurements are data, not gates. Non-zero only
 on hard IO/parse errors. Missing telemetry or manifest is a skip (exit 0).`,
@@ -112,7 +117,7 @@ func runEvalMeasure(ctx context.Context, printer *ui.Printer, opts evalMeasureOp
 
 	var all []evalmeasure.EvaluationResult
 	for _, p := range telemPaths {
-		results, stats, err := evalmeasure.MeasureAndExport(ctx, p, registry, opts.outDir)
+		results, stats, err := evalmeasure.MeasureAndExport(ctx, p, registry, opts.outDir, Version())
 		if stats.Incomplete != "" {
 			printer.StepWarn(fmt.Sprintf("%s: telemetry parse incomplete (%s); scored available traces", p, stats.Incomplete))
 		}
@@ -121,6 +126,9 @@ func runEvalMeasure(ctx context.Context, printer *ui.Printer, opts evalMeasureOp
 		}
 		if stats.SkippedSpans > 0 {
 			printer.StepWarn(fmt.Sprintf("%s: skipped %d unreadable span(s) inside otherwise-valid telemetry line(s)", p, stats.SkippedSpans))
+		}
+		if stats.RemoteExportWarning != "" {
+			printer.StepWarn(fmt.Sprintf("%s: OTLP score export failed (local JSONL kept): %s", p, stats.RemoteExportWarning))
 		}
 		if err != nil {
 			return append(all, results...), false, err
@@ -218,7 +226,17 @@ func evalMeasureFetchContext(fullsendDir string, offline bool, printer *ui.Print
 	}
 	orgAllowlist := config.DefaultAllowedRemoteResources()
 	if fullsendDir != "" && printer != nil {
-		if orgCfg := tryLoadOrgConfig(filepath.Join(abs, "config.yaml"), printer); orgCfg != nil {
+		cfgPath := filepath.Join(abs, "config.yaml")
+		orgCfg, loadErr := loadLockConfig(cfgPath)
+		if loadErr != nil {
+			// A config layer (config.yaml or config.base.yaml) exists but
+			// could not be loaded (malformed, unreadable, or a rejected
+			// per-org format). Fail closed rather than silently reverting
+			// to the default allowlist, which could override an explicit
+			// deny-all.
+			printer.StepWarn("Fullsend config could not be loaded; remote fetching denied: " + loadErr.Error())
+			orgAllowlist = []string{}
+		} else if orgCfg != nil {
 			orgAllowlist = orgCfg.AllowedResources()
 		}
 	}

@@ -91,7 +91,8 @@ cp ~/Downloads/myorg-triage.2026-06-18.private-key.pem pems/triage.pem
 ## Step 3: Build the standalone mint
 
 ```bash
-cd cmd/mint
+git clone https://github.com/fullsend-ai/fullsend.git
+cd fullsend/cmd/mint
 go build -o fullsend-mint .
 ```
 
@@ -103,7 +104,7 @@ The standalone mint is configured entirely through environment variables:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `ALLOWED_ORGS` | Comma-separated GitHub orgs allowed to request tokens, or `*` for public mint mode (any org; upstream-only workflow provenance) | `myorg,myorg-sandbox` or `*` |
+| `PER_REPO_WIF_REPOS` | Comma-separated `owner/repo` entries enrolled to request tokens, or `*` for public mint mode (every requesting repository is admitted). A repository that is not listed is denied. Per-repo callers can only mint to their own repo scope unless repo-level FOREIGN grants authorize more. | `myorg/my-repo,myorg/other-repo` or `*` |
 | `ROLE_APP_IDS` | JSON map of role name to GitHub App ID (use plain role names, not org-prefixed) | `{"triage":"4087047","scanner":"5555555"}` |
 | `PEM_DIR` | Path to directory containing `{role}.pem` files | `./pems` |
 
@@ -114,17 +115,15 @@ The standalone mint is configured entirely through environment variables:
 | `ALLOWED_WORKFLOW_FILES` | Comma-separated workflow file allowlist; `*` for all | `*` |
 | `FALLBACK_MINT_URL` | Upstream mint URL for roles without local PEMs | `https://mint.fullsend.sh` |
 | `CUSTOM_ROLE_PERMISSIONS` | JSON map of custom role permissions (see below) | `{"scanner":{"contents":"read"}}` |
-| `PER_REPO_WIF_REPOS` | Comma-separated repos with per-repo WIF treatment. Use `*` for public mint mode (all repos get per-repo treatment). Per-repo callers can only mint to their own repo scope. Callers not in this list fall through to per-org (`ALLOWED_ORGS`) and get org-mode repos shapes. | `myorg/private-repo` |
-| `WORKFLOW_HOST_REPOS` | Comma-separated repos whose workflows are trusted to call the mint for per-repo callers. Per-org callers are not affected (they hard-wire to `{org}/.fullsend` and upstream). Defaults to `fullsend-ai/fullsend` when unset. | `fullsend-ai/fullsend,myorg/my-workflows` |
+| `WORKFLOW_HOST_REPOS` | Comma-separated repos whose workflows are trusted to call the mint. Applies to every admitted caller; the upstream `fullsend-ai/fullsend` is always accepted. Defaults to `fullsend-ai/fullsend` when unset. | `fullsend-ai/fullsend,myorg/my-workflows` |
 | `PORT` | HTTP listen port | `8080` (default) |
 
 ### Public mint mode
 
-Set `ALLOWED_ORGS=*` and `PER_REPO_WIF_REPOS=*` to enable public mint mode:
+Set `PER_REPO_WIF_REPOS=*` to enable public mint mode:
 
-- Any org may request tokens (installation lookup still scopes tokens to the requesting org)
-- `job_workflow_ref` validation uses the same per-repo path: only repos in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`) are accepted, and the `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2)
-- Set `PER_REPO_WIF_REPOS=*` alongside `ALLOWED_ORGS=*`
+- Any repository may request tokens (installation lookup still scopes tokens to the requesting org)
+- `job_workflow_ref` validation is the same as in enrolled mode: only the upstream `fullsend-ai/fullsend` and repos in `WORKFLOW_HOST_REPOS` are accepted, and the `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2)
 - No WIF or GCP STS setup is required — standalone mint validates OIDC via GitHub JWKS directly
 
 ### Example: local roles with fallback proxy
@@ -132,7 +131,7 @@ Set `ALLOWED_ORGS=*` and `PER_REPO_WIF_REPOS=*` to enable public mint mode:
 This configuration serves `triage` and `scanner` locally while proxying all other roles (coder, review, etc.) to the hosted mint:
 
 ```bash
-export ALLOWED_ORGS="myorg"
+export PER_REPO_WIF_REPOS="myorg/my-repo"
 export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
@@ -155,7 +154,7 @@ On startup, the mint logs the configuration:
 If you do not need the hosted mint at all, omit `FALLBACK_MINT_URL`. Requests for roles without local PEMs will be rejected:
 
 ```bash
-export ALLOWED_ORGS="myorg"
+export PER_REPO_WIF_REPOS="myorg/my-repo"
 export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
@@ -194,13 +193,30 @@ gh api -X POST /repos/myorg/my-repo/actions/variables \
 
 > **Note:** Repository-level variables override organization-level variables in GitHub Actions. If a repo already has `FULLSEND_MINT_URL` set at the repo level, update it there — the org-level variable will be ignored for that repo.
 
+## Privilege levels
+
+Levels are keys on each role. The mint looks up the requested level and returns the stored permission map — or returns an error if the level is not defined. Every role must define at least `read` and `write`; custom roles may define additional named levels.
+
+| Level | Behavior |
+|-------|----------|
+| `"read"` | Returns the `read`-level permission map (built-in roles: all values `"read"`) |
+| `"write"` | Returns the `write`-level permission map (built-in roles: the canonical ceiling) |
+| _(omitted)_ | Defaults to `"write"` (temporary compatibility default — a future release will change to `"read"`) |
+| _(custom)_ | Custom roles may define extra named levels; the mint looks them up the same way |
+
+Level names must match `^[a-z][a-z0-9_-]{0,31}$` (starts with a lowercase letter, max 32 characters). Invalid names are rejected with HTTP 400.
+
+> **Temporary compatibility default:** Omitting `level` currently defaults to `"write"` so existing HTTP clients keep receiving write-level tokens. A future PR will migrate the default to `"read"`. Callers that need read-only tokens should pass `"level": "read"` explicitly.
+
 ## Custom role permissions
 
 ### Defining permissions
 
 Custom roles require an explicit permissions map via the `CUSTOM_ROLE_PERMISSIONS` environment variable. This tells the mint what permissions to request when creating installation tokens for the role.
 
-The format is a JSON object mapping role names to permission maps:
+#### Flat format
+
+The simplest format is a JSON object mapping role names to permission maps. The given map is stored as both the `read` and `write` levels — requesting either level returns the same permissions:
 
 ```json
 {
@@ -218,7 +234,35 @@ The format is a JSON object mapping role names to permission maps:
 }
 ```
 
-Permission names and levels match the [GitHub App permissions API](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app). Common permission levels are `read` and `write`.
+#### Multi-level format
+
+To define distinct `read` and `write` privilege levels for a custom role, wrap the permission maps inside a `levels` key:
+
+```json
+{
+  "deployer": {
+    "levels": {
+      "read": {
+        "contents": "read",
+        "deployments": "read",
+        "metadata": "read"
+      },
+      "write": {
+        "contents": "read",
+        "deployments": "write",
+        "environments": "write",
+        "metadata": "read"
+      }
+    }
+  }
+}
+```
+
+When a token request omits the `level` field (or sets it to `"read"`), the mint returns the `read`-level permissions. Setting `level: "write"` returns the `write`-level permissions. Multi-level roles must define both `read` and `write` levels; extra named levels are allowed. The mint looks up the requested level and fails if it is not defined — there is no derivation or fallback.
+
+Both formats can be mixed in a single `CUSTOM_ROLE_PERMISSIONS` value — some roles flat, others multi-level. The mint auto-detects the format per role by checking for the `levels` key.
+
+Permission names and levels match the [GitHub App permissions API](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app). Supported levels include `read`, `write`, and `admin` where GitHub exposes that level.
 
 ### Built-in roles cannot be overridden
 
@@ -246,9 +290,11 @@ Valid examples: `scanner`, `deploy-prod`, `code_review`, `my-agent-v2`
 
 Invalid examples: `Scanner` (uppercase), `123scanner` (starts with digit), `my--agent` (double hyphen)
 
+Role-prefixed identifiers (environment variables, GitHub Actions secrets and variables such as `FULLSEND_<ROLE>_APP_PRIVATE_KEY`, `FULLSEND_<ROLE>_CLIENT_ID`, `<ROLE>_FULLSEND_MODEL`, and `FULLSEND_FOREIGN_<ROLE>_REPOS`) map the role with `role.upper().replace("-", "_")`. For `ci-check` that is `CI_CHECK`, so the foreign allow-list variable is `FULLSEND_FOREIGN_CI_CHECK_REPOS` and the model override is `CI_CHECK_FULLSEND_MODEL`. Roles that differ only by hyphen vs underscore (`ci-check` vs `ci_check`) share an identifier.
+
 ### Permissions must match the GitHub App
 
-The permissions in `CUSTOM_ROLE_PERMISSIONS` must be a subset of what the GitHub App is installed with. If you request a permission the app does not have, GitHub will return an error when the mint tries to create the installation token. The mint does not validate this at startup — the error occurs at token request time.
+The permissions in `CUSTOM_ROLE_PERMISSIONS` must be a subset of what the GitHub App is installed with. When the installation lookup includes its granted permissions, custom-role permissions are required by default: if an installation does not grant one, the mint reports the missing permission before making the token request. If GitHub omits that map, the mint preserves the requested permissions and lets the token request validate them. During a built-in permission rollout, only permissions explicitly listed in the mint's `optionalRolePermissions` map may be omitted; see the [permission rollout runbook](infrastructure-reference.md#roll-out-a-github-app-permission).
 
 ## Fallback proxy behavior
 
@@ -273,6 +319,32 @@ When `FALLBACK_MINT_URL` is not set, requests for roles without local PEMs are r
 curl http://localhost:8080/health
 # {"status":"ok"}
 ```
+
+### Check status via the CLI
+
+If `FULLSEND_MINT_URL` is set (or you pass `--mint-url`), the CLI can
+query the mint's `/v1/status` endpoint using auto-discovered GitHub
+credentials — but only GitHub Actions OIDC succeeds against a standalone
+mint built per Step 3 above (`go build -o fullsend-mint .`, no
+`-tags github`): the `GH_TOKEN` / `GITHUB_TOKEN` / `gh auth token`
+fallback always returns HTTP 401 unless the binary was compiled with
+`-tags github` and `StatusGitHubGroup` is set to a non-empty
+`ORG/TEAM` (see [Enabling optional
+validators](infrastructure-reference.md#status-endpoint)). Run it from
+within a GitHub Actions workflow to use OIDC:
+
+```bash
+fullsend mint status --mint-url="$FULLSEND_MINT_URL"
+```
+
+Under GitHub Actions OIDC, this reports the mint's version, build commit,
+the calling workflow's organization, configured roles, and workflow host
+repos — without requiring any GCP IAM roles. It does not list all enrolled
+organizations; the status response no longer includes an
+`allowed_orgs` field. The non-OIDC (GitHub token) path, which a default
+standalone mint rejects with HTTP 401 as described above, returns the
+roles, workflow host repos, and version without an `org`. To verify locally without GitHub Actions
+OIDC, use the health endpoint above instead.
 
 ### Test from a GitHub Actions workflow
 
@@ -303,7 +375,7 @@ jobs:
           curl -s -X POST "${{ vars.FULLSEND_MINT_URL }}/v1/token" \
             -H "Authorization: Bearer ${{ steps.oidc.outputs.token }}" \
             -H "Content-Type: application/json" \
-            -d '{"role":"scanner","repos":["${{ github.event.repository.name }}"]}'
+            -d '{"role":"scanner","level":"read","repos":["${{ github.event.repository.name }}"]}'
 ```
 
 ## Complete example
@@ -325,10 +397,11 @@ cp ~/Downloads/myorg-scanner.private-key.pem pems/scanner.pem
 chmod 600 pems/*.pem
 
 # 3. Build
-cd cmd/mint && go build -o fullsend-mint .
+git clone https://github.com/fullsend-ai/fullsend.git
+cd fullsend/cmd/mint && go build -o fullsend-mint .
 
 # 4. Run
-export ALLOWED_ORGS="myorg"
+export PER_REPO_WIF_REPOS="myorg/my-repo"
 export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
