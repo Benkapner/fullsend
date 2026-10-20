@@ -353,8 +353,8 @@ func TestPerRepoConfig_MintURL_Fallback(t *testing.T) {
 	})
 }
 
-// TestPerRepoConfig_MintURLFromFile_Fallback
-// checks thatConfigMintURLFromFile stops at "" instead of reaching the compiled
+// TestPerRepoConfig_MintURLFromFile_Fallback checks that
+// ConfigMintURLFromFile stops at "" instead of reaching the compiled
 // default — it never asks the perRepoDefaults layer for a value.
 func TestPerRepoConfig_MintURLFromFile_Fallback(t *testing.T) {
 	t.Run("empty falls through to parent", func(t *testing.T) {

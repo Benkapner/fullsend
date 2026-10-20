@@ -8257,6 +8257,7 @@ func TestRunAgent_MintURLFromFileSkipsWithoutOIDC(t *testing.T) {
 	t.Setenv("FULLSEND_MINT_URL", "")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+	t.Setenv("GITHUB_ACTIONS", "")
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
 	t.Setenv("GH_TOKEN", "fake-gh-token")
 	t.Setenv("PUSH_TOKEN", "")
@@ -8286,6 +8287,101 @@ func TestRunAgent_MintURLFromFileSkipsWithoutOIDC(t *testing.T) {
 // --mint-url flag (or FULLSEND_MINT_URL) is a deliberate signal from the
 // operator and stays fail-closed — it must still hard-fail when GitHub
 // Actions OIDC is unavailable, rather than silently degrading.
+// TestRunAgent_MintURLFromFileFailsClosedWhenEnvAlsoSet is a regression test
+// for review feedback on #8400: the file wins the mint_url endpoint
+// precedence, so resolveMintURL reports mintURLSourceFile even when
+// FULLSEND_MINT_URL is also set — but an operator who set the env var still
+// signalled real intent to mint, even though that value is shadowed. The
+// downgrade must not fire in that case; a missing OIDC environment must
+// still hard-fail the run.
+func TestRunAgent_MintURLFromFileFailsClosedWhenEnvAlsoSet(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "fake-gh-token")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent token minting failed", "a competing FULLSEND_MINT_URL must stay fail-closed even though the file wins the endpoint")
+}
+
+// TestRunAgent_MintURLFromFileFailsClosedInGitHubActions is a regression
+// test for review feedback on #8400: downgrading solely on missing OIDC env
+// would also silently fall back to the ambient GH_TOKEN inside GitHub
+// Actions when a workflow is missing id-token: write — a misconfiguration
+// that must fail loudly, not swap in unscoped credentials. The downgrade
+// must only apply to a genuine local (non-Actions) run.
+func TestRunAgent_MintURLFromFileFailsClosedInGitHubActions(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	// Simulates a workflow missing id-token: write permission: genuinely
+	// inside GitHub Actions, but the OIDC request env vars never showed up.
+	t.Setenv("FULLSEND_MINT_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "fake-gh-token")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent token minting failed", "a missing id-token: write permission inside Actions must fail loudly, not fall back to the ambient GH_TOKEN")
+}
+
 func TestRunAgent_MintURLFlagFailsClosedWithoutOIDC(t *testing.T) {
 	useFakeOpenshell(t)
 	dir := t.TempDir()

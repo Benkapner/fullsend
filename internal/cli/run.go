@@ -896,10 +896,23 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// run into a hard failure by attempting a GitHub Actions OIDC exchange
 	// that isn't available outside Actions. A flag or FULLSEND_MINT_URL is
 	// an explicit signal from the operator, so those stay fail-closed below
-	// (#8400).
+	// (#8400). Two conditions narrow the downgrade to a genuine local run,
+	// not just "OIDC env happens to be empty" (review feedback on #8400):
+	//   - FULLSEND_MINT_URL must also be unset. The file wins the endpoint
+	//     precedence either way, but an operator who separately set the
+	//     env var still signalled real intent to mint, even though that
+	//     value is shadowed, so a mint failure must stay loud.
+	//   - GITHUB_ACTIONS must not be "true". Downgrading solely on missing
+	//     OIDC env would also silently fall back to the ambient (often
+	//     broader) GH_TOKEN inside Actions when a workflow is missing
+	//     id-token: write — a misconfiguration that should fail loudly,
+	//     not swap in unscoped credentials.
 	mintSkipWarning := ""
-	if mintSource == mintURLSourceFile && !hasActionsOIDCEnv(os.Getenv) {
-		mintSkipWarning = "config.yaml/config.base.yaml sets mint_url, but GitHub Actions OIDC is unavailable (not running in Actions, or missing id-token: write); skipping token minting for role " + h.Role
+	if mintSource == mintURLSourceFile &&
+		os.Getenv("FULLSEND_MINT_URL") == "" &&
+		os.Getenv("GITHUB_ACTIONS") != "true" &&
+		!hasActionsOIDCEnv(os.Getenv) {
+		mintSkipWarning = "config.yaml/config.base.yaml sets mint_url for a local run with no FULLSEND_MINT_URL, but GitHub Actions OIDC is unavailable; skipping token minting for role " + h.Role
 		mintURL = ""
 	}
 	runtimeLevel := h.PrivilegeLevelForStage(harness.PrivilegeStageRuntime)
