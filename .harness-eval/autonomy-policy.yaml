@@ -1,0 +1,11 @@
+# Policy facts this repository accepts. harness-autonomy lists a match under
+# "waived" with the reason below instead of returning REVIEW_REQUIRED.
+# Only rules with effect=policy can be accepted; block rules cannot.
+# Protect this file with CODEOWNERS: it is a trust decision.
+accept:
+  - rule: content/allowed-tools-auto-approve
+    file: skills/*/SKILL.md
+    reason: >-
+      Developer skills grant scoped git/gh commands (Bash(git push:*),
+      Bash(gh release:*)) on purpose; they run in a maintainer's own Claude
+      Code session, not in an agent sandbox. Reviewed with the 8.0 rollout.
