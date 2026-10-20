@@ -70,6 +70,9 @@ var claudeToolForCodex = map[string]string{
 
 func (r CodexRuntime) codexHooksDir() string { return r.ConfigDir() + "/hooks" }
 
+// codexRolesDir is where codex discovers sub-agent roles at launch (#6970).
+func (r CodexRuntime) codexRolesDir() string { return r.ConfigDir() + "/agents" }
+
 func (r CodexRuntime) codexManifestPath() string { return r.ConfigDir() + "/" + codexManifestFile }
 
 func (r CodexRuntime) codexSessionsDir() string { return r.ConfigDir() + "/sessions" }
@@ -151,6 +154,25 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	if !ok || repoInput.RepoDir() == "" {
 		return fmt.Errorf("codex bootstrap: the target repository's sandbox path is required")
 	}
+	// ADR 0126 gate. Part one: tools include Agent and harness security is
+	// on. Part two needs the pinned CLI's catalog: codex must resolve the
+	// model Run will launch to collaboration V1, the only version whose spawn
+	// tool the guard admits (its entry selects V1, or carries no version and
+	// codex's multi_agent feature, on by default, supplies V1). A V2 or
+	// unlisted parent keeps the multi-agent tools off and runs in one context,
+	// as every agent does today.
+	_, securityOn := input.(SandboxHooksBootstrap)
+	var catalog codexCatalog
+	delegating := false
+	if codexDelegates(def, securityOn) {
+		if catalog, err = codexPreflightCatalog(sandboxName); err != nil {
+			return err
+		}
+		var reason string
+		if delegating, reason = codexParentResolvesV1(catalog, input.ParentModel(), def.Model); !delegating {
+			fmt.Fprintf(os.Stderr, "sub-agents: %s; native sub-agents need a parent Codex resolves to collaboration V1, running in one context\n", reason)
+		}
+	}
 	// The gateway provider is rendered only when the runner registered an
 	// inference.gateway block for this sandbox (PrepareGatewayRun).
 	gatewayBaseURL := codexGatewayRunFor(sandboxName)
@@ -190,18 +212,9 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		return err
 	}
 
-	if err := duplicateDestinationNameError("skill", input.SkillDirs()); err != nil {
+	// codex discovers $CODEX_HOME/skills natively.
+	if err := uploadHarnessSkills(sandboxName, cfg+"/skills", input.SkillDirs()); err != nil {
 		return err
-	}
-	for _, skillPath := range input.SkillDirs() {
-		if skillPath == "" {
-			continue
-		}
-		// codex discovers $CODEX_HOME/skills natively.
-		if err := sandbox.Upload(sandboxName, skillPath, cfg+"/skills/"); err != nil {
-			return fmt.Errorf("copying skill %q: %w", skillPath, err)
-		}
-		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
 	}
 
 	for _, e := range input.Plugins() {
@@ -273,6 +286,23 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 			return fmt.Errorf("writing %s: %w", codexHooksFile, err)
 		}
 		digests.HooksJSON = codexAssetSHA256(hooksJSON)
+		// The role files are agent-writable, so their digests join the
+		// runner-held set the spawn guard re-checks before every spawn.
+		// Codex's multi-agent tools stay off in config.toml until the
+		// dispatch note lands (#6970).
+		if delegating {
+			if err := codexExecOK(sandboxName, "mkdir -p "+shellQuote(r.codexRolesDir()), "creating codex roles dir"); err != nil {
+				return err
+			}
+			digests.RoleFiles = map[string]string{}
+			for _, role := range codexRoles(input.SkillDirs(), agentName) {
+				data := role.toml()
+				if err := uploadBytes(sandboxName, r.codexRolesDir()+"/"+role.Name+".toml", data); err != nil {
+					return fmt.Errorf("writing role %q: %w", role.Name, err)
+				}
+				digests.RoleFiles[role.Name] = codexAssetSHA256(data)
+			}
+		}
 		manifest.Hooks = codexHooksManifestFor(r.codexHooksDir(), hooks)
 	}
 
@@ -334,19 +364,21 @@ func codexDeveloperInstructions(agentName string, def *piAgentDef) string {
 // single-context path deliberately instead of recording a failed dispatch.
 // codex does have a spawn_agent tool, but fullsend wires no sub-agent roster
 // for it in v1, the same position pi was in (#6527).
-//
-// The second paragraph is the chunked-read rule for Codex's exec truncation
-// (10,000 tokens, head and tail, at 0.157.0). A single cat of a long SKILL.md
-// drops the middle with no retry (#7831). Lines are counted with awk's NR, not
-// `wc -l`: `wc -l` counts newline characters, so a file whose last line has no
-// trailing newline reports one line too few and the last range would stop
-// short of it.
 const codexNoSubagentNote = "\n## Runtime note\n\n" +
 	"This agent runs on the codex runtime (FULLSEND_RUNTIME=codex). No fullsend sub-agent " +
 	"roster is available. When a skill says to dispatch sub-agents, execute each sub-agent " +
 	"definition yourself, in the listed order, with the same context package, and treat each " +
 	"output as that sub-agent's result.\n\n" +
-	"When reading a SKILL.md or other instruction file, do not cat it in one call: Codex " +
+	codexChunkedReadNote
+
+// codexChunkedReadNote is the chunked-read rule for Codex's exec truncation
+// (10,000 tokens, head and tail, at 0.157.0). A single cat of a long SKILL.md
+// drops the middle with no retry (#7831). Lines are counted with awk's NR, not
+// `wc -l`: `wc -l` counts newline characters, so a file whose last line has no
+// trailing newline reports one line too few and the last range would stop
+// short of it. codexNoSubagentNote and every role file (codexChildNote) end
+// their runtime note with it.
+const codexChunkedReadNote = "When reading a SKILL.md or other instruction file, do not cat it in one call: Codex " +
 	"truncates exec output (head and tail, dropping the middle). For each file, count its " +
 	"lines with `awk 'END { print NR }' <file>` (`wc -l` misses a last line with no newline), " +
 	"then `sed -n '<start>,<end>p'` in contiguous ranges of at most 200 lines, one range per " +
@@ -433,6 +465,26 @@ func codexPreflightVersion(sandboxName string) (string, error) {
 	return sanitizeOutput(number), nil
 }
 
+// codexPreflightCatalog dumps the catalog compiled into the pinned binary
+// (offline, no CODEX_HOME needed) and parses it. Failure here is a broken
+// image, reported before any iteration.
+func codexPreflightCatalog(sandboxName string) (codexCatalog, error) {
+	const cmd = "codex debug models --bundled"
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, cmd, 30*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("codex preflight: %w", err)
+	}
+	if exitCode != 0 {
+		return nil, fmt.Errorf("codex preflight: `%s` exited %d: %s",
+			cmd, exitCode, strings.TrimSpace(sanitizeOutput(stderr)))
+	}
+	catalog, err := parseCodexCatalog([]byte(stdout))
+	if err != nil {
+		return nil, fmt.Errorf("codex preflight: `%s` printed no model catalog: %w", cmd, err)
+	}
+	return catalog, nil
+}
+
 // codexVersionPrefix is what `codex --version` puts before the number.
 // Asserted at image build time too (images/sandbox/Containerfile compares the
 // whole "codex-cli <pin>" string), so a change here shows up as a build
@@ -449,12 +501,14 @@ var codexHarnessSecurityEnvKeys = []string{"FULLSEND_CANARY_TOKEN", "FULLSEND_TO
 // token or allowlist cannot contain it.
 const codexEnvReadSeparator = "|fullsend-env-sep|"
 
-// codexReadHarnessSecurityEnvCmd sources envFile silently, so nothing a
-// sourced file prints lands in front of the first value, and prints the
-// codexHarnessSecurityEnvKeys values joined by codexEnvReadSeparator. A failed
-// source prints nothing and exits non-zero, so a broken .env fails Bootstrap
-// instead of pinning the values as unset. Its stderr stays discarded because
-// the shell echoes the offending .env line, which can carry a token. The
+// codexReadHarnessSecurityEnvCmd reads envFile as data, as the launch does
+// (envDataLoad, #8574), so no .env or .env.d line runs and nothing lands in
+// front of the first value, and prints the codexHarnessSecurityEnvKeys values
+// joined by codexEnvReadSeparator. A .env (or a file it names) that exists
+// but cannot be read prints nothing and exits non-zero, so it fails Bootstrap
+// instead of pinning the values as unset; a line the loader does not take is
+// skipped, as at launch. The loader reports a dropped line by file and line
+// only, never by content, so its stderr is kept for the error message. The
 // references are double-quoted, not shellQuote'd: single quotes would print
 // the literal "${KEY:-}" text instead of expanding it.
 func codexReadHarnessSecurityEnvCmd(envFile string) string {
@@ -462,8 +516,8 @@ func codexReadHarnessSecurityEnvCmd(envFile string) string {
 	for _, key := range codexHarnessSecurityEnvKeys {
 		refs = append(refs, fmt.Sprintf("${%s:-}", key))
 	}
-	return fmt.Sprintf(`. %s >/dev/null 2>&1 && printf '%%s' "%s"`,
-		shellQuote(envFile), strings.Join(refs, codexEnvReadSeparator))
+	return fmt.Sprintf(`%s && printf '%%s' "%s"`,
+		envDataLoad(envFile), strings.Join(refs, codexEnvReadSeparator))
 }
 
 // codexReadHarnessSecurityEnv reads the harness-supplied hook variables from

@@ -45,7 +45,7 @@ Create a thin harness that inherits from the upstream code agent and adds your s
 base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.yaml#sha256=abc...
 
 skills:
-  - skills/my-custom-linting        # Merged with base skills (child overrides by basename)
+  - skills/my-custom-linting        # Merged with base skills (child overrides by skill identity)
 
 timeout_minutes: 45                 # Override timeout (scalar: child wins)
 ```
@@ -119,7 +119,7 @@ validation_loop:
 Any harness field can be overridden. See the [field merge rules](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays) for how each field type combines with the base:
 
 - **Change model, timeout, image, scripts** — scalars replace the base value.
-- **Add skills** — your entries are merged with the base's by basename; same-named skills override the base entry. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
+- **Add skills** — your entries are merged with the base's by skill identity (declared `SKILL.md` name when on disk, otherwise directory basename); a matching child skill overrides the base entry. Nested forge skills that share a leaf directory name are kept alongside each other. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
 - **Add or override env vars** — maps are merged; your keys win on collision.
 - **Override validation_loop fields** — child non-zero values win; omitted fields inherit from the base (for example, set only `schema` to swap the schema without copying `script`). **Replace security config** — child replaces the entire block.
 
@@ -177,7 +177,7 @@ workflow token as `GH_WORKFLOW_TOKEN`, a *provider-only* credential:
   refused in `runner_env`, `env.runner`, `env.sandbox`, `host_files` and
   `validation_loop.schema`, and pre/post/validation scripts never see it.
 - `gh` and the post-script keep using the minted token (`GH_TOKEN`,
-  `PUSH_TOKEN`).
+  `GITHUB_TOKEN`, `PUSH_TOKEN`).
 - Outside GitHub Actions the variable is left alone; a local PAT is never
   copied into it. Set it yourself only for a local run against GitHub Packages.
 - Any provider definition in `.fullsend` may reference it, the same way one
@@ -321,8 +321,9 @@ are actually changing:
    schema, post-script, and any shipped skills under
    [fullsend-ai/agents](https://github.com/fullsend-ai/agents). Do not guess
    field names or roster lists from memory.
-2. **Unique skill names** — a repo skill with the same directory name as a
-   built-in is ignored and produces a warning (see
+2. **Unique skill names** — a repo skill whose identity (its declared
+   `SKILL.md` `name:`, or its directory name when none is declared) matches a
+   built-in's is ignored and produces a warning (see
    [skill precedence](customizing-with-skills.md#skill-precedence)).
 3. **Specificity wins** — vague augmentations lose to hard default
    instructions. Own exact fields; use word limits and templates.
@@ -369,9 +370,9 @@ also need the Go toolchain. Pin the parent tag to a digest before CI use.
 On Claude and pi runs the sandbox already has `/sandbox/workspace/bin` on its
 `PATH`, after the image's own directories. A file there adds a command; it
 does not replace a command the image already provides, such as `git`,
-`python3` or `node`. Codex runs restore the `PATH` from before the workspace
-`.env` is sourced, so `/sandbox/workspace/bin` is not on the codex agent's
-`PATH`; call the script by its absolute path there. To make a script
+`python3` or `node`. Codex and OpenCode runs restore the `PATH` from before
+the workspace `.env` is read, so `/sandbox/workspace/bin` is not on the codex
+or OpenCode agent's `PATH`; call the script by its absolute path there. To make a script
 available as a command on Claude and pi runs, drop it there:
 
 1. Create your script (e.g. `scripts/my-tool.sh`):
@@ -426,20 +427,27 @@ When you need a directory outside `/sandbox/workspace/bin` on the `PATH`
        dest: /sandbox/workspace/.env.d/extra-path.env
    ```
 
-3. At startup the sandbox sources every `*.env` file under
-   `/sandbox/workspace/.env.d/`, picking up your PATH addition.
+3. At startup the sandbox reads every `*.env` file under
+   `/sandbox/workspace/.env.d/`, picking up your PATH addition. Claude, codex,
+   pi and OpenCode launches read these files as data, not shell: write plain
+   `export NAME=value` lines, one assignment per line and without
+   `${NAME:-default}` (see
+   [`.env.d` host files](../../reference/harness-reference.md)).
 
-On Claude and pi runs, after the `.env.d` files are sourced, the runner puts
+On Claude and pi runs, after the `.env.d` files are read, the runner puts
 its own `PATH` back in front, so your directory ends up after the runner's
 entries: a command found only in `/opt/my-toolchain/bin` is picked up from
 there, and a command the image also provides, such as `git` or `go`, is
 picked up from the image. To replace one of those, extend the sandbox image
-(see [Extending the sandbox image](#extending-the-sandbox-image)). Codex runs
-restore the `PATH` from before `.env`, so `.env.d` additions are not on the
-codex agent's `PATH`.
+(see [Extending the sandbox image](#extending-the-sandbox-image)). Codex and
+OpenCode runs restore the `PATH` from before `.env`, so `.env.d` additions are
+not on the codex or OpenCode agent's `PATH`.
 
-`.env.d` files run as shell in the agent launch shell; treat them like
-`pre_script`. `host_files` can also place configuration that tools load, such
+Launches and the runner's probes read `.env.d` files as data, and shell
+constructs in them (command substitution, `;`-joined commands, `${NAME:-default}`
+and other lines that are not plain assignments) are skipped with a warning.
+`.env` itself is still valid shell that an agent may source, so keep treating
+these files like `pre_script`. `host_files` can also place configuration that tools load, such
 as git config or shell rc files; that is trusted like `pre_script` too.
 
 **Note**: `env.sandbox` cannot modify `PATH`, the harness ignores special
@@ -595,7 +603,10 @@ only. This triage-level access applies to **GitHub webhook dispatch** (slash
 commands, label-triggered dispatch, and event-triggered dispatch). The Go
 poll path used for GitLab and Jira currently requires `write` for all
 non-exception transitions — it does not yet distinguish observation from
-mutation thresholds.
+mutation thresholds. On GitLab, the agent job also requires the event actor
+to hold Developer access or higher for every stage except retro and
+prioritize, so automatic triage of a newly opened issue runs only when its
+author is a Developer, Maintainer, or Owner.
 See the
 [Authorization Contract](../../normative/authorization/v1/README.md) for the
 full role hierarchy, exception rules, and implementation notes.
