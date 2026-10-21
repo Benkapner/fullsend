@@ -6,9 +6,12 @@
 // skipped and never reset or deleted. Each org installation's GitHub
 // rate-limit headers gate further claims there until the reported reset.
 //
-// This file provides the allocation layer only. Wiring it into the
-// behaviour and playback suite runners (replacing exclusive org
-// acquisition) and in-driver GC of crashed leases are follow-ups.
+// This file provides the allocation layer. Wiring it into the behaviour
+// and playback suite runners (replacing exclusive org acquisition) is a
+// follow-up. Slots left behind by crashed runners are reclaimed from the
+// claim path by the GC in slotgc.go. Until legacy runners that take the
+// exclusive e2e-lock have drained, each lease also holds the org's
+// e2e-lock in shared mode (orglock.go).
 //
 // The existing ensurer (ensure.go: ensureRepoExists → deleteBlockingRepo
 // and resetRepo) deletes or resets existing test-repo-NN repos under the
@@ -86,6 +89,11 @@ var claimCreateTimeout = 30 * time.Second
 // rate-limited, denied, or failing. Use errors.Is; the concrete error is
 // a *CapacityError carrying the per-reason breakdown.
 var ErrPoolCapacityExhausted = errors.New("behaviour pool capacity exhausted")
+
+// errSlotRepoReleased is returned by Release's retry guard when the
+// repository under the slot's name is gone or no longer this lease's, so
+// the DELETE must not be resent.
+var errSlotRepoReleased = errors.New("slot repo gone or no longer ours")
 
 // PoolLayout describes the pool's orgs and slots by numeric index.
 // Names are derived by PoolOrgName and PoolSlotName.
@@ -206,6 +214,19 @@ type CapacityError struct {
 	// Failed maps orgs that hit transient or unclassified API failures
 	// to the last such error.
 	Failed map[string]error
+	// LockExcluded maps orgs whose e2e-lock did not admit a new holder
+	// (legacy lock, shared lock too old or closing) to the reason.
+	LockExcluded map[string]string
+	// Reclaimed counts slots freed by GC at the end of the pass (see
+	// slotgc.go); Acquire retries at once when it is positive.
+	Reclaimed int
+	// GC maps each org GC ran on (or deferred) at the end of the pass to
+	// its outcome: what was reclaimed, what was left occupied and why.
+	GC map[string]string
+
+	// occupiedByOrg counts, per org, the slots found occupied by another
+	// lease's repository; it feeds the GC threshold.
+	occupiedByOrg map[string]int
 }
 
 func (e *CapacityError) Error() string {
@@ -224,6 +245,25 @@ func (e *CapacityError) Error() string {
 	if len(e.Failed) > 0 {
 		parts = append(parts, "failed: "+joinOrgErrors(e.Failed))
 	}
+	if len(e.LockExcluded) > 0 {
+		orgs := sortedKeys(e.LockExcluded)
+		items := make([]string, 0, len(orgs))
+		for _, org := range orgs {
+			items = append(items, fmt.Sprintf("%s (%s)", org, e.LockExcluded[org]))
+		}
+		parts = append(parts, "e2e-lock: "+strings.Join(items, ", "))
+	}
+	if e.Reclaimed > 0 {
+		parts = append(parts, fmt.Sprintf("%d slot(s) reclaimed by gc", e.Reclaimed))
+	}
+	if len(e.GC) > 0 {
+		orgs := sortedKeys(e.GC)
+		items := make([]string, 0, len(orgs))
+		for _, org := range orgs {
+			items = append(items, fmt.Sprintf("%s (%s)", org, e.GC[org]))
+		}
+		parts = append(parts, "gc: "+strings.Join(items, ", "))
+	}
 	return fmt.Sprintf("%v: %s", ErrPoolCapacityExhausted, strings.Join(parts, "; "))
 }
 
@@ -240,12 +280,45 @@ type slotAllocator struct {
 	logf      func(string, ...any)
 	now       func() time.Time
 	shuffle   func([]Slot)
+	// orgLock is the shared e2e-lock bridge to legacy suite runners
+	// (orglock.go); nil disables it.
+	orgLock *sharedOrgLock
+	// gc reclaims abandoned slot repos (slotgc.go); nil disables it.
+	gc *slotCollector
 
 	mu           sync.Mutex
 	held         map[Slot]lease
 	blockedUntil map[string]time.Time
 	quota        map[string]forge.RateLimit
+	// pending maps each slot to the lease descriptions of creates whose
+	// outcome is unknown: the create failed ambiguously and the ownership
+	// lookup could not show the repo was ours or someone else's. Later
+	// passes re-check these nonces so a create that landed (including one
+	// landing after the lookup) is adopted rather than leaked.
+	pending map[Slot][]string
+	// occupiedSeen counts each org's occupied claims since its last GC
+	// attempt; gcRunning marks orgs being collected; gcReports holds each
+	// org's last GC outcome (slotgc.go).
+	occupiedSeen map[string]int
+	gcRunning    map[string]bool
+	gcReports    map[string]string
 }
+
+// ownership is what findOwn learned about the repository under a slot's
+// name.
+type ownership int
+
+const (
+	// ownMine indicates the repository carries one of our lease nonces.
+	ownMine ownership = iota
+	// ownForeign indicates a repository exists and carries none of our
+	// nonces.
+	ownForeign
+	// ownAbsent indicates no repository exists under the name.
+	ownAbsent
+	// ownUnknown indicates the lookup failed.
+	ownUnknown
+)
 
 // lease is one held slot: the client that created (or adopted) the repo
 // and the identity that proves a repo under the slot's name is still ours.
@@ -255,6 +328,9 @@ type lease struct {
 	repoID int64
 	// description is the per-claim description carrying the nonce.
 	description string
+	// orgLock is the lease's shared e2e-lock membership; nil when the
+	// bridge is disabled.
+	orgLock *orgLockMembership
 }
 
 // owns reports whether repo is the repository this lease created. GitHub
@@ -288,7 +364,7 @@ func newSlotAllocator(layout PoolLayout, clientFor OrgClientFunc, logf func(stri
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &slotAllocator{
+	a := &slotAllocator{
 		layout:    layout,
 		clientFor: clientFor,
 		logf:      logf,
@@ -299,7 +375,15 @@ func newSlotAllocator(layout PoolLayout, clientFor OrgClientFunc, logf func(stri
 		held:         make(map[Slot]lease),
 		blockedUntil: make(map[string]time.Time),
 		quota:        make(map[string]forge.RateLimit),
-	}, nil
+		pending:      make(map[Slot][]string),
+		occupiedSeen: make(map[string]int),
+		gcRunning:    make(map[string]bool),
+		gcReports:    make(map[string]string),
+		gc:           newSlotCollector(),
+	}
+	a.orgLock = newSharedOrgLock(logf, func() time.Time { return a.now() })
+	a.orgLock.timeout = func() time.Duration { return claimCreateTimeout }
+	return a, nil
 }
 
 // Capacity is the total number of slots in the layout.
@@ -317,18 +401,31 @@ func (a *slotAllocator) Claim(ctx context.Context) (Slot, forge.Client, error) {
 	a.shuffle(slots)
 
 	capErr := &CapacityError{
-		RateLimited: map[string]time.Time{},
-		Denied:      map[string]error{},
-		Failed:      map[string]error{},
+		RateLimited:  map[string]time.Time{},
+		Denied:       map[string]error{},
+		Failed:       map[string]error{},
+		LockExcluded: map[string]string{},
 	}
 	clients := map[string]forge.Client{}
 	listed := map[string]map[string]bool{}
+	// joined holds this pass's shared e2e-lock admissions, one per org,
+	// reused across that org's slots. A lease takes over its org's
+	// admission; the rest are given back when the pass ends.
+	joined := map[string]*orgLockMembership{}
+	defer func() {
+		for org, m := range joined {
+			a.leaveOrgLock(ctx, clients[org], m)
+		}
+	}()
 
 	for _, slot := range slots {
 		if err := ctx.Err(); err != nil {
 			return Slot{}, nil, fmt.Errorf("claiming pool slot: %w", err)
 		}
 		if _, denied := capErr.Denied[slot.Org]; denied {
+			continue
+		}
+		if _, excluded := capErr.LockExcluded[slot.Org]; excluded {
 			continue
 		}
 		if until, limited := a.orgBlockedUntil(slot.Org); limited {
@@ -392,8 +489,59 @@ func (a *slotAllocator) Claim(ctx context.Context) (Slot, forge.Client, error) {
 			}
 		}
 		if occupied[strings.ToLower(slot.String())] {
-			capErr.Occupied++
+			// A repo under the name may be one of our own earlier creates
+			// whose outcome was unknown, possibly landing after the
+			// lookup that followed it. Check before calling it occupied.
+			if nonces := a.pendingFor(slot); len(nonces) > 0 {
+				l, own, ownErr := a.findOwn(ctx, client, slot, nonces)
+				switch own {
+				case ownMine:
+					// The adopted lease holds the org's shared e2e-lock
+					// like any other, so admit it first.
+					membership, admitted := joined[slot.Org]
+					if !admitted {
+						membership, admitted = a.joinOrgLock(ctx, slot, client, capErr)
+						if !admitted {
+							if err := ctx.Err(); err != nil {
+								return Slot{}, nil, fmt.Errorf("claiming pool slot: %w", err)
+							}
+							continue
+						}
+						joined[slot.Org] = membership
+					}
+					l.orgLock = membership
+					if a.adoptLease(slot, l, "") {
+						delete(joined, slot.Org)
+						a.logf("[slots] %s is our earlier ambiguous create; adopting it", slot)
+						return slot, client, nil
+					}
+					// A concurrent Claim adopted it first: it is theirs.
+				case ownForeign:
+					a.clearPending(slot, nonces)
+				case ownUnknown:
+					if ctx.Err() != nil {
+						return Slot{}, nil, fmt.Errorf("claiming pool slot %s: %w", slot, ctx.Err())
+					}
+					a.recordOrgError(slot, client, fmt.Errorf("re-checking ownership of %s: %w", slot, ownErr), capErr)
+					continue
+				}
+			}
+			capErr.noteOccupied(slot.Org)
 			continue
+		}
+
+		// Hold the org's e2e-lock in shared mode before creating a slot
+		// repo there, so legacy runners keep out of the org.
+		membership, admitted := joined[slot.Org]
+		if !admitted {
+			membership, admitted = a.joinOrgLock(ctx, slot, client, capErr)
+			if !admitted {
+				if err := ctx.Err(); err != nil {
+					return Slot{}, nil, fmt.Errorf("claiming pool slot: %w", err)
+				}
+				continue
+			}
+			joined[slot.Org] = membership
 		}
 
 		// Each claim carries a unique description so that, if the create
@@ -410,40 +558,78 @@ func (a *slotAllocator) Claim(ctx context.Context) (Slot, forge.Client, error) {
 		cancelCreate()
 		a.observeQuota(slot.Org, client)
 		if err == nil {
-			l := lease{client: client, description: desc}
+			l := lease{client: client, description: desc, orgLock: membership}
 			if repo != nil {
 				l.repoID = repo.ID
 			}
-			a.recordLease(slot, l)
+			if !a.recordLease(slot, l) {
+				// The held-slot guard rejected the lease (the slot is
+				// held under another lease, e.g. its repo was deleted or
+				// renamed externally). The new repo has no lease, so it
+				// must not be returned as a claim; it is left for GC.
+				// The admission stays in joined and is given back when
+				// the pass ends.
+				a.logf("[slots] %s was created but the slot is already held; not claiming it", slot)
+				capErr.Occupied++
+				continue
+			}
+			delete(joined, slot.Org)
 			return slot, client, nil
 		}
 
+		// Our earlier ambiguous creates for this slot are matched too: the
+		// repo under the name may be one of them.
+		nonces := append(a.pendingFor(slot), desc)
 		switch {
 		case forge.IsAlreadyExists(err):
-			l, ours, ownErr := a.findOwn(ctx, client, slot, desc)
-			if ours {
-				a.logf("[slots] %s already existed after our create; adopting it", slot)
-				a.recordLease(slot, l)
-				return slot, client, nil
+			l, own, ownErr := a.findOwn(ctx, client, slot, nonces)
+			switch own {
+			case ownMine:
+				l.orgLock = membership
+				if a.adoptLease(slot, l, desc) {
+					delete(joined, slot.Org)
+					a.logf("[slots] %s already existed after our create; adopting it", slot)
+					return slot, client, nil
+				}
+				// A concurrent Claim adopted it first: it is theirs.
+				capErr.Occupied++
+			case ownForeign:
+				a.clearPending(slot, nonces)
+				capErr.noteOccupied(slot.Org)
+			default:
+				// The repo exists but the lookup could not say whose it
+				// is: it may be ours, so it is unknown, not occupied, and
+				// is re-checked on later passes.
+				a.addPending(slot, desc)
+				if ctx.Err() != nil {
+					return Slot{}, nil, fmt.Errorf("claiming pool slot %s: %w", slot, ctx.Err())
+				}
+				a.recordOrgError(slot, client,
+					fmt.Errorf("checking ownership of %s after create reported it exists: %w", slot, ownErr), capErr)
 			}
-			if ownErr != nil && isBackoffError(ownErr) {
-				// The ownership lookup was throttled or timed out: move on
-				// to other orgs instead of probing this one again.
-				a.recordOrgError(slot, client, ownErr, capErr)
-				break
-			}
-			capErr.Occupied++
 		case ctx.Err() != nil:
 			// The create may have succeeded server-side; the repo then
 			// looks occupied to everyone and is left for GC.
 			return Slot{}, nil, fmt.Errorf("claiming pool slot %s: %w", slot, ctx.Err())
 		case timedOut:
 			// The create may have landed before the deadline cut it off.
-			l, ours, ownErr := a.findOwn(ctx, client, slot, desc)
-			if ours {
-				a.logf("[slots] %s was created despite create timeout; adopting it", slot)
-				a.recordLease(slot, l)
-				return slot, client, nil
+			l, own, ownErr := a.findOwn(ctx, client, slot, nonces)
+			switch own {
+			case ownMine:
+				l.orgLock = membership
+				if a.adoptLease(slot, l, desc) {
+					delete(joined, slot.Org)
+					a.logf("[slots] %s was created despite create timeout; adopting it", slot)
+					return slot, client, nil
+				}
+				// A concurrent Claim adopted it first: it is theirs.
+				capErr.Occupied++
+				continue
+			case ownForeign:
+				a.clearPending(slot, nonces)
+			default:
+				// The create may still land after this lookup.
+				a.addPending(slot, desc)
 			}
 			if ownErr != nil && isBackoffError(ownErr) {
 				// Honour a rate-limit deadline the lookup observed too;
@@ -454,19 +640,162 @@ func (a *slotAllocator) Claim(ctx context.Context) (Slot, forge.Client, error) {
 			a.logf("[slots] creating %s did not finish within %v, backing off %s until %s: %v",
 				slot, claimCreateTimeout, slot.Org, until.UTC().Format(time.RFC3339), err)
 			capErr.RateLimited[slot.Org] = until
-		default:
+		case isDeniedError(err):
 			a.recordOrgError(slot, client, err, capErr)
+		default:
+			// A connection reset or a decode failure after a 201 can hide
+			// a create that landed: look for our nonce before giving up.
+			l, own, ownErr := a.findOwn(ctx, client, slot, nonces)
+			switch own {
+			case ownMine:
+				l.orgLock = membership
+				if a.adoptLease(slot, l, desc) {
+					delete(joined, slot.Org)
+					a.logf("[slots] %s was created despite create error; adopting it: %v", slot, err)
+					return slot, client, nil
+				}
+				// A concurrent Claim adopted it first: it is theirs.
+				capErr.Occupied++
+				continue
+			case ownForeign:
+				a.clearPending(slot, nonces)
+				a.logf("[slots] %s create failed and the name is held by another lease: %v", slot, err)
+				capErr.noteOccupied(slot.Org)
+				if isBackoffError(err) {
+					// The create error still says the org is throttling;
+					// the foreign repo must not hide it.
+					a.recordOrgError(slot, client, err, capErr)
+				}
+				continue
+			}
+			// The create may still land after this lookup.
+			a.addPending(slot, desc)
+			if ctx.Err() != nil {
+				return Slot{}, nil, fmt.Errorf("claiming pool slot %s: %w", slot, ctx.Err())
+			}
+			a.recordOrgError(slot, client, err, capErr)
+			if ownErr != nil && isBackoffError(ownErr) {
+				a.recordOrgError(slot, client, ownErr, capErr)
+			}
 		}
 	}
+	// Nothing could be leased: collect orgs whose occupied claims crossed
+	// the GC threshold, so a slot freed here is claimable on the next pass.
+	a.collectAfterPass(ctx, clients, capErr)
 	return Slot{}, nil, capErr
 }
 
-// recordLease stores the lease for slot and logs the claim.
-func (a *slotAllocator) recordLease(slot Slot, l lease) {
+// joinOrgLock admits a new holder to slot's org's shared e2e-lock. It
+// reports false, after recording why under capErr, when the org is not
+// eligible or the lock could not be read. With the bridge disabled it
+// admits without a membership.
+func (a *slotAllocator) joinOrgLock(ctx context.Context, slot Slot, client forge.Client, capErr *CapacityError) (*orgLockMembership, bool) {
+	if a.orgLock == nil {
+		return nil, true
+	}
+	m, reason, err := a.orgLock.join(ctx, client, slot.Org)
+	a.observeQuota(slot.Org, client)
+	switch {
+	case err != nil:
+		if m != nil {
+			// The admission write may have landed with only its response
+			// lost; leave it so the holder does not keep the lock occupied
+			// until stale reclaim. Leaving a holder that never joined is a
+			// no-op.
+			a.leaveOrgLock(ctx, client, m)
+		}
+		if ctx.Err() == nil {
+			a.recordOrgError(slot, client, err, capErr)
+		}
+		return nil, false
+	case m == nil:
+		a.logf("[slots] skipping %s: %s", slot.Org, reason)
+		capErr.LockExcluded[slot.Org] = reason
+		return nil, false
+	default:
+		return m, true
+	}
+}
+
+// leaveOrgLock returns an admission that ended up without a lease. It
+// runs even when ctx is done, bounded by claimCreateTimeout, so a
+// cancelled claim does not leave its holder in the lock. Failures are
+// logged: the lock is reclaimed by age at worst.
+func (a *slotAllocator) leaveOrgLock(ctx context.Context, client forge.Client, m *orgLockMembership) {
+	if a.orgLock == nil || m == nil {
+		return
+	}
+	leaveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), claimCreateTimeout)
+	defer cancel()
+	if err := a.orgLock.leave(leaveCtx, client, m); err != nil {
+		a.logf("[slots] warning: leaving shared e2e-lock on %s failed: %v", m.org, err)
+	}
+}
+
+// recordLease stores the lease of a repository this call just created.
+// It is adoptLease for a lease whose description is this call's own.
+func (a *slotAllocator) recordLease(slot Slot, l lease) bool {
+	return a.adoptLease(slot, l, l.description)
+}
+
+// adoptLease stores the lease for slot, forgets the slot's pending
+// nonces (the name is ours now, so none of them can land), and logs the
+// claim. The checks and the insert are atomic: it returns false and
+// changes nothing when the slot is already held, or when the lease's
+// description is neither fresh (the nonce this call created with, which
+// no other Claim can match) nor still pending for the slot. Adopting a
+// pending lease consumes its nonce, so of several Claims adopting the
+// same pending lease only the first succeeds, even if it has already
+// released the slot by the time another gets here.
+func (a *slotAllocator) adoptLease(slot Slot, l lease, fresh string) bool {
 	a.mu.Lock()
+	if _, held := a.held[slot]; held {
+		a.mu.Unlock()
+		return false
+	}
+	if l.description != fresh && !slices.Contains(a.pending[slot], l.description) {
+		a.mu.Unlock()
+		return false
+	}
 	a.held[slot] = l
+	delete(a.pending, slot)
 	a.mu.Unlock()
 	a.logf("[slots] claimed %s (%s)", slot, a.quotaSummary(slot.Org))
+	return true
+}
+
+// pendingFor returns a copy of slot's pending lease descriptions.
+func (a *slotAllocator) pendingFor(slot Slot) []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.pending[slot])
+}
+
+// addPending records desc as a create for slot whose outcome is unknown.
+func (a *slotAllocator) addPending(slot Slot, desc string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !slices.Contains(a.pending[slot], desc) {
+		a.pending[slot] = append(a.pending[slot], desc)
+	}
+}
+
+// clearPending forgets the given pending lease descriptions of slot (the
+// ones a lookup just classified) once another lease's repository holds
+// the name: none of those creates can land while it exists. Nonces
+// registered after the lookup's snapshot stay pending. A create landing
+// after that repository is deleted is left for GC.
+func (a *slotAllocator) clearPending(slot Slot, descs []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	rest := slices.DeleteFunc(slices.Clone(a.pending[slot]), func(d string) bool {
+		return slices.Contains(descs, d)
+	})
+	if len(rest) == 0 {
+		delete(a.pending, slot)
+		return
+	}
+	a.pending[slot] = rest
 }
 
 // recordOrgError files a failed API call for slot's org under the
@@ -511,33 +840,42 @@ func (a *slotAllocator) listOccupied(ctx context.Context, client forge.Client, o
 }
 
 // findOwn looks the slot's repository up by name and reports whether it
-// carries desc, in which case the returned lease adopts it. The lookup is
-// bounded by claimCreateTimeout. A lookup failure is returned so the caller
-// can back the org off when it is throttling; the repo is then treated as
-// not ours.
-func (a *slotAllocator) findOwn(ctx context.Context, client forge.Client, slot Slot, desc string) (lease, bool, error) {
+// carries one of descs (ownMine, with a lease adopting it), carries none
+// of them (ownForeign), is absent (ownAbsent), or could not be looked up
+// (ownUnknown). The lookup is bounded by claimCreateTimeout. For
+// ownAbsent and ownUnknown the lookup error is returned so the caller
+// can back the org off when it is throttling.
+func (a *slotAllocator) findOwn(ctx context.Context, client forge.Client, slot Slot, descs []string) (lease, ownership, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, claimCreateTimeout)
 	defer cancel()
 	repo, err := client.GetRepo(reqCtx, slot.Org, slot.Repo)
 	a.observeQuota(slot.Org, client)
-	if err != nil {
-		return lease{}, false, err
+	switch {
+	case forge.IsNotFound(err):
+		return lease{}, ownAbsent, err
+	case err != nil:
+		return lease{}, ownUnknown, err
+	case repo == nil || !slices.Contains(descs, repo.Description):
+		return lease{}, ownForeign, nil
 	}
-	if repo == nil || repo.Description != desc {
-		return lease{}, false, nil
-	}
-	return lease{client: client, repoID: repo.ID, description: desc}, true, nil
+	return lease{client: client, repoID: repo.ID, description: repo.Description}, ownMine, nil
 }
 
 // Acquire repeats Claim until a slot is leased or ctx ends, waiting
-// slotClaimPoll between passes that found no capacity. Errors other
-// than capacity exhaustion are returned immediately. On cancellation
-// the last capacity error is joined to the context error.
+// slotClaimPoll between passes that found no capacity, except after a pass
+// whose GC reclaimed slots. Errors other than capacity exhaustion are
+// returned immediately. On cancellation the last capacity error is joined
+// to the context error.
 func (a *slotAllocator) Acquire(ctx context.Context) (Slot, forge.Client, error) {
 	for {
 		slot, client, err := a.Claim(ctx)
 		if err == nil || !errors.Is(err, ErrPoolCapacityExhausted) {
 			return slot, client, err
+		}
+		var capErr *CapacityError
+		if errors.As(err, &capErr) && capErr.Reclaimed > 0 {
+			a.logf("[slots] gc reclaimed %d slot(s), retrying now: %v", capErr.Reclaimed, err)
+			continue
 		}
 		a.logf("[slots] no capacity, retrying in %v: %v", slotClaimPoll, err)
 		select {
@@ -554,14 +892,18 @@ func (a *slotAllocator) Acquire(ctx context.Context) (Slot, forge.Client, error)
 // (by ID, else by the claim's description nonce): after an ambiguous
 // failure another allocator may already have recreated the name, and its
 // repository is never deleted. The check and the delete are not atomic;
-// the window is one API round trip. A deletion failure is returned unless
+// the window is one API round trip. When the client waits out a rate limit
+// before resending the DELETE, ownership is re-checked before the resend,
+// and a repository that is gone or replaced by then counts as already
+// released. A deletion failure is returned unless
 // a re-check shows the repository is gone or no longer ours; the
 // repository then still exists, so other allocators keep treating the
 // slot as occupied (it is left for GC) rather than reusing it. The
 // client is re-resolved through the OrgClientFunc, since the claim-time
 // installation token may have expired; the claim-time client is the
 // fallback when that fails. Releasing a slot this allocator does not hold
-// is an error and deletes nothing.
+// is an error and deletes nothing. After the repository step, whatever
+// its outcome, the lease's holder leaves the org's shared e2e-lock.
 func (a *slotAllocator) Release(ctx context.Context, slot Slot) error {
 	a.mu.Lock()
 	l, ok := a.held[slot]
@@ -580,6 +922,18 @@ func (a *slotAllocator) Release(ctx context.Context, slot Slot) error {
 		client = fresh
 	}
 
+	err := a.deleteLeasedRepo(ctx, client, slot, l)
+	if a.orgLock != nil && l.orgLock != nil {
+		if leaveErr := a.orgLock.leave(ctx, client, l.orgLock); leaveErr != nil {
+			err = errors.Join(err, fmt.Errorf("releasing pool slot %s: leaving shared e2e-lock: %w", slot, leaveErr))
+		}
+	}
+	return err
+}
+
+// deleteLeasedRepo deletes the repository under slot's name if it still
+// belongs to lease l (see Release).
+func (a *slotAllocator) deleteLeasedRepo(ctx context.Context, client forge.Client, slot Slot, l lease) error {
 	gone, err := a.repoGoneOrForeign(ctx, client, slot, l)
 	if err != nil {
 		return fmt.Errorf("releasing pool slot %s: verifying repo before delete: %w", slot, err)
@@ -592,9 +946,28 @@ func (a *slotAllocator) Release(ctx context.Context, slot Slot) error {
 	// The live client must not replay this DELETE after a timeout or 5xx:
 	// the first attempt may have landed and the name may since have been
 	// recreated by another allocator. The identity re-check below decides
-	// what to do after such a failure.
-	err = client.DeleteRepo(gh.WithoutAmbiguousRetry(ctx), slot.Org, slot.Repo)
+	// what to do after such a failure. Rate-limit rejections are still
+	// retried after a wait, during which the name may also have been
+	// deleted and recreated (e.g. by GC), so the guard re-verifies
+	// ownership before every resend.
+	delCtx := gh.WithRetryGuard(gh.WithoutAmbiguousRetry(ctx), func(context.Context) error {
+		// Look up on the caller's ctx, not the guarded request context,
+		// so the lookup is not itself guarded.
+		gone, checkErr := a.repoGoneOrForeign(ctx, client, slot, l)
+		if checkErr != nil {
+			return fmt.Errorf("re-verifying repo after retry wait: %w", checkErr)
+		}
+		if gone {
+			return errSlotRepoReleased
+		}
+		return nil
+	})
+	err = client.DeleteRepo(delCtx, slot.Org, slot.Repo)
 	a.observeQuota(slot.Org, client)
+	if errors.Is(err, errSlotRepoReleased) {
+		a.logf("[slots] released %s (repo gone or replaced during retry wait; delete not resent)", slot)
+		return nil
+	}
 	if err != nil && !forge.IsNotFound(err) {
 		// The delete may have succeeded server-side with the response
 		// lost; re-check by identity instead of blindly re-sending it.

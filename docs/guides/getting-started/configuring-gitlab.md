@@ -45,6 +45,13 @@ GitHub repositories use a different command (`fullsend github setup`). See
   their compatible setting. See [GitLab Role-Credential
   Contract](../../contributing/gitlab-role-credentials.md#how-a-job-selects-its-credential)
   for the remaining live-validation rollout gates for this transport.
+* If the project has a push rule with a branch name regex (**Settings >
+  Repository > Push rules > Branch name**), it must also match
+  `fullsend-poll-state-slash` and `fullsend-poll-state-events`. Install
+  creates those branches, so `repos install` (including `--dry-run`) reads
+  the push rule and stops before any write when the regex rejects a branch
+  that does not exist yet. The check is skipped when the push rule cannot
+  be read, for example on editions without push rules.
 
 ## Typed-input dispatch migration
 
@@ -950,7 +957,15 @@ reason and resource IDs.
   When the activation is not recorded (the account or the gate deferred, or the
   account stage failed), install hands any account-owned schedule back to the
   installer instead. This also happens before the account is ever raised to
-  Maintainer and when rotation or repair retires an account. Each move creates
+  Maintainer and when rotation or repair retires an account while the
+  activation is not recorded. When rotation or repair records the activation
+  for the replacement generation, the schedules the retired account still owns
+  move straight to the replacement account in the same run. While the
+  activation is recorded, `repos status` reports any managed schedule the
+  trigger account does not own as drift; re-run install to move it. Install
+  refuses a schedule whose owner is not a retired generation or a verified
+  installer Maintainer; an administrator must remove or reassign that one first.
+  Each move creates
   the replacement before deleting the original, so an interrupted run leaves a
   duplicate that the next install removes. If an install stops before it
   reaches the trigger-account stage, the activation stays withdrawn and the

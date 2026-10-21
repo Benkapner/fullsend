@@ -102,7 +102,7 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 
 	// The guard runs before the agent-writable .env is sourced; the
 	// runner-owned locations are re-pinned right after it.
-	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && `+piBinaryPin()+` && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && `+piEnvLoad+` && `+piLoaderEnvUnset()+` && `+strings.Join(PiRuntime{}.EnvExports(), " && ")+` && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && export FULLSEND_RUNTIME=pi && export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}" && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && "$FULLSEND_PI_BIN" --print --mode json`), cmd)
+	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && `+piBinaryPin()+` && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && `+piEnvLoad+` && `+piLoaderEnvUnset()+` && `+strings.Join(PiRuntime{}.EnvExports(), " && ")+` && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && export FULLSEND_PI_HOOK_PYTHON="$FULLSEND_ENV_PYTHON" && export FULLSEND_PI_HOOK_PATH="$FULLSEND_TRUSTED_PATH" && export FULLSEND_PI_CHILD_BIN="$FULLSEND_PI_BIN" FULLSEND_PI_CHILD_NODE="$FULLSEND_PI_NODE" && export FULLSEND_RUNTIME=pi && export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}" && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && `+cliLaunch(piBinaryVar, piNodeVar)+` --print --mode json`), cmd)
 	// Gemini on Vertex needs GOOGLE_CLOUD_LOCATION; the fleet exports the
 	// region as CLOUD_ML_REGION, so it is mirrored after .env is sourced.
 	assert.Contains(t, cmd, `&& export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}"`)
@@ -127,7 +127,7 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	// project is pinned to the variable Claude Code on Vertex uses.
 	unsetIdx := strings.Index(cmd, "&& unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL")
 	envIdx := strings.Index(cmd, piEnvLoad)
-	piIdx := strings.Index(cmd, `&& "$FULLSEND_PI_BIN" `)
+	piIdx := strings.Index(cmd, "&& "+cliLaunch(piBinaryVar, piNodeVar)+" ")
 	assert.True(t, unsetIdx > envIdx && unsetIdx < piIdx, "unset runs after sourcing .env and before pi: %s", cmd)
 	assert.Contains(t, cmd, `&& export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}"`)
 
@@ -364,6 +364,84 @@ func TestPiManifestGuard(t *testing.T) {
 	assert.NotContains(t, out, "RAN")
 }
 
+// TestBuildPiRunCommand_HookPythonPinned checks (#8577) that the hook adapter
+// runs its scripts with the python3 pinned before .env was read, handed over
+// in an exported variable .env cannot set.
+func TestBuildPiRunCommand_HookPythonPinned(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	m := &piManifest{AgentName: "triage", Model: "opus"}
+	cmd := buildPiRunCommand(piTestParams(), m, nil, "")
+
+	envSource := strings.Index(cmd, piEnvLoad)
+	require.Positive(t, envSource)
+	assert.Contains(t, piEnvLoad, " "+piHookPythonEnv+" ", "the loader drops the name, so .env cannot set it")
+	export := strings.Index(cmd, "&& "+piHookPythonExport()+" &&")
+	require.Positive(t, export, "the pinned interpreter is exported for the hook adapter")
+	assert.Greater(t, export, envSource, "after .env, which cannot then clear it")
+	launch := strings.Index(cmd, "&& "+cliLaunch(piBinaryVar, piNodeVar)+" --print")
+	require.Positive(t, launch)
+	assert.Less(t, export, launch, "before pi starts")
+
+	assert.Contains(t, piEnvLoad, " "+piHookPathEnv+" ", "the loader drops the hook PATH name too")
+	assert.Contains(t, piEnvLoad, " "+piChildBinEnv+" "+piChildNodeEnv+"'", "and the children's pi and node")
+	childExport := strings.Index(cmd, "&& "+piChildLaunchExport()+" &&")
+	assert.Greater(t, childExport, envSource, "the children's pi and node are exported after .env")
+	assert.Less(t, childExport, launch, "before pi starts")
+	pathExport := strings.Index(cmd, "&& "+piHookPathExport()+" &&")
+	require.Positive(t, pathExport, "the trusted PATH is exported for the hook adapter")
+	assert.Greater(t, pathExport, envSource)
+	assert.Less(t, pathExport, launch)
+}
+
+// TestPiHookPythonExport_IgnoresEnv checks that the exported value is the
+// python3 found before .env ran: neither a .env assignment to the name nor a
+// python3 stub .env puts first on PATH reaches it.
+func TestPiHookPythonExport_IgnoresEnv(t *testing.T) {
+	f := newEnvDataFixture(t)
+	pinned, err := exec.Command("/bin/sh", "-c", envDataPin()+` && printf '%s|%s' "$`+envDataPythonVar+`" "$`+envDataTrustedPathVar+`"`).Output()
+	if err != nil {
+		t.Skip("no python3 in a non-writable PATH directory on this host")
+	}
+	want, trusted, _ := strings.Cut(string(pinned), "|")
+
+	stubDir := filepath.Join(f.ws, "bin")
+	require.NoError(t, os.MkdirAll(stubDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "python3"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	f.write(t, ".env", "export PATH="+stubDir+":$PATH\nexport "+piHookPythonEnv+"=/evil\nexport "+piHookPathEnv+"="+stubDir+"\n")
+
+	out, stderr, err := f.load(t, piHookPythonExport()+` && `+piHookPathExport()+` && command -v python3 && env`, piBinaryVar, piHookPythonEnv, piHookPathEnv)
+	require.NoError(t, err, stderr)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	require.NotEmpty(t, lines)
+	assert.Equal(t, filepath.Join(stubDir, "python3"), lines[0], "the stub is first on PATH after the load")
+	assert.Contains(t, lines[1:], piHookPythonEnv+"="+want, "exported as the interpreter pinned before .env")
+	assert.Contains(t, stderr, piHookPythonEnv+" is not taken from .env")
+	assert.Contains(t, lines[1:], piHookPathEnv+"="+trusted, "exported as the PATH recorded before .env")
+	assert.NotContains(t, ":"+trusted+":", ":"+stubDir+":")
+	assert.Contains(t, stderr, piHookPathEnv+" is not taken from .env")
+}
+
+// TestPiChildLaunchExport_IgnoresEnv runs the export after a .env that sets
+// both names: the Agent tool's children get the pi and node pinned before
+// .env, and the loader reports the lines it dropped.
+func TestPiChildLaunchExport_IgnoresEnv(t *testing.T) {
+	f := newEnvDataFixture(t)
+	f.write(t, ".env", "export "+piChildBinEnv+"=/evil/pi\nexport "+piChildNodeEnv+"=/evil/node\n")
+	script := `readonly ` + piBinaryVar + `=/usr/lib/pi/cli.js ` + piNodeVar + `=/usr/bin/node && ` +
+		envDataTrustedPin() + ` && ` + envDataLoadWith(f.envFile, envDataControlLines(f.ws), []string{piBinaryVar, piNodeVar, piChildBinEnv, piChildNodeEnv}) +
+		` && ` + piChildLaunchExport() + ` && env`
+	cmd := exec.Command("/bin/sh", "-c", script)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=/home/agent"}
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	require.NoError(t, cmd.Run(), stderr.String())
+	lines := strings.Split(stdout.String(), "\n")
+	assert.Contains(t, lines, piChildBinEnv+"=/usr/lib/pi/cli.js")
+	assert.Contains(t, lines, piChildNodeEnv+"=/usr/bin/node")
+	assert.Contains(t, stderr.String(), piChildBinEnv+" is not taken from .env")
+	assert.Contains(t, stderr.String(), piChildNodeEnv+" is not taken from .env")
+}
+
 // TestBuildPiRunCommand_ManifestGuard checks where the guard is emitted:
 // before .env can shadow the tools it uses, and again after .env, since
 // .env could have rewritten the manifest between the two.
@@ -515,7 +593,7 @@ func TestBuildPiRunCommand_OpenAI(t *testing.T) {
 	assert.Less(t, strings.Index(cmd, "&& unset -f test command grep tr sed printf pi"), secondGuard, "unset -f precedes the second guard")
 	assert.Greater(t, strings.Index(cmd, "&& unset -f test command grep tr sed printf pi"), envIdx, "unset -f after .env sourced")
 	assert.Less(t, strings.Index(cmd, "&& "+piBinaryPin()), envIdx, "the pi binary is pinned before .env")
-	assert.Contains(t, cmd, `&& "$FULLSEND_PI_BIN" --print`, "pi is launched by its pinned path")
+	assert.Contains(t, cmd, "&& "+cliLaunch(piBinaryVar, piNodeVar)+" --print", "pi is launched by its pinned path")
 	seedIdx := strings.Index(cmd, "&& "+PiOpenAIAuthSeed(PiRuntime{}.ConfigDir()))
 	assert.Less(t, seedIdx, envIdx, "auth.json is seeded before .env can touch OPENAI_API_KEY")
 	assert.Greater(t, seedIdx, firstGuard, "after the first guard")
@@ -568,7 +646,7 @@ func TestPiBinaryPin(t *testing.T) {
 	launch := func(envBody string) (string, error) {
 		env := filepath.Join(t.TempDir(), ".env")
 		require.NoError(t, os.WriteFile(env, []byte(envBody), 0o644))
-		cmd := exec.Command("sh", "-c", piBinaryPin()+" && . "+shellQuote(env)+` && unset -f pi && "$`+piBinaryVar+`"`)
+		cmd := exec.Command("sh", "-c", protectedDirsShell(t, bin)+piBinaryPin()+" && . "+shellQuote(env)+` && unset -f pi && `+cliLaunch(piBinaryVar, piNodeVar))
 		cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin"}
 		out, err := cmd.CombinedOutput()
 		return strings.TrimSpace(string(out)), err
@@ -1098,7 +1176,7 @@ func TestBuildPiRunCommand_LoaderEnvHygieneRuns(t *testing.T) {
 	cmd := buildPiRunCommand(params, &piManifest{AgentName: "triage", Model: "opus"}, nil, "")
 	cmd = strings.ReplaceAll(cmd, sandbox.SandboxWorkspace, ws)
 	cmd = strings.ReplaceAll(cmd, PiRuntime{}.ConfigDir(), cfg)
-	c := exec.Command("/bin/sh", "-c", cmd)
+	c := exec.Command("/bin/sh", "-c", protectedDirsShell(t, bin)+cmd)
 	c.Env = []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "HOME=" + root}
 	out, err := c.CombinedOutput()
 	require.NoError(t, err, string(out))
