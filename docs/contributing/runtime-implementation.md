@@ -1167,9 +1167,11 @@ flowchart TB
   open-stdin hang pi needs `</dev/null` for.
 - **`codex exec` has no `--debug` flag.** Its tracing goes to stderr at **error level by default** —
   unlike pi, a codex run is not silent there: the denied `GET /v1/models` and every hook block are
-  logged — and `RUST_LOG` raises the level. Debug mode exports `RUST_LOG` and appends stderr to
+  logged — and `RUST_LOG` raises the level. The launch always exports `RUST_LOG` (codex's default
+  filter plus `codex_app_server::in_process` at warn, so a dropped stream notification is
+  reported); debug mode raises it to info and appends stderr to
   `codex-debug.log`; without it those error lines reach the runner console, since `Run` hands
-  `os.Stderr` to the exec stream.
+  the exec stream a counting wrapper over `os.Stderr`.
 - **Model**: `openai/<id>` or a bare `<id>`, resolved through `EffectiveModel` — the same chain
   `NeedsOpenAIProvider` decides from, so the launch and the run-scoped provider decision cannot
   disagree about which model a run calls. The fallback is the **runner-held** copy of the agent
@@ -1347,9 +1349,13 @@ guard's `codex_spawn_guard_admit` lines in `/sandbox/workspace/.security/finding
 the run (`codex_spawn_without_admission`) on a shortfall, a spawn not sent by the primary thread,
 a spawn item too long to read, or a failed read. The count spans the run's iterations, so
 `ClearIterationArtifacts` must leave `.security/` in place (it clears `output/`, the sessions
-directory and the debug log, nothing else under the workspace). The check cannot catch a forged admission (the log is agent-writable), a surplus
-admission covering a later spawn (counts, not ids), a resume (a `wait` item in the stream), or a
-spawn whose item notifications codex dropped under backpressure.
+directory and the debug log, nothing else under the workspace). Codex can drop a stream
+notification under backpressure and says so on stderr: the launch raises
+`codex_app_server::in_process` to warn in `RUST_LOG` (which codex's commands inherit), the runner
+scans that stderr on the host (the sandbox log under `--debug`) and warns on the line; the change
+that switches the multi-agent tools on turns that into a failure, since nothing can spawn before
+it. The check cannot catch a forged admission (the log is agent-writable), a surplus admission
+covering a later spawn (counts, not ids), or a resume (a `wait` item in the stream).
 
 **PATH is pinned across `.env` for the same reason the interpreter is.** The hook scripts resolve
 their tools by name — `tirith_check.py` runs a bare `tirith` — so a `.env` that prepends a directory

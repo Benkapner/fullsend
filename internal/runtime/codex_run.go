@@ -431,12 +431,15 @@ func buildCodexRunCommand(params RunParams, model codexModel, effort string, hoo
 		// Again after .env, which runs in this shell and could recreate it.
 		"&& "+codexModelsCacheRemoval(r),
 	)
+	// codex exec has no --debug flag. Its tracing goes to stderr, at error
+	// level by default — a codex run is not silent there the way pi is — and
+	// RUST_LOG raises it. The in-process module is always at warn: it is
+	// where codex reports a dropped stream notification (codexStderrDrops).
+	level, module := codexStderrDefaultFilter, "warn"
 	if params.Debug != "" {
-		// codex exec has no --debug flag. Its tracing goes to stderr, at
-		// error level by default — a codex run is not silent there the way pi
-		// is — and RUST_LOG raises it.
-		parts = append(parts, `&& export RUST_LOG="${RUST_LOG:-info}"`)
+		level, module = "info", "info"
 	}
+	parts = append(parts, `&& export RUST_LOG="${RUST_LOG:-`+level+`},codex_app_server::in_process=`+module+`"`)
 
 	prompt := DefaultAgentPrompt
 	if params.Prompt != "" {
@@ -584,7 +587,8 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 
 	cmd := buildCodexRunCommand(params, model, effort, hooksEnabled, digests)
 
-	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
+	stderr := &codexStderrDrops{w: os.Stderr}
+	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, stderr)
 	if err != nil {
 		return -1, err
 	}
@@ -649,6 +653,15 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		exitCode = execCmd.ProcessState.ExitCode()
 	}
 	childIDs.flush()
+	stderr.flush()
+	if params.Debug != "" {
+		// Under --debug codex's stderr went to the sandbox log instead.
+		n, derr := codexCountDroppedInLog(params.SandboxName)
+		if derr != nil {
+			printer.StepWarn("Could not read codex's log for dropped stream notifications: " + redactSummary(sanitizeOutput(derr.Error())))
+		}
+		stderr.Dropped += n
+	}
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)
 	}
@@ -684,7 +697,12 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	// Checked whatever the exit code: with a validation loop an iteration's
 	// non-zero exit does not fail the run; an error from Run does, and a
 	// failed read or an unread spawn item is one too, unlike the usage read
-	// above.
+	// above. A dropped stream notification can hide a completed spawn, but
+	// nothing can spawn until the multi-agent tools are switched on, so it
+	// is a warning until then.
+	if stderr.Dropped > 0 {
+		printer.StepWarn(fmt.Sprintf("codex dropped %d stream notification(s) under backpressure; the progress log is incomplete", stderr.Dropped))
+	}
 	if childIDs.UnreadSpawn {
 		return exitCode, fmt.Errorf("%s: a spawn_agent item longer than %d bytes could not be read", codexSpawnWithoutAdmission, streamBufSize)
 	}

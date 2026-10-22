@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -185,6 +187,67 @@ func (c *codexChildIDs) take(b []byte) {
 	c.line = append(c.line, b...)
 }
 
+// codexStderrDefaultFilter is codex exec's own stderr filter when RUST_LOG
+// is unset, kept as the base so the always-on module directive adds to it.
+const codexStderrDefaultFilter = "error,opentelemetry_sdk=off,opentelemetry_otlp=off"
+
+// codexDroppedNotification is the line codex logs, at warn, when its
+// in-process channel is full and it drops a stream notification: an item
+// then never reaches `exec --json`, and a completed spawn may be among them.
+const codexDroppedNotification = "dropping in-process server notification (queue full)"
+
+// codexStderrDrops forwards codex's stderr to the runner's and counts the
+// lines that carry codexDroppedNotification; flush scans a final line
+// without a newline once the stream has ended.
+type codexStderrDrops struct {
+	w       io.Writer
+	line    []byte
+	Dropped int
+}
+
+func (c *codexStderrDrops) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	rest := p
+	for {
+		i := bytes.IndexByte(rest, '\n')
+		if i < 0 {
+			if len(c.line) < 64*1024 {
+				c.line = append(c.line, rest...)
+			}
+			return n, err
+		}
+		if len(c.line) < 64*1024 {
+			c.line = append(c.line, rest[:i]...)
+		}
+		if bytes.Contains(c.line, []byte(codexDroppedNotification)) {
+			c.Dropped++
+		}
+		c.line = c.line[:0]
+		rest = rest[i+1:]
+	}
+}
+
+func (c *codexStderrDrops) flush() {
+	if bytes.Contains(c.line, []byte(codexDroppedNotification)) {
+		c.Dropped++
+	}
+	c.line = c.line[:0]
+}
+
+// codexCountDroppedInLog counts codexDroppedNotification in the sandbox
+// debug log, where codex's stderr goes under --debug instead of the host. A
+// log that is missing or has no such line counts zero.
+func codexCountDroppedInLog(sandboxName string) (int, error) {
+	cmd := fmt.Sprintf(`command -p grep -a -c -F -e %s -- %s 2>/dev/null || true`,
+		shellQuote(codexDroppedNotification), shellQuote(sandbox.SandboxWorkspace+"/"+codexDebugLogFile))
+	stdout, _, _, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(stdout))
+	return n, nil
+}
+
 // flush scans the pending final line, if any.
 func (c *codexChildIDs) flush() {
 	if len(c.line) > 0 {
@@ -326,8 +389,10 @@ func (r CodexRuntime) foldCodexChildUsage(sandboxName string, childIDs []string,
 // while a torn, cut or missing log can only lower it: it can fail a run that
 // would have passed, never pass one that would have failed. The stream side
 // is not that strict: codex can drop an item notification under
-// backpressure, so the completed count can be too low and a spawn the guard
-// never decided then passes. A resume that got through appears in the stream
+// backpressure, and the completed count is then too low; it says so on its
+// stderr, which Run scans (codexStderrDrops) and warns on, a failure once
+// the multi-agent tools are switched on. A resume that got through appears
+// in the stream
 // as a wait item, so it is not caught either, nor is an overlong spawn line
 // whose first bytes do not show its type and tool. Counts are compared, not
 // ids: a stream item carries no tool_use_id.

@@ -288,7 +288,9 @@ func TestBuildCodexRunCommand_OrderAndFlags(t *testing.T) {
 		assert.Contains(t, cmd, name+":"+digest)
 	}
 	assert.True(t, strings.HasSuffix(strings.TrimSpace(cmd), "-"), "the command must end with the stdin sentinel")
-	assert.NotContains(t, cmd, "RUST_LOG", "debug tracing is off unless the runner asks for it")
+	assert.Contains(t, cmd, `export RUST_LOG="${RUST_LOG:-error,opentelemetry_sdk=off,opentelemetry_otlp=off},codex_app_server::in_process=warn"`,
+		"codex's default filter, plus the in-process module at warn so a dropped notification is reported")
+	assert.NotContains(t, cmd, "2>>", "stderr stays on the runner's stderr unless the runner asks for the log")
 }
 
 func TestBuildCodexRunCommand_HooksDisabled(t *testing.T) {
@@ -310,7 +312,7 @@ func TestBuildCodexRunCommand_DebugCapturesStderr(t *testing.T) {
 
 	cmd := buildCodexRunCommand(RunParams{RepoDir: "/repo", Debug: "1"}, codexModel{ID: "gpt-5.6-luna"}, "", false, testRunnerHeldDigests)
 	// codex exec has no --debug flag: tracing goes to stderr behind RUST_LOG.
-	assert.Contains(t, cmd, `export RUST_LOG="${RUST_LOG:-info}"`)
+	assert.Contains(t, cmd, `export RUST_LOG="${RUST_LOG:-info},codex_app_server::in_process=info"`)
 	assert.Contains(t, cmd, "2>>'"+sandbox.SandboxWorkspace+"/"+codexDebugLogFile+"'")
 }
 

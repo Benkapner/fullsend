@@ -55,11 +55,16 @@ Copied from `openai/codex` tag `rust-v0.152.1` and re-checked at `rust-v0.157.0`
 (both files are byte-identical between the `rust-v0.157.0` and `rust-v0.159.3` tags),
 `codex-rs/exec/src/exec_events.rs` (shapes) and
 `codex-rs/exec/src/event_processor_with_jsonl_output.rs` (when each event is
-emitted). Re-check both when `CODEX_VERSION` moves, and with them two facts the admission
+emitted). Re-check both when `CODEX_VERSION` moves, and with them three facts the admission
 cross-check (`codex_subagents.go`) rests on at `rust-v0.159.3`: a resume reaches the stream as a
-`wait` item (`CollabAgentTool::ResumeAgent => CollabTool::Wait` in the same processor), and
-in-process delivery may drop non-terminal item notifications under backpressure
-(`codex-rs/app-server/src/in_process.rs`), so the stream can miss a completed spawn.
+`wait` item (`CollabAgentTool::ResumeAgent => CollabTool::Wait` in the same processor); in-process
+delivery guarantees only TurnCompleted, the thread-state notifications and async AgentMessage
+items, drops any other item notification (a collab item's `item.completed` included) when its
+channel is full, and logs `dropping in-process server notification (queue full)` at warn from
+`codex_app_server::in_process` (`codex-rs/app-server/src/in_process.rs`), which the runner scans
+for; and exec's default stderr filter is `error,opentelemetry_sdk=off,opentelemetry_otlp=off`
+(`codex-rs/exec/src/lib.rs`, `EXEC_DEFAULT_LOG_FILTER`), which the launch command keeps as its
+base.
 
 Top-level `ThreadEvent` — serde `tag = "type"`, the variant payload flattened
 next to it:
