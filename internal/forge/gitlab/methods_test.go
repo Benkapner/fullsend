@@ -259,7 +259,7 @@ func TestListPullRequestReviewThreads_PositionContract(t *testing.T) {
 		}
 		return n
 	}
-	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, _ *http.Request) {
+	handleTracked(t, mux, "/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, w, http.StatusOK, []map[string]any{
 			{"id": "context-line", "notes": []map[string]any{note(map[string]any{
 				"new_path": "main.go", "old_path": "main.go", "new_line": 17, "old_line": 16,

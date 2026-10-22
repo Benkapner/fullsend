@@ -651,12 +651,14 @@ type ReviewThread struct {
 	// example an outdated GitHub thread) or has no line position.
 	Line *int `json:"line"`
 	// StartSide and StartLine give the first line of a multi-line range.
-	// Both are nil for single-line threads.
+	// Both are nil for single-line threads. StartLine is nil for an outdated
+	// multi-line thread, while StartSide may still be set.
 	StartSide *DiffSide `json:"start_side"`
 	StartLine *int      `json:"start_line"`
-	// OriginalLine and OriginalStartLine are the line and start line on Side
-	// in the diff the thread was created against. Nil when the forge does
-	// not report the original position (GitLab).
+	// OriginalLine is the line on Side, and OriginalStartLine is the start
+	// line on StartSide, in the diff the thread was created against. For
+	// cross-side ranges the two belong to different file versions. Nil when
+	// the forge does not report the original position (GitLab).
 	OriginalLine      *int `json:"original_line"`
 	OriginalStartLine *int `json:"original_start_line"`
 	// OldLine and NewLine are the current position's line numbers in the

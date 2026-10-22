@@ -112,6 +112,11 @@ func TestListPullRequestReviewThreads_PositionContract(t *testing.T) {
 						"line": 14, "originalLine": 13, "startDiffSide": "LEFT",
 						"startLine": 10, "originalStartLine": 9, "isOutdated": false,
 					}),
+					thread(map[string]any{
+						"id": "outdated-multi-line", "path": "main.go", "diffSide": "RIGHT",
+						"line": nil, "originalLine": 25, "startDiffSide": "LEFT",
+						"startLine": nil, "originalStartLine": 22, "isOutdated": true,
+					}),
 				},
 			}},
 		}}})
@@ -120,7 +125,7 @@ func TestListPullRequestReviewThreads_PositionContract(t *testing.T) {
 
 	got, err := newTestClient(t, srv).ListPullRequestReviewThreads(context.Background(), "owner", "repo", 1)
 	require.NoError(t, err)
-	require.Len(t, got.Threads, 3)
+	require.Len(t, got.Threads, 4)
 
 	oldSide := got.Threads[0]
 	require.NotNil(t, oldSide.Side)
@@ -151,6 +156,14 @@ func TestListPullRequestReviewThreads_PositionContract(t *testing.T) {
 	assert.Equal(t, 10, *multi.StartLine)
 	assert.Equal(t, 13, *multi.OriginalLine)
 	assert.Equal(t, 9, *multi.OriginalStartLine)
+
+	outdatedMulti := got.Threads[3]
+	assert.Nil(t, outdatedMulti.Line)
+	assert.Nil(t, outdatedMulti.StartLine)
+	require.NotNil(t, outdatedMulti.StartSide, "start side survives a null startLine on outdated threads")
+	assert.Equal(t, forge.DiffSideLeft, *outdatedMulti.StartSide)
+	assert.Equal(t, 25, *outdatedMulti.OriginalLine)
+	assert.Equal(t, 22, *outdatedMulti.OriginalStartLine)
 }
 
 func TestListPullRequestReviewThreads_GHESGraphQLEndpoint(t *testing.T) {

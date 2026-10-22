@@ -3999,7 +3999,10 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 				IsOutdated:        &thread.IsOutdated,
 				CommentsTruncated: thread.Comments.PageInfo.HasNextPage,
 			}
-			if thread.StartLine != nil && thread.StartDiffSide != nil {
+			// Outdated multi-line threads have a null startLine but may still
+			// report startDiffSide and originalStartLine, so do not gate on
+			// startLine.
+			if thread.StartDiffSide != nil {
 				converted.StartSide = githubDiffSide(*thread.StartDiffSide)
 			}
 			// GitHub reports the current line on one side only.

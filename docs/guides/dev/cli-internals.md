@@ -239,9 +239,9 @@ lines in that side's version of the file.
 | `side` | Diff side that `line` and `original_line` refer to (`left` or `right`) | `diffSide`, lowercased | `right` when `new_line` is set, otherwise `left` when `old_line` is set |
 | `line` | Last line of the thread's range on `side` in the current diff; `null` when the thread no longer maps onto the current diff | `line` (`null` for outdated threads) | `new_line` on the right side, `old_line` on the left side |
 | `start_side` | Side of the first line of a multi-line range; `null` for single-line threads | `startDiffSide`, lowercased | `line_range.start.type` (`old` is `left`, `new` is `right`), otherwise the same rule as `side` |
-| `start_line` | First line of a multi-line range on `start_side`; `null` for single-line threads | `startLine` | `line_range.start` line on `start_side`, when it differs from the end |
+| `start_line` | First line of a multi-line range on `start_side`; `null` for single-line threads and for outdated multi-line GitHub threads (which keep `start_side` and `original_start_line`) | `startLine` | `line_range.start` line on `start_side`, when it differs from the end |
 | `original_line` | Line on `side` in the diff the thread was created against | `originalLine` | Always `null` (not exposed) |
-| `original_start_line` | Start line on `side` in the diff the thread was created against | `originalStartLine` | Always `null` (not exposed) |
+| `original_start_line` | Start line on `start_side` in the diff the thread was created against; for cross-side ranges this is a different file version than `original_line` | `originalStartLine` | Always `null` (not exposed) |
 | `old_line` | Current line number in the old (left) file | `line` when `side` is `left` | `old_line` |
 | `new_line` | Current line number in the new (right) file | `line` when `side` is `right` | `new_line` |
 | `is_outdated` | Whether later pushes made the thread outdated | `isOutdated` | Always `null` (not exposed) |
