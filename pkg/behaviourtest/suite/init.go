@@ -176,6 +176,8 @@ func resetScenarioWorld(w *world.World) {
 	w.LeasedRepoOrg = ""
 	w.LeaseOwned = nil
 	w.MintURL = ""
+	w.MintStatusGroup = ""
+	w.MintWorkflowHostRepos = nil
 	w.KillSwitchActivated = false
 	w.RuntimeOverridden = false
 	w.RuntimeOriginal = ""
@@ -197,6 +199,7 @@ func resetScenarioWorld(w *world.World) {
 	w.StagePublishedSHA = nil
 	w.MintProbe = nil
 	w.MintStatus = nil
+	w.BotRoleProbe = nil
 }
 
 func tagNames(tags []*messages.PickleTag) []string {
