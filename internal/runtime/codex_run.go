@@ -433,13 +433,16 @@ func buildCodexRunCommand(params RunParams, model codexModel, effort string, hoo
 	)
 	// codex exec has no --debug flag. Its tracing goes to stderr, at error
 	// level by default — a codex run is not silent there the way pi is — and
-	// RUST_LOG raises it. The in-process module is always at warn: it is
-	// where codex reports a dropped stream notification (codexStderrDrops).
-	level, module := codexStderrDefaultFilter, "warn"
+	// RUST_LOG sets the level. It is set here outright, after .env, so neither
+	// .env nor the environment can lower it below what codexStderrDrops
+	// needs: the in-process module at warn, where codex reports a dropped
+	// stream notification; a value codex cannot parse would silently drop it
+	// to the default filter.
+	filter := codexStderrDefaultFilter + ",codex_app_server::in_process=warn"
 	if params.Debug != "" {
-		level, module = "info", "info"
+		filter = "info"
 	}
-	parts = append(parts, `&& export RUST_LOG="${RUST_LOG:-`+level+`},codex_app_server::in_process=`+module+`"`)
+	parts = append(parts, `&& export RUST_LOG=`+shellQuote(filter))
 
 	prompt := DefaultAgentPrompt
 	if params.Prompt != "" {

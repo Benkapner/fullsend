@@ -415,10 +415,12 @@ made.
 
 **`codex dropped N stream notification(s) under backpressure; the progress log is incomplete`.**
 A warning: codex's in-process channel filled and it dropped an item notification, which it says on
-stderr; the runner reads codex's stderr for that line on every run (`RUST_LOG` raises
-`codex_app_server::in_process` to warn; under `--debug` the sandbox log is read instead). Until
-sub-agents are switched on nothing can spawn, so the run goes on; the release that switches them
-on fails the run on it, since the missing item can be a completed spawn.
+stderr; the runner reads codex's stderr for that line on every run (under `--debug` the sandbox log
+instead). Most drops lose nothing the stream needs, since codex re-emits a completed item it saw
+start when the turn completes; a spawn that lost both its notifications is not counted, and the
+count cannot tell the two apart. The launch sets `RUST_LOG` itself, codex's default filter with
+`codex_app_server::in_process` at warn (`info` under `--debug`), replacing any value from the
+environment or `.env`.
 
 **`--debug "..."` fails with `accepts 1 arg(s)`.** `--debug` takes an optional value: write
 `--debug='*'` (with `=`).
@@ -436,7 +438,7 @@ to finish the job. The credential is dead either way; run that command to tidy u
 references the provider.
 
 **The agent fails with nothing in the terminal.** Codex has no debug flag of its own, so
-`--debug='*'` makes the runner raise `RUST_LOG` to info and capture codex's stderr to `codex-debug.log` in
+`--debug='*'` makes the runner set `RUST_LOG=info` and capture codex's stderr to `codex-debug.log` in
 the run directory, next to the transcripts. Kept sandboxes must be removed manually
 (`openshell sandbox delete <name>`).
 

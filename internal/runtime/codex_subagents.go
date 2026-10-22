@@ -390,9 +390,11 @@ func (r CodexRuntime) foldCodexChildUsage(sandboxName string, childIDs []string,
 // would have passed, never pass one that would have failed. The stream side
 // is not that strict: codex can drop an item notification under
 // backpressure, and the completed count is then too low; it says so on its
-// stderr, which Run scans (codexStderrDrops) and warns on, a failure once
-// the multi-agent tools are switched on. A resume that got through appears
-// in the stream
+// stderr, which Run scans (codexStderrDrops) and warns on. A dropped item
+// hides a spawn only when both its notifications are lost, since exec
+// re-emits a completed item it saw start when the turn completes, and the
+// count cannot tell those apart, so such a spawn is not counted. A resume
+// that got through appears in the stream
 // as a wait item, so it is not caught either, nor is an overlong spawn line
 // whose first bytes do not show its type and tool. Counts are compared, not
 // ids: a stream item carries no tool_use_id.

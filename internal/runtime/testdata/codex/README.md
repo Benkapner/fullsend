@@ -62,7 +62,9 @@ delivery guarantees only TurnCompleted, the thread-state notifications and async
 items, drops any other item notification (a collab item's `item.completed` included) when its
 channel is full, and logs `dropping in-process server notification (queue full)` at warn from
 `codex_app_server::in_process` (`codex-rs/app-server/src/in_process.rs`), which the runner scans
-for; and exec's default stderr filter is `error,opentelemetry_sdk=off,opentelemetry_otlp=off`
+for, while exec re-emits at `turn/completed` the completed items whose `item.started` it saw
+(`maybe_backfill_turn_completed_items`, `reconcile_unfinished_started_items`), so only a spawn
+that lost both notifications is missing; and exec's default stderr filter is `error,opentelemetry_sdk=off,opentelemetry_otlp=off`
 (`codex-rs/exec/src/lib.rs`, `EXEC_DEFAULT_LOG_FILTER`), which the launch command keeps as its
 base.
 

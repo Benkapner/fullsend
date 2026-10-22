@@ -1167,9 +1167,10 @@ flowchart TB
   open-stdin hang pi needs `</dev/null` for.
 - **`codex exec` has no `--debug` flag.** Its tracing goes to stderr at **error level by default** —
   unlike pi, a codex run is not silent there: the denied `GET /v1/models` and every hook block are
-  logged — and `RUST_LOG` raises the level. The launch always exports `RUST_LOG` (codex's default
-  filter plus `codex_app_server::in_process` at warn, so a dropped stream notification is
-  reported); debug mode raises it to info and appends stderr to
+  logged — and `RUST_LOG` sets the level. The launch sets it outright after `.env` (codex's
+  default filter plus `codex_app_server::in_process` at warn, so a dropped stream notification is
+  reported; a value from the environment or `.env` is replaced); debug mode sets `info` and appends
+  stderr to
   `codex-debug.log`; without it those error lines reach the runner console, since `Run` hands
   the exec stream a counting wrapper over `os.Stderr`.
 - **Model**: `openai/<id>` or a bare `<id>`, resolved through `EffectiveModel` — the same chain
@@ -1350,12 +1351,13 @@ the run (`codex_spawn_without_admission`) on a shortfall, a spawn not sent by th
 a spawn item too long to read, or a failed read. The count spans the run's iterations, so
 `ClearIterationArtifacts` must leave `.security/` in place (it clears `output/`, the sessions
 directory and the debug log, nothing else under the workspace). Codex can drop a stream
-notification under backpressure and says so on stderr: the launch raises
-`codex_app_server::in_process` to warn in `RUST_LOG` (which codex's commands inherit), the runner
-scans that stderr on the host (the sandbox log under `--debug`) and warns on the line; the change
-that switches the multi-agent tools on turns that into a failure, since nothing can spawn before
-it. The check cannot catch a forged admission (the log is agent-writable), a surplus admission
-covering a later spawn (counts, not ids), or a resume (a `wait` item in the stream).
+notification under backpressure and says so on stderr: the launch sets `RUST_LOG` outright after
+`.env` (codex's default filter with `codex_app_server::in_process` at warn; codex's commands
+inherit it), the runner scans that stderr on the host (the sandbox log under `--debug`) and warns
+on the line. The check cannot catch a forged admission (the log is agent-writable), a surplus
+admission covering a later spawn (counts, not ids), a resume (a `wait` item in the stream), or a
+spawn both of whose notifications codex dropped (a completed item it saw start is re-emitted when
+the turn completes, so a single drop loses nothing the count needs).
 
 **PATH is pinned across `.env` for the same reason the interpreter is.** The hook scripts resolve
 their tools by name — `tirith_check.py` runs a bare `tirith` — so a `.env` that prepends a directory
