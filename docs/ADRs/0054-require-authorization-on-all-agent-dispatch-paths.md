@@ -40,6 +40,12 @@ the preserved GitHub label handoff exception are decided in [ADR 0107](0107-bot-
 Fullsend-originated entity discovery without a prompting event. Event-backed
 dispatch remains subject to this ADR's actor authorization gate.
 
+[ADR 0151](0151-common-actor-admission-floor.md) partially supersedes the human
+permission threshold for target CEL-routed event admission: the platform floor
+is a verified effective `triage`-or-higher role, while CEL expresses stronger
+harness conditions. The workflow stage guards and current Go `write` gate
+remain in effect until migration.
+
 ## Context
 
 The dispatch routing logic (`dispatch.yml` / `reusable-dispatch.yml`)

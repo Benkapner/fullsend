@@ -6,6 +6,11 @@ under the actor-attributed data boundary in [ADR 0133](../../../ADRs/0133-actor-
 It is the contract between forge adapters, `fullsend run`, harness scripts, and
 agent runtimes.
 
+> **Version note:** [ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md)
+> selects a common `triage` human floor for target Fullsend-controlled model
+> admission. This v1 bundle retains its harness-derived threshold; snapshot
+> producers need a v2 contract before applying the new floor.
+
 Here, *entity-context-snapshot* means the staged data snapshot for a handled
 Git-forge entity. The qualified name distinguishes this data structure from
 the dispatch-layer routing category called *entity context* in

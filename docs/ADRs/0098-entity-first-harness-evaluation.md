@@ -40,7 +40,22 @@ On GitLab, the low-latency webhook candidate path and poller backstop are
 trusted, entity-bound `fullsend run` may recheck only its canonical entity with
 `event == null`. `fullsend poll` remains the broad candidate enumerator. Both
 eventless paths require eligible entity sources, trusted Fullsend invocation
-provenance, current actor filtering, and the same harness CEL predicate.
+provenance, actor filtering under the current authorization contract, and the
+same harness CEL predicate.
+
+[ADR 0147](0147-evaluate-entity-cel-over-selectively-acquired-data.md)
+partially supersedes the pre-CEL full-history enumeration, permission
+resolution for every history actor, and audit-roster requirements below.
+[ADR 0148](0148-reuse-verified-actor-roles-for-entity-cel.md) separately permits
+bounded role reuse across entity-CEL checks and partially supersedes the
+permission-at-evaluation-time rule. Trusted-origin, event-actor, and
+model-bound authorization remain required.
+
+[ADR 0151](0151-common-actor-admission-floor.md) partially supersedes this
+ADR's per-harness human threshold for decision-relevant entity facts. Target
+entity-CEL admission uses a verified effective `triage`-or-higher platform
+floor; actor provenance and fail-closed filtering remain required, and CEL may
+require stronger conditions.
 
 ## Context
 

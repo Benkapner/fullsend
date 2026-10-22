@@ -19,6 +19,11 @@ Date: 2026-10-07
 
 Accepted
 
+[ADR 0151](0151-common-actor-admission-floor.md) partially supersedes the
+selected-harness human threshold for Fullsend-controlled model-bound records
+with a verified effective `triage`-or-higher floor. Current-revision actor
+checks and filtering, delimitation, and redaction requirements remain.
+
 ## Context
 
 [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md) decides

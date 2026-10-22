@@ -422,15 +422,19 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `conversation.Client` — not a separate always-on chat bot and not an extension
   of `forge.Client`
   ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)).
-- Event-backed dispatch authorization: event-triggered paths authorize the prompting
-  actor before dispatch. This includes schedule/manual dispatch represented as
-  a `NormalizedEvent`, whose actor is the configured service identity. GitHub
-  paths check the acting user's collaborator permission via the repository API
-  (`write` or above for mutation commands; `triage` or above for observation
-  stages); a repo that enables the `owners_file` authorization provider also
-  grants these roles to its Prow `OWNERS` approvers and reviewers. Non-GitHub
-  event paths map source-system roles to dispatch authorization roles (`read`,
-  `write`, `admin`) using source-native role resolution, with no cross-system
+- Event-backed dispatch authorization: event-triggered paths authorize the
+  prompting actor before dispatch. This includes schedule/manual dispatch
+  represented as a `NormalizedEvent`, whose actor is the configured service
+  identity. The target CEL path requires a verified effective normalized role
+  of `triage` or higher for an ordinary human actor, independent of the
+  selected harness and its token capabilities. The effective role comes from
+  the source provider or a trusted configured permission source such as
+  `OWNERS`; harness CEL may require `write` or narrower actor, target, or action
+  conditions. Current GitHub bash guards still use `triage` for observation
+  stages and `write` for mutation stages, except for its ungated retro close
+  route; the Go dispatch path still requires `write` for ordinary events before
+  matching harnesses. Non-GitHub event paths map source-native roles to
+  normalized roles without cross-system
   identity verification. Bot actors are migrating to provider-backed exact role
   resolution: adapters classify actors from source-native metadata; recognized bots receive a
   canonical `actor.bot_role` such as `review`, and bot actors retain
@@ -443,38 +447,67 @@ The existing design principle is that [the repo is the coordinator](problems/age
   time of ADR 0107, GitHub is the only production implementation. CEL may
   further restrict recognized bot roles but cannot authorize an unknown bot on
   non-label paths ([ADR 0107](ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md);
-  [Authorization Contract v1](normative/authorization/v1/);
-  [ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
-- Data security boundary (target state): each source-system record is admitted
-  only when its actor attribution and current authorization meet the selected
-  harness threshold, regardless of whether it arrives through an event or a
-  proactive API read; unrecognized or unauthorized content is redacted.
+  [Authorization Contract v1](normative/authorization/v1/) for current dispatch;
+  [Authorization Contract v2](normative/authorization/v2/) for target CEL;
+  [ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md);
+  [ADR 0151](ADRs/0151-common-actor-admission-floor.md)).
+- Data security boundary (target state): each source-system record that
+  Fullsend controls is admitted to model input only after its exact current
+  revision's actor and current authorization are verified. An ordinary human
+  actor must have an effective normalized role of `triage` or higher regardless
+  of the selected harness; registered bots use a separate provider-backed
+  exact-role check. Authorization is refreshed at model-bound checkpoints, and
+  a prompting event's CEL result does not authorize separate records.
+  Unrecognized, unauthorized, or unattributed content is redacted.
   Host-side filtering removes hidden characters, redacts sensitive data, scans
   for prompt injection, and applies size limits before filtered,
   provenance-labelled content reaches the model. This ADR does not govern
   model-initiated direct source-system calls; future ADRs may encourage use of
   platform-originated checked data or add filtering for model-originated
-  retrievals ([ADR 0133](ADRs/0133-actor-attributed-data-security-boundary.md)).
+  retrievals ([ADR 0133](ADRs/0133-actor-attributed-data-security-boundary.md),
+  partially superseded by
+  [ADR 0151](ADRs/0151-common-actor-admission-floor.md)).
 - Fullsend-originated entity evaluation (target state): `fullsend poll`
   enumerates candidates, while a bound `fullsend run` may recheck only its
   canonical entity with `event == null`. Both require verified,
   non-user-assertable Fullsend invocation provenance and effective platform
   eligibility; the actor of an earlier event does not authorize an eventless
-  cycle. Before each candidate harness's CEL predicate, the platform
-  fail-closed enumerates a closed superset of action-indicating entity
-  elements, resolves each actor's current permission, and removes elements
-  below that harness's observation or mutation threshold. Later input-selection
-  and injection filtering are defense in depth for prompt construction.
-  Entity-first execution remains disabled until its versioned normalized-entity
-  contract exists. Every run uses the harness's configured identity
+  cycle. The platform classifies action-indicating categories, but acquires
+  only entity data that can affect each harness's CEL predicate. The target
+  CEL view admits actor-originated facts that could make the predicate
+  actionable only after verifying their actors' effective roles; an ordinary
+  human needs `triage` or higher,
+  while a harness may require stronger conditions in CEL. A below-floor fact
+  is excluded, and unresolved authority for a potentially decisive fact cannot
+  prove a false or empty result. Raw service-clock state used only to defer
+  eligibility may be evaluated without unrelated history. With an explicit
+  versioned platform age policy, a host-owned cache may share
+  provider-verified actor roles, but not harness-specific authorization
+  decisions, across checks and `poll` and bound `run` processes for no more
+  than five minutes from the authoritative lookup's start. Without that policy,
+  cross-check reuse is disabled. A cache-dependent false CEL result must be
+  rechecked after expiry or known invalidation within a bounded reconciliation
+  interval. Event admission and model-bound content checks retain separate
+  fresh gates.
+  Partial data yields a definitive result only with proven coverage; otherwise
+  `poll` or bound `run` fetches more relevant data or leaves the check
+  unresolved, without launching a sandbox. Later input selection and injection
+  filtering govern prompt construction. Entity-first execution remains
+  disabled until the versioned normalized-entity contract defines partial
+  data and coverage. Every run uses the harness's configured identity
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md),
-  [ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md)).
+  [ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md),
+  [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md),
+  [ADR 0148](ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md),
+  [ADR 0151](ADRs/0151-common-actor-admission-floor.md),
+  [Authorization Contract v2](normative/authorization/v2/)).
 
 **Open questions:**
 
-- What normative entity-history, query-planning, and handled-state contract
-  can support entity-first harness evaluation without unbounded provider reads
-  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md))?
+- What field-level normalized-entity contract and provider query plans can
+  prove partial-history coverage and represent handled state? Selective
+  acquisition and its authorization rules are decided in
+  [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md).
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
@@ -538,10 +571,15 @@ Observability is a cross-cutting concern that touches every other component. Eac
 - Event-driven stage dispatch remains traceable end-to-end in the GitHub Actions UI by using synchronous `workflow_call` dispatch (see [ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 - Scheduled entity-discovery runs are attributable to the verified Fullsend
   invocation identity, target repository, effective policy, harness revision,
-  and resolved entity; retained action-indicating elements preserve their actor
-  provenance. State-only predicates trace to the configured service identity
-  and versioned policy/harness configuration
-  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
+  and resolved entity. Their CEL checks record decision and coverage evidence;
+  identifiable positive witnesses retain actor provenance, while collection
+  results use bounded summaries rather than a full actor-history roster.
+  State-only predicates trace to the configured service identity and versioned
+  policy/harness configuration. When a shared actor-role result contributes to
+  CEL, the audit records its lookup time, age, and effective maximum age
+  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md),
+  [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md),
+  [ADR 0148](ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)).
 - Distributed tracing: framework-native OpenTelemetry instrumentation with zero-configuration baseline. Every run produces `run-telemetry.jsonl` locally; optional live OTLP export to any compatible backend. W3C trace context propagation links multi-agent pipelines into unified traces. OTEL GenAI semantic conventions enable LLM-aware backends ([ADR 0050](ADRs/0050-distributed-tracing-instrumentation.md)).
 - Eval measurements: the concept of scoring traces ([fail-open](glossary.md#fail-open)). [OTEL primary facts](glossary.md#otel-primary-facts) stay on the run trace (`run-telemetry.jsonl`); [OTEL derived products](glossary.md#otel-derived-products) are the scores (`eval-measurements.jsonl`) ([ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md)). See [Eval Measurements](guides/infrastructure/eval-measurements.md). When `OTEL_EXPORTER_OTLP_*` is set, scores also export as `gen_ai.evaluation.result` span events on the same TraceID (same OTLP path as agent traces; fail-open).
 
