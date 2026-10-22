@@ -384,6 +384,35 @@ The first two exit 97 and mean the hook wiring cannot be trusted; the third exit
 credential-and-trust guard. All three are fail-closed by design. Between iterations the agent runs
 as the same user as those files, so "did the agent write there?" is the question to ask first.
 
+**A spawn failed the admission check.** After an iteration whose `exec --json` stream reported a
+completed `spawn_agent`, the runner compares the run's completed spawns with the spawn guard's
+`codex_spawn_guard_admit` lines in `/sandbox/workspace/.security/findings.jsonl`, and the run fails
+whatever codex's exit code. Each message says why:
+
+```
+codex_spawn_without_admission: 3 completed spawn(s) in this run's stream(s) but 2 recorded admission(s)
+```
+The guard admitted fewer spawns than completed: a hook handler that timed out or failed let a spawn
+through, or the findings log lost lines. The count spans every iteration of the run, so a retry's
+spawns need admissions of their own. Ask first whether the agent wrote to the findings log; a log
+over 1 MiB is read cut, and the message then ends with `the admissions read was cut at 1048576
+bytes`.
+```
+codex_spawn_without_admission: a completed spawn was not sent by the primary thread
+```
+A spawn item without a sender, or sent by a thread other than the run's own. Codex 0.159.3 emits
+neither; look for a malformed or planted stream line.
+```
+codex_spawn_without_admission: a spawn_agent item longer than 1048576 bytes could not be read
+```
+The parent spawned with a prompt over 1 MiB, so the runner cannot tell whether that spawn
+completed. Shorten the prompt.
+```
+reading the spawn admissions: ...
+```
+The findings log could not be read (the command failed or timed out), so the check could not be
+made.
+
 **`--debug "..."` fails with `accepts 1 arg(s)`.** `--debug` takes an optional value: write
 `--debug='*'` (with `=`).
 

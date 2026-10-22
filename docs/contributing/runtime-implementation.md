@@ -1341,6 +1341,16 @@ file when a child starts, so Run exports their digests as `FULLSEND_CODEX_SPAWN_
 handler re-hashes them, and lists `agents/`, before applying the policy, on its own deadline below
 the hook timeout at which codex kills a handler and lets the call through. No role, no spawn.
 
+A handler codex kills at that timeout still lets the call through, so after each iteration the
+runner cross-checks the stream's completed `spawn_agent` items, read on the host, against the
+guard's `codex_spawn_guard_admit` lines in `/sandbox/workspace/.security/findings.jsonl` and fails
+the run (`codex_spawn_without_admission`) on a shortfall, a spawn not sent by the primary thread,
+a spawn item too long to read, or a failed read. The count spans the run's iterations, so
+`ClearIterationArtifacts` must leave `.security/` in place (it clears `output/`, the sessions
+directory and the debug log, nothing else under the workspace). The check cannot catch a forged admission (the log is agent-writable), a surplus
+admission covering a later spawn (counts, not ids), a resume (a `wait` item in the stream), or a
+spawn whose item notifications codex dropped under backpressure.
+
 **PATH is pinned across `.env` for the same reason the interpreter is.** The hook scripts resolve
 their tools by name — `tirith_check.py` runs a bare `tirith` — so a `.env` that prepends a directory
 holding a fake `tirith` that exits 0 neuters the entire PreToolUse chain while every digest stays

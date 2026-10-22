@@ -324,11 +324,13 @@ func (r CodexRuntime) foldCodexChildUsage(sandboxName string, childIDs []string,
 // lines in the sandbox findings log. The log is agent-writable: a planted or
 // duplicated admission only raises the count, so a forged one is not caught,
 // while a torn, cut or missing log can only lower it: it can fail a run that
-// would have passed, never pass one that would have failed. A resume_agent
-// call that got through is not caught either, since codex emits no stream
-// item for a resume, and nor is a spawn item the collector dropped as
-// overlong. Counts are compared, not ids: a stream item carries no
-// tool_use_id.
+// would have passed, never pass one that would have failed. The stream side
+// is not that strict: codex can drop an item notification under
+// backpressure, so the completed count can be too low and a spawn the guard
+// never decided then passes. A resume that got through appears in the stream
+// as a wait item, so it is not caught either, nor is an overlong spawn line
+// whose first bytes do not show its type and tool. Counts are compared, not
+// ids: a stream item carries no tool_use_id.
 
 // codexSpawnAdmitFinding is the adapter's SPAWN_ADMIT_FINDING.
 const codexSpawnAdmitFinding = "codex_spawn_guard_admit"

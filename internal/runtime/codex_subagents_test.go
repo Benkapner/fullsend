@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -1098,4 +1099,30 @@ func TestCodexRun_UnreadSpawnItemFailsTheRun(t *testing.T) {
 	assert.EqualError(t, err, "codex_spawn_without_admission: a spawn_agent item longer than 1048576 bytes could not be read")
 	assert.Equal(t, 0, exit)
 	assert.NotContains(t, log, codexSpawnAdmitFinding, "nothing to compare: the unread item fails the run before the read")
+}
+
+// The findings log the admission cross-check counts across iterations
+// survives ClearIterationArtifacts, which clears output/, the sessions
+// directory and the debug log, nothing else under the workspace.
+func TestCodexRuntime_ClearIterationArtifacts_KeepsTheFindingsLog(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	fakeOpenshellCodexChildren(t, logPath, t.TempDir(), "", t.TempDir())
+	require.NoError(t, CodexRuntime{}.ClearIterationArtifacts("sb"))
+	var clear string
+	for _, line := range strings.Split(readFileString(t, logPath), "\n") {
+		if i := strings.Index(line, "rm -rf "); i >= 0 {
+			clear = line[i:]
+		}
+	}
+	require.NotEmpty(t, clear, "the file cleanup ran")
+
+	ws := t.TempDir()
+	for _, p := range []string{".security/findings.jsonl", "output/result.txt"} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(ws, p)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(ws, p), []byte("x\n"), 0o600))
+	}
+	out, err := exec.Command("/bin/sh", "-c", strings.ReplaceAll(clear, sandbox.SandboxWorkspace, ws)).CombinedOutput()
+	require.NoError(t, err, string(out))
+	assert.FileExists(t, filepath.Join(ws, ".security", "findings.jsonl"), "the admissions of earlier iterations stay")
+	assert.NoFileExists(t, filepath.Join(ws, "output", "result.txt"))
 }
