@@ -42,6 +42,13 @@ its other event routes have distinct guards, including an ungated retro-close
 route ([`reusable-dispatch.yml` at `fe68925b`](https://github.com/fullsend-ai/fullsend/blob/fe68925b53066c27ba0c0272e2e8eb1ce73ebe40/.github/workflows/reusable-dispatch.yml#L305-L420)).
 The current Go path instead applies one `write` gate before loading
 harnesses ([`Dispatch` at `fe68925b`](https://github.com/fullsend-ai/fullsend/blob/fe68925b53066c27ba0c0272e2e8eb1ce73ebe40/internal/harnessdispatch/core.go#L48-L85)).
+The current GitHub dispatch and run jobs each check out the PR base commit for
+PR events ([`reusable-dispatch.yml` at `fe68925b`](https://github.com/fullsend-ai/fullsend/blob/fe68925b53066c27ba0c0272e2e8eb1ce73ebe40/.github/workflows/reusable-dispatch.yml#L1519-L1532),
+[`run checkout` at `fe68925b`](https://github.com/fullsend-ai/fullsend/blob/fe68925b53066c27ba0c0272e2e8eb1ce73ebe40/.github/workflows/reusable-dispatch.yml#L1681-L1686)).
+The matrix execution ref carries agent and role but no composed policy digest
+([`ExecutionRef` at `fe68925b`](https://github.com/fullsend-ai/fullsend/blob/fe68925b53066c27ba0c0272e2e8eb1ce73ebe40/internal/harnessdispatch/ref.go#L3-L13)),
+and `run` resolves the harness by name again
+([`run.go` at `fe68925b`](https://github.com/fullsend-ai/fullsend/blob/fe68925b53066c27ba0c0272e2e8eb1ce73ebe40/internal/cli/run.go#L641-L674)).
 
 A common `triage`-only admission rule would allow `triage`-authored model
 records to guide a write-capable harness even if its trigger CEL required a
@@ -74,6 +81,16 @@ The default is an authorization policy, not a deduction from mint token scopes
 or the harness's `privilege_levels`. The trusted composed harness revision and
 effective minimum stay fixed for one evaluation and run cycle; a changed
 policy requires a new cycle or abort, not a silent threshold change.
+The registry and local harness and `base` files that set this policy must come
+from one immutable trusted checkout revision selected independently of the
+prompting actor and entity content. A change proposal uses its target/base
+commit, never its proposed head; other paths must identify an equivalent
+trusted canonical revision. Every remote harness or base layer must pass its
+allowlist and content-hash checks, and its digest belongs in the composed
+policy identity. Dispatch must bind that identity and effective minimum to its
+run handoff. A run or later Fullsend-controlled retrieval that cannot verify
+the same pin must stop and may restart authorization from the first gate
+before using the content.
 
 Fullsend applies the same effective minimum separately to the ordinary human
 prompting event before that harness's CEL predicate; to each actor-originated

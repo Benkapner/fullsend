@@ -196,6 +196,20 @@ stages. Neither token permissions nor workflow stage names infer a different
 human threshold. The default table is an authorization policy, not a claim
 about the capabilities of every harness using a role.
 
+The agent registry and local child and `base` harness files that determine
+`role` or `human_min_role` MUST come from one actor-independent, trusted
+checkout pinned to an immutable revision. For a change-proposal event, that is
+the provider-verified target/base commit, never the proposed head; for other
+events, it is a trusted repository revision selected and pinned by the
+platform. An actor-supplied ref, CEL input, proposed head checkout, or mutable
+target working tree MUST NOT select or replace these policy files or their
+revision. A remote registered harness or `base` layer MUST be selected through
+that trusted registry and base chain, pass a trusted remote-resource allowlist,
+and have its content verified against a declared hash before contributing
+`role` or `human_min_role`. A hash or allowlist match alone does not authorize
+an actor-supplied remote source. Configured actor-permission sources retain
+their separate trusted-ref and freshness requirements below.
+
 `human_min_role` constrains human actors and their records only. A
 provider-classified bot using the exact verified label handoff or a bot with
 an exact registered role uses its separate gate, even when the selected
@@ -223,10 +237,19 @@ A harness evaluation and any sandbox it starts MUST use one trusted composed
 harness revision, resolved `role`, and effective `human_min_role`. Fullsend
 MUST pin that policy before the first harness-specific actor gate and retain it
 through event admission, entity CEL, snapshot and model-record checks, and
-later Fullsend-controlled retrieval. If the harness policy changes mid-cycle,
-Fullsend MUST either retain the original pin for the whole cycle or stop and
-re-evaluate from the first gate under the new revision; it MUST NOT silently
-mix minima. A new child cycle under
+later Fullsend-controlled retrieval. Its policy identity MUST bind the trusted
+checkout revision, registry and composed harness content digest, trusted
+remote-resource allowlist revision or digest, verified remote-layer hashes,
+resolved `role`, effective minimum, and its explicit-or-default source. When
+dispatch, execution, or retrieval use separate processes, the handoff MUST
+preserve this identity with integrity. The receiver MUST verify the pin
+against its loaded policy before minting or using harness credentials and
+before admitting content. Passing only an agent name or
+credential role is insufficient. If the policy changes mid-cycle, Fullsend
+MUST either retain the original verified pin for the whole cycle or stop and
+re-evaluate from the first gate under a new trusted revision; it MUST NOT
+silently mix minima. If the receiver cannot verify the handoff pin, it MUST
+stop and MAY restart authorization from the first gate. A new child cycle under
 [ADR 0144](../../../ADRs/0144-reuse-poll-and-entity-bound-run-processes.md)
 may resolve and record a new pin.
 
@@ -244,11 +267,12 @@ authorization denial.
 
 For each selected harness, the event-admission audit MUST bind the verified
 actor identity, effective role and source or narrow label-grant evidence, the
-harness revision and resolved `role`, the effective `human_min_role` and its
-explicit-or-default source, and the gate outcome, including denial before
-CEL. A bot decision records its registered role or verified label-transition
-evidence instead of a human role. An early platform-floor denial records the
-actor evidence and floor outcome.
+policy identity above, and the gate outcome, including denial before CEL. A
+cross-process handoff records the policy identity sent and verified, or the
+reason verification failed and authorization restarted or stopped. A bot
+decision records its registered role or verified label-transition evidence
+instead of a human role. An early platform-floor denial records the actor
+evidence and floor outcome.
 
 ### Current dispatch compatibility
 
@@ -271,7 +295,9 @@ harnesses or set their role requirements. After provider-backed
 > under-enforce an intended `maintain` or `admin` minimum. A v2-conforming
 > runner MUST reject a configured `human_min_role` it cannot parse, validate,
 > or enforce rather than silently treat it as absent. The field cannot be
-> deployed as effective policy while a selected runner still ignores it.
+> deployed as effective policy while a selected runner still ignores it. The
+> current execution matrix carries agent name and credential role, not the
+> composed policy identity required for a v2 cross-process handoff.
 
 ## Fail-closed behavior
 
@@ -462,14 +488,12 @@ justification as any other wildcard allowlist in this contract.
 Each entity-source evaluation's audit record MUST identify its verified
 initiator (the event actor for an event-bearing check, or the trusted Fullsend
 invocation identity for an eventless check), target repository, effective
-policy, harness revision, resolved harness `role`, effective
-`human_min_role`, whether that minimum came from an explicit field or the
-default map, canonical entity, acquisition-plan identity, and decision
-outcome, including `UNKNOWN`, deferred, or denied outcomes. It MUST record
-which source scopes and bounded queries were needed, their coverage and
-completeness evidence, and the current attribution, live or eligible cached
-verified role or exact label-grant provenance, and harness-gate outcome for
-individual actor-originated records used as decisive witnesses. Complete
+policy and pinned policy identity, canonical entity, acquisition-plan identity,
+and decision outcome, including `UNKNOWN`, deferred, or denied outcomes. The
+audit MUST record needed source scopes and bounded queries, their coverage and
+completeness evidence, current attribution, live or eligible cached verified
+role or exact label-grant provenance, and harness-gate outcome for individual
+actor-originated records used as decisive witnesses. Complete
 negative or aggregate claims require bounded query and source-coverage
 evidence bound to the effective minimum, authorization policy, permission or
 grant source, and check time or equivalent authorization epoch.
@@ -712,9 +736,9 @@ human- or bot-authored, does not admit its source record to model input
 without this separate fresh gate and ADR 0133 filtering.
 
 The model-record admission evidence MUST bind each admitted or redacted
-record's current-revision actor and gate result to the selected harness
-revision, effective `human_min_role`, its explicit-or-default source, and the
-fresh checkpoint. A CEL match or earlier event admission is not this evidence.
+record's current-revision actor and gate result to the selected harness's
+pinned policy identity and the fresh checkpoint. A CEL match or earlier event
+admission is not this evidence.
 
 Source-record attribution MAY come from a provider-verified event or be
 resolved from the source system. Model-bound actor authorization MUST be
@@ -895,9 +919,9 @@ configured value MUST reject that harness, including a stronger `maintain` or
 that carry verified effective roles and distinguish exact label-grant
 provenance. Existing authorization-sensitive CEL comparisons against an
 unverified legacy role MUST be migrated before v2 routing. Migration also
-requires per-harness event and entity actor gates and an
-entity-context-snapshot v2 contract that can represent all four allowed
-minimums and the changed record-admission rule.
+requires a verified policy-identity handoff, per-harness event and entity
+actor gates, and an entity-context-snapshot v2 contract that can represent all
+four allowed minimums and the changed record-admission rule.
 [Entity-context-snapshot v1](../../entity-context-snapshot/v1/README.md)
 retains its historical stage-derived `triage`/`write` rule until that
 migration.
