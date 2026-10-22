@@ -305,6 +305,26 @@ func TestCodexChildIDs_SkipsOverlongLine(t *testing.T) {
 	assert.Equal(t, []string{codexChildSameModelID}, c.IDs,
 		"a line at or past the parser's own bound is dropped whole, as parseCodexStream drops it, even when it names a child; the next line is still scanned")
 	assert.Empty(t, c.line, "nothing pending after a newline")
+	assert.True(t, c.UnreadSpawn, "the dropped lines opened as spawn_agent items, so the run cannot pass on the count")
+}
+
+func TestCodexChildIDs_NotesAnUnreadSpawnItem(t *testing.T) {
+	t.Parallel()
+
+	spawn := `{"type":"item.completed","item":{"id":"item_0","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"` + codexRootThreadID + `","receiver_thread_ids":["` + codexChildOtherModelID + `"],"prompt":"` + strings.Repeat("a", streamBufSize) + `","agents_states":{},"status":"completed"}}` + "\n"
+	chunked := &codexChildIDs{}
+	for i := 0; i < len(spawn); i += 4096 {
+		_, err := chunked.Write([]byte(spawn[i:min(i+4096, len(spawn))]))
+		require.NoError(t, err)
+	}
+	assert.True(t, chunked.UnreadSpawn, "the item's opening is in the pending line when the bound is reached")
+	assert.Empty(t, chunked.Senders)
+
+	output := `{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"cat big","aggregated_output":"` + strings.Repeat("a", streamBufSize) + `","exit_code":0,"status":"completed"}}` + "\n"
+	other := &codexChildIDs{}
+	_, err := other.Write([]byte(output))
+	require.NoError(t, err)
+	assert.False(t, other.UnreadSpawn, "an overlong line of another item kind is dropped silently, as before")
 }
 
 // A failed child shows only as failed wait and close items and never fails
@@ -742,7 +762,10 @@ func tryCodexRunWithChildren(t *testing.T, streamFixture string, delegating bool
 	}
 	sessions := writeCodexChildRollouts(t, codexChildSameModelID, codexChildOtherModelID, codexChildFailedID)
 	writeCodexSpawnAdmissions(t, sessions, admitted)
-	fakeOpenshellCodexChildren(t, logPath, storeDir, filepath.Join("testdata", "codex", streamFixture), sessions)
+	if !filepath.IsAbs(streamFixture) {
+		streamFixture = filepath.Join("testdata", "codex", streamFixture)
+	}
+	fakeOpenshellCodexChildren(t, logPath, storeDir, streamFixture, sessions)
 
 	var out bytes.Buffer
 	metrics := &RunMetrics{}
@@ -896,7 +919,7 @@ func TestCountCodexSpawnAdmissions(t *testing.T) {
 	assert.Zero(t, countCodexSpawnAdmissions(nil), "no findings log: the command prints nothing")
 }
 
-func TestCodexCheckSpawnAdmissions(t *testing.T) {
+func TestCompareCodexSpawnAdmissions(t *testing.T) {
 	t.Parallel()
 
 	root := codexRootThreadID
@@ -919,11 +942,13 @@ func TestCodexCheckSpawnAdmissions(t *testing.T) {
 			"codex_spawn_without_admission: a completed spawn was not sent by the primary thread"},
 		{"the stream named no primary thread", "", []string{root}, 1, 3,
 			"codex_spawn_without_admission: a completed spawn was not sent by the primary thread"},
+		{"no sender and no primary thread", "", []string{""}, 1, 3,
+			"codex_spawn_without_admission: a completed spawn was not sent by the primary thread"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := codexCheckSpawnAdmissions(tt.primary, tt.senders, tt.completed, tt.admitted)
+			err := compareCodexSpawnAdmissions(tt.primary, tt.senders, tt.completed, tt.admitted)
 			if tt.want == "" {
 				assert.NoError(t, err)
 				return
@@ -1051,4 +1076,26 @@ func TestCodexChildIDs_FlushScansTheTornLastLine(t *testing.T) {
 	assert.Len(t, c.Senders, 2)
 	c.flush()
 	assert.Len(t, c.Senders, 2, "nothing pending")
+}
+
+// A spawn item too long to read fails the run: whether that spawn completed
+// is unknown, and the parent chooses the prompt's size.
+func TestCodexRun_UnreadSpawnItemFailsTheRun(t *testing.T) {
+	lines := bytes.Split(readCodexFixture(t, "collab_spawn.ndjson"), []byte("\n"))
+	padded := false
+	for i, line := range lines {
+		if bytes.Contains(line, []byte(`"tool":"spawn_agent"`)) && bytes.Contains(line, []byte(`"status":"completed"`)) {
+			lines[i] = bytes.Replace(line, []byte(`"prompt":"`), []byte(`"prompt":"`+strings.Repeat("a", streamBufSize)), 1)
+			padded = true
+			break
+		}
+	}
+	require.True(t, padded)
+	path := filepath.Join(t.TempDir(), "padded.ndjson")
+	require.NoError(t, os.WriteFile(path, bytes.Join(lines, []byte("\n")), 0o600))
+
+	_, exit, _, log, err := tryCodexRunWithChildren(t, path, false, 3)
+	assert.EqualError(t, err, "codex_spawn_without_admission: a spawn_agent item longer than 1048576 bytes could not be read")
+	assert.Equal(t, 0, exit)
+	assert.NotContains(t, log, codexSpawnAdmitFinding, "nothing to compare: the unread item fails the run before the read")
 }

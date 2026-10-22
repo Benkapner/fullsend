@@ -139,10 +139,13 @@ func parseCodexChildUsage(data []byte) []codexChildUsage {
 // A final line without a newline waits for flush, once the stream has ended:
 // codex killed mid-write can leave a completed spawn there.
 type codexChildIDs struct {
-	IDs      []string
-	Senders  []string
-	line     []byte
-	overlong bool
+	IDs     []string
+	Senders []string
+	// UnreadSpawn marks a line too long to scan that opened as a spawn_agent
+	// item: whether that spawn completed is unknown, so the run fails.
+	UnreadSpawn bool
+	line        []byte
+	overlong    bool
 }
 
 func (c *codexChildIDs) Write(p []byte) (int, error) {
@@ -163,9 +166,18 @@ func (c *codexChildIDs) Write(p []byte) (int, error) {
 }
 
 // take appends to the pending line and drops a line that reaches
-// streamBufSize, as parseCodexStream does.
+// streamBufSize, as parseCodexStream does, noting one that opened as a
+// spawn_agent item (the parent chooses the prompt's size).
 func (c *codexChildIDs) take(b []byte) {
 	if c.overlong || len(c.line)+len(b) >= streamBufSize {
+		if !c.overlong {
+			var head [256]byte
+			n := copy(head[:], c.line)
+			n += copy(head[n:], b)
+			if bytes.Contains(head[:n], []byte(`"type":"collab_tool_call"`)) && bytes.Contains(head[:n], []byte(`"tool":"spawn_agent"`)) {
+				c.UnreadSpawn = true
+			}
+		}
 		c.overlong = true
 		c.line = c.line[:0]
 		return
@@ -351,16 +363,17 @@ func countCodexSpawnAdmissions(data []byte) int {
 	return n
 }
 
-// codexCheckSpawnAdmissions returns an error for a spawn sent by any thread
-// but the primary one, and for more completed spawns in the run than
-// admissions. More admissions is not an error: an admitted spawn codex then
-// refused (at the thread limit) completed nothing. No id is in the error:
-// the stream comes out of the sandbox. At the pinned codex the stream
-// carries the primary thread's items only, so the sender rule is defence in
-// depth; a child's spawn is the guard's deny.
-func codexCheckSpawnAdmissions(primary string, senders []string, completed, admitted int) error {
+// compareCodexSpawnAdmissions returns an error for a spawn without a sender
+// or sent by any thread but the primary one (two unknown ids are not the
+// same thread), and for more completed spawns in the run than admissions.
+// More admissions is not an error: an admitted spawn codex then refused (at
+// the thread limit) completed nothing. No id is in the error: the stream
+// comes out of the sandbox. At the pinned codex the stream carries the
+// primary thread's items only, so the sender rule is defence in depth; a
+// child's spawn is the guard's deny.
+func compareCodexSpawnAdmissions(primary string, senders []string, completed, admitted int) error {
 	for _, sender := range senders {
-		if sender != primary {
+		if sender == "" || sender != primary {
 			return fmt.Errorf("%s: a completed spawn was not sent by the primary thread", codexSpawnWithoutAdmission)
 		}
 	}
@@ -384,7 +397,7 @@ func checkCodexSpawnAdmissions(sandboxName, primary string, senders []string, co
 		return fmt.Errorf("reading the spawn admissions: exited %d: %s", exitCode, redactSummary(strings.TrimSpace(sanitizeOutput(stderr))))
 	}
 	admitted := countCodexSpawnAdmissions([]byte(stdout))
-	err = codexCheckSpawnAdmissions(primary, senders, completed, admitted)
+	err = compareCodexSpawnAdmissions(primary, senders, completed, admitted)
 	if err != nil && admitted < completed && len(stdout) >= codexChildUsageMaxBytes {
 		return fmt.Errorf("%w; the admissions read was cut at %d bytes", err, codexChildUsageMaxBytes)
 	}

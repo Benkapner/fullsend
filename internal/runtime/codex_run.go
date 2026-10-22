@@ -683,7 +683,11 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 
 	// Checked whatever the exit code: with a validation loop an iteration's
 	// non-zero exit does not fail the run; an error from Run does, and a
-	// failed read is one too, unlike the usage read above.
+	// failed read or an unread spawn item is one too, unlike the usage read
+	// above.
+	if childIDs.UnreadSpawn {
+		return exitCode, fmt.Errorf("%s: a spawn_agent item longer than %d bytes could not be read", codexSpawnWithoutAdmission, streamBufSize)
+	}
 	if len(childIDs.Senders) > 0 {
 		digests.CompletedSpawns += len(childIDs.Senders)
 		recordRunnerHeldDigests(params.SandboxName, digests)
