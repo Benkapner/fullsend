@@ -33,9 +33,12 @@ for every harness increases reads and still leaves `poll` to determine which
 harnesses should receive each result. A provider search result also cannot
 prove that an entity remains in a harness's source when `run` starts.
 
-**Planned:** Entity-source discovery is not yet implemented; [#8418](https://github.com/fullsend-ai/fullsend/issues/8418)
-tracks entity-first execution and [#8421](https://github.com/fullsend-ai/fullsend/issues/8421)
-tracks discovery requirements. The current [`fullsend poll` command](https://github.com/fullsend-ai/fullsend/blob/0777c7f37b9cdcf0d293635be1bd40f25c1806d8/internal/cli/poll.go#L41-L64)
+Entity-source discovery is not yet implemented.
+[#8418](https://github.com/fullsend-ai/fullsend/issues/8418)
+tracks entity-first execution, while
+[#8421](https://github.com/fullsend-ai/fullsend/issues/8421)
+tracks discovery requirements. The current
+[`fullsend poll` command](https://github.com/fullsend-ai/fullsend/blob/0777c7f37b9cdcf0d293635be1bd40f25c1806d8/internal/cli/poll.go#L41-L64)
 uses event-reconstructing input drivers.
 
 ## Options

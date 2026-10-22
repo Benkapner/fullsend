@@ -470,13 +470,14 @@ The existing design principle is that [the repo is the coordinator](problems/age
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md),
   [ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md)).
 
-**Planned:** Entity-source discovery combines admissible harness queries into
-one logical candidate search per source scope and routes possible matches
-locally. A bound `run` rechecks source-query membership before event-backed or
-eventless sandbox cycles ([ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)).
-Implementation and the normative query protocol are tracked in
-[#8418](https://github.com/fullsend-ai/fullsend/issues/8418) and
-[#8421](https://github.com/fullsend-ai/fullsend/issues/8421).
+- Entity-source discovery (target state): `fullsend poll` combines admissible
+  harness queries into one logical candidate search per source scope and routes
+  possible matches locally. A bound `run` rechecks source-query membership
+  before event-backed or eventless sandbox cycles
+  ([ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)).
+  Implementation and the normative query protocol are tracked in
+  [#8418](https://github.com/fullsend-ai/fullsend/issues/8418) and
+  [#8421](https://github.com/fullsend-ai/fullsend/issues/8421).
 
 **Open questions:**
 
