@@ -55,6 +55,11 @@ records to guide a write-capable harness even if its trigger CEL required a
 `write` prompting actor. A mint role can provide a compatibility default for
 human authorization, but the minted token's permission set does not itself
 define which human actors may prompt or supply data to the harness.
+[ADR 0112](0112-overlays-may-set-any-harness-field.md) specifies that overlays
+guarded by trusted facts may set security-relevant harness fields. Excluding
+`human_min_role` would prevent the same reviewed harness from choosing a
+minimum by source or other trusted metadata. The minimum must,
+however, be selected before it controls actor and content admission.
 
 ## Options
 
@@ -68,29 +73,59 @@ For ordinary human actors, Fullsend retains a non-waivable `triage`-level
 authorization gate. The narrow verified label-transition grant below can
 satisfy that gate only for the exact transition and its proven projection;
 it does not establish a normalized human role. For each trusted harness,
-Fullsend sets its `human_min_role` from an explicit top-level harness field
-or, when omitted, from the harness's `role`: `triage` and `review` default
-to `triage`; every other role, including custom roles, defaults to `write`.
+Fullsend resolves `human_min_role` from an explicit top-level harness field
+and any matching guarded overlays or, when no explicit value survives
+resolution, from the harness's `role`: `triage` and `review` default to
+`triage`; every other role, including custom roles, defaults to `write`.
 An explicit value may be `triage`, `write`, `maintain`, or `admin`. It can
 lower a `write` default to `triage` but cannot admit `read`, `none`, or
 `external` actors. An invalid explicit value makes that harness ineligible;
-it never falls back to the default. Resolve the field after trusted `base`
-composition. Event-dependent overlays, CEL, and forge-specific fields cannot
-alter it.
+it never falls back to the default. Validate explicit values in top-level,
+base, and overlay entries, including overlays that do not match. Within each
+base layer, matching overlays apply in order before that layer merges into the
+child; an explicit child value overrides the inherited value, and the child's
+matching overlays then apply in order. Resolve the final value before the
+harness's actor gate or trigger CEL. A deprecated `forge:` block cannot set it.
+
+An overlay setting `human_min_role` is a guarded overlay under ADR 0112:
+its `when:` may depend only on that decision's closed set of trusted facts or
+the versioned verified effective-role input, verified from the provider or
+the pinned trusted configuration before harness-specific admission. It cannot
+depend on the trigger CEL, actor-filtered entity facts, model records, or any
+value whose availability depends on the minimum being selected. A role
+comparison must use the versioned verified effective-role input, never raw
+`event.actor.role` or the narrow label grant. The raw role field is excluded
+for this purpose even though normalized-event v1 lists it as trusted; the
+versioned CEL schema must define the verified role path and provenance before
+role-based guards can be used. A known absent event or optional key is a
+nonmatch under ADR 0112; an evaluation error or required guard evidence that
+cannot be verified fails evaluation rather than silently selecting a fallback.
+Trusted entity-source identity needed for a guard must be obtained from
+provider-verified structural metadata or a platform discovery credential,
+not from the still-unpinned harness run credential.
+Trusted-field validation alone does not prove that a guard's matching branch
+has the intended security meaning: for example, a change author may choose a
+fork, while only an author with write access can make `is_fork` false. A
+conditional relaxation should positively prove the trusted condition for
+which the lower minimum is intended. The selected value gates other actors'
+entity facts and model records as well as the prompting actor.
+
 The default is an authorization policy, not a deduction from mint token scopes
-or the harness's `privilege_levels`. The trusted composed harness revision and
-effective minimum stay fixed for one evaluation and run cycle; a changed
-policy requires a new cycle or abort, not a silent threshold change.
+or the harness's `privilege_levels`. The trusted composed harness revision,
+ordered overlay outcome, trusted guard evidence, and effective minimum stay
+fixed for one evaluation and run cycle; a changed policy or guard result
+requires a new cycle or abort, not a silent threshold change.
 The registry and local harness and `base` files that set this policy must come
 from one immutable trusted checkout revision selected independently of the
 prompting actor and entity content. A change proposal uses its target/base
 commit, never its proposed head; other paths must identify an equivalent
 trusted canonical revision. Every remote harness or base layer must pass its
 allowlist and content-hash checks, and its digest belongs in the composed
-policy identity. Dispatch must bind that identity and effective minimum to its
-run handoff. A run or later Fullsend-controlled retrieval that cannot verify
-the same pin must stop and may restart authorization from the first gate
-before using the content.
+policy identity. Dispatch must bind that identity, the ordered overlay
+resolution and verified guard inputs, and the effective minimum to its run
+handoff. A run or later Fullsend-controlled retrieval that cannot verify the
+same pin must stop and may restart authorization from the first gate before
+using the content.
 
 Fullsend applies the same effective minimum separately to the ordinary human
 prompting event before that harness's CEL predicate; to each actor-originated
