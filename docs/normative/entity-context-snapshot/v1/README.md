@@ -7,9 +7,11 @@ It is the contract between forge adapters, `fullsend run`, harness scripts, and
 agent runtimes.
 
 > **Version note:** [ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md)
-> selects a common `triage` human floor for target Fullsend-controlled model
-> admission. This v1 bundle retains its harness-derived threshold; snapshot
-> producers need a v2 contract before applying the new floor.
+> keeps an immutable `triage` floor and uses the selected harness's effective
+> `human_min_role` for target Fullsend-controlled model admission. This v1
+> bundle retains its observation/mutation-derived `triage` or `write` threshold;
+> snapshot producers need a v2 contract before applying the configurable
+> threshold or its expanded role values.
 
 Here, *entity-context-snapshot* means the staged data snapshot for a handled
 Git-forge entity. The qualified name distinguishes this data structure from

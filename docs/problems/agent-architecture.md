@@ -153,8 +153,9 @@ The repository's existing infrastructure provides all the coordination needed:
   lets those checks acquire entity data progressively when the result is not
   yet known. [ADR 0148](../ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)
   permits bounded sharing of verified actor roles between those checks.
-  [ADR 0151](../ADRs/0151-common-actor-admission-floor.md) sets the common
-  human actor floor; harness-specific stronger roles remain CEL conditions.
+  [ADR 0151](../ADRs/0151-common-actor-admission-floor.md) sets a platform
+  `triage` floor and a configurable `human_min_role` for each harness. The
+  platform applies that minimum before evaluating the harness's CEL predicate.
 
 No agent orchestrates other agents. Each agent independently observes the state of the PR and acts according to its role:
 

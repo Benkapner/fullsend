@@ -26,8 +26,8 @@ actor-role refresh at every due check and prohibition on a cached
 authorization result substituting for that refresh. This exception applies
 only to entity-source CEL. Event admission and model-bound content admission
 retain their separate fresh authorization rules.
-[ADR 0151](0151-common-actor-admission-floor.md) sets their common human actor
-floor without extending this cache to either gate.
+[ADR 0151](0151-common-actor-admission-floor.md) sets the platform human floor
+and effective harness minimum without extending this cache to either gate.
 
 ## Context
 
@@ -75,7 +75,10 @@ repository cannot widen it. Verified denials may be cached under the same
 bound. Failed, incomplete, or unverifiable lookups are not cache entries and
 cannot fall back to an older entry.
 The cache stores the verified effective role or verified absence, not a
-per-harness threshold result or CEL decision.
+per-harness threshold result or CEL decision. Harnesses with different
+`human_min_role` values may reuse the same role verdict but must each compare
+it with their own effective minimum. An exact label-transition grant is not
+an actor-role verdict and cannot be stored in this cache.
 
 Cache keys and invalidation must isolate the source provider and tenant,
 target repository or project, immutable actor identity, effective permission
@@ -83,10 +86,11 @@ source and policy revision, and the selected source ref plus relevant OWNERS,
 OWNERS_ALIASES, or bot-registration source revision. A known change to a grant,
 OWNERS, OWNERS_ALIASES, bot registry, or policy invalidates affected entries.
 Every check separately validates current entity facts, their
-source-revision actor attribution, query coverage, the common `triage` platform
-floor, and its harness CEL predicate. A wakeup invalidates affected entity
-facts; it does not by itself turn an unexpired actor-role result into a fresh
-one.
+source-revision actor attribution, and query coverage. It applies the platform
+`triage` floor and effective harness minimum through the applicable ordinary
+human role or exact human-label-grant path, checks registered-bot requirements,
+and evaluates its CEL predicate. A wakeup invalidates affected entity facts;
+it does not by itself turn an unexpired actor-role result into a fresh one.
 If cached authorization contributes to a false CEL result, discovery must
 schedule a recheck or guarantee rediscovery after expiry or known invalidation
 within a bounded reconciliation interval, even when the entity itself has not

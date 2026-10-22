@@ -2,12 +2,14 @@
 
 Normative rules for event actors, entity CEL facts, and model-bound records.
 
-This version applies a verified `triage`-or-higher human floor to
-ordinary event admission, actor-originated entity facts needed for actionable
-CEL results, and Fullsend-controlled model-bound records. Harness CEL may
-impose stronger role conditions.
-[ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md) establishes this
-common floor while preserving separate bot and verified-label grants and fresh
+This version keeps a `triage` platform floor for humans, including the narrow
+verified label-transition grant below, and applies the selected harness's
+effective `human_min_role` to prompting events, actor-originated facts needed
+for actionable CEL results, and Fullsend-controlled model-bound records.
+Harness CEL may impose further
+conditions but cannot replace these admission gates.
+[ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md) establishes the
+floor and harness minimum while preserving separate bot grants and fresh
 model-bound checkpoints.
 This version also adopts selective entity acquisition and decision-focused
 audit evidence for the future entity-first path under
@@ -82,9 +84,10 @@ in `user.permissions` (`admin`, `maintain`, `push` → `write`, `triage`,
 stays `read`, because it cannot distinguish Read from Triage. Fork authors
 and non-collaborators are mapped to `read` (public repositories) or `none`, never `external`.
 The `external` role is currently produced only by the Jira adapter for
-actors without project membership. The common human floor denies `read`,
-`none`, and `external` alike. The `author_association` field is
-**not** used because it does not correctly reflect private org membership
+actors without project membership. The platform human floor denies `read`,
+`none`, and `external` alike; a selected harness may require more than the
+floor. The `author_association` field is **not** used because it does not
+correctly reflect private org membership
 (see [Excluded fields](#excluded-fields)).
 
 A GitHub repository that lists `owners_file` under `authorization` in
@@ -135,46 +138,117 @@ normalized event, an applicable source and target, and a transition supported
 by the selected harness. CEL may further restrict routing but cannot create or
 broaden bot identity authorization.
 
-For humans on ordinary non-label paths, `role_verified: false` makes
-`actor.role` unusable as a forge-permission claim. It does not invalidate an
-independently verified configured-source grant such as OWNERS for the same
-verified actor and target. Fullsend denies the event if no verified source
-establishes an effective role meeting the common floor. The versioned CEL
-input MUST carry that effective role and its verification source without
-reinterpreting v1 `actor.role_verified`. A missing `role_verified` on a trusted
-pre-migration event is treated as legacy input and retains the current human
-authorization behavior; new adapters MUST emit the field. Legacy status is
-determined by the adapter implementation contract, not by guessing from this
-field's absence. On the permanent label exception, `role_verified` is not an
-authorization input: an accepted forge label mutation authorizes a human, and
-a bot additionally requires positive provider bot classification. For bots,
+For humans on all event paths, including a verified label addition,
+`role_verified: false` makes `actor.role` unusable as a forge-permission claim.
+It does not invalidate an independently verified configured-source grant such
+as OWNERS for the same verified actor and target. An exact provider-proven
+human label addition may instead use its narrow `triage` grant for a harness
+whose minimum is `triage`; stronger minima require a separately verified
+effective role. The versioned CEL input MUST carry a verified effective role
+and its source when present, and MUST distinguish a label grant from role
+evidence without reinterpreting v1 `actor.role_verified`. Missing
+`role_verified` on a trusted pre-migration event is treated as legacy
+input and retains the current human authorization behavior; new adapters MUST
+emit the field. Legacy status is determined by the adapter implementation
+contract, not by guessing from this field's absence. An accepted forge label
+mutation supplies only the transition-specific human `triage` grant, not a
+verified repository role. For a bot using its separate narrow label grant,
 omission means that bot-role lookup is not applicable, not that it failed.
 
-## Common human authorization floor
+Authorization-sensitive CEL role comparisons in v2 MUST use the versioned
+verified effective-role input. The legacy `event.actor.role` value is not a
+verified permission claim when `actor.role_verified` is false, even if a narrow
+label grant admits the event. A harness that relies on a legacy role comparison
+for a stronger condition MUST update its predicate for the versioned input
+before using v2 routing; it cannot interpret the grant as that stronger role.
 
-For an ordinary human prompting event, Fullsend MUST resolve a fresh, verified
-effective normalized role of at least `triage` before harness CEL runs. The
-effective role comes from the source provider or a trusted configured
-permission source such as OWNERS. The same floor applies independently to
+## Platform floor and per-harness human minimum
+
+Fullsend MUST require a verified effective normalized human role of at least
+`triage` as a platform floor for ordinary human actors, with freshness
+specified separately for each admission path below. The exact accepted human
+label addition and its proven projection may instead use the
+narrow, provider-proven `triage` grant below; it is not a general role claim.
+For each selected harness, Fullsend MUST resolve and enforce that harness's
+effective `human_min_role` before its CEL predicate runs. An effective role
+comes from the source provider or a trusted configured permission source such
+as OWNERS. The explicit top-level `human_min_role` field, when present in the
+trusted, composed harness, MUST be one of `triage`, `write`, `maintain`, or
+`admin`. An invalid value or unverifiable harness revision denies evaluation;
+it MUST NOT use the default. An explicitly empty value is invalid rather than
+absent. During
+`base` composition, an explicit child value overrides an inherited value;
+otherwise the child inherits it. When the field is absent after composition,
+the resolved harness `role` supplies this default:
+
+| Resolved harness `role` | Default `human_min_role` |
+|-------------------------|--------------------------|
+| `triage` or `review` | `triage` |
+| Any other role, including a custom or unrecognized role | `write` |
+
+An explicit value may lower a `write` default to `triage` or require
+`maintain` or `admin`, but it cannot lower the platform floor. The minimum is
+resolved from trusted harness configuration after `base` composition, before
+using event or entity content in CEL. `human_min_role` cannot be selected by a
+`forge` block or CEL overlay. Harness `role` selects the agent credential
+identity (the mint role on GitHub); `privilege_levels` scopes tokens for run
+stages. Neither token permissions nor workflow stage names infer a different
+human threshold. The default table is an authorization policy, not a claim
+about the capabilities of every harness using a role.
+
+`human_min_role` constrains human actors and their records only. A
+provider-classified bot using the exact verified label handoff or a bot with
+an exact registered role uses its separate gate, even when the selected
+harness has a `maintain` or `admin` human minimum. Harness CEL and bot policy
+may narrow those bot paths; the human minimum does not serve as bot
+authorization or deny an otherwise authorized bot.
+
+The same effective minimum applies independently to a human prompting event,
 actor-originated entity facts whose authority is needed to make CEL actionable
-or prove an actionable absence or aggregate, using a live or eligible bounded
-verdict under the rules below. Raw state used only for conservative deferral
-follows the causal classification below and does not require authorizing every
-historical updater. A Fullsend-controlled model-bound record has its own fresh
-check against the floor at the required exposure checkpoints.
-`read`, `none`, `external`, and unresolved human roles do not pass. Event
-admission does not authorize another actor's fact or model-bound record.
-Trusted Fullsend invocation provenance, rather than a human event actor,
-authorizes eventless entity discovery; actor-originated facts that serve as
-authority still pass their own floor.
+or prove an actionable absence or aggregate, and every Fullsend-controlled
+model-bound record. Event admission uses fresh authority. Entity CEL may use a
+live or eligible bounded actor verdict under the rules below; model-bound
+records receive their own fresh checks at the required exposure checkpoints.
+Raw state used only for conservative deferral follows the causal classification
+below and does not require authorizing every historical updater. For ordinary
+role-based admission, `read`, `none`, `external`, and unresolved human roles do
+not pass; only the exact verified human label transition and its proven
+projection may use the narrow `triage` grant. Admission of one event does not
+authorize another actor's fact or model-bound record. Trusted Fullsend
+invocation provenance, rather than a human event actor, authorizes
+eventless entity discovery; decision-relevant actor-originated facts still
+pass the selected harness's minimum.
 
-This floor does not depend on a legacy workflow stage, harness `role`, token
-`privilege_levels`, or selected harness. The platform MUST expose to CEL the
-same verified effective human role it used for admission, including any valid
-configured OWNERS upgrade. Harness CEL MAY require `write` or a stronger role
-and MAY add other restrictions, but it cannot admit an actor or fact rejected
-by the platform floor. A false CEL predicate is a harness nonmatch, not a
-platform authorization denial.
+A harness evaluation and any sandbox it starts MUST use one trusted composed
+harness revision, resolved `role`, and effective `human_min_role`. Fullsend
+MUST pin that policy before the first harness-specific actor gate and retain it
+through event admission, entity CEL, snapshot and model-record checks, and
+later Fullsend-controlled retrieval. If the harness policy changes mid-cycle,
+Fullsend MUST either retain the original pin for the whole cycle or stop and
+re-evaluate from the first gate under the new revision; it MUST NOT silently
+mix minima. A new child cycle under
+[ADR 0144](../../../ADRs/0144-reuse-poll-and-entity-bound-run-processes.md)
+may resolve and record a new pin.
+
+The platform MAY reject a below-floor human event before loading harnesses
+unless the event has the verified label-transition grant. It MUST enforce each
+selected harness's effective minimum before evaluating that harness's CEL
+predicate, including for a verified human label addition. When admission uses
+a role, the platform MUST expose that same verified effective human role to
+CEL, including any valid configured OWNERS upgrade. When it uses the narrow
+label grant, the versioned CEL input MUST expose grant provenance separately
+and MUST NOT synthesize a verified `triage` role. Harness CEL MAY add stronger
+or narrower conditions, but cannot admit an actor or fact that failed the
+applicable gate. A false CEL predicate is a harness nonmatch, not a platform
+authorization denial.
+
+For each selected harness, the event-admission audit MUST bind the verified
+actor identity, effective role and source or narrow label-grant evidence, the
+harness revision and resolved `role`, the effective `human_min_role` and its
+explicit-or-default source, and the gate outcome, including denial before
+CEL. A bot decision records its registered role or verified label-transition
+evidence instead of a human role. An early platform-floor denial records the
+actor evidence and floor outcome.
 
 ### Current dispatch compatibility
 
@@ -187,17 +261,26 @@ harnesses or set their role requirements. After provider-backed
 > **Current Go implementation:** `IsAuthorized()` in `harnessdispatch` still
 > applies `write+` to ordinary events before `MatchHarnesses()`, including
 > poll-based dispatch. This is current compatibility behavior, not the v2
-> common floor. Before lowering that gate, migration must make the
-> OWNERS-adjusted effective role visible in a versioned CEL input and add
-> intended stronger role conditions to first-party mutation harness
-> predicates. Today the Go path applies an OWNERS upgrade to its platform
-> check but passes the original event role to CEL.
+> per-harness gate. Migration must resolve each harness's minimum before its
+> CEL predicate, apply that minimum to the event actor, and make the
+> OWNERS-adjusted effective role visible in a versioned CEL input. Today the
+> Go path applies an OWNERS upgrade to its platform check but passes the
+> original event role to CEL. The current harness loader does not recognize
+> `human_min_role` and can ignore an unknown YAML key. Adding the field to a
+> harness today does not enforce it: the global `write+` check would especially
+> under-enforce an intended `maintain` or `admin` minimum. A v2-conforming
+> runner MUST reject a configured `human_min_role` it cannot parse, validate,
+> or enforce rather than silently treat it as absent. The field cannot be
+> deployed as effective policy while a selected runner still ignores it.
 
 ## Fail-closed behavior
 
-The ordinary human role gate is **fail-closed**: when the effective role cannot
-be determined, that path is denied. The verified label-transition grant and
-registered-bot gate below use their own provider evidence.
+The human role gate is **fail-closed**: when the effective role or a harness's
+effective minimum cannot be determined, that harness's path is denied. The
+exact verified human label addition may still satisfy a `triage` minimum with
+its narrow grant; an unresolved role never satisfies a stronger minimum.
+The registered-bot and separate bot-label gates use their own provider
+evidence.
 
 The entity-evaluation rows below specify the future ADR 0098 path as revised by
 [ADR 0147](../../../ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md)
@@ -205,19 +288,22 @@ and [ADR 0148](../../../ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)
 and do not describe behavior currently implemented by `fullsend dispatch` or
 `fullsend poll`.
 
-The human role-lookup rows below apply to ordinary non-label paths. The
+The human role-lookup rows below apply to every target human event path. The
 bot-specific rows are ADR 0107 target behavior; legacy events remain subject
 to the compatibility rules until implementation migration is complete.
 
 | Condition | Outcome |
 |-----------|---------|
-| Collaborator API returns a custom `role_name` with no effective permission signal | Forge role maps to `none`; a separate verified OWNERS grant may satisfy the floor, otherwise deny |
-| Collaborator API returns an error or times out | Forge role is unusable; a separate verified OWNERS grant may satisfy the floor, otherwise deny |
+| Collaborator API returns a custom `role_name` with no effective permission signal | Forge role maps to `none`; a separate verified OWNERS grant may satisfy the selected harness minimum, or an exact verified label addition may satisfy `triage`; otherwise deny |
+| Collaborator API returns an error or times out | Forge role is unusable; a separate verified OWNERS grant may satisfy the selected harness minimum, or an exact verified label addition may satisfy `triage`; otherwise deny |
 | Bot-role lookup returns no registered identity on a non-label path | `actor.role` remains `none`; `actor.role_verified` is true; `actor.bot_role` is absent; denied |
 | Bot-role lookup fails or is unverifiable on a non-label path | `actor.role` remains `none`; `actor.role_verified` is false; `actor.bot_role` is absent; denied, with the failure retained in resolver/audit diagnostics |
-| Collaborator API response is not valid JSON or does not match the expected shape | Forge role is unusable; a separate verified OWNERS grant may satisfy the floor, otherwise deny |
+| Collaborator API response is not valid JSON or does not match the expected shape | Forge role is unusable; a separate verified OWNERS grant may satisfy the selected harness minimum, or an exact verified label addition may satisfy `triage`; otherwise deny |
 | `actor.role` is empty or missing | Event fails `NormalizedEvent` validation; never reaches dispatch |
-| `actor.role_verified` is false for a human on an ordinary non-label path | Ignore `actor.role`; require a separate verified configured-source grant meeting the floor, otherwise deny |
+| `actor.role_verified` is false for a human, including a verified label addition | Ignore `actor.role`; require a separate verified configured-source role meeting the selected harness minimum, or the exact human label grant for a `triage` minimum; otherwise deny |
+| Trusted harness `human_min_role` is invalid or the resolved harness role or revision is unverifiable | Deny that harness; do not silently use the default or evaluate its CEL predicate |
+| The selected harness policy changes within an evaluation or sandbox cycle | Retain the original pinned revision and minimum for the entire cycle, or stop and re-evaluate from the first gate under the new revision; never mix them |
+| Human event actor meets the platform `triage` floor but not the selected harness minimum | Deny that harness before CEL; other harnesses are evaluated under their own minimums |
 | Legacy bot event has an `actor.role` other than `none` | Valid in the v1 compatibility schema; authorization follows current compatibility behavior during migration and is not an ADR 0107 bot-role authorization result |
 | `actor.role_verified` is false but `actor.bot_role` is non-null for a bot | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | `actor.bot_role` is non-null for a human | Event fails `NormalizedEvent` validation; never reaches dispatch |
@@ -232,18 +318,21 @@ to the compatibility rules until implementation migration is complete.
 | A poll candidate remains inconclusive, cannot be handed off, or its bound run fails before completion or safe deferral | Retain a durable retry path or prove source rediscovery after checkpoint advancement; no sandbox starts from an unresolved decision |
 | A required entity source is unsupported, unavailable, fails, or cannot establish complete coverage within allowed bounds | Evaluation fails closed; no sandbox starts and the failure is not recorded as a false CEL result |
 | A conservative dependency or provider query cannot be shown to include every authorized fact that could change a definitive CEL result | Expand the plan or leave the result unknown; if it cannot be resolved, evaluation fails closed |
-| Current attribution or a live or eligible cached actor-role verdict for a fact requiring the actor gate is missing or unverifiable | The fact cannot be admitted as authority; if it could affect an actionable result, evaluation remains unknown or fails closed and cannot start a sandbox |
+| Current attribution or required actor-role or exact label-grant evidence for a fact requiring the actor gate is missing or unverifiable | The fact cannot be admitted as authority; if it could affect an actionable result, evaluation remains unknown or fails closed and cannot start a sandbox |
 | A versioned platform policy with an explicit maximum age no greater than five minutes for cross-check CEL actor-verdict reuse is missing or unverifiable | Reuse is disabled; obtain a live authoritative role verdict or leave dependent CEL unknown, with no sandbox on unknown |
 | A needed CEL actor-verdict cache entry is expired, invalidated, or scoped to another source, actor, repository, policy, or revision | Refresh from the authoritative actor-role source; if that cannot complete, the dependent result remains unknown and cannot start a sandbox |
-| The actor of a fact requiring the gate is human and below the common `triage` floor, or is a bot with no recognized role | The fact is excluded from the authorized CEL view and cannot trigger execution |
+| The actor of a fact requiring the gate is human and below the selected harness minimum without the exact applicable human label grant for a `triage` minimum, or is a bot with no recognized role or narrow grant | The fact is excluded from that harness's authorized CEL view and cannot trigger execution |
 | Versioned normalized-entity contract is missing or incomplete | Entity-first execution denied |
 
 ## Exceptions
 
-Only the verified label-added transition below bypasses the ordinary human
-`triage` floor in v2. Registered-bot roles use a separate gate. The legacy
-compatibility paths described below do not create additional v2 grants or
-authorize unrelated entity facts or model-bound records.
+The verified label-added transition below supplies an exact `triage` grant for
+a human author and a separate narrow grant for a provider-classified bot
+without a registered bot role. A human label author must meet the selected
+harness's minimum through that `triage` grant or a separately verified role.
+Registered-bot roles use a separate gate. Legacy compatibility paths do not
+create additional v2 grants or authorize unrelated entity facts or model-bound
+records.
 
 ### Label application
 
@@ -253,17 +342,20 @@ preserves bot-to-bot handoffs such as adding `ready-to-code` after triage
 completes, including handoffs from provider bots that are not Fullsend-
 registered.
 
-**ADR 0107 target behavior:** When
-`transition.kind` is `label_changed` and `label.action` is `added`, GitHub
-authorizes the event regardless of `actor.role` once the adapter has
-established an accepted forge label mutation and authoritative actor-to-
-transition provenance. This is a separate platform authorization grant, not an
-application of the ordinary human floor. At the time of this ADR, GitHub
-is the only implementation; another adapter MUST provide equivalent
-forge-authoritative evidence before enabling the same grant, and absent or
-unverifiable evidence denies the event. For a bot actor, the adapter MUST
-positively classify it using provider-controlled metadata, but `actor.bot_role`
-lookup is not required. The platform gate MUST NOT inspect the label name or
+**V2 target behavior:** When `transition.kind` is `label_changed` and
+`label.action` is `added`, the GitHub adapter MUST establish an accepted forge
+label mutation and authoritative actor-to-transition provenance. For a human,
+that evidence supplies a narrow `triage` grant for the exact accepted
+transition and its proven entity projection. It satisfies a harness with
+`human_min_role: triage` without claiming that the actor has a verified
+repository role. A `write`, `maintain`, or `admin` minimum requires a separate
+fresh, verified effective human role meeting it. A provider-classified bot
+MAY use its own verified-transition grant without an `actor.bot_role` lookup,
+preserving bot-to-bot handoffs. Neither grant authorizes unrelated history or
+model-bound records. At the time of ADR 0107, GitHub is the only
+implementation; another adapter MUST provide equivalent forge-authoritative
+evidence before enabling either grant, and absent or unverifiable evidence
+denies the event. The platform gate MUST NOT inspect the label name or
 maintain an agent-role label allowlist; harness/CEL routing owns that mapping
 and may further narrow the dispatch.
 
@@ -290,10 +382,10 @@ file issues, comment, and apply labels. The Go `IsAuthorized()` path has no
 close-event exception and applies its current `write+` gate.
 
 The ungated bash route is not a general v2 grant for CEL-based dispatch or
-entity facts. Under this contract, an ordinary human close-event actor must
-meet the common `triage` floor unless a separate platform exception is
-adopted. Harness CEL may add stricter conditions. The legacy `/fs-retro`
-slash command retains its bash `write` guard.
+entity facts. Under this contract, a human close-event actor must meet the
+selected harness's effective minimum before CEL. A `retro`-role harness
+defaults to `write`; an explicit `human_min_role` may choose another allowed
+value. The legacy `/fs-retro` slash command retains its bash `write` guard.
 
 ### Schedule and manual dispatch
 
@@ -301,9 +393,9 @@ When `source.system` is `schedule` or `manual`, the actor is the configured
 operator or service identity (for example, a GitHub App bot or workflow
 `GITHUB_ACTOR`). Adapters MUST classify that identity from authoritative
 provider metadata. Human identities use verified forge permissions and the
-common human floor; bot identities use provider-backed `actor.bot_role`
-resolution and retain `actor.role` as `none`. An unrecognized or unresolved
-bot identity is denied.
+selected harness's effective minimum; bot identities use provider-backed
+`actor.bot_role` resolution and retain `actor.role` as `none`. An unrecognized
+or unresolved bot identity is denied.
 
 **Current compatibility behavior:** Until provider-backed bot-role resolution
 is wired into the adapters and dispatch path, adapters set `actor.role` to the
@@ -324,7 +416,7 @@ and revised for selective acquisition and audit by
 with bounded cross-check actor-verdict reuse under
 [ADR 0148](../../../ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md).
 [ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md) supplies the
-common human floor.
+platform floor and per-harness human minimum.
 It applies to an entity-source harness's CEL predicate whether a verified
 prompting event is present or `event == null`; legacy event-only dispatch is
 unchanged. The entity-source path is not yet implemented by `fullsend dispatch`,
@@ -333,15 +425,23 @@ enabled until the versioned normalized-entity contract defines CEL-eligible and
 prompt-eligible fields and their coverage states. That contract is a platform
 allowlist; a harness may request fewer fields but cannot expand it.
 
-With a prompting event, the event-actor authorization gate above still runs
-before harness CEL; neither discovery nor an entity-source query replaces it.
-The event actor authorizes that event, not other actor-originated entity facts.
-The verified GitHub label-added exception authorizes CEL to use that exact
-accepted label transition without the ordinary human floor. It
-does not authorize other label applications, the entity's current label state
-without transition provenance, or other records from the same actor.
-Current label state may use that grant only when the adapter proves it is the
+With a prompting event, the event-actor authorization gate for the selected
+harness still runs before its CEL predicate; neither discovery nor an
+entity-source query replaces it. The event actor authorizes that event, not
+other actor-originated entity facts. A verified human label addition may use
+its exact `triage` grant for a triage-minimum harness; a stronger minimum
+requires a separately verified effective role. The separate verified GitHub
+bot label grant may admit a provider-classified bot's exact accepted
+transition and proven entity projection without a registered bot role.
+Neither grant authorizes other label applications, the entity's current label
+state without transition provenance, or other records from the same actor.
+Current label state may use a grant only when the adapter proves it is the
 projection of the same accepted transition, with no intervening replacement.
+For a `triage`-minimum harness, this exact projection remains eligible while
+that proof holds, even if the labeler later loses repository permission; it is
+evidence of the accepted mutation, not a current role. A higher human minimum
+still requires the labeler's current verified effective role, and model-bound
+records still pass their separate fresh gate.
 For an eventless check, the following Fullsend-origin and platform-eligibility
 gate applies instead.
 
@@ -362,15 +462,20 @@ justification as any other wildcard allowlist in this contract.
 Each entity-source evaluation's audit record MUST identify its verified
 initiator (the event actor for an event-bearing check, or the trusted Fullsend
 invocation identity for an eventless check), target repository, effective
-policy, harness revision, canonical entity, acquisition-plan identity, and
-decision outcome, including `UNKNOWN`, deferred, or denied outcomes. It MUST
-record which source scopes and bounded queries were needed, their coverage and
+policy, harness revision, resolved harness `role`, effective
+`human_min_role`, whether that minimum came from an explicit field or the
+default map, canonical entity, acquisition-plan identity, and decision
+outcome, including `UNKNOWN`, deferred, or denied outcomes. It MUST record
+which source scopes and bounded queries were needed, their coverage and
 completeness evidence, and the current attribution, live or eligible cached
-verified role, and platform-gate outcome for individual actor-originated
-records used as decisive witnesses. Complete negative or aggregate claims
-require bounded query and source-coverage evidence bound to the effective
-authorization policy, permission source, and check time or equivalent
-authorization epoch.
+verified role or exact label-grant provenance, and harness-gate outcome for
+individual actor-originated records used as decisive witnesses. Complete
+negative or aggregate claims require bounded query and source-coverage
+evidence bound to the effective minimum, authorization policy, permission or
+grant source, and check time or equivalent authorization epoch.
+For a label-grant witness, the audit MUST bind the provider's accepted
+transition proof, current source revision and proven projection, and check
+time; the grant is not recorded as a verified actor role.
 Summaries MAY use counts and digests of admitted, excluded, and unresolved actor
 checks; they do not require
 an audit roster of every record and actor examined to establish completeness.
@@ -437,25 +542,27 @@ false condition. For every actor-originated fact whose authority is needed to
 make CEL actionable or establish an actionable absence or aggregate under the
 causal classification above, Fullsend MUST re-establish its current
 source-revision actor and obtain an eligible verified authorization verdict
-before admitting the fact into CEL: a human must meet the common
-`triage` floor, using the effective role from all configured permission
-sources. A bot needs a provider-backed exact registered role under
-[ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
-The verified effective role remains available to harness CEL, which may
-require a stronger human role for a particular predicate. No harness stage
-classification changes the platform floor.
-Only the exact transition covered by the verified label-added event exception
-may bypass the ordinary human floor or registered-bot-role check. It still
-requires accepted transition provenance and positive provider bot
-classification when the actor is a bot. The exception supplies authority for
-that transition only, not for unrelated entity history. An unauthorized fact is
-excluded from the authorized view. Missing or unverifiable attribution or
-authorization of a fact needed to prove an actionable result remains
-unresolved and cannot prove absence. Historical or inferred actor
+before admitting the fact into the selected harness's CEL view. A human
+ordinarily must have an effective role from the provider or a configured
+permission source meeting that harness's `human_min_role`. Only the exact
+verified label-added transition and its proven projection may instead use the
+human `triage` grant when the harness minimum is `triage`; the grant is not an
+actor-role verdict for other facts or CEL role comparisons. A bot needs a
+provider-backed exact registered role under
+[ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md),
+except for the exact transition covered by the verified bot label-added grant.
+That grant requires accepted transition provenance and positive provider bot
+classification and supplies authority only for that transition, not unrelated
+entity history. A verified effective human role remains available to harness
+CEL when present; the human label grant is exposed as separate provenance.
+CEL may impose further conditions but cannot replace the gate. An
+unauthorized fact is excluded from that harness's authorized view. Missing or
+unverifiable attribution or authorization of a fact needed to prove an
+actionable result
+remains unresolved and cannot prove absence. Historical or inferred actor
 relationships are insufficient; only the bounded provider-verified actor-role
 cache defined below may replace a live actor-permission lookup. CEL may
-further restrict the authorized view, but cannot create authority or replace
-this platform gate.
+further restrict the authorized view, but cannot create authority.
 
 #### Bounded CEL actor-verdict cache
 
@@ -466,11 +573,13 @@ For entity-source CEL only, Fullsend MAY reuse a completed, authoritative
 human permission or exact registered bot-role verdict across entity checks and
 harnesses, poll cycles, separate `poll` and bound `run` loops, and the bound
 run's final CEL decision. The cached value MUST be the verified effective
-role or verified absence, never a platform-floor boolean or harness-specific
-CEL result. Every check reapplies the common floor and its harness CEL
-conditions. Both positive and verified negative results
-may be cached; errors, timeouts, unresolved lookups, caller claims, and
-partially verified roles MUST NOT be cached. The key MUST bind the provider,
+role or verified absence, never a platform-floor boolean, per-harness
+authorization decision, or CEL result. Every check reapplies the selected
+harness's effective human minimum or bot gate, as applicable, and its CEL
+conditions. Both positive and verified negative results may be cached;
+errors, timeouts, unresolved lookups, caller claims, and partially verified
+roles MUST NOT be cached. A verified label grant is transition-specific and
+MUST NOT be cached as an actor-role verdict. The key MUST bind the provider,
 tenant, canonical repository or project, immutable actor ID, verified actor
 kind, effective authorization policy and its revision or digest, and
 permission source. When applicable, it also binds the selected ref and the
@@ -575,8 +684,8 @@ entity contract permits. Further trust or injection filtering MAY run after CEL
 routing and before the harness pre-script. Retained content remains untrusted
 for dispatch and CEL evaluation throughout.
 [ADR 0133](../../../ADRs/0133-actor-attributed-data-security-boundary.md)
-defines the separate model-bound admission and filtering gate, as revised
-for the human floor by
+defines the separate model-bound admission and filtering gate, as revised for
+the per-harness human minimum by
 [ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md): only filtered
 content whose source record and actor pass the fresh gate below may be exposed
 to the model under bounded harness scope. Any resulting agent run uses the
@@ -589,17 +698,23 @@ expose to a model, regardless of whether the record arrived in an event, was
 found by polling or snapshotting, or was read through a proactive or
 Fullsend-controlled API. Fullsend MUST establish the record's current actor
 attribution through the source system and resolve that actor's current
-authorization. A human MUST have a fresh, verified effective role of at least
-`triage` at each required checkpoint. A bot MUST have fresh
-provider-backed recognition of its exact registered `actor.bot_role` under
-ADR 0107; its `actor.role: none` is not compared with the human floor.
-Missing or unverifiable attribution, an unrecognized or unresolved bot
-identity, and a human below the floor MUST redact the record; there is no
-data-only fallback. The platform does not infer a stronger threshold from a
-workflow stage or harness identity. Harness-specific conditions for selecting
-the run belong in CEL; later model-bound record admission uses this floor and
-ADR 0133 filtering. A label-event grant applies only to its exact verified
-transition and does not admit unrelated content.
+authorization. A human MUST have a fresh, verified effective role meeting the
+selected harness's `human_min_role` at each required checkpoint. A bot MUST
+have fresh provider-backed recognition of its exact registered
+`actor.bot_role` under ADR 0107; its `actor.role: none` is not compared with
+the human minimum. Missing or unverifiable attribution, an unrecognized or
+unresolved bot identity, and a human below the selected minimum MUST redact
+the record; there is no data-only fallback. The platform derives the default
+minimum from the resolved harness `role` as specified above, not from a
+workflow stage or token capability. CEL conditions for selecting the run do
+not authorize separate model records. A verified label transition, whether
+human- or bot-authored, does not admit its source record to model input
+without this separate fresh gate and ADR 0133 filtering.
+
+The model-record admission evidence MUST bind each admitted or redacted
+record's current-revision actor and gate result to the selected harness
+revision, effective `human_min_role`, its explicit-or-default source, and the
+fresh checkpoint. A CEL match or earlier event admission is not this evidence.
 
 Source-record attribution MAY come from a provider-verified event or be
 resolved from the source system. Model-bound actor authorization MUST be
@@ -645,86 +760,109 @@ used for dispatch gating:
 | `actor.is_entity_author` | Being the author of an issue or PR does not grant repository permissions. This field supports routing decisions in CEL triggers, not authorization. |
 
 **Principle:** relationship and contribution-history fields are not
-evidence of current authority. Event-backed authorization must be derived from
-the source provider's verified permission model or a trusted configured
-permission source at event time and meet the common human floor, not from
-cached or inferred relationships.
+evidence of current authority. Event-backed human authorization must be
+derived from the source provider's verified permission model or a trusted
+configured permission source at event time and meet the selected harness's
+effective minimum, except that an exact provider-verified human label addition
+may use its narrow `triage` grant. Neither path relies on cached or inferred
+relationships.
 Fullsend-originated eventless evaluation must instead be authorized from
 trusted Fullsend-controlled invocation provenance for poll enumeration or
 bound rechecks. Actor-originated entity facts needed for an actionable CEL
 result are separately gated by current source-revision attribution and a live
-or eligible bounded role verdict against the same floor. Deferral-only raw
-state follows the causal classification above.
+or eligible bounded role verdict against that harness's minimum, except for
+the exact human label transition and its proven projection under a `triage`
+minimum. Deferral-only raw state follows the causal classification above.
 Model-bound records receive separate fresh checks. Historical actors and
 relationship fields must not serve as authorization evidence.
 
 ## Enforcement point
 
-The common human floor is a **platform-level gate** that CEL cannot override.
-Event-backed dispatch checks the normalized event actor's fresh verified
-effective role before routing, subject only to the specific bot and transition
-grants above. Fullsend-originated eventless evaluation checks trusted
-invocation provenance and platform eligibility before resolving the entity. An
-entity-source predicate may then be evaluated progressively. An actor-originated
-fact that could make CEL actionable, or whose actor-filtered coverage is needed
-to prove an actionable absence or aggregate, passes its own floor check using
-live or eligible bounded role evidence. Its current source-revision
-attribution and coverage are checked separately. Deferral-only raw state
-follows the causal classification above. Not-yet-loaded facts remain unknown
-rather than being treated as unauthorized, absent, or empty.
+The `triage` platform floor and selected harness's effective human minimum are
+**platform-enforced gates** that CEL cannot override. Event-backed dispatch
+checks the normalized human event actor's fresh verified effective role against
+both before evaluating that harness's CEL predicate. An exact verified human
+label addition may instead satisfy a `triage` minimum with its narrow grant;
+a stronger minimum requires the verified role. Bots use the registered-role or
+separate narrow label-transition grants above. Fullsend-originated eventless
+evaluation checks trusted invocation provenance and platform eligibility
+before resolving the entity. An entity-source predicate may then be evaluated
+progressively for each eligible harness. An actor-originated fact that could
+make CEL actionable, or whose actor-filtered coverage is needed to prove an
+actionable absence or
+aggregate, passes that harness's minimum using live or eligible bounded role
+evidence, or the exact human label grant when the minimum is `triage`. Its
+current source-revision attribution and coverage are checked separately.
+Deferral-only raw state follows the causal classification above.
+Not-yet-loaded facts remain unknown rather than being treated as unauthorized,
+absent, or empty.
 
 ```
 Forge event
   --> NormalizedEvent (adapter)
-  --> Event-actor floor or narrow grant      <-- enforced here
+  --> Human triage floor/label grant or bot grant  <-- enforced here
+  --> Resolve trusted harness and effective human minimum
+      --> Human role or exact label-grant gate    <-- before this harness's CEL
   --> Event-only CEL routing or entity-source resolution
-      --> Dependency-driven acquisition and actor gate where required
+      --> Dependency-driven acquisition and per-harness actor gate
       --> CEL true / false / UNKNOWN
-      --> Execution only on definitive true
+      --> Model-record gate and execution only on definitive true
 
 Fullsend poll discovery / bound run eventless recheck
   --> Trusted-origin authorization gate     <-- enforced here
   --> Enumerate and resolve candidates (poll) / resolve canonical entity (run)
   --> Evaluate each candidate harness (poll) or the bound harness (run):
-      --> Dependency-driven acquisition and actor gate where required
+      --> Resolve effective human minimum
+      --> Dependency-driven acquisition and per-harness actor gate
       --> CEL true / false / UNKNOWN (event is null)
       --> Unknown may continue in bound run after current entity re-resolution
-      --> Further trust/injection filtering and execution only on true
+      --> Model-record gate, filtering, and execution only on true
 ```
 
 ### CEL triggers: harness-specific conditions
 
 Harness `trigger` expressions select runs and may require stronger human roles
-or narrower bot roles, labels, and entity states. Such harness-specific
-conditions belong in CEL; they never weaken the platform floor or create a
-bot or transition grant. A CEL nonmatch is not a platform denial. On the
-event-backed path, an event that fails the platform gate never reaches CEL.
+or narrower bot roles, labels, and entity states. Such CEL conditions may
+further narrow a run but never weaken or replace the platform floor or the
+selected harness's admission minimum, and they do not create a bot or
+transition grant. A CEL nonmatch is not a platform denial. On the event-backed
+path, an event that fails the role or exact label-grant gate never reaches
+that harness's CEL.
 
-The gate precedes harness selection: `IsAuthorized()` currently runs before
-`MatchHarnesses()` in the dispatch core. On the Fullsend-originated eventless
-path, the trusted-origin gate runs before poll enumeration or bound-entity
-resolution and CEL evaluation. For each eligible entity-source harness, the
-platform admits actor-originated facts needed for an actionable CEL result
-only after current source-revision attribution and a live or eligible bounded
-role verdict meeting the common floor. CEL receives that verified effective
-role and may apply stronger conditions. The verified label-event grant
-authorizes only
-its exact transition, as described above. Eventless checks use
-`event == null`. Legacy event-only harness routing does not acquire entity
-history under this section.
+The current Go gate precedes harness loading: `IsAuthorized()` runs before
+`MatchHarnesses()` in the dispatch core. In the target path, the platform MAY
+reject a below-floor human event before loading harnesses unless the exact
+verified label grant applies, but MUST resolve and enforce each candidate
+harness's minimum before its CEL predicate. On the Fullsend-originated
+eventless path, the trusted-origin gate runs before poll enumeration or
+bound-entity resolution and CEL evaluation. For each eligible entity-source
+harness, the platform admits actor-originated facts needed for
+an actionable CEL result only after current source-revision attribution and a
+live or eligible bounded role verdict meeting its effective minimum, or the
+exact applicable human label grant for a `triage` minimum. CEL receives that
+verified effective role when present and may apply further conditions. An
+exact human label transition may instead carry separate `triage`-grant
+provenance; CEL MUST NOT treat it as a verified role. The
+verified bot label-event grant authorizes only its exact transition, as
+described above. Eventless checks use `event == null`. Legacy event-only
+harness routing does not acquire entity history under this section.
 
 ### Per-repo configurability
 
-The common floor and the narrow bot and transition grants are platform-level
-security boundaries. Individual repositories cannot disable or lower them.
-Per-repo harness registration and CEL triggers operate within those
-boundaries: a repository may disable a harness or require stronger conditions,
-but cannot make it available to an actor rejected by the platform.
+The `triage` floor and the narrow human-label and bot grants are
+platform-level security boundaries. Individual repositories cannot disable or
+lower them. A trusted harness author MAY set top-level `human_min_role` to
+`triage`, `write`, `maintain`, or `admin`. This may lower a harness's `write`
+default to `triage` or raise its minimum; the value applies to human event,
+entity-fact, and model-record admission alike. A repository may disable a
+harness or use CEL to require additional conditions, but cannot make it
+available to a human rejected by either admission gate. A CEL overlay or
+source event cannot alter `human_min_role`.
 
 A repository can add permission sources through the `authorization`
 field (today only `owners_file`). These sources may raise the verified
 effective role used by the platform and visible to CEL; they do not change
-the floor or bypass the gate. The current bash
+either minimum or bypass the gate. The current bash
 `has_repo_permission` helper and Go `IsAuthorized` check retain their
 compatibility behavior until migrated.
 
@@ -737,17 +875,36 @@ supersedes v1's future full-history entity-evaluation and audit requirements;
 [ADR 0148](../../../ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)
 adds bounded cross-check reuse of provider-verified actor-role verdicts for
 entity-source CEL only.
-[ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md) sets the common
-human floor and moves stronger harness-specific role conditions into CEL.
-This changes v1's stage-specific human authorization rules when an
-implementation migrates to v2, while preserving the separate fresh
-model-bound release checkpoints. Migration also requires versioned event and
-entity CEL inputs and an entity-context-snapshot v2 contract for the changed
-model-record admission meaning. The
-[v1 snapshot](../../entity-context-snapshot/v1/README.md) retains its
-historical stage-derived rule until that migration. Authorization v1 remains
-authoritative for existing dispatch during migration, including its bash
-thresholds and Go `write+` behavior.
+[ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md) sets the
+immutable `triage` platform floor and the selected harness's effective
+`human_min_role` for human event, entity-fact, and model-record admission. The
+resolved harness `role` supplies the default map above; an explicit top-level
+field may change it within the allowed range. CEL may further narrow
+selection but does not replace the admission minimum. This replaces v1's
+stage-specific human authorization rules when an implementation migrates to
+v2, while preserving separate fresh model-bound release checkpoints.
+
+Migration MUST teach harness loading and `base` composition to recognize and
+validate `human_min_role` with key-presence awareness before the value can
+affect any v2 decision. An explicit empty or invalid value MUST NOT silently
+inherit or default during scalar merge; a `forge` or event-dependent overlay
+value MUST be rejected before resolution. A runner that cannot interpret a
+configured value MUST reject that harness, including a stronger `maintain` or
+`admin` value; it MUST NOT silently use the role default or current global
+`write+` gate. Migration also requires versioned event and entity CEL inputs
+that carry verified effective roles and distinguish exact label-grant
+provenance. Existing authorization-sensitive CEL comparisons against an
+unverified legacy role MUST be migrated before v2 routing. Migration also
+requires per-harness event and entity actor gates and an
+entity-context-snapshot v2 contract that can represent all four allowed
+minimums and the changed record-admission rule.
+[Entity-context-snapshot v1](../../entity-context-snapshot/v1/README.md)
+retains its historical stage-derived `triage`/`write` rule until that
+migration.
+Authorization v1 remains authoritative for existing dispatch during
+migration, including its bash thresholds and Go `write+` behavior. An
+explicit per-harness minimum change under v2 is a harness-policy change bound
+to that harness's reviewed revision, not a normative contract version change.
 Breaking changes to v2 require `docs/normative/authorization/v3/`.
 
 **ADR 0107 migration exception:** The migration from legacy bot authorization
@@ -759,12 +916,14 @@ non-label bots are denied. The adapter implementation itself is the migration
 boundary; no per-event mode marker or separate deprecation window is required.
 An updated adapter MUST enforce the target behavior and MUST NOT silently fall
 back to legacy bot authorization when its resolver fails. The normalized-event
-fields used to carry this distinction are additive, and the permanent
-label-added exception is preserved. This exception does not alter the general
-v3 rule for unrelated authorization changes.
+fields used to carry this distinction are additive. The verified label-added
+bot handoff grant remains; human label additions meet the selected harness's
+minimum only when the v2 human gate is implemented. This bot migration
+exception does not alter the general v3 rule for unrelated authorization
+changes.
 
 | Change | v2 impact |
 |--------|-----------|
-| **Breaking** (requires v3): remove a role from the hierarchy, change the common human floor, alter a target bot or transition grant, change fail-closed to fail-open, remove a fresh model-bound checkpoint, or weaken the actor and coverage gates beyond the bounded CEL cache adopted here | Dispatch implementations must migrate |
+| **Breaking** (requires v3): remove a role from the hierarchy, change the platform `triage` floor, change the harness-role default map or allowed `human_min_role` values, stop applying the minimum to human label additions or any of the three admission paths, alter a target label or bot grant, change fail-closed to fail-open, remove a fresh model-bound checkpoint, or weaken the actor and coverage gates beyond the bounded CEL cache adopted here | Dispatch implementations must migrate |
 | **Adapter bot-identity migration** (allowed in v2): update an adapter to emit and enforce the ADR 0107 target representation | The adapter's existing compatibility behavior applies until that implementation update; afterward, registered bots use `actor.bot_role` and unregistered non-label bots are denied |
-| **Non-breaking** (allowed in v2): add a role without changing the floor, add equivalent forge mappings, or clarify documentation | Existing dispatch behavior is preserved |
+| **Non-breaking** (allowed in v2): add a role under the existing default map, change one reviewed harness's explicit minimum, add equivalent forge mappings, or clarify documentation | The platform floor and contract remain; a harness minimum change binds to its new revision |

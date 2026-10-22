@@ -299,7 +299,7 @@ flowchart TB
 **Decided (implementation):**
 
 - The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code, with [pi](https://github.com/earendil-works/pi) available as an opt-in second runtime (`runtime: pi`, Claude-on-Vertex through the same WIF credential path), [codex](https://github.com/openai/codex) as a third (`runtime: codex`, OpenAI models through a custom model provider whose bearer token comes from a runner-seeded file, or `gateway/` models through a runner-owned gateway provider ([ADR 0137](ADRs/0137-inference-gateway-credential-route.md)), with the sandbox tool hooks behind a translating adapter — [ADR 0099](ADRs/0099-codex-agent-runtime.md) and [ADR 0100](ADRs/0100-codex-sandbox-hooks.md)), and [OpenCode](https://github.com/anomalyco/opencode) as a fourth (`runtime: opencode`, Claude-on-Vertex through the same WIF credential path; read-only agents only until the security-hook plugin adapter in [unbound-force#515](https://github.com/unbound-force/unbound-force/issues/515) lands). Runtime selection is configured per repo with `runtime:` in `.fullsend/config.yaml` (per-agent `runtime`/`model`/`effort`/`subagents` on the agent's `agents:` entry sit above it and below the `--runtime`/`--model`/`--effort` flags and `FULLSEND_*` variables, [ADR 0091](ADRs/0091-per-agent-runtime-model-effort.md)) and resolved via `runtime.ResolveForAgent()`. Test-only runtimes — **dummy** (scripted operations) and **dummy-playback** (playlist-based replay of canned results) — execute in the real OpenShell sandbox for behaviour tests without inference. Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `SandboxHooksBootstrap` for the runtime-neutral sandbox tool hooks ([ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)); runtimes declare further capabilities through small optional interfaces (`DebugLogNamer`, `ContextBridger`) rather than `Name()` checks in the runner. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
-- Harness `overlays:` ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)) will be able to set any harness field except `base`, `trigger`, `overlays`, `slug`, `role` and `forge`; an overlay that sets a guarded field (any field except `model`, `effort`, `description` and `doc`) may read only trusted event and entity fields, `runtime.forge` and `config`, and every run will record an overlay resolution trace in the plan output and a dedicated span ([ADR 0112](ADRs/0112-overlays-may-set-any-harness-field.md)). Per-task model routing is overlays setting `model` and `effort`, and when a routed model isn't served the runner retries once with the model and effort the run would use without overlays, and `FULLSEND_FALLBACK_MODELS` applies as each runtime allows. Decided, not yet implemented.
+- Harness `overlays:` ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)) will be able to set any harness field except `base`, `trigger`, `overlays`, `slug`, `role`, `forge`, and the authorization field `human_min_role` ([ADR 0151](ADRs/0151-common-actor-admission-floor.md)); an overlay that sets a guarded field (any field except `model`, `effort`, `description` and `doc`) may read only trusted event and entity fields, `runtime.forge` and `config`, and every run will record an overlay resolution trace in the plan output and a dedicated span ([ADR 0112](ADRs/0112-overlays-may-set-any-harness-field.md)). Per-task model routing is overlays setting `model` and `effort`, and when a routed model isn't served the runner retries once with the model and effort the run would use without overlays, and `FULLSEND_FALLBACK_MODELS` applies as each runtime allows. Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
 - Native Codex children run under a runner-owned policy: Bootstrap registers roles for an agent with the `Agent` tool, under harness security, whose parent model Codex resolves to collaboration V1 (a V2 or unlisted parent keeps the multi-agent tools off), and binds each child's model (a persona's own entry in its role file, the run-level default otherwise), and a mandatory dispatch hook admits only fresh-context V1 spawns of registered roles after checking `hooks.json` and the role files against runner-held digests ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md)); not yet implemented, so review and retro still run in one context on Codex ([#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
 
@@ -425,26 +425,33 @@ The existing design principle is that [the repo is the coordinator](problems/age
 - Event-backed dispatch authorization: event-triggered paths authorize the
   prompting actor before dispatch. This includes schedule/manual dispatch
   represented as a `NormalizedEvent`, whose actor is the configured service
-  identity. The target CEL path requires a verified effective normalized role
-  of `triage` or higher for an ordinary human actor, independent of the
-  selected harness and its token capabilities. The effective role comes from
-  the source provider or a trusted configured permission source such as
-  `OWNERS`; harness CEL may require `write` or narrower actor, target, or action
-  conditions. Current GitHub bash guards still use `triage` for observation
-  stages and `write` for mutation stages, except for its ungated retro close
-  route; the Go dispatch path still requires `write` for ordinary events before
-  matching harnesses. Non-GitHub event paths map source-native roles to
-  normalized roles without cross-system
+  identity. For ordinary human events, the target CEL path checks the actor's
+  verified effective normalized role against the platform `triage` floor and
+  the selected harness's `human_min_role` before CEL. The harness `role` selects
+  its run identity (a mint role on GitHub or registered role credentials on
+  GitLab); it defaults this human minimum to `triage` for `triage`
+  and `review`, and `write` for all other roles, including custom roles. A
+  top-level `human_min_role` may set `triage`, `write`, `maintain`, or `admin`
+  without lowering the platform floor. Token `privilege_levels` remain a
+  separate capability setting. The effective human role comes from the source
+  provider or a trusted configured permission source such as `OWNERS`; harness
+  CEL may narrow actor, target, or action conditions. Current GitHub bash
+  guards still use `triage` for observation stages and `write` for mutation
+  stages, except for its ungated retro close route; the Go dispatch path still
+  requires `write` for ordinary events before matching harnesses. Non-GitHub
+  event paths map source-native roles to normalized roles without cross-system
   identity verification. Bot actors are migrating to provider-backed exact role
   resolution: adapters classify actors from source-native metadata; recognized bots receive a
   canonical `actor.bot_role` such as `review`, and bot actors retain
   `actor.role: none` with `actor.role_verified` reflecting completion of the
   bot-role lookup; unknown or unresolved bots fail closed on non-label paths.
-  The label-added exception remains permanent across source systems: provider-
-  positive bot classification is required, but the forge-authorized label
-  mutation and authoritative actor-to-transition provenance are sufficient
-  platform evidence; label-to-agent mapping remains harness/CEL routing. At the
-  time of ADR 0107, GitHub is the only production implementation. CEL may
+  A verified human label addition separately grants `triage`-equivalent
+  authority for its exact accepted transition and proven projection without
+  synthesizing a verified actor role; a higher harness minimum also requires
+  the labeler's verified effective role. Provider-verified bot label
+  handoffs use a separate grant for the exact transition and its proven
+  projection; label-to-agent mapping remains harness/CEL routing. At the time
+  of ADR 0107, GitHub is the only production implementation. CEL may
   further restrict recognized bot roles but cannot authorize an unknown bot on
   non-label paths ([ADR 0107](ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md);
   [Authorization Contract v1](normative/authorization/v1/) for current dispatch;
@@ -454,10 +461,10 @@ The existing design principle is that [the repo is the coordinator](problems/age
 - Data security boundary (target state): each source-system record that
   Fullsend controls is admitted to model input only after its exact current
   revision's actor and current authorization are verified. An ordinary human
-  actor must have an effective normalized role of `triage` or higher regardless
-  of the selected harness; registered bots use a separate provider-backed
-  exact-role check. Authorization is refreshed at model-bound checkpoints, and
-  a prompting event's CEL result does not authorize separate records.
+  actor must meet the platform `triage` floor and the selected harness's
+  effective `human_min_role`; registered bots use a separate provider-backed
+  exact-role check. Authorization is refreshed at model-bound checkpoints,
+  and a prompting event's CEL result does not authorize separate records.
   Unrecognized, unauthorized, or unattributed content is redacted.
   Host-side filtering removes hidden characters, redacts sensitive data, scans
   for prompt injection, and applies size limits before filtered,
@@ -474,21 +481,24 @@ The existing design principle is that [the repo is the coordinator](problems/age
   eligibility; the actor of an earlier event does not authorize an eventless
   cycle. The platform classifies action-indicating categories, but acquires
   only entity data that can affect each harness's CEL predicate. The target
-  CEL view admits actor-originated facts that could make the predicate
-  actionable only after verifying their actors' effective roles; an ordinary
-  human needs `triage` or higher,
-  while a harness may require stronger conditions in CEL. A below-floor fact
-  is excluded, and unresolved authority for a potentially decisive fact cannot
+  CEL view admits ordinary human-originated facts that could make the
+  predicate actionable only after their actors' verified effective roles meet
+  the platform `triage` floor and that harness's effective `human_min_role`.
+  Registered bot facts require their exact roles. The narrow label grants
+  above may instead satisfy a `triage` human minimum, or the separate bot
+  gate, only for exact accepted transitions and proven projections. A
+  harness may narrow conditions further in CEL. A below-threshold fact is
+  excluded, and unresolved authority for a potentially decisive fact cannot
   prove a false or empty result. Raw service-clock state used only to defer
-  eligibility may be evaluated without unrelated history. With an explicit
-  versioned platform age policy, a host-owned cache may share
+  eligibility may be evaluated without unrelated history.
+  With an explicit versioned platform age policy, a host-owned cache may share
   provider-verified actor roles, but not harness-specific authorization
   decisions, across checks and `poll` and bound `run` processes for no more
   than five minutes from the authoritative lookup's start. Without that policy,
-  cross-check reuse is disabled. A cache-dependent false CEL result must be
-  rechecked after expiry or known invalidation within a bounded reconciliation
-  interval. Event admission and model-bound content checks retain separate
-  fresh gates.
+  cross-check reuse is disabled. Every harness reapplies its own minimum to a
+  reused role. A cache-dependent false CEL result must be rechecked after
+  expiry or known invalidation within a bounded reconciliation interval. Event
+  admission and model-bound content checks retain separate fresh gates.
   Partial data yields a definitive result only with proven coverage; otherwise
   `poll` or bound `run` fetches more relevant data or leaves the check
   unresolved, without launching a sandbox. Later input selection and injection

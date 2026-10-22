@@ -21,9 +21,10 @@ Accepted
 
 [ADR 0151](0151-common-actor-admission-floor.md) partially supersedes the
 human threshold inherited from ADR 0133 for Fullsend-controlled model-bound
-snapshot records in the v2 target contract: admission uses a verified effective
-`triage`-or-higher role. Snapshot v1 retains its historical threshold;
-deterministic assembly, current-revision checks, and filtering remain required.
+snapshot records in the target contract: admission uses the selected harness's
+effective `human_min_role` above an immutable `triage` floor. Snapshot v1
+retains its historical threshold; deterministic assembly, current-revision
+checks, and filtering remain required.
 
 ## Context
 

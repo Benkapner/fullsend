@@ -36,6 +36,12 @@ separately permits bounded role reuse for entity CEL in place of mandatory
 per-check actor-role refresh. The lifecycle, due-check scheduling, current
 entity resolution, and fresh model-bound authorization rules remain current.
 
+[ADR 0151](0151-common-actor-admission-floor.md) makes the selected harness's
+effective `human_min_role` the platform-enforced threshold for each cycle's
+event actor (when present), decision-relevant entity facts, and
+Fullsend-controlled model records. Eventless checks still require trusted
+Fullsend invocation provenance; model-bound actor checks remain fresh.
+
 ## Context
 
 [ADR 0098](0098-entity-first-harness-evaluation.md) makes the current entity,

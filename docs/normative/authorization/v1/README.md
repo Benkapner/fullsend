@@ -15,8 +15,10 @@ consumed by this contract. Bot identity and role resolution are specified by
 > supersedes v1's future full-history entity-evaluation and audit requirements.
 > [ADR 0148](../../../ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)
 > permits bounded actor-role reuse for entity-source CEL in v2.
-> [ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md) sets a common
-> human actor floor for target CEL and Fullsend-controlled model admission.
+> [ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md) keeps an
+> immutable `triage` human floor and applies the selected harness's effective
+> `human_min_role` to target event, entity-fact, and model-record admission.
+> Human labelers must meet that minimum; bot label grants remain separate.
 > Existing event-backed dispatch continues to use v1 until migrated; the v1
 > requirements below remain the record of this version's contract.
 

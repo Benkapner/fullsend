@@ -97,6 +97,9 @@ For entity-trigger decisions, [ADR 0147](../ADRs/0147-evaluate-entity-cel-over-s
 applies that principle to bounded actor-provenance and source-coverage evidence.
 [ADR 0148](../ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md) also requires
 the audit to record the age of any shared actor-role result used for CEL.
+The audit records the evaluated harness revision and its effective
+`human_min_role`, since one verified actor role can pass one harness's gate and
+fail another's under [ADR 0151](../ADRs/0151-common-actor-admission-floor.md).
 
 Traces need to be correlatable. A PR review workflow involving five agents needs a session-level view that shows all five traces, their ordering, and how their outputs composed into the final decision. This is the LLM equivalent of distributed tracing in microservices — but with the additional challenge that each "span" contains non-deterministic reasoning, not just timing and status.
 

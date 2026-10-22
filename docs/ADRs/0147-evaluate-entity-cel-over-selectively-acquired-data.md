@@ -28,8 +28,8 @@ complete-entity due checks and full-history audit roster. Its process
 lifecycle and model-bound staging rules remain. This ADR does not change
 actor-role freshness; [ADR 0148](0148-reuse-verified-actor-roles-for-entity-cel.md)
 addresses that separately.
-[ADR 0151](0151-common-actor-admission-floor.md) separately sets the common
-human actor floor for CEL and model admission.
+[ADR 0151](0151-common-actor-admission-floor.md) separately sets the platform
+human actor floor and each harness's human minimum for CEL and model admission.
 
 ## Context
 
@@ -77,8 +77,10 @@ classified action-indicating elements inherit their source records' actor
 dependencies. Provider aggregates affected by unauthorized records cannot
 enter the authorized CEL view unchanged.
 Whether a state field needs an actor check depends on how CEL uses it. An
-actor-driven change that can make the check actionable requires its actor to
-pass the platform actor floor. A harness may require a stronger role in CEL.
+ordinary human-driven change that can make the check actionable requires its
+actor's verified effective role to meet the platform floor and the evaluated
+harness's `human_min_role`. An exact verified label transition may instead use
+the narrow grant described below. CEL may narrow selection further.
 When `updated_at` advances on each forge update, elapsed
 time can make a staleness check on that raw field actionable without checking
 every historical updater; any update can defer it. A query plan must not hide a
@@ -92,11 +94,13 @@ facts. Within one check, an iteration may reuse a verified role for an actor
 it has already resolved while that verdict remains eligible under
 [ADR 0148](0148-reuse-verified-actor-roles-for-entity-cel.md)'s age bound; an
 expired verdict must be refreshed before it contributes to a definitive
-decision. Each iteration applies the common platform floor to actor-originated
-facts that could make the predicate actionable and makes the verified effective
-role available for stricter harness CEL conditions. Raw state used only for the
-conservative deferral described above is not actor authority. ADR 0148
-separately permits reuse across checks.
+decision. Each iteration applies the platform floor and the evaluated harness's
+effective `human_min_role` to ordinary human actor-originated facts that could
+make the predicate actionable. Exact verified label transitions and registered
+bots follow their separate admission paths below; verified effective roles,
+when present, remain available to CEL.
+Raw state used only for the conservative deferral described above is not actor
+authority. ADR 0148 separately permits reuse across checks.
 
 Partial entity data must distinguish not-yet-loaded data from absent or empty
 data. A CEL result is definitive `true` or `false` only when every complete
@@ -120,22 +124,29 @@ a sandbox only after its own definitive true. Absence, negation, counts, and
 universal conditions may still require complete coverage of relevant scopes.
 
 Before a classified action-indicating entity fact can influence CEL, Fullsend
-verifies its source-revision actor. A human's verified effective role must meet
-the common `triage` platform floor; a bot needs its exact registered role under
-ADR 0107. The eligible actor's verified role is available to CEL for further
-harness conditions. The existing verified label-added prompting event exception
-grants authority only for that exact accepted transition and
-its proven entity projection; independent history needs its own actor gate.
+verifies its source-revision actor. For an ordinary human fact, that actor's
+verified effective role must meet the platform `triage` floor and the
+evaluated harness's effective `human_min_role`. A verified human label
+addition instead grants `triage`-equivalent authority only for its exact
+accepted transition and proven entity projection; a higher harness minimum
+also requires the labeler's verified effective role to meet it. This narrow
+grant neither sets `actor.role` nor makes `actor.role_verified` true, and it
+is not a cacheable actor-role verdict. A bot needs its exact registered role
+under ADR 0107, except that a provider-verified bot label handoff separately
+grants authority for its exact transition and projection. Independent history
+needs its own actor gate. Verified effective roles, when present, remain
+available to CEL for further harness conditions.
+
 Unauthorized records are excluded. Unrelated history need not be fetched,
 authorized, or listed in the audit. Each check records its verified initiator,
-entity, repository, effective policy and harness revision, decision time,
-dependency and query scopes, and
-bounded evidence of source coverage and actor-check outcomes. Identifiable
-witnesses for a positive decision retain actor provenance; collection-wide
-decisions may bind counts, digests, and source references to the checked
+entity, repository, effective policy, harness revision and `human_min_role`,
+decision time, dependency and query scopes, and bounded evidence of source
+coverage and actor-check outcomes. Identifiable witnesses for a positive
+decision retain actor provenance; collection-wide decisions may bind counts,
+digests, and source references to the checked
 coverage and authorization source instead of listing every record and actor.
-Event-actor and model-bound gates remain separate; ADR 0151 sets their common
-human floor.
+Event-actor and model-bound gates remain separate; ADR 0151 applies the same
+effective harness minimum to their ordinary human actors.
 
 The breaking change to enumeration and audit guarantees is specified by
 [Authorization Contract v2](../normative/authorization/v2/README.md), as

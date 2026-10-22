@@ -19,10 +19,10 @@ Date: 2026-09-27
 
 Accepted
 
-[ADR 0151](0151-common-actor-admission-floor.md) updates the human permission
-floor referenced here for target CEL and Fullsend-controlled model admission.
-This ADR's bot grants and the forge-role meaning of human `role_verified`
-remain unchanged.
+[ADR 0151](0151-common-actor-admission-floor.md) requires a human labeler to
+meet the selected harness's effective `human_min_role` for target CEL dispatch;
+the accepted label mutation alone no longer bypasses a stronger human minimum.
+This ADR's provider-classified bot label grant and registered-bot gate remain.
 
 Extends [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)
 and defines the bot behavior to be added to the existing v1 contracts. This ADR

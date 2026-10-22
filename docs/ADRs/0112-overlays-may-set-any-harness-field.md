@@ -21,6 +21,11 @@ Date: 2026-10-01
 
 Accepted
 
+[ADR 0151](0151-common-actor-admission-floor.md) adds `human_min_role` to the
+top-level-only fields. It is resolved before authorization and cannot be set
+by an overlay, even one guarded by trusted fields. The other overlay rules
+remain current.
+
 <!-- ADRs are point-in-time records, but not fully frozen after acceptance.
      Minor annotations are welcome: cross-references to related ADRs, short
      notes linking to newer decisions, or clarifying remarks. However, do not
