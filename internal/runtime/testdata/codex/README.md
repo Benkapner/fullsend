@@ -43,7 +43,11 @@ Codex **rollouts** (`$CODEX_HOME/sessions/**/rollout-*.jsonl`) for `foldCodexChi
 | `child_usage_forked.jsonl` | A forked child (hand-authored from codex 0.159.3's fork rules): the parent's `turn_context` (`gpt-5.6-luna`) and `token_count` copied ahead of the child's own `turn_context` (`gpt-5.6-terra`) and `token_usage_record`; its usage lands under `gpt-5.6-terra`. |
 
 The tests lay the rollouts out under a temporary sessions tree as
-`2026/09/29/rollout-2026-09-29T15-46-38-<thread id>.jsonl`, the name codex gives a rollout.
+`2026/09/29/rollout-2026-09-29T15-46-38-<thread id>.jsonl`, the name codex gives a rollout,
+and the findings log beside the tree as `.security/findings.jsonl`. `spawn_admissions.jsonl` is
+that log for a run whose spawn guard admitted three spawns and denied one, in the adapter's
+`log_finding` shape, plus one `secret_redact_posttool` finding; `countCodexSpawnAdmissions`
+counts the three `codex_spawn_guard_admit` lines by name.
 
 ## Event structs
 

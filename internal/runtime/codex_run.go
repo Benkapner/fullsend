@@ -636,7 +636,8 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		innerHandler(evt)
 	}
 
-	if _, parseErr := parseCodexStream(reader, handler); parseErr != nil {
+	primaryThreadID, parseErr := parseCodexStream(reader, handler)
+	if parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, reader)
@@ -647,6 +648,7 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	if execCmd.ProcessState != nil {
 		exitCode = execCmd.ProcessState.ExitCode()
 	}
+	childIDs.flush()
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)
 	}
@@ -676,6 +678,17 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		// children can record more after the read.
 		if len(childIDs.IDs) > 0 && (ctx.Err() != nil || exitCode == 124 || exitCode == -1) {
 			printer.StepWarn("Sub-agent usage may be undercounted: codex was stopped, and its children can record more after the read")
+		}
+	}
+
+	// Checked whatever the exit code: with a validation loop an iteration's
+	// non-zero exit does not fail the run; an error from Run does, and a
+	// failed read is one too, unlike the usage read above.
+	if len(childIDs.Senders) > 0 {
+		digests.CompletedSpawns += len(childIDs.Senders)
+		recordRunnerHeldDigests(params.SandboxName, digests)
+		if err := checkCodexSpawnAdmissions(params.SandboxName, primaryThreadID, childIDs.Senders, digests.CompletedSpawns); err != nil {
+			return exitCode, err
 		}
 	}
 
