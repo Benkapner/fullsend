@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
@@ -46,9 +48,9 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 	}
 
 	// Compute the effective role for the auth gate without mutating the
-	// caller's event. The OWNERS-upgraded role is used only for
-	// IsAuthorized; downstream CEL evaluation sees the original
-	// collaborator-API role.
+	// caller's event. The OWNERS-upgraded role is used only for the
+	// event-level and per-harness auth checks; downstream CEL evaluation
+	// sees the original collaborator-API role.
 	repoRoot := filepath.Dir(opts.ConfigDir)
 	effectiveRole := opts.Event.Actor.Role
 	if pr, ok := dirCfg.(config.PerRepoConfigReader); ok && pr.IsOwnersFileAuthEnabled() && opts.Event.Actor.ID != "" {
@@ -65,7 +67,7 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 
 	authCheck := *opts.Event
 	authCheck.Actor.Role = effectiveRole
-	if !IsAuthorized(&authCheck) {
+	if !IsEventAuthorized(&authCheck) {
 		return nil, nil
 	}
 
@@ -74,10 +76,13 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 		return nil, err
 	}
 
+	candidates = FilterAuthorizedHarnesses(candidates, &authCheck)
+
 	matched, err := MatchHarnesses(candidates, opts.Event)
 	if err != nil {
 		return nil, err
 	}
+	matched = dropGitHubRoutedBuiltins(matched, opts.Event)
 
 	var refs []ExecutionRef
 	for _, m := range matched {
@@ -89,4 +94,27 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 		refs = append(refs, ref)
 	}
 	return refs, nil
+}
+
+// dropGitHubRoutedBuiltins removes matched harnesses registered under a
+// built-in agent name (config.ValidAgentNames, case-insensitive) when the
+// event comes from GitHub. On GitHub the built-in stages are already routed
+// by the route job in reusable-dispatch.yml; dispatching an override of a
+// built-in agent here as well would run it twice. Other sources are left
+// untouched: Jira polling has no stage routing and registers built-in names
+// with triggers on purpose.
+func dropGitHubRoutedBuiltins(matched []TriggeredHarness, event *normevent.Event) []TriggeredHarness {
+	if event.Source.System != normevent.SystemGitHub {
+		return matched
+	}
+	builtins := config.ValidAgentNames()
+	var kept []TriggeredHarness
+	for _, m := range matched {
+		if slices.Contains(builtins, strings.ToLower(m.Name)) {
+			log.Printf("harness dispatch: %s is a built-in agent; its GitHub stage routing handles this event", m.Name)
+			continue
+		}
+		kept = append(kept, m)
+	}
+	return kept
 }
