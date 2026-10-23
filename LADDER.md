@@ -6,11 +6,15 @@ additional expectations. Advancement is not automatic — it requires a
 request, a track record, and maintainer approval.
 
 The ladder is organization-wide. Merged PRs and substantive reviews in
-any repository under the [fullsend-ai](https://github.com/fullsend-ai)
-organization count toward the track record for each role — not only
-contributions to this repository. The Vouched role is the exception:
-it is this repository's intake gate, described in
-[CONTRIBUTING.md](CONTRIBUTING.md).
+any public repository under the
+[fullsend-ai](https://github.com/fullsend-ai) organization count toward
+the track record for each role — not only contributions to this
+repository. Vouched is org-wide as well: one vouch, requested through
+this repository's
+[Vouch Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=vouch-request)
+discussion, admits you to every fullsend-ai repository that runs the
+vouch gate. See [CONTRIBUTING.md](CONTRIBUTING.md) for the request
+process.
 
 For the Maintainer role specifically — including eligibility, the
 nomination process, and what maintainers do — see
