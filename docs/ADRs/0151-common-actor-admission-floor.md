@@ -23,9 +23,10 @@ This decision partially supersedes the human permission thresholds in
 [ADR 0098](0098-entity-first-harness-evaluation.md),
 [ADR 0133](0133-actor-attributed-data-security-boundary.md), and
 [ADR 0141](0141-deterministic-filtered-entity-context-staging.md) for the
-target CEL and model-bound paths. It also supersedes [ADR
+target CEL and model-bound paths. It also refines [ADR
 0061](0061-harness-cel-dispatch.md)'s authorization-before-harness-
-enumeration ordering and narrows the human label-transition exception in
+enumeration ordering for harness-specific thresholds and narrows the human
+label-transition exception in
 [ADR 0107](0107-bot-identity-resolution-for-dispatch-authorization.md) for a
 harness requiring more than `triage`.
 Their other provenance, bot, freshness, and filtering requirements remain.
@@ -36,12 +37,23 @@ Their other provenance, bot, freshness, and filtering requirements remain.
 harness CEL. A harness's `role` selects its run identity: GitHub requests a
 mint token for it, while GitLab selects registered role credentials
 ([`run.go` at `fe68925b`](https://github.com/fullsend-ai/fullsend/blob/fe68925b53066c27ba0c0272e2e8eb1ce73ebe40/internal/cli/run.go#L903-L915)).
-The existing GitHub workflow uses `triage` for human triage/review slash
-commands and `write` for human code/fix/retro/prioritize slash commands;
-its other event routes have distinct guards, including an ungated retro-close
-route ([`reusable-dispatch.yml` at `fe68925b`](https://github.com/fullsend-ai/fullsend/blob/fe68925b53066c27ba0c0272e2e8eb1ce73ebe40/.github/workflows/reusable-dispatch.yml#L305-L420)).
-The current Go path instead applies one `write` gate before loading
-harnesses ([`Dispatch` at `fe68925b`](https://github.com/fullsend-ai/fullsend/blob/fe68925b53066c27ba0c0272e2e8eb1ce73ebe40/internal/harnessdispatch/core.go#L48-L85)).
+[Authorization v1](../normative/authorization/v1/README.md#default-thresholds)
+already sets `triage` for observation and `write` for mutation, including its
+target entity-fact and model-record rules. The GitHub workflow applies those
+thresholds to human slash commands; its other event routes have distinct
+guards, including an ungated retro-close route
+([`reusable-dispatch.yml` at `fe68925b`](https://github.com/fullsend-ai/fullsend/blob/fe68925b53066c27ba0c0272e2e8eb1ce73ebe40/.github/workflows/reusable-dispatch.yml#L305-L420)).
+Since [#8727](https://github.com/fullsend-ai/fullsend/pull/8727), Go CEL
+dispatch also applies an event-level `triage` floor for ordinary human events
+and filters candidate harnesses by the v1 `role`-derived default before CEL:
+`triage` and `review`
+require `triage`; every other role requires `write`
+([`auth.go` at `33dc5e1`](https://github.com/fullsend-ai/fullsend/blob/33dc5e1e27f2c732c49603ed93fb405fb728d160/internal/harnessdispatch/auth.go#L78-L157),
+[`core.go` at `33dc5e1`](https://github.com/fullsend-ai/fullsend/blob/33dc5e1e27f2c732c49603ed93fb405fb728d160/internal/harnessdispatch/core.go#L68-L82)).
+Its harness schema has no explicit human minimum
+([`harness.go` at `33dc5e1`](https://github.com/fullsend-ai/fullsend/blob/33dc5e1e27f2c732c49603ed93fb405fb728d160/internal/harness/harness.go#L364-L400)),
+and its label-added exception bypasses the per-harness role threshold
+([`auth.go` at `33dc5e1`](https://github.com/fullsend-ai/fullsend/blob/33dc5e1e27f2c732c49603ed93fb405fb728d160/internal/harnessdispatch/auth.go#L53-L58)).
 The current GitHub dispatch and run jobs each check out the PR base commit for
 PR events ([`reusable-dispatch.yml` at `fe68925b`](https://github.com/fullsend-ai/fullsend/blob/fe68925b53066c27ba0c0272e2e8eb1ce73ebe40/.github/workflows/reusable-dispatch.yml#L1519-L1532),
 [`run checkout` at `fe68925b`](https://github.com/fullsend-ai/fullsend/blob/fe68925b53066c27ba0c0272e2e8eb1ce73ebe40/.github/workflows/reusable-dispatch.yml#L1681-L1686)).
@@ -178,12 +190,12 @@ Source-specific bot and label grants require their own provider evidence.
 
 ## Consequences
 
-- The current Go `write` gate and bash routes remain compatibility behavior
-  until dispatch can load trusted harness policy, apply each minimum before
-  its CEL predicate, and expose verified effective roles or exact label-grant
-  provenance to CEL. The
-  `human_min_role` field is target-only until the loader validates and enforces
-  it.
+- Current Go CEL dispatch enforces the v1 role-derived default for ordinary
+  human events, and bash routes retain their stage guards. Explicit or guarded
+  overlay `human_min_role` values, selected-minimum checks for human label
+  additions and actor-originated entity and model records, and the pinned
+  policy handoff remain target behavior. The field cannot become effective
+  policy until the loader validates and enforces it.
 - A harness author may deliberately set `human_min_role: triage` for a
   write-capable role; that permits `triage` actors and records to guide that
   harness without changing its minted capabilities.

@@ -324,22 +324,25 @@ and bot compatibility behavior, as recorded in
 harnesses or set their role requirements. After provider-backed
 `actor.bot_role` recognition, bots use the separate bot gate above.
 
-> **Current Go implementation:** `IsAuthorized()` in `harnessdispatch` still
-> applies `write+` to ordinary events before `MatchHarnesses()`, including
-> poll-based dispatch. This is current compatibility behavior, not the v2
-> per-harness gate. Migration must resolve each harness's minimum before its
-> CEL predicate, apply that minimum to the event actor, and make the
-> OWNERS-adjusted effective role visible in a versioned CEL input. Today the
-> Go path applies an OWNERS upgrade to its platform check but passes the
-> original event role to CEL. The current harness loader does not recognize
-> `human_min_role` and can ignore an unknown YAML key. Adding the field to a
-> harness today does not enforce it: the global `write+` check would especially
-> under-enforce an intended `maintain` or `admin` minimum. A v2-conforming
-> runner MUST reject a configured `human_min_role` it cannot parse, validate,
-> or enforce rather than silently treat it as absent. The field cannot be
-> deployed as effective policy while a selected runner still ignores it. The
-> current execution matrix carries agent name and credential role, not the
-> composed policy identity required for a v2 cross-process handoff.
+> **Current Go implementation:** Since
+> [#8727](https://github.com/fullsend-ai/fullsend/pull/8727),
+> `fullsend dispatch` runs `IsEventAuthorized()` before harness enumeration,
+> then `FilterAuthorizedHarnesses()` applies each candidate's `role`-derived
+> `triage` or `write` default before `MatchHarnesses()`. Jira polling preloads
+> candidates, then runs both authorization checks before CEL. This implements
+> the v1 default for ordinary events.
+> Migration must resolve any explicit or guarded-overlay minimum before that
+> harness's CEL predicate and expose the same verified effective role to CEL.
+> Today Go still lets human label-added events bypass the per-harness threshold;
+> it applies an OWNERS upgrade to its gate but passes the original event role
+> to CEL. The harness loader does not recognize `human_min_role` and can ignore
+> an unknown YAML key. Adding the field today does not enforce it, including
+> an intended `maintain` or `admin` minimum. A v2-conforming runner MUST reject
+> a configured `human_min_role` it cannot parse, validate, or enforce rather
+> than silently treat it as absent. The field cannot be deployed as effective
+> policy while a selected runner still ignores it. The current execution
+> matrix carries agent name and credential role, not the composed policy
+> identity required for a v2 cross-process handoff.
 
 ## Fail-closed behavior
 
@@ -449,8 +452,9 @@ role and review state are accepted.
 `pull_request_target.closed` to retro without a separate collaborator-role
 check, so any closer may trigger it. This is not a read-only capability:
 retro's token can write issues and pull requests, and its post-script can
-file issues, comment, and apply labels. The Go `IsAuthorized()` path has no
-close-event exception and applies its current `write+` gate.
+file issues, comment, and apply labels. The Go CEL path has no close-event
+exception and applies the selected harness's role-derived default; a `retro`
+role requires `write`.
 
 The ungated bash route is not a general v2 grant for CEL-based dispatch or
 entity facts. Under this contract, a human close-event actor must meet the
@@ -902,11 +906,12 @@ transition grant. A CEL nonmatch is not a platform denial. On the event-backed
 path, an event that fails the role or exact label-grant gate never reaches
 that harness's CEL.
 
-The current Go gate precedes harness loading: `IsAuthorized()` runs before
-`MatchHarnesses()` in the dispatch core. In the target path, the platform MAY
-reject a below-floor human event before loading harnesses unless the exact
-verified label grant applies, but MUST resolve and enforce each candidate
-harness's minimum before its CEL predicate. On the Fullsend-originated
+Current `fullsend dispatch` runs `IsEventAuthorized()` before harness loading
+and `FilterAuthorizedHarnesses()` before `MatchHarnesses()`. Jira polling
+preloads harnesses but applies both checks before CEL. In the target path, the
+platform MAY reject a below-floor human event before loading harnesses unless
+the exact verified label grant applies, but MUST resolve and enforce each
+candidate harness's minimum before its CEL predicate. On the Fullsend-originated
 eventless path, the trusted-origin gate runs before poll enumeration or
 bound-entity resolution and CEL evaluation. For each eligible entity-source
 harness, the platform admits actor-originated facts needed for
@@ -937,8 +942,8 @@ A repository can add permission sources through the `authorization`
 field (today only `owners_file`). These sources may raise the verified
 effective role used by the platform and visible to CEL; they do not change
 either minimum or bypass the gate. The current bash
-`has_repo_permission` helper and Go `IsAuthorized` check retain their
-compatibility behavior until migrated.
+`has_repo_permission` helper and Go event and per-harness gates retain their
+v1 compatibility behavior until migrated.
 
 ## Versioning
 
@@ -955,9 +960,10 @@ immutable `triage` platform floor and the selected harness's effective
 resolved harness `role` supplies the default map above; an explicit top-level
 or trusted-fact-guarded overlay value may change it within the allowed range.
 Trigger CEL may further narrow selection but does not replace the admission
-minimum. This replaces v1's stage-specific human authorization rules when an
-implementation migrates to
-v2, while preserving separate fresh model-bound release checkpoints.
+minimum. V2 retains v1's role-derived defaults; a resolved explicit or
+guarded-overlay value supersedes the fixed default for that harness across
+event, entity-fact, and model-record admission. The separate fresh model-bound
+release checkpoints remain.
 
 Migration MUST teach harness loading and `base` composition to recognize and
 validate `human_min_role` with key-presence awareness, including in overlay
@@ -968,9 +974,9 @@ inherit or default during scalar merge; a
 `forge:` value or overlay with untrusted or admission-dependent guard inputs
 MUST be rejected before resolution. A runner that cannot interpret a
 configured value MUST reject that harness, including a stronger `maintain` or
-`admin` value; it MUST NOT silently use the role default or current global
-`write+` gate. Migration also requires versioned event and entity CEL inputs
-that carry verified effective roles and distinguish exact label-grant
+`admin` value; it MUST NOT silently use the v1 role-derived default. Migration
+also requires versioned event and entity CEL inputs that carry verified
+effective roles and distinguish exact label-grant
 provenance. Existing authorization-sensitive CEL comparisons against an
 unverified legacy role MUST be migrated before v2 routing. Migration also
 requires dispatch and run to use the same verified overlay guard context, a
@@ -982,7 +988,7 @@ record-admission rule.
 retains its historical stage-derived `triage`/`write` rule until that
 migration.
 Authorization v1 remains authoritative for existing dispatch during
-migration, including its bash thresholds and Go `write+` behavior. An
+migration, including its bash thresholds and Go role-derived defaults. An
 explicit per-harness minimum change under v2 is a harness-policy change bound
 to that harness's reviewed revision, not a normative contract version change.
 Breaking changes to v2 require `docs/normative/authorization/v3/`.

@@ -453,8 +453,9 @@ The existing design principle is that [the repo is the coordinator](problems/age
   provider or a trusted configured permission source such as `OWNERS`; harness
   CEL may narrow actor, target, or action conditions. Current GitHub bash
   guards still use `triage` for observation stages and `write` for mutation
-  stages, except for its ungated retro close route; the Go dispatch path still
-  requires `write` for ordinary events before matching harnesses. Non-GitHub
+  stages, except for its ungated retro close route. Go CEL dispatch now
+  applies the v1 role-derived default per harness before CEL for ordinary
+  human events; explicit or overlay minima remain target behavior. Non-GitHub
   event paths map source-native roles to normalized roles without cross-system
   identity verification. Bot actors are migrating to provider-backed exact role
   resolution: adapters classify actors from source-native metadata; recognized bots receive a

@@ -44,8 +44,8 @@ dispatch remains subject to this ADR's actor authorization gate.
 permission threshold for target CEL-routed event admission. The platform keeps
 a non-waivable `triage`-level floor, satisfied by a verified role or the narrow
 verified label-transition grant, and enforces each selected harness's effective
-`human_min_role` before CEL. The workflow stage guards and current Go `write`
-gate remain in effect until migration.
+`human_min_role` before CEL. The workflow stage guards and Go role-derived
+default thresholds remain in effect until migration.
 
 ## Context
 
