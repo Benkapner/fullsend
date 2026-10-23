@@ -10,10 +10,16 @@ The [NormalizedEvent v1](../../normalized-event/v1/) specification defines the
 consumed by this contract. Bot identity and role resolution are specified by
 [ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
 
-> **ADR 0107 target contract — not yet implemented:** The bot identity fields,
-> resolver outcomes, and bot-specific fail-closed rows below describe the
-> behavior to be implemented by the adapters and dispatch path. Until that
-> migration lands, existing compatibility behavior remains authoritative.
+> **ADR 0107 target contract — partially implemented:** The bot identity
+> fields, resolver outcomes, and bot-specific fail-closed rows below describe
+> the target behavior. The building blocks exist: the `actor.bot_role` and
+> `actor.role_verified` fields in `internal/normevent`, the forge-neutral
+> `BotRoleResolver` contract in `internal/botidentity`, the mint's GitHub
+> `POST /v1/bot-role` lookup, and a non-label bot branch in `IsEventAuthorized()`.
+> That branch applies only to events that carry a lookup result
+> (`actor.role_verified` set). No production adapter performs the lookup yet,
+> so existing compatibility behavior remains authoritative for current events.
+> Non-GitHub lookup is not implemented.
 
 ## Role ordering
 
@@ -152,13 +158,25 @@ The bash dispatch implementation uses a parameterized
 `has_repo_permission(username, min)` helper that encodes this comparison
 (see [Enforcement point](#enforcement-point)).
 
-> **Implementation note:** the Go dispatch path (`IsAuthorized()` in
-> `harnessdispatch`) currently uses a coarse `write+` filter for all
-> non-exception transitions — it does not yet distinguish observation
-> from mutation thresholds. Poll-based dispatch (GitLab/Jira) uses the
-> Go path, so a `triage`-role user triggering observation through that
-> path is denied today. The bash path (GitHub webhook dispatch)
-> implements the full parameterized threshold.
+> **Implementation note:** the Go CEL dispatch path (`harnessdispatch`) applies
+> these thresholds per harness, keyed on the harness `role:` field. It serves
+> GitHub CEL dispatch (`fullsend dispatch`) and Jira polling (`fullsend poll
+> --input-driver jira-poll`). The event-level gate (`IsEventAuthorized()`)
+> runs once before harness enumeration and applies the label-added, bot, and
+> `role_verified` rules. For the remaining actors, the candidate harnesses are
+> then filtered by `IsHarnessAuthorized()` before CEL evaluation: `role: triage`
+> and `role: review` require `triage`; every other role, including an empty,
+> unknown, or custom role, requires `write` (fail closed). GitLab polling and
+> webhook routing do not use `harnessdispatch`: `dispatch.HarnessRouter`
+> gates slash commands per stage (triage and review at `triage`, other stages
+> at `write`) and label routes at `write`, and the agent job then requires
+> Developer access for every stage except retro and prioritize. The bash path (GitHub webhook
+> dispatch) applies the same thresholds per stage through
+> `has_repo_permission`.
+> Among the Go paths, only `fullsend dispatch --route retro` applies the
+> lifecycle-close exception; the bash path applies it for every closer and
+> CEL harness dispatch does not (see
+> [Lifecycle close](#lifecycle-close-pull_request_targetclosed)).
 
 ## Fail-closed behavior
 
@@ -188,7 +206,7 @@ migration is complete.
 | Username is empty | Denied |
 | `OWNERS` is missing or malformed, or `OWNERS_ALIASES` is present but malformed (`owners_file` enabled) | OWNERS check skipped; the collaborator API decides |
 | Username contains characters outside `[A-Za-z0-9-]` (`owners_file` enabled) | OWNERS check skipped; the collaborator API decides |
-| Fullsend poll invocation provenance is missing or unverifiable | Entity discovery denied |
+| Fullsend invocation provenance for poll discovery or a bound run's eventless check is missing or unverifiable | That eventless evaluation is denied |
 | Harness entity sources are missing or malformed | That harness is skipped for scheduled evaluation |
 | Effective platform eligibility policy is missing, malformed, or unverifiable | Scheduled evaluations governed by that policy are denied |
 | Effective platform eligibility policy uses a wildcard without explicit platform-level justification | Scheduled evaluations governed by that policy are denied |
@@ -243,9 +261,17 @@ role and review state are accepted.
 The `pull_request_target.closed` event that triggers the retro stage is
 intentionally ungated: any closer may trigger read-only lifecycle
 accounting. The retro agent performs only observation work and does not
-mutate repository state. This exception is currently implemented in
-the bash dispatch path; the Go `IsAuthorized()` path has no special
-handling for closed transitions and applies the standard `write+` gate.
+mutate repository state. This exception is implemented in the bash
+dispatch path and, on GitHub, by `fullsend dispatch --route retro`
+(`IsLifecycleCloseAuthorized()` in `harnessdispatch`), which admits a
+`pull_request_target` close, merged or not, whoever closed it, for the
+retro role only. Any pull request author can close their own pull request,
+so no other harness role gets the exception. The route applies it only when
+routing retro, keyed on the resolved harness `role: retro`; when the harness
+cannot be loaded, it is keyed on the routed agent's own role (the Retro job
+mints the retro role either way). CEL harness dispatch has no
+special handling for closed transitions: the retro harness role resolves to
+the `write` threshold there.
 
 ### Schedule and manual dispatch
 
@@ -266,39 +292,54 @@ the standard permission gate applies.
 > compatibility handling remains authoritative until provider-backed bot-role
 > resolution is wired into the adapters and dispatch path.
 
-### Fullsend-originated entity discovery
+### Fullsend-originated eventless entity evaluation
 
 This is the future path adopted by
-[ADR 0098](../../../ADRs/0098-entity-first-harness-evaluation.md); it is not yet
-implemented by `fullsend dispatch` or `fullsend poll`, and entity-first
-execution MUST NOT be enabled until the versioned normalized-entity contract
-defines CEL-eligible and prompt-eligible fields. That contract is a platform
-allowlist; a harness may request fewer fields but cannot expand it.
+[ADR 0098](../../../ADRs/0098-entity-first-harness-evaluation.md) and clarified
+by [ADR 0144](../../../ADRs/0144-reuse-poll-and-entity-bound-run-processes.md);
+it is not yet implemented by `fullsend dispatch`, `fullsend poll`, or eventless
+bound `fullsend run`. Entity-first execution MUST NOT be enabled until the
+versioned normalized-entity contract defines CEL-eligible and prompt-eligible
+fields. That contract is a platform allowlist; a harness may request fewer
+fields but cannot expand it.
 
-`fullsend poll` may perform scheduled entity discovery without synthesizing a
-`NormalizedEvent` or event actor. This path is authorized only when its caller
-has trusted Fullsend-controlled invocation provenance: a verified,
+`fullsend poll` may enumerate candidates without synthesizing a
+`NormalizedEvent` or event actor. A bound `fullsend run` may instead recheck
+only its canonical entity with `event == null`, including after consuming an
+initial event. Both paths require eligible entity sources and effective
+platform policy permitting eventless evaluation. They are authorized only when
+the caller has trusted Fullsend-controlled invocation provenance: a verified,
 non-user-assertable platform execution identity bound to the invocation and its
 target, such as an attested workflow/job identity or installation credential.
-A CLI flag, request header, or other caller-supplied claim is insufficient. A
-caller that cannot establish that provenance MUST be denied. Wildcard
-eligibility (`*` or `all`) requires the same explicit platform-level
+Neither the actor of an earlier event nor an authenticated wake peer supplies
+this authority. A CLI flag, request header, or other caller-supplied claim is
+insufficient. A caller that cannot establish that provenance MUST be denied.
+Wildcard eligibility (`*` or `all`) requires the same explicit platform-level
 justification as any other wildcard allowlist in this contract.
 
-Authorization of the poll origin does not authorize entity content. For each
-candidate harness, before evaluating its CEL predicate, Fullsend MUST enumerate
-a platform-defined closed superset of action-indicating elements for the entity
-kind. These are actor-originated entity-history elements whose content or state
-could be treated as a request for a stage to run; the superset includes issue or
-change-proposal bodies, comments, reviews, and label applications wherever the
-entity kind supports them. A harness cannot exclude a supported category from
-classification. If enumeration fails, is unavailable, or does not cover the
-entity kind, evaluation of that entity MUST be denied; only successful
-enumeration may return an empty set for a state-only predicate.
+Each eventless entity evaluation's audit record MUST identify the verified
+Fullsend invocation identity, target repository, effective policy, harness
+revision, canonical entity, and every retained action-indicating element and
+its actor. Those element actors describe evaluated entity history, not the
+evaluation's initiator. An event-bearing child cycle identifies its verified
+event actor; the actor of an earlier event is not attributed as the initiator
+of a later eventless cycle in the same containing run.
+
+Authorization of the Fullsend invocation origin does not authorize entity
+content. For each evaluated harness, before evaluating its CEL predicate,
+Fullsend MUST enumerate a platform-defined closed superset of
+action-indicating elements for the entity kind. These are actor-originated
+entity-history elements whose content or state could be treated as a request
+for a stage to run; the superset includes issue or change-proposal bodies,
+comments, reviews, and label applications wherever the entity kind supports
+them. A harness cannot exclude a supported category from classification. If
+enumeration fails, is unavailable, or does not cover the entity kind,
+evaluation of that entity MUST be denied; only successful enumeration may
+return an empty set for a state-only predicate.
 
 Fullsend MUST resolve the current forge permission level for every enumerated
 element's actor and remove the element unless that permission meets the
-candidate harness's observation or mutation threshold. Historical or cached
+evaluated harness's observation or mutation threshold. Historical or cached
 actor relationships are insufficient. A harness CEL predicate MAY further
 restrict selection using retained elements and their current actor-permission
 fields, but cannot weaken the platform gate or be relied upon to identify an
@@ -367,19 +408,19 @@ used for dispatch gating:
 **Principle:** relationship and contribution-history fields are not
 evidence of current authority. Event-backed authorization must be derived from
 the forge's permission model at event time, not from cached or inferred
-relationships. Fullsend-originated entity discovery must instead be authorized
-from trusted Fullsend-controlled invocation provenance for enumeration and
-evaluation. Action-indicating elements are separately gated by current actor
-permission; historical actors and relationship fields must not serve as
-authorization evidence.
+relationships. Fullsend-originated eventless evaluation must instead be
+authorized from trusted Fullsend-controlled invocation provenance for poll
+enumeration or bound rechecks. Action-indicating elements are separately gated
+by current actor permission; historical actors and relationship fields must not
+serve as authorization evidence.
 
 ## Enforcement point
 
 Authorization is enforced as a **platform-level gate** before CEL trigger
 evaluation. Event-backed dispatch uses the normalized event actor;
-Fullsend-originated entity discovery uses trusted invocation provenance to
-authorize enumeration and evaluation, then independently filters
-action-indicating elements by current actor permission before CEL.
+Fullsend-originated eventless evaluation uses trusted invocation provenance to
+authorize evaluation, then independently filters action-indicating elements by
+current actor permission before CEL.
 
 ```
 Forge event
@@ -388,10 +429,10 @@ Forge event
   --> CEL trigger evaluation (harness routing)
   --> Execution
 
-Fullsend poll invocation
+Fullsend poll discovery / bound run eventless recheck
   --> Trusted-origin authorization gate     <-- enforced here
-  --> Entity enumeration and resolution
-  --> For each candidate harness:
+  --> Enumerate and resolve candidates (poll) / resolve canonical entity (run)
+  --> Evaluate each candidate harness (poll) or the bound harness (run):
       --> Enumerate action-indicating elements
       --> Harness-stage actor gate           <-- enforced here
       --> CEL trigger evaluation (event is null)
@@ -409,12 +450,15 @@ may **never weaken** the platform authorization gate. On the event-backed path,
 an event that fails authorization never reaches CEL evaluation.
 
 This separation is enforced architecturally: on the event-backed path,
-`IsAuthorized()` runs before `MatchHarnesses()` in the dispatch core. On the
-entity-discovery path, the trusted-origin gate runs before enumeration and CEL
-evaluation. For each candidate harness, the platform removes unauthorized
-action-indicating elements using that harness's stage threshold before its CEL
-predicate runs, and `event` remains null. Neither path lets a CEL expression
-override or relax an authorization denial.
+`IsEventAuthorized()` runs before harness enumeration in the dispatch core, and
+`FilterAuthorizedHarnesses()` removes each harness whose role threshold the
+actor does not meet before `MatchHarnesses()` evaluates CEL. On the
+Fullsend-originated eventless path, the trusted-origin gate runs before poll
+enumeration or bound-entity resolution and CEL evaluation. For each eligible
+harness, the platform removes unauthorized action-indicating elements using
+that harness's stage threshold before its CEL predicate runs, and `event`
+remains null. Neither path lets a CEL expression override or relax an
+authorization denial.
 
 ### Per-repo configurability
 
@@ -426,7 +470,8 @@ cannot make it available to unauthorized users.
 
 A repository can add permission sources through the `authorization`
 field (today only `owners_file`). These sources extend the
-`has_repo_permission` helper and the Go `IsAuthorized` check; they do not
+`has_repo_permission` helper and the Go `IsEventAuthorized` gate and
+per-harness filter; they do not
 bypass the gate or change the thresholds.
 
 ## Versioning

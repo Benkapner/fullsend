@@ -47,6 +47,7 @@ func newReconcileStatusCmd() *cobra.Command {
 		fullsendDir string
 		jobStatus   string
 		wasSkipped  bool
+		reviewRun   bool
 	)
 
 	cmd := &cobra.Command{
@@ -63,7 +64,9 @@ to an "Interrupted" state and adds the terminal tag. If already
 finalized, this is a no-op.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var tc tracker.Client
+			var statusForgeClient forge.Client
 			var project string
+			var forgePlatform string
 
 			// Event-source routing (ADR 0093): read the normalized
 			// event from the same sources as fullsend run—the on-disk
@@ -133,27 +136,27 @@ finalized, this is a no-op.`,
 				}
 				owner, repoName := parts[0], parts[1]
 
-				forgePlatform, err := detectForgePlatform(forgeFlag, nil)
+				var err error
+				forgePlatform, err = detectForgePlatform(forgeFlag, nil)
 				if err != nil {
 					return err
 				}
 
-				var forgeClient forge.Client
 				if forgePlatform == "gitlab" {
 					var gitlabErr error
-					forgeClient, gitlabErr = newGitLabClientFromEnv("status reconciliation")
+					statusForgeClient, gitlabErr = newGitLabClientFromEnv("status reconciliation")
 					if gitlabErr != nil {
 						return gitlabErr
 					}
 				} else {
 					var githubErr error
-					forgeClient, githubErr = reconcileGitHubClient(cmd, mintURL, role, repoName, orgCfg)
+					statusForgeClient, githubErr = reconcileGitHubClient(cmd, mintURL, role, repoName, orgCfg)
 					if githubErr != nil {
 						return githubErr
 					}
 				}
 
-				tc = reconcileNewTrackerClient(forgeClient)
+				tc = reconcileNewTrackerClient(statusForgeClient)
 				project = owner + "/" + repoName
 			}
 
@@ -166,8 +169,24 @@ finalized, this is a no-op.`,
 			}
 
 			agentDescription := titleCase(strings.ReplaceAll(role, "-", " "))
-
-			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription)
+			guidance := ""
+			if reviewRun && termReason == statuscomment.ReasonCancelled {
+				var guidanceErr error
+				guidance, guidanceErr = resolveBuiltInGitHubReviewCancellationGuidance(
+					cmd.Context(), 
+          
+          
+          
+          , "review", forgePlatform, trackerSource,
+					project, number, sha,
+				)
+				if guidanceErr != nil {
+					fmt.Fprintf(os.Stderr, "WARNING: could not determine whether cancelled review was superseded; omitting retry guidance: %v\n", guidanceErr)
+				}
+			}
+			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription, statuscomment.ReconcileOptions{
+				CancellationGuidance: guidance,
+			})
 		},
 	}
 
@@ -183,6 +202,7 @@ finalized, this is a no-op.`,
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to fullsend config directory (used to detect completion mode, resolve a layered mint_url, and read normalized event for tracker routing)")
 	cmd.Flags().StringVar(&jobStatus, "job-status", "", "job outcome from the CI runner (e.g. success, failure, cancelled)")
 	cmd.Flags().BoolVar(&wasSkipped, "was-skipped", false, "whether the pre-script decided to skip the run (forces synthesis under on_failure even when --job-status is success)")
+	cmd.Flags().BoolVar(&reviewRun, "review-run", false, "whether this is the built-in GitHub review agent (enables GitHub-specific cancellation guidance)")
 	_ = cmd.MarkFlagRequired("run-id")
 
 	return cmd

@@ -80,7 +80,7 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
 
   `roles/owner` covers all of the above for users with broad access.
 
-  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` and `halfsend-NN/test-repo-01` … `test-repo-12` (lazily created and installed on demand by the unified `install.Driver` — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-unified-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`). For the STAGE environment, also enroll `halfsend/test-repo-01` … `test-repo-12` (see the STAGE enrollment block in [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment)). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` and `halfsend-NN/test-repo-01` … `test-repo-12` (created by each slot claim and installed on demand by the shared slot driver — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-the-shared-slot-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`). For the STAGE environment, also enroll `halfsend/test-repo-01` … `test-repo-12` (see the STAGE enrollment block in [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment)). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
   An administrator can grant all required roles with a single script:
 
@@ -791,17 +791,24 @@ fullsend mint delete \
 
 ## Cloudflare Worker rate limiting
 
-The Cloudflare Worker deployment includes a native `[[ratelimits]]` binding (`MINT_TOKEN_RATE_LIMITER`) that rate-limits `POST /v1/token` requests. The binding is configured in `wrangler.toml` and enforced in the Worker before WASM initialization — no operator action is required.
+The Cloudflare Worker deployment includes a native `[[ratelimits]]` binding (`MINT_TOKEN_RATE_LIMITER`) that rate-limits `POST /v1/token` and `POST /v1/bot-role` requests. The binding is configured in `wrangler.toml` and enforced in the Worker before WASM initialization — no operator action is required.
 
 | Setting | Value |
 |---------|-------|
 | Binding name | `MINT_TOKEN_RATE_LIMITER` |
 | Limit | 60 requests per minute per key |
-| Key format | `{hostname}:/v1/token:{client-IP}` |
+| Key format | `{hostname}:{path}:{client-IP}` |
 
 The rate limit key incorporates the request hostname, so preview deployments (which produce distinct hostnames like `<alias>-<worker>.<subdomain>.workers.dev`) get isolated counters. Durable deploys use a stable hostname. When the rate limit is exceeded, the Worker returns HTTP 429 with `{"error":"rate_limited"}`.
 
 If the `[[ratelimits]]` section is removed from `wrangler.toml`, the Worker logs a warning and continues without rate limiting (fail-open).
+
+## Bot-role lookup endpoint
+
+`POST /v1/bot-role` resolves a bot login to a registered role for dispatch authorization ([ADR 0107](../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md)). Callers authenticate with the same OIDC token as `/v1/token`.
+
+- **Canonical role.** The `role` field of a recognized response (`{"outcome": "recognized", "role": "review"}`) is the canonical role of the matching GitHub App; the dispatch adapter surfaces it as `actor.bot_role` in the normalized event. When several allowed roles share one App ID (for example `fix` reuses the `coder` App), the lexicographically first role name is returned, so `fix` resolves to `coder`. Treat this tie-break as a stable contract: renaming a role or registering a new role that sorts earlier for a shared App changes the `role` the endpoint returns.
+- **Rate limiting.** The Worker rate limiter described above also covers `POST /v1/bot-role`, with a separate counter per path, because each authenticated call makes outbound GitHub API requests.
 
 ## See Also
 

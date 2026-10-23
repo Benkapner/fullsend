@@ -729,16 +729,278 @@ role name. The built-in agent names are: `code`, `triage`, `review`,
 agent named `code` — writing `name: coder` passes validation but
 disables nothing because no agent has that harness name.
 
+## Choosing when review runs
+
+By default, the dispatch workflow decides when the review agent runs: when a
+pull request is opened, pushed to or marked ready, when the
+`ready-for-review` label is added, and on a `/fs-review` comment. To decide it
+yourself, give the `review` entry in `.fullsend/config.yaml` a `trigger`: a
+[CEL expression](cel-triggers-reference.md) over the event. The review still
+runs in the same `Review` job; the trigger only decides whether that job
+starts.
+
+### Example: review only on `/fs-review`
+
+To stop the automatic review on every pull request but keep `/fs-review`, add
+this entry to `.fullsend/config.yaml` on your default branch:
+
+```yaml
+agents:
+  - name: review
+    trigger: >-
+      event.transition.kind == "comment_added"
+      && has(event.entity.linked_change_proposal)
+      && has(event.transition.comment.command)
+      && event.transition.comment.command == "/fs-review"
+      && event.actor.kind == "human"
+```
+
+`has(event.entity.linked_change_proposal)` keeps the trigger to comments on
+pull requests. The `Route` job evaluates the review trigger for the events
+the fullsend workflow receives: a pull request opened, pushed to
+(`synchronize`), marked ready for review, labeled or unlabeled, and a `/fs-*`
+comment on a pull request from a user who is not a bot. It does so only when
+the default rules chose review or no stage, and not for a closed pull request
+or a `/fs-retro`, `/fs-triage` or `/fs-prioritize` comment (see
+[Which trigger decides](#which-trigger-decides)), so a broad trigger can start
+reviews the default rules would not. It
+never starts a review from a bot's comment.
+
+The trigger is read from your default branch, so a pull request cannot change
+its own routing. After the change merges, open a pull request: no review
+starts. Comment `/fs-review` on it: one review starts.
+
+### What opts a repository in
+
+Only a `trigger` on the `review` entry in `config.yaml` moves review routing
+to CEL:
+
+| Your configuration | Who decides |
+|---|---|
+| No `review` entry, or one with only `runtime`, `model`, `effort` or `subagents` | The dispatch workflow, as before |
+| `trigger` on the `review` entry | The trigger |
+| A `review` entry with `source:` whose harness sets or inherits `trigger:` | The dispatch workflow, as before |
+
+A harness `trigger:` field never changes when a built-in agent runs, whether
+your own harness writes it or inherits it through `base:`. To route review by
+a trigger you keep in a harness, copy the expression into the `review` entry's
+`trigger` in `config.yaml`. The kill switch and `enabled: false` on the review
+entry keep working as before. The `Route`
+job evaluates the trigger with the fullsend CLI built at the dispatch
+workflow's commit; if your workflow call pins `fullsend_version`, the `Review`
+job runs that version instead.
+
+### Known differences from the default rules
+
+A trigger is checked by the same permission gate as other CEL-dispatched
+agents: the review harness's `role: review` needs at least triage access, so
+triage-role users can start a review as before. Some cases still differ from
+the dispatch workflow's built-in rules:
+
+| Case | Default rules | Trigger |
+|---|---|---|
+| Pull request opened or pushed by a bot without a registered fullsend role | Reviewed | Not reviewed |
+| Pull request pushed by the fix agent | Reviewed | Not reviewed until [#8329](https://github.com/fullsend-ai/fullsend/issues/8329) ships, so the review → fix → re-review loop stops |
+| Who is checked when a pull request is opened, pushed to or marked ready | The pull request author | The user who sent the event |
+| A maintainer's push to an outside contributor's fork pull request | Not reviewed | Reviewed |
+
+> [!WARNING]
+> Opt in only after
+> [#8329](https://github.com/fullsend-ai/fullsend/issues/8329) ships, or
+> accept that pushes from the fix agent no longer start a re-review. Until
+> then the trigger path does not look up a bot's role.
+
+### Checking the decision
+
+When a trigger is set, the `Route` job's "Finalize stage" step logs the
+decision for each pull request and pull request comment:
+
+```text
+CEL route (review): bash=review cel=skip reason=trigger did not match harness=agents@3c3081741e3c
+```
+
+The job summary shows `review_route=cel` when the trigger decided, or
+`review_route=bash` when the dispatch workflow did: the kill switch is on or
+the review entry is disabled.
+
+| Log text | Meaning | Action |
+|---|---|---|
+| `cel=skip reason=trigger did not match` | The trigger left this event out | Expected for events your trigger excludes; otherwise fix the trigger |
+| `cel=skip reason=actor not authorized` | The actor failed the dispatch permission check | See [Known differences from the default rules](#known-differences-from-the-default-rules) for bots |
+| `cel=skip reason=harness unavailable; actor below write` | The review harness could not be fetched or loaded, so only write access passes | Check the route step's warning for the harness error |
+| `cel=skip reason=trigger evaluation failed: …` | The trigger compiles but failed on this event, for example it reads a field the event lacks without `has()`; this counts as no match | Guard optional fields with `has()` |
+| `CEL route failed; keeping the bash stage` | A CEL route step failed or the configuration is invalid, so the dispatch workflow decided | Open the failed "… CEL route" step for the error, for example an invalid `trigger` or another invalid `agents:` entry |
+| `invalid agent config: agents[N] (review): invalid trigger` in any agent job | The `trigger` in `config.yaml` does not compile; every agent run validates the whole `agents:` list, so all agents fail, not only review | Fix the expression in `.fullsend/config.yaml` |
+
+## Choosing when retro runs
+
+By default, the dispatch workflow starts the retro agent when a pull request
+is closed, merged or not, and on a `/fs-retro` comment on an issue or a pull
+request. To decide it yourself, give the `retro` entry in
+`.fullsend/config.yaml` a `trigger`. The retro still runs in the same `Retro`
+job; the trigger only decides whether that job starts. What opts a repository
+in, and how to check the decision, work as for review: see
+[What opts a repository in](#what-opts-a-repository-in) and
+[Checking the decision](#checking-the-decision), with `retro` in place of
+`review` (`CEL route (retro): ...`, `retro_route=cel`).
+
+### Example: retro only on `/fs-retro`
+
+To stop the retro on every closed pull request but keep `/fs-retro`, add this
+entry to `.fullsend/config.yaml` on your default branch:
+
+```yaml
+agents:
+  - name: retro
+    trigger: >-
+      event.transition.kind == "comment_added"
+      && has(event.transition.comment.command)
+      && event.transition.comment.command == "/fs-retro"
+      && event.actor.kind == "human"
+```
+
+After the change merges, close a pull request: no retro starts. Comment
+`/fs-retro` on it: one retro starts.
+
+The `Route` job asks the trigger only about closed pull requests and
+`/fs-retro` comments; every other event keeps the dispatch workflow's rules,
+and a bot's `/fs-retro` comment never starts a retro.
+
+### Who can start a retro
+
+A trigger decides which events start a retro, not who may start one:
+
+- **Closing a pull request:** anyone who closes or merges it, including its
+  read-only author and bots without a registered fullsend role, as with the
+  dispatch workflow. Only the retro agent gets this exception (the
+  [lifecycle-close exception](../../normative/authorization/v1/README.md#lifecycle-close-pull_request_targetclosed)).
+- **`/fs-retro`:** users with write access or above.
+
+## Choosing when triage and prioritize run
+
+The triage and prioritize agents opt in the same way as review: give the
+`triage` or `prioritize` entry in `.fullsend/config.yaml` a `trigger`, and
+that trigger, not the dispatch workflow's built-in rules, decides whether the
+`Triage` or `Prioritize` job starts. The rules in
+[What opts a repository in](#what-opts-a-repository-in) apply to both, with
+`triage` or `prioritize` in place of `review`. Each agent opts in on its own: a
+`triage` trigger does not change when prioritize runs.
+
+A trigger only sees the events that reach the `Route` job. The workflow that
+`fullsend` installs in your repository forwards issues opened, edited and
+labeled, and comments that start with `/fs-` from people, not bots. So a
+prioritize trigger only decides `/fs-prioritize`, and on a pull request only
+`/fs-triage` asks the triage trigger.
+
+By default the dispatch workflow starts:
+
+- **Triage** when an issue is opened or edited, when the `ready-for-triage`
+  label is added to an issue, and on a `/fs-triage` comment on an issue or a
+  pull request.
+- **Prioritize** on a `/fs-prioritize` comment on an issue or a pull request.
+  The scheduled scoring run (a scheduler workflow that dispatches
+  `prioritize.yml`) does not go through this routing, so a trigger does not
+  change it.
+
+### Example: triage only on `/fs-triage`
+
+To stop triaging every new or edited issue but keep `/fs-triage`, add this
+entry to `.fullsend/config.yaml` on your default branch:
+
+```yaml
+agents:
+  - name: triage
+    trigger: >-
+      event.entity.kind == "work_item"
+      && event.transition.kind == "comment_added"
+      && has(event.transition.comment.command)
+      && event.transition.comment.command == "/fs-triage"
+      && event.actor.kind == "human"
+```
+
+After the change merges, open an issue: no triage starts. Comment
+`/fs-triage` on it: one triage starts. The `Route` job summary shows
+`triage_route=cel`.
+
+Leave out the `ready-for-triage` label at your own cost: when the triage
+agent splits an issue, it labels each new sub-issue `ready-for-triage` so that
+the sub-issue is triaged. Keep a label arm like this one if you rely on
+splits:
+
+```text
+(event.entity.kind == "work_item"
+  && event.transition.kind == "label_changed"
+  && event.transition.label.name == "ready-for-triage"
+  && event.transition.label.action == "added")
+```
+
+### Which trigger decides
+
+The `Route` job asks one agent's trigger per event:
+
+| Event | Agent asked |
+|---|---|
+| An issue opened, edited or labeled | `triage` |
+| A pull request closed, merged or not | `retro` |
+| A pull request opened, pushed to, marked ready or labeled | `review` |
+| A `/fs-` comment that the built-in rules route to `review`, `retro`, `triage` or `prioritize` | That agent |
+| Any other `/fs-retro`, `/fs-triage` or `/fs-prioritize` comment | `retro`, `triage` or `prioritize` |
+| Any other `/fs-` comment on a pull request | `review` |
+| Any other `/fs-` comment on an issue | `triage` |
+
+An event the built-in rules route to another stage, such as `/fs-code` or the
+`ready-to-code` label, is never handed to a trigger.
+
+### Copying the built-in triage rules into a trigger
+
+To start from the built-in rules and then change them, write them as a
+trigger. Keep the `event.actor.kind == "human"` guard on opened and edited:
+it stops the triage agent's own sub-issues and edits from being triaged
+twice once bots are recognized
+([#8329](https://github.com/fullsend-ai/fullsend/issues/8329)).
+
+```yaml
+agents:
+  - name: triage
+    trigger: >-
+      (event.entity.kind == "work_item"
+        && event.transition.kind in ["opened", "edited"]
+        && event.actor.kind == "human")
+      || (event.entity.kind == "work_item"
+        && event.transition.kind == "label_changed"
+        && event.transition.label.name == "ready-for-triage"
+        && event.transition.label.action == "added")
+      || (event.entity.kind in ["work_item", "change_proposal"]
+        && event.transition.kind == "comment_added"
+        && has(event.transition.comment.command)
+        && event.transition.comment.command == "/fs-triage"
+        && event.actor.kind == "human")
+```
+
+It differs from the built-in rules in one case:
+
+| Case | Built-in rules | This trigger |
+|---|---|---|
+| An issue opened or edited by a bot, for example a sub-issue the triage agent creates | Triaged when the bot holds a collaborator role | Not triaged; the sub-issue is triaged through its `ready-for-triage` label |
+
 ## Agent dispatch authorization
 
 By default, fullsend checks the forge's permission API to decide who can
 trigger agents. Users with `write` or above can trigger all agents; users
-with `triage` can trigger observation agents (`/fs-triage`, `/fs-review`)
-only. This triage-level access applies to **GitHub webhook dispatch** (slash
-commands, label-triggered dispatch, and event-triggered dispatch). The Go
-poll path used for GitLab and Jira currently requires `write` for all
-non-exception transitions — it does not yet distinguish observation from
-mutation thresholds. On GitLab, the agent job also requires the event actor
+with `triage` can trigger the built-in observation agents (`/fs-triage`,
+`/fs-review`). This applies to **GitHub webhook dispatch** (slash commands,
+label-triggered dispatch, and event-triggered dispatch).
+
+On the CEL dispatch path (GitHub `fullsend dispatch` and the Jira poll), the
+threshold follows the harness `role:`:
+
+- `role: triage` or `role: review` — triage-level actors can trigger it,
+  including OWNERS reviewers on GitHub when
+  [OWNERS authorization](owners-file-authorization.md) is enabled.
+- Any other `role:` — the actor needs `write`.
+
+GitLab uses its own stage router, which applies the same triage and write
+split to slash commands. The GitLab agent job also requires the event actor
 to hold Developer access or higher for every stage except retro and
 prioritize, so automatic triage of a newly opened issue runs only when its
 author is a Developer, Maintainer, or Owner.

@@ -33,11 +33,36 @@ When you register a custom agent and give it a `trigger` expression, fullsend ha
 
 Built-in agents (triage, code, review, fix, retro, prioritize) are routed by the dispatch workflow's stage-based routing logic. Custom agents with CEL triggers run alongside them — the two mechanisms coexist. A single event can trigger both a built-in agent via stage routing and one or more custom agents via CEL matching.
 
+On GitHub, CEL dispatch ignores the `trigger` of any agent registered under a
+built-in name (matched case-insensitively), including an override whose harness
+has one: that agent runs only where stage routing sends it, so it never runs
+twice. Jira polling, the only poll source that evaluates CEL triggers today, has
+no stage routing, so built-in names whose trigger matches are still dispatched.
+GitLab routes agents through its own built-in router and does not evaluate
+`trigger` expressions.
+
+The review, retro, triage and prioritize agents are the exception on
+GitHub: a `trigger` you set on the agent's entry in `config.yaml` decides
+whether the built-in `Review`, `Retro`, `Triage` or `Prioritize` job starts,
+in place of the stage-based rules. A harness `trigger:` field never changes
+built-in routing; copy it into `config.yaml` to opt in. See
+[Choosing when review runs](customizing-agents.md#choosing-when-review-runs),
+[Choosing when retro runs](customizing-agents.md#choosing-when-retro-runs)
+and
+[Choosing when triage and prioritize run](customizing-agents.md#choosing-when-triage-and-prioritize-run).
+
 You can also keep a hand-written workflow that invokes `fullsend run` with a fixed harness path. CEL-based dispatch and explicit harness invocation may run side by side in the same installation.
 
 ## Writing CEL triggers
 
-The harness `trigger` field is a [CEL](https://github.com/google/cel-spec) boolean expression evaluated against the incoming event. The expression has access to a single root variable, `event`, which is a [`NormalizedEvent`](../../normative/normalized-event/v1/) object.
+The harness `trigger` field is a [CEL](https://github.com/google/cel-spec)
+boolean expression evaluated against the incoming event. The expression has
+access to a single root variable, `event`, which is a
+[`NormalizedEvent`](../../normative/normalized-event/v1/) object. The same
+expression language is used by `agents[].trigger` in `config.yaml`, but that
+field decides routing for the built-in review, retro, triage and prioritize
+agents only; CEL dispatch of custom agents and the Jira poller use the harness
+`trigger:`.
 
 A harness with no `trigger` field (or an empty trigger) is manual-only — it runs via `fullsend run` but is never selected by dispatch.
 
@@ -93,6 +118,10 @@ This table covers the most common trigger fields. For the complete field list �
 | `label_changed` | Label added or removed — check `event.transition.label.name` and `.action` (`"added"` or `"removed"`) |
 | `comment_added` | Comment posted — check `event.transition.comment.command` for slash commands |
 | `review_submitted` | PR review submitted — check `event.transition.review.state` (`"approved"`, `"changes_requested"`, `"commented"`, `"dismissed"`) |
+
+On GitHub, empty-body `commented` review submissions remain available to custom
+triggers. A reviewer may submit substantive inline comments without adding a
+summary body.
 
 ### Common trigger patterns
 

@@ -213,7 +213,8 @@ fullsend
     ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
     ├── --fullsend-dir <path>                #   Path to fullsend config directory (completion mode detection, layered mint_url resolution, and tracker routing)
     ├── --job-status <string>                #   Job outcome from CI runner (e.g. success, failure, cancelled)
-    └── --was-skipped                        #   Pre-script decided to skip the run; forces synthesis under on_failure
+    ├── --was-skipped                        #   Pre-script decided to skip the run; forces synthesis under on_failure
+    └── --review-run                         #   Built-in GitHub review agent; enables current-HEAD-aware cancellation guidance
 ```
 
 ### Command Decomposition
@@ -424,7 +425,9 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │                   │  profile — see #7218. On GitLab, a       │
 │  │                   │  fullsend-gitlab-forge profile is        │
 │  │                   │  auto-generated from the forge host URL  │
-│  │                   │  — see #6615)                            │
+│  │                   │  — see #6615 — and the forge host is     │
+│  │                   │  added to each profile that issues       │
+│  │                   │  GITLAB_TOKEN — see #8683)               │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
@@ -635,7 +638,7 @@ details, see [Agent runtimes](../../runtimes.md).
 | `Upload()` | `openshell sandbox upload ...` | Copy files into sandbox |
 | `UploadDir()` | tar -czf + Upload + Exec extract | Copy directory preserving symlinks |
 | `Download()` | `openshell sandbox download ...` | Copy files out of sandbox |
-| `SafeDownload()` | Download + sanitize | Remove dangerous symlinks (absolute or repo-escaping), .git/hooks |
+| `SafeDownload()` | Staged download + sanitize | Retry into a fresh staging directory, remove dangerous symlinks (absolute or repo-escaping) and `.git/hooks/`, then publish the sanitized tree |
 | `CollectLogs()` | Download logs dir | Extract sandbox logs |
 | `ExtractTranscripts()` | Download transcripts | Extract conversation transcripts |
 | `Delete()` | `openshell sandbox delete` | Destroy container |

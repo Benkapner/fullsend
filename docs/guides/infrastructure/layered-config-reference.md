@@ -163,19 +163,20 @@ the overlay → base → code defaults chain.
 `authorization` is overlay-only: setting it in `config.base.yaml` has no
 effect, so each repo must opt in explicitly.
 
-### Per-agent `runtime`, `model`, `effort`, `subagents` on `agents:` entries
+### Per-agent `runtime`, `model`, `effort`, `subagents`, `trigger` on `agents:` entries
 
-An `agents:` entry may set `runtime`, `model`, `effort` and `subagents` for
-that agent. The `ref` field records the branch or tag that was resolved when
+An `agents:` entry may set `runtime`, `model`, `effort`, `subagents` and
+`trigger` for that agent. The `ref` field records the branch or tag that was resolved when
 the agent was adopted via `agent add`; `agent update` re-resolves against
 this ref instead of the default branch when it is present (empty for
 SHA-pinned or legacy entries).
 
 An enabled entry without `source:` is an *override-only* entry that tunes a
 built-in agent by name (or, in an overlay, a custom agent registered in the
-base layer). The keyed merge by `DerivedName()` carries the four settings
-field by field: for `runtime`, `model` and `effort` the overlay's non-empty
-value wins and an empty value inherits the parent's. `subagents` uses
+base layer). The keyed merge by `DerivedName()` carries the five settings
+field by field: for `runtime`, `model`, `effort` and `trigger` (a string)
+the overlay's non-empty value wins and an empty or omitted value inherits the
+parent's. `subagents` uses
 per-key merge: overlay entries override or tombstone (`~`) individual
 persona keys while unstated keys inherit from the parent. There is no way to
 unset a parent's scalar value from the overlay short of restating the entry.
@@ -512,9 +513,10 @@ backends. Currently one provider is supported:
   expanded.
 
 Both the bash routing path (built-in stages) and the Go harness-dispatch
-path (custom agents) consult OWNERS. The Go path admits write-level roles
-only, so a reviewer's triage-level grant covers built-in observation stages
-(`/fs-triage`, `/fs-review`) but not custom agents. A missing or malformed `OWNERS`
+path (custom agents) consult OWNERS. The Go path keys the threshold on the
+harness `role:`, so a reviewer's triage-level grant covers built-in
+observation stages (`/fs-triage`, `/fs-review`) and custom agents with
+`role: triage` or `role: review`; any other `role:` requires write. A missing or malformed `OWNERS`
 file, or a malformed `OWNERS_ALIASES` file, fails closed: the OWNERS check is
 skipped and authorization falls through to the collaborator API.
 

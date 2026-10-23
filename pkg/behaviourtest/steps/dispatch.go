@@ -16,6 +16,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -43,6 +44,9 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 	})
 	sc.Step(`^a review comment is submitted on the pull request$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, whenPullRequestReviewComment(world.FromContext(ctx))
+	})
+	sc.Step(`^the pull request is closed$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, whenPullRequestClosed(world.FromContext(ctx))
 	})
 	sc.Step(`^the kill switch is active$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, givenKillSwitchActive(world.FromContext(ctx))
@@ -102,7 +106,7 @@ func DeactivateKillSwitch(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: deactivate kill switch", merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: deactivate kill switch", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
@@ -171,7 +175,7 @@ func DeactivateKillSwitchBase(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: deactivate kill switch in config.base.yaml", merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: deactivate kill switch in config.base.yaml", merged); err != nil {
 		return fmt.Errorf("updating base config: %w", err)
 	}
 	return nil
@@ -474,25 +478,33 @@ func ensureHarnessArtifacts(w *world.World, agent string) error {
 }
 
 func whenPullRequestOpened(w *world.World) error {
+	_, err := openPullRequest(w, w.SCM)
+	return err
+}
+
+// openPullRequest pushes a new branch with one commit and opens a pull
+// request from it through driver, so the PR author (and the sender of its
+// opened event) is driver's identity. It returns the head branch.
+func openPullRequest(w *world.World, driver scm.Driver) (string, error) {
 	if w.RepoOwner == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before PR operations")
+		return "", fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before PR operations")
 	}
 	w.ScenarioStart = time.Now()
 	branch := fmt.Sprintf("behaviour-pr-%d", time.Now().UnixNano())
 	ctx := context.Background()
-	if err := w.SCM.CreateBranch(ctx, w.RepoOwner, w.RepoName, branch); err != nil {
-		return err
+	if err := driver.CreateBranch(ctx, w.RepoOwner, w.RepoName, branch); err != nil {
+		return "", err
 	}
 	msg := fmt.Sprintf("behaviour pr %s", branch)
-	if err := w.SCM.CommitFileToBranch(ctx, w.RepoOwner, w.RepoName, branch, "behaviour/pr.txt", msg, []byte("behaviour test\n")); err != nil {
-		return err
+	if err := driver.CommitFileToBranch(ctx, w.RepoOwner, w.RepoName, branch, "behaviour/pr.txt", msg, []byte("behaviour test\n")); err != nil {
+		return branch, err
 	}
-	pr, err := w.SCM.CreateChangeProposal(ctx, w.RepoOwner, w.RepoName, "Behaviour test PR", "behaviour", branch, "main")
+	pr, err := driver.CreateChangeProposal(ctx, w.RepoOwner, w.RepoName, "Behaviour test PR", "behaviour", branch, "main")
 	if err != nil {
-		return err
+		return branch, err
 	}
 	w.PRNumber = pr.Number
-	return nil
+	return branch, nil
 }
 
 func whenPullRequestLabeled(w *world.World, label string) error {
@@ -501,6 +513,17 @@ func whenPullRequestLabeled(w *world.World, label string) error {
 	}
 	w.ScenarioStart = time.Now()
 	return w.SCM.AddIssueLabels(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber, label)
+}
+
+// whenPullRequestClosed closes the pull request without merging it. The e2e
+// installation identity closes it, so the closer is a bot with no
+// collaborator role.
+func whenPullRequestClosed(w *world.World) error {
+	if w.PRNumber == 0 {
+		return fmt.Errorf("no pull request opened")
+	}
+	w.ScenarioStart = time.Now()
+	return w.SCM.CloseIssue(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber)
 }
 
 func whenPullRequestReviewComment(w *world.World) error {

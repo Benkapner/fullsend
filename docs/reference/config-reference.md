@@ -50,6 +50,7 @@ agents:                              # Registered agent sources and per-agent tu
     subagents:                       # Per-agent sub-agent model map
       default: sonnet                # Fallback model for personas without an explicit entry
       code-reviewer: opus            # Model for a specific persona
+    # trigger: <CEL expression>      # When the built-in review agent runs (review entry only)
 
 # ── Remote resources ─────────────────────────────────────────
 allowed_remote_resources:            # URL prefixes allowed for remote resources (agents, policies, skills, plugins, profiles, providers, and base composition)
@@ -174,7 +175,7 @@ Omitting the key inherits the parent's roles. See
 
 Registered agent sources and per-agent tuning. Each entry identifies an agent
 by source URL or local path, with optional overrides for runtime, model,
-effort, and sub-agent models.
+effort, sub-agent models and the trigger.
 
 - **`source`** — URL (must include `#sha256=<64-hex-char>` integrity hash) or
   local path. URL sources must be covered by `allowed_remote_resources`.
@@ -194,6 +195,23 @@ effort, and sub-agent models.
   key sets the fallback for personas without an explicit entry. A `~` (null)
   value tombstones an inherited entry. Keys must be lowercase alphanumeric
   segments joined by hyphens (max 64 chars).
+- **`trigger`** — A [CEL trigger](../guides/user/cel-triggers-reference.md)
+  (a boolean over the normalized `event`). It decides routing for the
+  built-in review, retro, triage and prioritize agents only: on one of those
+  entries it opts the repository into CEL routing for that agent, so the
+  trigger, not the dispatch workflow's built-in rules, decides when the
+  agent's job starts (see
+  [Choosing when review runs](../guides/user/customizing-agents.md#choosing-when-review-runs),
+  [Choosing when retro runs](../guides/user/customizing-agents.md#choosing-when-retro-runs)
+  and
+  [Choosing when triage and prioritize run](../guides/user/customizing-agents.md#choosing-when-triage-and-prioritize-run)).
+  It does not change CEL dispatch: the harness `trigger:` keeps deciding when
+  custom agents run and what the Jira poller dispatches. A trigger alone
+  makes a valid override-only entry for a built-in agent. Validated when the
+  agent list is validated: it must compile and return a boolean. Like an
+  invalid `model` or `effort`, an invalid `trigger` makes every agent run in
+  the repository fail with `invalid agent config`, not only built-in routing, so
+  check the expression before you merge the change.
 
 In the layered config system, agents use keyed merge by `DerivedName()` — see
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
@@ -255,8 +273,9 @@ The only provider is `owners_file`:
 
 - An `approvers` entry in the repo-root `OWNERS` file gets write-level access
   (every slash command and custom agent). A `reviewers` entry gets
-  triage-level access, which covers `/fs-triage` and `/fs-review` only:
-  custom agents under `agents:` still require write.
+  triage-level access, which covers `/fs-triage`, `/fs-review`, and custom
+  agents whose harness sets `role: triage` or `role: review`. Custom agents
+  with any other `role:` still require write.
 - An entry that names a key in `OWNERS_ALIASES` stands for that alias's
   members. A GitHub login equal to any alias key never matches, and nested
   aliases are not expanded.

@@ -31,6 +31,17 @@ import (
 )
 
 // LiveClient implements forge.Client for the GitHub REST API.
+//
+// Rate-limit blocking: when GitHub answers 429 or 403 for an exhausted
+// primary quota (X-RateLimit-Remaining 0, no Retry-After), a request waits for
+// X-RateLimit-Reset, for at most maxPrimaryResetWait (65 minutes), instead of
+// failing after the short backoff retries. A caller whose context has no
+// deadline can therefore block for up to about an hour; set a context deadline
+// to bound the wait. When the deadline cannot cover the wait, the request
+// fails at once with a rate-limit error. When the context ends during a
+// rate-limit wait, the error is a rate-limit *APIError whose Unwrap returns
+// the context error, so errors.Is matches context.Canceled or
+// context.DeadlineExceeded.
 type LiveClient struct {
 	http      *http.Client
 	token     string
@@ -303,47 +314,33 @@ func IsPATForbiddenError(err error) bool {
 
 const maxRetries = 5
 
-type noAmbiguousRetryKey struct{}
-
-// WithoutAmbiguousRetry returns a context that stops the client from
-// retrying a request after an ambiguous failure: a transport timeout or a
-// 5xx response, where the server may already have applied the request.
-// Rate-limit rejections (429, rate-limit 403) are still retried because
-// the server did not process those. Use it for requests that must not be
-// replayed blindly, such as deleting a repository by name that another
-// party may have recreated; the caller re-checks state after the error.
-func WithoutAmbiguousRetry(ctx context.Context) context.Context {
-	return context.WithValue(ctx, noAmbiguousRetryKey{}, true)
-}
-
 func ambiguousRetryDisabled(ctx context.Context) bool {
-	v, _ := ctx.Value(noAmbiguousRetryKey{}).(bool)
-	return v
+	return forge.AmbiguousRetryDisabled(ctx)
 }
 
-type retryGuardKey struct{}
-
-// WithRetryGuard returns a context under which the client calls guard
-// after every retry wait (including rate-limit waits, repository-race
-// waits and commit-retry delays) and before resending the request or
-// rerunning the operation. A non-nil error from guard stops the retry:
-// nothing is resent and that error is returned, wrapped. Use it for requests
-// whose target may change while the client waits, such as deleting a
-// repository by name that another party may have deleted and recreated.
-// guard receives the request context; requests it makes on that context
-// are subject to the same guard, so it should use its own context.
-func WithRetryGuard(ctx context.Context, guard func(context.Context) error) context.Context {
-	return context.WithValue(ctx, retryGuardKey{}, guard)
-}
-
-// checkRetryGuard runs the WithRetryGuard guard on ctx, if any.
+// checkRetryGuard runs the forge.WithRetryGuard guard on ctx, if any.
 func checkRetryGuard(ctx context.Context, method, path string) error {
-	guard, _ := ctx.Value(retryGuardKey{}).(func(context.Context) error)
+	guard := forge.RetryGuard(ctx)
 	if guard == nil {
 		return nil
 	}
 	if err := guard(ctx); err != nil {
 		return fmt.Errorf("%s %s: not retried: %w", method, path, err)
+	}
+	return nil
+}
+
+// checkMutationGuard runs the WithRetryGuard guard on ctx, if any,
+// immediately before the first mutating request of an operation whose
+// earlier requests were reads, so a target replaced during those reads
+// is not written to.
+func checkMutationGuard(ctx context.Context, op string) error {
+	guard := forge.RetryGuard(ctx)
+	if guard == nil {
+		return nil
+	}
+	if err := guard(ctx); err != nil {
+		return fmt.Errorf("%s: not sent: %w", op, err)
 	}
 	return nil
 }
@@ -481,6 +478,20 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 		delay := retryDelay(resp, attempt)
 		retryAfter := resp.Header.Get("Retry-After")
 
+		// An exhausted primary quota only recovers at X-RateLimit-Reset,
+		// so wait for that instead of spending the retries on short
+		// backoffs inside the same window. When the caller's deadline
+		// cannot cover the wait, fail now with the rate-limit cause
+		// rather than sleeping into a deadline error.
+		resetWait, primaryExhausted := primaryResetWait(resp, time.Now())
+		if primaryExhausted {
+			delay = resetWait
+			if deadline, ok := ctx.Deadline(); ok && resetWait > time.Until(deadline) {
+				return nil, c.rateLimitError(resp, method, path,
+					fmt.Sprintf("primary quota exhausted, reset in %s is beyond the context deadline on %s %s", resetWait.Round(time.Second), method, path))
+			}
+		}
+
 		if attempt == maxRetries-1 {
 			msg := fmt.Sprintf("retryable error after %d attempts on %s %s (last delay: %s", maxRetries, method, path, delay)
 			if retryAfter != "" {
@@ -493,19 +504,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 			// that only has the error can still tell "rate limited"
 			// from a generic 403.
 			if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden {
-				msg = "rate limit: " + msg
-				// Report the budget from the response that failed —
-				// the client-wide observation may belong to another
-				// goroutine's request. A response without the headers
-				// (secondary limits may omit them) says so, and names
-				// the last observation with its age.
-				if rl, ok := parseRateLimit(resp.Header); ok {
-					msg += " [" + rl.String() + "]"
-				} else if last, seen := c.RateLimit(); seen {
-					msg += fmt.Sprintf(" [rate-limit headers absent; last seen %s, %s ago]", last, time.Since(last.Observed).Round(time.Second))
-				} else {
-					msg += " [rate-limit headers absent; no prior observation]"
-				}
+				msg = "rate limit: " + msg + c.rateBudgetSuffix(resp)
 			}
 			apiErr := &APIError{StatusCode: resp.StatusCode, Message: msg}
 			if secs, convErr := strconv.Atoi(retryAfter); convErr == nil && secs > 0 {
@@ -542,6 +541,56 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 
 	// Unreachable, but the compiler needs it.
 	return nil, fmt.Errorf("exhausted retries for %s %s", method, path)
+}
+
+// rateBudgetSuffix renders the budget a rate-limited response reported, so
+// a caller that only has the error can tell "rate limited" from a generic
+// 403. It reports the budget from the response that failed — the
+// client-wide observation may belong to another goroutine's request. A
+// response without the headers (secondary limits may omit them) says so,
+// and names the last observation with its age.
+func (c *LiveClient) rateBudgetSuffix(resp *http.Response) string {
+	if rl, ok := parseRateLimit(resp.Header); ok {
+		return " [" + rl.String() + "]"
+	}
+	if last, seen := c.RateLimit(); seen {
+		return fmt.Sprintf(" [rate-limit headers absent; last seen %s, %s ago]", last, time.Since(last.Observed).Round(time.Second))
+	}
+	return " [rate-limit headers absent; no prior observation]"
+}
+
+// rateLimitError is the APIError for a rate-limited response that is not
+// retried further; IsRateLimitError matches it.
+func (c *LiveClient) rateLimitError(resp *http.Response, method, path, detail string) error {
+	return &APIError{StatusCode: resp.StatusCode, Message: "rate limit: " + detail + c.rateBudgetSuffix(resp)}
+}
+
+// maxPrimaryResetWait bounds a wait for X-RateLimit-Reset. The primary
+// window is an hour, so a longer wait means a bad header.
+const maxPrimaryResetWait = 65 * time.Minute
+
+// primaryResetWait reports how long to wait for an exhausted primary rate
+// limit to reset: 429 or 403 with X-RateLimit-Remaining 0, a usable
+// X-RateLimit-Reset and no Retry-After (which, when present, is the
+// explicit instruction and wins). The extra second covers clock skew.
+func primaryResetWait(resp *http.Response, now time.Time) (time.Duration, bool) {
+	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusForbidden {
+		return 0, false
+	}
+	if resp.Header.Get("Retry-After") != "" || strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")) != "0" {
+		return 0, false
+	}
+	secs, err := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64)
+	if err != nil || secs <= 0 {
+		return 0, false
+	}
+	// Compare the delta before adding the skew second: Sub saturates for a
+	// far-future reset, and adding to the saturated value would wrap negative.
+	delta := max(time.Unix(secs, 0).Sub(now), 0)
+	if delta > maxPrimaryResetWait-time.Second {
+		return 0, false
+	}
+	return delta + time.Second, true
 }
 
 // isRetryable returns true for responses that should trigger a retry.
@@ -1598,6 +1647,15 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		changes = append(changes, pendingChange{file: f, expectedSHA: expectedSHA, modeOnly: exists && info.sha == expectedSHA})
 	}
 
+	// Everything above was a read. Let a caller's guard confirm the target
+	// is still the one it meant before the first write, which a retry
+	// guard alone would not do until a later attempt.
+	if len(changes) > 0 {
+		if err := checkMutationGuard(ctx, fmt.Sprintf("commit to %s/%s@%s", owner, repo, branch)); err != nil {
+			return false, err
+		}
+	}
+
 	// 5. Signed GraphQL path unless a changed file needs the Git Data API
 	// (see usesGitDataPath).
 	changedFiles := make([]forge.TreeFile, 0, len(changes))
@@ -2000,7 +2058,7 @@ func (c *LiveClient) GetFileContent(ctx context.Context, owner, repo, path strin
 // rejects a stale SHA with 409 and a create over an existing file with a
 // 422 naming the missing "sha"; both are returned wrapping
 // forge.ErrConflict. The PUT is sent once: it bypasses retryOnRepoRace
-// (which would replay a 409) and runs with WithoutAmbiguousRetry so a
+// (which would replay a 409) and runs with forge.WithoutAmbiguousRetry so a
 // timeout or 5xx is not replayed either.
 func (c *LiveClient) UpdateFileIfMatch(ctx context.Context, owner, repo, path, message string, content []byte, expectedSHA string) error {
 	payload := map[string]any{
@@ -2011,7 +2069,7 @@ func (c *LiveClient) UpdateFileIfMatch(ctx context.Context, owner, repo, path, m
 		payload["sha"] = expectedSHA
 	}
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, escapePathSegments(path))
-	resp, err := c.do(WithoutAmbiguousRetry(ctx), http.MethodPut, apiPath, payload)
+	resp, err := c.do(forge.WithoutAmbiguousRetry(ctx), http.MethodPut, apiPath, payload)
 	if err != nil {
 		return fmt.Errorf("conditional update of %s: %w", path, err)
 	}
@@ -2869,10 +2927,14 @@ func (c *LiveClient) CreateRepoSecret(ctx context.Context, owner, repo, name, va
 		return fmt.Errorf("encrypt secret: %w", err)
 	}
 
-	// Step 3: Upload the encrypted secret.
+	// Step 3: Upload the encrypted secret. The key lookup above was a
+	// read, so let a caller's guard confirm the target before the write.
 	payload := map[string]string{
 		"encrypted_value": base64.StdEncoding.EncodeToString(encrypted),
 		"key_id":          pubKey.KeyID,
+	}
+	if err := checkMutationGuard(ctx, fmt.Sprintf("create secret %s on %s/%s", name, owner, repo)); err != nil {
+		return err
 	}
 
 	resp, err := c.put(ctx, fmt.Sprintf("/repos/%s/%s/actions/secrets/%s", owner, repo, name), payload)
@@ -2917,6 +2979,12 @@ func (c *LiveClient) CreateOrUpdateRepoVariable(ctx context.Context, owner, repo
 		"value": value,
 	}
 
+	// Each distinct write is preceded by the caller's guard, so a target
+	// replaced during the PATCH is not written to by the POST fallback.
+	if err := checkMutationGuard(ctx, fmt.Sprintf("update variable %s on %s/%s", name, owner, repo)); err != nil {
+		return err
+	}
+
 	// Try PATCH first (update existing).
 	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/actions/variables/%s", owner, repo, name), payload)
 	if err == nil {
@@ -2932,6 +3000,9 @@ func (c *LiveClient) CreateOrUpdateRepoVariable(ctx context.Context, owner, repo
 	createPayload := map[string]string{
 		"name":  name,
 		"value": value,
+	}
+	if err := checkMutationGuard(ctx, fmt.Sprintf("create variable %s on %s/%s", name, owner, repo)); err != nil {
+		return err
 	}
 	resp2, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/actions/variables", owner, repo), createPayload)
 	if err != nil {
@@ -3184,11 +3255,17 @@ func (c *LiveClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 	if len(labels) > 0 {
 		payload["labels"] = labels
 	}
+	if err := checkMutationGuard(ctx, fmt.Sprintf("create issue on %s/%s", owner, repo)); err != nil {
+		return nil, err
+	}
 	resp, err := c.post(ctx, path, payload)
 	if err != nil {
 		var apiErr *APIError
 		if len(labels) == 0 || !errors.As(err, &apiErr) || !isValidationErrorForField(apiErr, "labels") {
 			return nil, fmt.Errorf("create issue: %w", err)
+		}
+		if err := checkMutationGuard(ctx, fmt.Sprintf("create issue without labels on %s/%s", owner, repo)); err != nil {
+			return nil, err
 		}
 		resp, err = c.post(ctx, path, map[string]any{"title": title, "body": body})
 		if err != nil {
@@ -3422,6 +3499,9 @@ func (c *LiveClient) GetIssueComment(ctx context.Context, owner, repo string, co
 // CreateIssueComment creates a new comment on an issue or pull request.
 func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
 	payload := map[string]string{"body": body}
+	if err := checkMutationGuard(ctx, fmt.Sprintf("create comment on %s/%s#%d", owner, repo, number)); err != nil {
+		return nil, err
+	}
 	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number), payload)
 	if err != nil {
 		return nil, fmt.Errorf("create issue comment on #%d: %w", number, err)
