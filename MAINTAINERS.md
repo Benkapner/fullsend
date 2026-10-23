@@ -26,10 +26,12 @@ Maintainers carry additional responsibilities:
 
 ## Eligibility
 
-You should have a demonstrated track record of contributions to this
-project — authored PRs that were reviewed and merged, substantive PR
-reviews, or both. Drive-by fixes are appreciated but do not on their
-own establish the familiarity needed for a maintainer role.
+You should have a demonstrated track record of contributions to
+repositories under the
+[fullsend-ai](https://github.com/fullsend-ai) organization — authored
+PRs that were reviewed and merged, substantive PR reviews, or both.
+Drive-by fixes are appreciated but do not on their own establish the
+familiarity needed for a maintainer role.
 
 ## Process
 
