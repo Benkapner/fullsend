@@ -366,7 +366,8 @@ func TestParseCodexStream_FailedCollabItem(t *testing.T) {
 // printing; FULLSEND_TEST_ADMISSIONS_READ_FAIL does the same to the
 // admissions read; FULLSEND_TEST_CODEX_EXIT sets the launch's exit status (killed:
 // SIGKILL, as the budget's context kill ends it); FULLSEND_TEST_CODEX_DROP=1
-// prints codex's dropped-notification warning on stderr before the stream.
+// prints codex's dropped-notification warning on stderr before the stream,
+// FULLSEND_TEST_CODEX_BACKFILL_FAIL=1 exec's failed-backfill warning.
 func fakeOpenshellCodexChildren(t *testing.T, logPath, storeDir, streamFixture, sessionsDir string) {
 	t.Helper()
 	binDir := t.TempDir()
@@ -376,7 +377,7 @@ if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
-    *"exec --json"*) [ "${FULLSEND_TEST_CODEX_DROP:-}" = 1 ] && echo "2026-10-22T16:00:00Z  WARN codex_app_server::in_process: ` + codexDroppedNotification + `" >&2; cat '` + streamFixture + `'; [ "${FULLSEND_TEST_CODEX_EXIT:-}" = killed ] && kill -9 $$; exit "${FULLSEND_TEST_CODEX_EXIT:-0}" ;;
+    *"exec --json"*) [ "${FULLSEND_TEST_CODEX_DROP:-}" = 1 ] && echo "2026-10-22T16:00:00Z  WARN codex_app_server::in_process: ` + codexDroppedNotification + `" >&2; [ "${FULLSEND_TEST_CODEX_BACKFILL_FAIL:-}" = 1 ] && echo "2026-10-22T16:00:01Z  WARN codex_exec: ` + codexBackfillFailed + ` for turn completion: boom" >&2; cat '` + streamFixture + `'; [ "${FULLSEND_TEST_CODEX_EXIT:-}" = killed ] && kill -9 $$; exit "${FULLSEND_TEST_CODEX_EXIT:-0}" ;;
     *` + codexChildUsageMarker + `*)
       if [ "${FULLSEND_TEST_CHILD_READ_FAIL:-}" = 1 ]; then echo "fake openshell: refusing the rollout read${FULLSEND_TEST_CHILD_READ_STDERR:+ $FULLSEND_TEST_CHILD_READ_STDERR}" >&2; exit 1; fi
       sh -c "$(printf '%s' "$last" | sed 's#` + CodexRuntime{}.codexSessionsDir() + `#` + sessionsDir + `#g')"; rc=$?
@@ -1145,9 +1146,13 @@ func TestCodexStderrDrops_CountsAcrossChunks(t *testing.T) {
 	}
 	assert.Equal(t, 2, d.Dropped, "one per line, however the writes split it")
 	assert.Equal(t, whole, sink.String(), "every byte still reaches the runner's stderr")
+	_, err := d.Write([]byte("WARN codex_exec: " + codexBackfillFailed + " for turn completion: boom\n"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, d.BackfillFailed)
+	assert.Equal(t, 2, d.Dropped)
 
 	last := &codexStderrDrops{w: &sink}
-	_, err := last.Write([]byte("WARN " + codexDroppedNotification))
+	_, err = last.Write([]byte("WARN " + codexDroppedNotification))
 	require.NoError(t, err)
 	assert.Equal(t, 0, last.Dropped, "no newline yet")
 	last.flush()
@@ -1163,6 +1168,10 @@ func TestCodexRun_DroppedNotificationWarns(t *testing.T) {
 	assert.Equal(t, 0, exit)
 	assert.Contains(t, out, "! codex dropped 1 stream notification(s) under backpressure; the progress log is incomplete")
 	assert.Equal(t, 1, strings.Count(log, codexSpawnAdmitFinding))
+
+	t.Setenv("FULLSEND_TEST_CODEX_BACKFILL_FAIL", "1")
+	_, _, out, _ = runCodexWithChildren(t, "collab_spawn.ndjson", true, 3)
+	assert.Contains(t, out, "! codex dropped 1 stream notification(s) under backpressure, and its backfill of the turn's items failed, so a dropped completed item stayed lost; the progress log is incomplete")
 }
 
 // Under --debug codex's stderr goes to the sandbox log, which is read back.
@@ -1173,7 +1182,7 @@ func TestCodexRun_DroppedNotificationInTheDebugLog(t *testing.T) {
 	seedCodexManifest(t, storeDir, r, nil)
 	sessions := writeCodexChildRollouts(t)
 	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(sessions), codexDebugLogFile),
-		[]byte("WARN codex_app_server::in_process: "+codexDroppedNotification+"\n"), 0o600))
+		[]byte("WARN codex_app_server::in_process: "+codexDroppedNotification+"\nWARN codex_exec: "+codexBackfillFailed+" for turn completion: boom\n"), 0o600))
 	fakeOpenshellCodexChildren(t, logPath, storeDir, filepath.Join("testdata", "codex", "basic_run.ndjson"), sessions)
 
 	params := codexChildrenRunParams
@@ -1182,6 +1191,6 @@ func TestCodexRun_DroppedNotificationInTheDebugLog(t *testing.T) {
 	exit, err := r.Run(context.Background(), params, ui.New(&out), time.Now(), &RunMetrics{})
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
-	assert.Contains(t, out.String(), "! codex dropped 1 stream notification(s) under backpressure")
-	assert.Contains(t, readFileString(t, logPath), "grep -a -c -F", "the count came from the sandbox log")
+	assert.Contains(t, out.String(), "! codex dropped 1 stream notification(s) under backpressure, and its backfill of the turn's items failed")
+	assert.Contains(t, readFileString(t, logPath), "grep -a -c -F", "the counts came from the sandbox log")
 }

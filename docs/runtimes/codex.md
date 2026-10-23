@@ -416,11 +416,12 @@ made.
 **`codex dropped N stream notification(s) under backpressure; the progress log is incomplete`.**
 A warning: codex's in-process channel filled and it dropped an item notification, which it says on
 stderr; the runner reads codex's stderr for that line on every run (under `--debug` the sandbox log
-instead). Most drops lose nothing the stream needs, since codex re-emits a completed item it saw
-start when the turn completes; a spawn that lost both its notifications is not counted, and the
-count cannot tell the two apart. The launch sets `RUST_LOG` itself, codex's default filter with
-`codex_app_server::in_process` at warn (`info` under `--debug`), replacing any value from the
-environment or `.env`.
+instead). A dropped completed item comes back when the turn completes, if exec's read of the turn's
+items succeeds; when that read fails codex says so too, and the warning adds `and its backfill of
+the turn's items failed`. A spawn that lost both its notifications, or whose backfill failed, is
+not counted, and the count cannot tell those from a harmless drop. The launch sets `RUST_LOG`
+itself, codex's default filter with `codex_exec` and `codex_app_server::in_process` at warn (`info`
+under `--debug`), replacing any value from the environment or `.env`.
 
 **`--debug "..."` fails with `accepts 1 arg(s)`.** `--debug` takes an optional value: write
 `--debug='*'` (with `=`).

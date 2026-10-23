@@ -63,8 +63,11 @@ items, drops any other item notification (a collab item's `item.completed` inclu
 channel is full, and logs `dropping in-process server notification (queue full)` at warn from
 `codex_app_server::in_process` (`codex-rs/app-server/src/in_process.rs`), which the runner scans
 for, while exec re-emits at `turn/completed` the completed items whose `item.started` it saw
-(`maybe_backfill_turn_completed_items`, `reconcile_unfinished_started_items`), so only a spawn
-that lost both notifications is missing; and exec's default stderr filter is `error,opentelemetry_sdk=off,opentelemetry_otlp=off`
+(`maybe_backfill_turn_completed_items`, `reconcile_unfinished_started_items`), only for a
+non-ephemeral thread and only when its `thread/read` succeeds (`should_backfill_turn_completed_items`;
+a failed read logs `thread/read failed while backfilling turn items for turn completion` at warn
+from `codex_exec`, which the runner counts too), so a spawn that lost both notifications or whose
+backfill failed is missing; and exec's default stderr filter is `error,opentelemetry_sdk=off,opentelemetry_otlp=off`
 (`codex-rs/exec/src/lib.rs`, `EXEC_DEFAULT_LOG_FILTER`), which the launch command keeps as its
 base.
 

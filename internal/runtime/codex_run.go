@@ -435,10 +435,10 @@ func buildCodexRunCommand(params RunParams, model codexModel, effort string, hoo
 	// level by default — a codex run is not silent there the way pi is — and
 	// RUST_LOG sets the level. It is set here outright, after .env, so neither
 	// .env nor the environment can lower it below what codexStderrDrops
-	// needs: the in-process module at warn, where codex reports a dropped
-	// stream notification; a value codex cannot parse would silently drop it
-	// to the default filter.
-	filter := codexStderrDefaultFilter + ",codex_app_server::in_process=warn"
+	// needs: exec and the in-process module at warn, where codex reports a
+	// dropped stream notification and a failed backfill; a value codex
+	// cannot parse would silently drop it to the default filter.
+	filter := codexStderrDefaultFilter + ",codex_exec=warn,codex_app_server::in_process=warn"
 	if params.Debug != "" {
 		filter = "info"
 	}
@@ -659,11 +659,12 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	stderr.flush()
 	if params.Debug != "" {
 		// Under --debug codex's stderr went to the sandbox log instead.
-		n, derr := codexCountDroppedInLog(params.SandboxName)
+		dropped, backfillFailed, derr := codexCountDroppedInLog(params.SandboxName)
 		if derr != nil {
 			printer.StepWarn("Could not read codex's log for dropped stream notifications: " + redactSummary(sanitizeOutput(derr.Error())))
 		}
-		stderr.Dropped += n
+		stderr.Dropped += dropped
+		stderr.BackfillFailed += backfillFailed
 	}
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)
@@ -704,7 +705,11 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	// nothing can spawn until the multi-agent tools are switched on, so it
 	// is a warning until then.
 	if stderr.Dropped > 0 {
-		printer.StepWarn(fmt.Sprintf("codex dropped %d stream notification(s) under backpressure; the progress log is incomplete", stderr.Dropped))
+		msg := fmt.Sprintf("codex dropped %d stream notification(s) under backpressure", stderr.Dropped)
+		if stderr.BackfillFailed > 0 {
+			msg += ", and its backfill of the turn's items failed, so a dropped completed item stayed lost"
+		}
+		printer.StepWarn(msg + "; the progress log is incomplete")
 	}
 	if childIDs.UnreadSpawn {
 		return exitCode, fmt.Errorf("%s: a spawn_agent item longer than %d bytes could not be read", codexSpawnWithoutAdmission, streamBufSize)

@@ -1168,8 +1168,9 @@ flowchart TB
 - **`codex exec` has no `--debug` flag.** Its tracing goes to stderr at **error level by default** —
   unlike pi, a codex run is not silent there: the denied `GET /v1/models` and every hook block are
   logged — and `RUST_LOG` sets the level. The launch sets it outright after `.env` (codex's
-  default filter plus `codex_app_server::in_process` at warn, so a dropped stream notification is
-  reported; a value from the environment or `.env` is replaced); debug mode sets `info` and appends
+  default filter plus `codex_exec` and `codex_app_server::in_process` at warn, so a dropped stream
+  notification and a failed backfill are reported; a value from the environment or `.env` is
+  replaced); debug mode sets `info` and appends
   stderr to
   `codex-debug.log`; without it those error lines reach the runner console, since `Run` hands
   the exec stream a counting wrapper over `os.Stderr`.
@@ -1352,12 +1353,14 @@ a spawn item too long to read, or a failed read. The count spans the run's itera
 `ClearIterationArtifacts` must leave `.security/` in place (it clears `output/`, the sessions
 directory and the debug log, nothing else under the workspace). Codex can drop a stream
 notification under backpressure and says so on stderr: the launch sets `RUST_LOG` outright after
-`.env` (codex's default filter with `codex_app_server::in_process` at warn; codex's commands
-inherit it), the runner scans that stderr on the host (the sandbox log under `--debug`) and warns
-on the line. The check cannot catch a forged admission (the log is agent-writable), a surplus
-admission covering a later spawn (counts, not ids), a resume (a `wait` item in the stream), or a
-spawn both of whose notifications codex dropped (a completed item it saw start is re-emitted when
-the turn completes, so a single drop loses nothing the count needs).
+`.env` (codex's default filter with `codex_exec` and `codex_app_server::in_process` at warn; codex's
+commands inherit it), the runner scans that stderr on the host (the sandbox log under `--debug`)
+and warns on the line, and on exec's warning that its `thread/read` backfill of the turn's items
+failed. The check cannot catch a forged admission (the log is agent-writable), a surplus admission
+covering a later spawn (counts, not ids), a resume (a `wait` item in the stream), or a spawn both
+of whose notifications codex dropped, or whose dropped completed item the backfill did not bring
+back (it runs only for a completed turn on a non-ephemeral thread, and only when `thread/read`
+succeeds).
 
 **PATH is pinned across `.env` for the same reason the interpreter is.** The hook scripts resolve
 their tools by name — `tirith_check.py` runs a bare `tirith` — so a `.env` that prepends a directory

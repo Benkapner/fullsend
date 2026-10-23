@@ -288,9 +288,9 @@ func TestBuildCodexRunCommand_OrderAndFlags(t *testing.T) {
 		assert.Contains(t, cmd, name+":"+digest)
 	}
 	assert.True(t, strings.HasSuffix(strings.TrimSpace(cmd), "-"), "the command must end with the stdin sentinel")
-	rustLog := `export RUST_LOG='error,opentelemetry_sdk=off,opentelemetry_otlp=off,codex_app_server::in_process=warn'`
+	rustLog := `export RUST_LOG='error,opentelemetry_sdk=off,opentelemetry_otlp=off,codex_exec=warn,codex_app_server::in_process=warn'`
 	assert.Contains(t, cmd, rustLog,
-		"codex's default filter, plus the in-process module at warn so a dropped notification is reported")
+		"codex's default filter, plus exec and the in-process module at warn so a dropped notification and a failed backfill are reported")
 	assert.Greater(t, strings.Index(cmd, rustLog), strings.Index(cmd, codexEnvLoad), "set after .env, so .env cannot change it")
 	assert.NotContains(t, cmd, "${RUST_LOG", "never built on an inherited value")
 	assert.NotContains(t, cmd, "2>>", "stderr stays on the runner's stderr unless the runner asks for the log")

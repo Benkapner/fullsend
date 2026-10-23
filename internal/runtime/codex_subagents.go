@@ -196,13 +196,19 @@ const codexStderrDefaultFilter = "error,opentelemetry_sdk=off,opentelemetry_otlp
 // then never reaches `exec --json`, and a completed spawn may be among them.
 const codexDroppedNotification = "dropping in-process server notification (queue full)"
 
+// codexBackfillFailed starts the line exec logs, at warn, when the read of
+// the turn's items that brings a dropped completed item back fails: such an
+// item then stays lost.
+const codexBackfillFailed = "thread/read failed while backfilling turn items"
+
 // codexStderrDrops forwards codex's stderr to the runner's and counts the
-// lines that carry codexDroppedNotification; flush scans a final line
-// without a newline once the stream has ended.
+// lines that carry codexDroppedNotification and codexBackfillFailed; flush
+// scans a final line without a newline once the stream has ended.
 type codexStderrDrops struct {
-	w       io.Writer
-	line    []byte
-	Dropped int
+	w              io.Writer
+	line           []byte
+	Dropped        int
+	BackfillFailed int
 }
 
 func (c *codexStderrDrops) Write(p []byte) (int, error) {
@@ -219,33 +225,41 @@ func (c *codexStderrDrops) Write(p []byte) (int, error) {
 		if len(c.line) < 64*1024 {
 			c.line = append(c.line, rest[:i]...)
 		}
-		if bytes.Contains(c.line, []byte(codexDroppedNotification)) {
-			c.Dropped++
-		}
-		c.line = c.line[:0]
+		c.flush()
 		rest = rest[i+1:]
 	}
 }
 
 func (c *codexStderrDrops) flush() {
-	if bytes.Contains(c.line, []byte(codexDroppedNotification)) {
+	switch {
+	case bytes.Contains(c.line, []byte(codexDroppedNotification)):
 		c.Dropped++
+	case bytes.Contains(c.line, []byte(codexBackfillFailed)):
+		c.BackfillFailed++
 	}
 	c.line = c.line[:0]
 }
 
-// codexCountDroppedInLog counts codexDroppedNotification in the sandbox
-// debug log, where codex's stderr goes under --debug instead of the host. A
-// log that is missing or has no such line counts zero.
-func codexCountDroppedInLog(sandboxName string) (int, error) {
-	cmd := fmt.Sprintf(`command -p grep -a -c -F -e %s -- %s 2>/dev/null || true`,
-		shellQuote(codexDroppedNotification), shellQuote(sandbox.SandboxWorkspace+"/"+codexDebugLogFile))
+// codexCountDroppedInLog counts codexDroppedNotification and
+// codexBackfillFailed in the sandbox debug log, where codex's stderr goes
+// under --debug instead of the host. A log that is missing or has no such
+// line counts zero.
+func codexCountDroppedInLog(sandboxName string) (dropped, backfillFailed int, err error) {
+	log := shellQuote(sandbox.SandboxWorkspace + "/" + codexDebugLogFile)
+	cmd := fmt.Sprintf(`command -p grep -a -c -F -e %s -- %s 2>/dev/null; command -p grep -a -c -F -e %s -- %s 2>/dev/null; true`,
+		shellQuote(codexDroppedNotification), log, shellQuote(codexBackfillFailed), log)
 	stdout, _, _, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	n, _ := strconv.Atoi(strings.TrimSpace(stdout))
-	return n, nil
+	counts := strings.Fields(stdout)
+	if len(counts) > 0 {
+		dropped, _ = strconv.Atoi(counts[0])
+	}
+	if len(counts) > 1 {
+		backfillFailed, _ = strconv.Atoi(counts[1])
+	}
+	return dropped, backfillFailed, nil
 }
 
 // flush scans the pending final line, if any.
@@ -390,10 +404,12 @@ func (r CodexRuntime) foldCodexChildUsage(sandboxName string, childIDs []string,
 // would have passed, never pass one that would have failed. The stream side
 // is not that strict: codex can drop an item notification under
 // backpressure, and the completed count is then too low; it says so on its
-// stderr, which Run scans (codexStderrDrops) and warns on. A dropped item
-// hides a spawn only when both its notifications are lost, since exec
-// re-emits a completed item it saw start when the turn completes, and the
-// count cannot tell those apart, so such a spawn is not counted. A resume
+// stderr, which Run scans (codexStderrDrops) and warns on. A completed item
+// codex saw start comes back when the turn completes, if exec's read of the
+// turn's items succeeds; exec warns when it does not, and Run counts that
+// line too. A spawn that lost both notifications, or whose dropped
+// completed item that read did not bring back, is not counted, and the
+// count cannot tell it from a harmless drop. A resume
 // that got through appears in the stream
 // as a wait item, so it is not caught either, nor is an overlong spawn line
 // whose first bytes do not show its type and tool. Counts are compared, not
