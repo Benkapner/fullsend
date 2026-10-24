@@ -73,7 +73,13 @@ How are governance decisions made, and how does the community participate?
 ## Accountability
 
 - When an agent makes a bad decision, who is responsible? The person who configured the agent? The person who authored the policy? The person who approved the repo for autonomy?
-- How do we trace an agent action back to the policy that authorized it? Every merge should be traceable: this PR was merged because the review sub-agents approved, operating under policy version X, with the change classified as intent authorization tier N, authorized by intent record Y. (For one lab's attempt at recording pinned policy and evidence revisions alongside each merge decision, see the [configuration security observation](#2-configuration-security).)
+- How do we trace an agent action back to the policy that authorized it? Every
+  merge should be traceable: this PR was merged because the review sub-agents
+  approved, operating under policy version X, with the change classified as
+  intent authorization tier N, authorized by intent record Y. (For one lab's
+  attempt at recording pinned policy and evidence revisions alongside each
+  merge decision, see the
+  [configuration security observation](#2-configuration-security).)
 - What's the escalation path when something goes wrong? Who gets paged? Who has authority to revoke agent autonomy in an emergency?
 - Can autonomy be automatically revoked? If a bad merge is detected (e.g., production incident traced to an agent-merged PR), should the system automatically downgrade the repo to human-required review?
 - Who is expected to *notice* an agent-authored work item before anything goes wrong? When an agent-authored PR has no assignee, or an assignee who cannot act on it, accountability exists on paper but not in practice. See [invisible ownership](agentic-sdlc-adoption-org-communication.md#invisible-ownership).
