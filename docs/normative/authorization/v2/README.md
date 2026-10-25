@@ -2,6 +2,11 @@
 
 Normative rules for event actors, entity CEL facts, and model-bound records.
 
+This is the target contract for CEL/entity routes and their v2 model-bound
+admission after migration. Legacy non-CEL, non-entity workflow configurations
+remain governed by Authorization v1 and their existing workflow guards; these
+new per-harness and entity rules do not apply to them.
+
 This version keeps a `triage` platform floor for humans, including the narrow
 verified label-transition grant below, and applies the selected harness's
 effective `human_min_role` to prompting events, actor-originated facts needed
@@ -196,8 +201,8 @@ harness-specific actor gate or trigger CEL. An overlay that sets this field
 MUST pass [ADR 0112](../../../ADRs/0112-overlays-may-set-any-harness-field.md)'s
 guarded-field dependency validation: its `when:` may read only the normalized
 event specification's trusted event or entity fields, platform-verified
-`runtime.forge`, and `config` from the same pinned trusted revision as the
-harness, plus the versioned verified effective-role input. That input is
+`runtime.forge`, and `config` from the pinned trusted target-repository
+revision, plus the versioned verified effective-role input. That input is
 trusted for this guard only when its identity, target, source, and role are
 independently verified. Guard inputs and their provenance MUST be available
 without using actor-filtered entity facts, model content, or a previous
@@ -216,38 +221,51 @@ the capabilities of every harness using a role.
 
 ADR 0112's trusted-field check is a dependency check, not proof that the
 matching value is safe. For example, a change author can choose a fork, but
-only a writer can make `is_fork` false. A harness that conditionally lowers a
-stricter top-level minimum SHOULD have a `when:` that positively establishes
-the trusted condition for which the lower minimum is intended. An unconditional
-lower value belongs at the top level. The final selected minimum applies to
-the prompting actor and to other actors' decision-relevant facts and
-model-bound records for the entire evaluation cycle.
+only a writer can make `is_fork` false. A layer's non-overlay
+`human_min_role` is its overlay baseline: use the layer's explicit scalar when
+present, otherwise the inherited value, otherwise the role-derived default.
+A matching overlay MAY preserve or lower that baseline only; it MUST NOT raise
+it. To conditionally require a stronger minimum, set that stronger value as
+the non-overlay baseline and let matching overlays lower it only when their
+trusted guard proves the relaxation is intended. A known-absent guard is a
+nonmatch, so the baseline remains at least as restrictive as every overlay
+value. The final selected minimum applies to the prompting actor and to other
+actors' decision-relevant facts and model-bound records for the entire
+evaluation cycle.
 
 A known absent event or optional key is a nonmatch under ADR 0112. If required
 verified guard metadata is unavailable, or the CEL evaluation has another
 error, Fullsend MUST fail the evaluation rather than treating the error as a
 nonmatch and using a possibly weaker default. All processes that make an
-admission decision MUST use the same verified guard context and ordered
-overlay result; dispatch cannot resolve the guard without an event and let run
-resolve it again with one. If a guard needs `entity.source.system`, Fullsend
-MUST obtain only that provider-verified structural metadata from the event or
-candidate identity, or with a platform discovery credential independent of
-the still-unpinned harness run credential. It MUST NOT acquire actor-originated
-entity facts for this purpose.
+admission decision MUST resolve overlays from one verified context within
+that decision. A later bound `run` is a new decision: it MUST reload trusted
+config and harness sources and recompute the guard context and ordered overlay
+result against its current canonical entity. It MUST NOT reuse a dispatch or
+poll allow as authority. For an event-bound run, the integrity-bound verified
+event remains the event input; current entity and policy inputs are resolved
+again. If a guard needs `entity.source.system`, Fullsend MUST obtain only that
+provider-verified structural metadata from the event or candidate identity, or
+with a platform discovery credential independent of the still-unpinned
+harness run credential. It MUST NOT acquire actor-originated entity facts for
+this purpose.
 
-The agent registry and local child and `base` harness files that determine
-`role` or `human_min_role` MUST come from one actor-independent, trusted
-checkout pinned to an immutable revision. For a change-proposal event, that is
-the provider-verified target/base commit, never the proposed head; for other
-events, it is a trusted repository revision selected and pinned by the
-platform. An actor-supplied ref, CEL input, proposed head checkout, or mutable
-target working tree MUST NOT select or replace these policy files or their
-revision. A remote registered harness or `base` layer MUST be selected through
-that trusted registry and base chain, pass a trusted remote-resource allowlist,
-and have its content verified against a declared hash before contributing
-`role` or `human_min_role`. A hash or allowlist match alone does not authorize
-an actor-supplied remote source. Configured actor-permission sources retain
-their separate trusted-ref and freshness requirements below.
+Policy inputs have separate trusted revision identities. The target-repository
+checkout pins `.fullsend/config.yaml` and any `config` facts used by an overlay;
+for a change-proposal event this is the provider-verified target/base commit,
+never the proposed head. Local harness and `base` files in that checkout share
+its revision. For other events, the platform selects and pins an equivalent
+trusted target revision. An actor-supplied ref, CEL input, proposed head
+checkout, or mutable target working tree MUST NOT select or replace these
+policy files or their revision.
+
+A remote registered harness or `base` layer MUST be selected through that
+trusted registry and base chain, pass a trusted remote-resource allowlist, and
+have its content verified against a declared hash before contributing `role`
+or `human_min_role`. Its source revision and content hash are separate inputs
+to the composed policy identity; they do not share the target-repository
+revision. A hash or allowlist match alone does not authorize an actor-supplied
+remote source. Configured actor-permission sources retain their separate
+trusted-ref and freshness requirements below.
 
 `human_min_role` constrains human actors and their records only. A
 provider-classified bot using the exact verified label handoff or a bot with
@@ -272,26 +290,39 @@ invocation provenance, rather than a human event actor, authorizes
 eventless entity discovery; decision-relevant actor-originated facts still
 pass the selected harness's minimum.
 
-A harness evaluation and any sandbox it starts MUST use one trusted composed
+Each evaluation cycle and any sandbox it starts MUST use one trusted composed
 harness revision, resolved `role`, and effective `human_min_role`. Fullsend
-MUST pin that policy before the first harness-specific actor gate and retain it
-through event admission, entity CEL, snapshot and model-record checks, and
-later Fullsend-controlled retrieval. Its policy identity MUST bind the trusted
-checkout revision, registry and composed harness content digest, trusted
-remote-resource allowlist revision or digest, verified remote-layer hashes,
-resolved `role`, ordered overlay matches and overrides, verified guard inputs
-and provenance, effective minimum, and its top-level, overlay, or default
-source. When dispatch, execution, or retrieval use separate processes, the
-handoff MUST preserve this identity with integrity. The receiver MUST verify the pin
-against its loaded policy before minting or using harness credentials and
-before admitting content. Passing only an agent name or
-credential role is insufficient. If the policy changes mid-cycle, Fullsend
-MUST either retain the original verified pin for the whole cycle or stop and
-re-evaluate from the first gate under a new trusted revision; it MUST NOT
+MUST pin that policy within the cycle and retain it through that cycle's actor,
+entity, and model-record checks. Its policy identity MUST bind
+the trusted checkout revision, registry and composed harness content digest,
+trusted remote-resource allowlist revision or digest, verified remote-layer
+hashes, resolved `role`, ordered overlay matches and overrides, verified guard
+inputs and provenance, effective minimum, and its top-level, overlay, or
+default source.
+
+For a separate bound `run`, the dispatch/poll handoff identifies the candidate
+harness and event/entity binding; it is not an authorization decision. Before
+model-context acquisition/staging or sandbox launch, `run` MUST independently
+reload the trusted target config and selected harness/base chain, reevaluate
+applicable `config.yaml` `when` flags and harness overlays against current
+verified inputs, re-fetch the bound canonical entity, and recheck all current
+authorization and launch conditions under
+[ADR 0144](../../../ADRs/0144-reuse-poll-and-entity-bound-run-processes.md).
+This includes the prompting-event gate when an event is present, trusted
+Fullsend-origin gate when it is absent, actor/fact admission, and trigger CEL.
+The run MUST then pin the policy identity it actually verified and use that
+same identity throughout its own context-staging, sandbox, and model-record
+checks.
+Dispatch and run policy identities do not have to match: a change between
+them is handled by this fresh run-time evaluation, not by inheriting the
+earlier allow. If current inputs cannot be loaded or verified, or the candidate
+no longer meets the current gates, `run` MUST stop before context exposure or
+launch. If policy changes during a single run cycle, Fullsend MUST stop or
+re-evaluate from the first gate under the newly loaded policy; it MUST NOT
 silently mix minima or overlay outcomes. A changed guard result or an expired
-guard claim requires the same stop or first-gate re-evaluation. If the receiver
-cannot verify the handoff pin, it MUST stop and MAY restart authorization from
-the first gate. A new child cycle under
+guard claim requires the same stop or first-gate re-evaluation. The run's own
+trusted source revisions and effective policy MUST be recorded for audit. A
+new child cycle under
 [ADR 0144](../../../ADRs/0144-reuse-poll-and-entity-bound-run-processes.md)
 may resolve and record a new pin.
 
@@ -309,12 +340,14 @@ authorization denial.
 
 For each selected harness, the event-admission audit MUST bind the verified
 actor identity, effective role and source or narrow label-grant evidence, the
-policy identity above, and the gate outcome, including denial before CEL. A
-cross-process handoff records the policy identity sent and verified, or the
-reason verification failed and authorization restarted or stopped. A bot
-decision records its registered role or verified label-transition evidence
-instead of a human role. An early platform-floor denial records the actor
-evidence and floor outcome.
+policy identity above, and the gate outcome, including denial before CEL. For
+separate dispatch/poll and run processes, the audit records both the policy
+used for candidate selection and the independently loaded run policy, plus the
+run-time recheck outcome. A dispatch policy identity forwarded in the handoff
+is correlation evidence only; it is not permission and need not match the run
+policy. A bot decision records its registered role or verified
+label-transition evidence instead of a human role. An early platform-floor
+denial records the actor evidence and floor outcome.
 
 ### Current dispatch compatibility
 
@@ -341,8 +374,30 @@ harnesses or set their role requirements. After provider-backed
 > a configured `human_min_role` it cannot parse, validate, or enforce rather
 > than silently treat it as absent. The field cannot be deployed as effective
 > policy while a selected runner still ignores it. The current execution
-> matrix carries agent name and credential role, not the composed policy
-> identity required for a v2 cross-process handoff.
+> matrix carries an agent name and credential role; these are candidate-routing
+> metadata, not an authorization result. V2 requires an integrity-bound
+> candidate and event/entity handoff plus an independent run-time policy
+> recheck.
+>
+> The legacy stage workflow pins the target repository's `.fullsend/config.yaml`
+> to the PR base commit. `run` first uses a configured local or URL source;
+> remote config sources require a declared SHA-256. A source-less built-in
+> entry is only an override and falls back to `fullsend-ai/agents`. Each `run`
+> resolves that fallback's release tag (or `main` for a source build) to a
+> commit SHA and fetches from the SHA-pinned URL, but does not verify a declared
+> content hash. The legacy route resolves its harness in one `run`; CEL dispatch
+> and its later `run` currently resolve independently. A v2 CEL/entity `run`
+> MUST reload the trusted config and harness, recompute config `when` flags,
+> harness overlays, and trigger CEL, and recheck launch gates against the
+> current entity. The dispatch/poll result is a candidate only; the policy
+> actually loaded by `run` is pinned for that run's own checks through context
+> staging and sandbox launch. A changed source between dispatch and run
+> triggers a new evaluation rather than a same-revision requirement. Current
+> behavior is visible in
+> [`reusable-dispatch.yml` at `c0695aaa`](https://github.com/fullsend-ai/fullsend/blob/c0695aaa5aee66fe500c4fb904ed4924e0b400da/.github/workflows/reusable-dispatch.yml#L135-L148),
+> [`run.go` source selection at `c0695aaa`](https://github.com/fullsend-ai/fullsend/blob/c0695aaa5aee66fe500c4fb904ed4924e0b400da/internal/cli/run.go#L7200-L7249),
+> [`config.go` URL pin validation at `c0695aaa`](https://github.com/fullsend-ai/fullsend/blob/c0695aaa5aee66fe500c4fb904ed4924e0b400da/internal/config/config.go#L601-L608),
+> and [`run.go` fallback resolution at `c0695aaa`](https://github.com/fullsend-ai/fullsend/blob/c0695aaa5aee66fe500c4fb904ed4924e0b400da/internal/cli/run.go#L7262-L7361).
 
 ## Fail-closed behavior
 
@@ -374,9 +429,10 @@ to the compatibility rules until implementation migration is complete.
 | `actor.role_verified` is false for a human, including a verified label addition | Ignore `actor.role`; require a separate verified configured-source role meeting the selected harness minimum, or the exact human label grant for a `triage` minimum; otherwise deny |
 | Trusted harness `human_min_role` is invalid or the resolved harness role or revision is unverifiable | Deny that harness; do not silently use the default or evaluate its CEL predicate |
 | An overlay setting `human_min_role` reads an untrusted or admission-dependent field | Reject that harness configuration before resolution |
+| An overlay value is above its layer's non-overlay baseline | Reject that harness configuration before resolution; overlays may only preserve or lower the baseline |
 | A `human_min_role` guard lacks required verified evidence or has a CEL evaluation error | Fail the evaluation; do not treat the overlay as a nonmatch or use a fallback minimum |
-| Dispatch, run, or retrieval cannot verify the same ordered overlay outcome and guard context | Stop; optionally restart authorization from the first gate with a newly pinned policy |
-| The selected harness policy changes within an evaluation or sandbox cycle | Retain the original pinned revision and minimum for the entire cycle, or stop and re-evaluate from the first gate under the new revision; never mix them |
+| A bound CEL/entity `run` cannot reload the trusted config/harness or re-evaluate current config `when` flags, overlays, and launch gates | Stop before context acquisition/staging or sandbox launch; the dispatch/poll decision is only a candidate selection |
+| The selected harness policy changes within one evaluation or run cycle | Retain that cycle's verified policy identity, or stop and re-evaluate from the first gate under the new revision; never mix them |
 | Human event actor meets the platform `triage` floor but not the selected harness minimum | Deny that harness before CEL; other harnesses are evaluated under their own minimums |
 | Legacy bot event has an `actor.role` other than `none` | Valid in the v1 compatibility schema; authorization follows current compatibility behavior during migration and is not an ADR 0107 bot-role authorization result |
 | `actor.role_verified` is false but `actor.bot_role` is non-null for a bot | Event fails `NormalizedEvent` validation; never reaches dispatch |
@@ -499,6 +555,12 @@ unchanged. The entity-source path is not yet implemented by `fullsend dispatch`,
 enabled until the versioned normalized-entity contract defines CEL-eligible and
 prompt-eligible fields and their coverage states. That contract is a platform
 allowlist; a harness may request fewer fields but cannot expand it.
+
+> **Planned:** Entity-source CEL is not implemented and remains disabled until
+> the [normalized-entity contract tracked by issue #8420](https://github.com/fullsend-ai/fullsend/issues/8420)
+> and the run-time authorization and launch checks described here are
+> implemented. Legacy non-CEL, non-entity workflows remain on Authorization
+> v1.
 
 With a prompting event, the event-actor authorization gate for the selected
 harness still runs before its CEL predicate; neither discovery nor an
@@ -931,8 +993,10 @@ The `triage` floor and the narrow human-label and bot grants are
 platform-level security boundaries. Individual repositories cannot disable or
 lower them. A trusted harness author MAY set `human_min_role` at the top level
 or in an ADR 0112 trusted-fact-guarded overlay to `triage`, `write`,
-`maintain`, or `admin`. This may lower a harness's `write` default to `triage`
-or raise its minimum; the selected value applies to human event, entity-fact,
+`maintain`, or `admin`. The top-level or inherited non-overlay value is the
+baseline; an overlay MAY preserve or lower it, never raise it. This lets a
+trusted condition relax a stronger default while a missing condition safely
+retains that default. The selected value applies to human event, entity-fact,
 and model-record admission alike. A repository may disable a harness or use
 trigger CEL to require additional conditions, but cannot make it available to
 a human rejected by either admission gate. A source event may select the field
@@ -958,7 +1022,9 @@ entity-source CEL only.
 immutable `triage` platform floor and the selected harness's effective
 `human_min_role` for human event, entity-fact, and model-record admission. The
 resolved harness `role` supplies the default map above; an explicit top-level
-or trusted-fact-guarded overlay value may change it within the allowed range.
+or trusted-fact-guarded overlay value may change it within the allowed range,
+subject to the rule that overlays may only preserve or lower their non-overlay
+baseline.
 Trigger CEL may further narrow selection but does not replace the admission
 minimum. V2 retains v1's role-derived defaults; a resolved explicit or
 guarded-overlay value supersedes the fixed default for that harness across
@@ -967,7 +1033,8 @@ release checkpoints remain.
 
 Migration MUST teach harness loading and `base` composition to recognize and
 validate `human_min_role` with key-presence awareness, including in overlay
-entries, before the value can affect any v2 decision. The versioned CEL schema
+entries, and reject an overlay value above its non-overlay baseline before the
+value can affect any v2 decision. The versioned CEL schema
 MUST name and classify the verified effective-role path before a role-based
 minimum overlay can run. An explicit empty or invalid value MUST NOT silently
 inherit or default during scalar merge; a
@@ -979,16 +1046,23 @@ also requires versioned event and entity CEL inputs that carry verified
 effective roles and distinguish exact label-grant
 provenance. Existing authorization-sensitive CEL comparisons against an
 unverified legacy role MUST be migrated before v2 routing. Migration also
-requires dispatch and run to use the same verified overlay guard context, a
-verified policy-identity handoff with the ordered overlay outcome and minimum,
-per-harness event and entity actor gates, and an entity-context-snapshot v2
-contract that can represent all four allowed minimums and the changed
-record-admission rule.
+requires the handoff to integrity-bind the candidate harness and event/entity
+locator, and requires `run` to reload the trusted target config and harness/base
+sources, recompute config `when` flags, harness overlays, and trigger CEL, and
+recheck current authorization and launch gates against the canonical entity
+under ADR 0144 before ADR 0141 context staging or sandbox launch. The run
+records and pins the policy identity it actually verifies through its own
+context, actor, and model-record checks.
+The dispatch/poll policy identity may differ; it is not permission and need not
+be verified as the same revision at run. Migration also requires per-harness
+event and entity actor gates and an entity-context-snapshot v2 contract that
+can represent all four allowed minimums and the changed record-admission rule.
 [Entity-context-snapshot v1](../../entity-context-snapshot/v1/README.md)
-retains its historical stage-derived `triage`/`write` rule until that
+retains its historical observation/mutation-derived `triage`/`write` rule until that
 migration.
-Authorization v1 remains authoritative for existing dispatch during
-migration, including its bash thresholds and Go role-derived defaults. An
+Authorization v1 remains authoritative for existing legacy non-CEL,
+non-entity workflows during migration, including their bash thresholds and Go
+role-derived defaults. An
 explicit per-harness minimum change under v2 is a harness-policy change bound
 to that harness's reviewed revision, not a normative contract version change.
 Breaking changes to v2 require `docs/normative/authorization/v3/`.

@@ -86,10 +86,10 @@ source and policy revision, and the selected source ref plus relevant OWNERS,
 OWNERS_ALIASES, or bot-registration source revision. A known change to a grant,
 OWNERS, OWNERS_ALIASES, bot registry, or policy invalidates affected entries.
 Every check separately validates current entity facts, their
-source-revision actor attribution, and query coverage. It applies the platform
-`triage` floor and effective harness minimum through the applicable ordinary
-human role or exact human-label-grant path, checks registered-bot requirements,
-and evaluates its CEL predicate. A wakeup invalidates affected entity facts;
+source-revision actor attribution, and query coverage. It applies the actor
+and fact gates in [ADR 0151](0151-common-actor-admission-floor.md) and
+[Authorization Contract v2](../normative/authorization/v2/README.md) to those
+current facts, then evaluates its CEL predicate. A wakeup invalidates affected entity facts;
 it does not by itself turn an unexpired actor-role result into a fresh one.
 If cached authorization contributes to a false CEL result, discovery must
 schedule a recheck or guarantee rediscovery after expiry or known invalidation

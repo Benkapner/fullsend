@@ -23,13 +23,17 @@ This decision partially supersedes the human permission thresholds in
 [ADR 0098](0098-entity-first-harness-evaluation.md),
 [ADR 0133](0133-actor-attributed-data-security-boundary.md), and
 [ADR 0141](0141-deterministic-filtered-entity-context-staging.md) for the
-target CEL and model-bound paths. It also refines [ADR
-0061](0061-harness-cel-dispatch.md)'s authorization-before-harness-
-enumeration ordering for harness-specific thresholds and narrows the human
-label-transition exception in
+target CEL/entity routes and their migrated model-bound paths. It also refines
+[ADR 0061](0061-harness-cel-dispatch.md)'s
+authorization-before-harness-enumeration ordering for harness-specific
+thresholds and narrows the human label-transition exception in
 [ADR 0107](0107-bot-identity-resolution-for-dispatch-authorization.md) for a
 harness requiring more than `triage`.
 Their other provenance, bot, freshness, and filtering requirements remain.
+These changes apply to CEL/entity routes and their v2 model-bound admission
+when migrated. Legacy non-CEL, non-entity workflow configurations remain under
+Authorization v1 and their existing workflow guards until separately
+migrated.
 
 ## Context
 
@@ -112,32 +116,59 @@ versioned CEL schema must define the verified role path and provenance before
 role-based guards can be used. A known absent event or optional key is a
 nonmatch under ADR 0112; an evaluation error or required guard evidence that
 cannot be verified fails evaluation rather than silently selecting a fallback.
+An overlay's value MUST preserve or lower the non-overlay baseline for its
+layer. The baseline is that layer's explicit `human_min_role`, otherwise its
+inherited resolved minimum, otherwise the role-derived default. To conditionally
+require a stronger minimum, set that stronger baseline outside overlays and
+allow a guarded overlay to lower it only when its trusted condition is
+positively established.
 Trusted entity-source identity needed for a guard must be obtained from
 provider-verified structural metadata or a platform discovery credential,
 not from the still-unpinned harness run credential.
 Trusted-field validation alone does not prove that a guard's matching branch
 has the intended security meaning: for example, a change author may choose a
 fork, while only an author with write access can make `is_fork` false. A
-conditional relaxation should positively prove the trusted condition for
+conditional relaxation MUST positively prove the trusted condition for
 which the lower minimum is intended. The selected value gates other actors'
 entity facts and model records as well as the prompting actor.
 
 The default is an authorization policy, not a deduction from mint token scopes
 or the harness's `privilege_levels`. The trusted composed harness revision,
 ordered overlay outcome, trusted guard evidence, and effective minimum stay
-fixed for one evaluation and run cycle; a changed policy or guard result
-requires a new cycle or abort, not a silent threshold change.
-The registry and local harness and `base` files that set this policy must come
-from one immutable trusted checkout revision selected independently of the
-prompting actor and entity content. A change proposal uses its target/base
-commit, never its proposed head; other paths must identify an equivalent
-trusted canonical revision. Every remote harness or base layer must pass its
-allowlist and content-hash checks, and its digest belongs in the composed
-policy identity. Dispatch must bind that identity, the ordered overlay
-resolution and verified guard inputs, and the effective minimum to its run
-handoff. A run or later Fullsend-controlled retrieval that cannot verify the
-same pin must stop and may restart authorization from the first gate before
-using the content.
+fixed within one evaluation or run cycle; a changed policy or guard result
+requires a new cycle or abort, not a silent threshold change. A dispatch or
+poll result is only a candidate selection, not permission to launch.
+The target-repository registry and local harness and `base` files that set
+this policy come from one immutable trusted checkout revision selected
+independently of the prompting actor and entity content. A change proposal
+uses its target/base commit, never its proposed head; other paths must identify
+an equivalent trusted canonical revision. A remote registered harness or
+`base` layer has its own immutable source revision and declared content hash;
+it does not share the target-repository revision. Built-in fallback harnesses
+from `fullsend-ai/agents` currently resolve a release tag (or `main` for a
+source build) to a commit SHA independently in each `run`, without verifying a
+declared content hash. Legacy routes pin target config to the base commit and
+resolve a fallback within their single `run`; current CEL dispatch and its
+later `run` resolve independently. Current behavior is implemented in
+[`reusable-dispatch.yml` at `c0695aaa`](https://github.com/fullsend-ai/fullsend/blob/c0695aaa5aee66fe500c4fb904ed4924e0b400da/.github/workflows/reusable-dispatch.yml#L135-L148)
+and [`run.go` at `c0695aaa`](https://github.com/fullsend-ai/fullsend/blob/c0695aaa5aee66fe500c4fb904ed4924e0b400da/internal/cli/run.go#L7200-L7361).
+Before a CEL/entity-bound run uses a selected candidate, `fullsend run` MUST
+independently load the trusted target config and selected harness/base chain,
+re-evaluate applicable `config.yaml` `when` flags and harness overlays from
+current verified inputs, rerun harness trigger CEL, and recheck authorization
+and launch eligibility against the freshly re-fetched canonical entity under
+ADR 0144. It MUST do
+this before assembling ADR 0141 model context or starting the sandbox. A
+candidate that is now disabled, no longer matches, or fails any current gate
+MUST stop before context exposure or launch. A config or harness revision
+change between dispatch/poll and `run` is handled by this fresh evaluation;
+the revisions do not have to match across processes. The run MUST record the
+trusted revisions and effective policy it actually verified, then use that
+same resolved policy through its own context-staging and launch checks. If a
+policy input changes during that run, it MUST stop or restart all gates under
+the newly loaded policy rather than mix decisions. This recheck applies to the
+CEL/entity and v2 paths only; it does not extend the new policy to legacy
+non-CEL, non-entity workflows.
 
 Fullsend applies the same effective minimum separately to the ordinary human
 prompting event before that harness's CEL predicate; to each actor-originated
@@ -193,9 +224,10 @@ Source-specific bot and label grants require their own provider evidence.
 - Current Go CEL dispatch enforces the v1 role-derived default for ordinary
   human events, and bash routes retain their stage guards. Explicit or guarded
   overlay `human_min_role` values, selected-minimum checks for human label
-  additions and actor-originated entity and model records, and the pinned
-  policy handoff remain target behavior. The field cannot become effective
-  policy until the loader validates and enforces it.
+  additions and actor-originated entity and model records, and run-time policy
+  reload and launch rechecks remain target behavior. The
+  field cannot become effective policy until the loader validates and enforces
+  it.
 - A harness author may deliberately set `human_min_role: triage` for a
   write-capable role; that permits `triage` actors and records to guide that
   harness without changing its minted capabilities.
@@ -203,6 +235,6 @@ Source-specific bot and label grants require their own provider evidence.
   selected harness's minimum; verified actor roles may be reused, but pass
   decisions and filtered views cannot be reused across different minima.
 - [Entity-context-snapshot v1](../normative/entity-context-snapshot/v1/README.md)
-  retains its category-derived `triage`/`write` threshold. Snapshot admission
+  retains its observation/mutation-derived `triage`/`write` threshold. Snapshot admission
   with a differing override or a higher role requires a versioned contract
   before migration.

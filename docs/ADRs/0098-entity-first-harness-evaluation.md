@@ -51,7 +51,7 @@ bounded role reuse across entity-CEL checks and partially supersedes the
 permission-at-evaluation-time rule. Trusted-origin, event-actor, and
 model-bound authorization remain required.
 
-[ADR 0151](0151-common-actor-admission-floor.md) replaces the category-derived
+[ADR 0151](0151-common-actor-admission-floor.md) replaces the observation/mutation-derived
 human threshold for decision-relevant entity facts with the selected harness's
 effective `human_min_role`, enforced by the platform above an immutable
 `triage` floor. Actor provenance and fail-closed filtering remain required.

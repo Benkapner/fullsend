@@ -54,6 +54,12 @@ Entity routing remains a target design: at
 [`a2be1678`](https://github.com/fullsend-ai/fullsend/blob/a2be1678c5dbd9361a77f04de5ec260320e4fb9f/internal/harness/trigger.go#L12-L16),
 the trigger CEL environment still declares only `event`.
 
+> **Planned:** Entity-source CEL is not implemented and remains disabled until
+> the [normalized-entity contract tracked by issue #8420](https://github.com/fullsend-ai/fullsend/issues/8420),
+> selective evaluator, and authorization gates are implemented. Legacy
+> non-CEL, non-entity workflows continue under their existing authorization
+> contract.
+
 ## Options
 
 ### Fetch all history before CEL
@@ -124,18 +130,11 @@ a sandbox only after its own definitive true. Absence, negation, counts, and
 universal conditions may still require complete coverage of relevant scopes.
 
 Before a classified action-indicating entity fact can influence CEL, Fullsend
-verifies its source-revision actor. For an ordinary human fact, that actor's
-verified effective role must meet the platform `triage` floor and the
-evaluated harness's effective `human_min_role`. A verified human label
-addition instead grants `triage`-equivalent authority only for its exact
-accepted transition and proven entity projection; a higher harness minimum
-also requires the labeler's verified effective role to meet it. This narrow
-grant neither sets `actor.role` nor makes `actor.role_verified` true, and it
-is not a cacheable actor-role verdict. A bot needs its exact registered role
-under ADR 0107, except that a provider-verified bot label handoff separately
-grants authority for its exact transition and projection. Independent history
-needs its own actor gate. Verified effective roles, when present, remain
-available to CEL for further harness conditions.
+verifies its source-revision actor and applies the actor and fact gates defined
+by [ADR 0151](0151-common-actor-admission-floor.md) and
+[Authorization Contract v2](../normative/authorization/v2/README.md).
+Independent history needs its own actor gate. Verified effective roles, when
+present, remain available to CEL for further harness conditions.
 
 Unauthorized records are excluded. Unrelated history need not be fetched,
 authorized, or listed in the audit. Each check records its verified initiator,
