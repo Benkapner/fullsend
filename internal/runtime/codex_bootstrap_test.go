@@ -909,6 +909,7 @@ func TestCodexRolesDir(t *testing.T) {
 // gate passing: one regular file per role under agents/, digests recorded
 // for the spawn guard, and everything else byte-equal to today.
 func TestCodexRuntimeBootstrap_WritesRoleFilesForADelegatingAgent(t *testing.T) {
+	t.Setenv(codexSubagentModelEnv, "")
 	logPath := filepath.Join(t.TempDir(), "openshell.log")
 	storeDir := t.TempDir()
 	fakeOpenshellCodex(t, logPath, storeDir, "codex-cli 0.152.1")
@@ -959,6 +960,7 @@ func TestCodexRuntimeBootstrap_WritesRoleFilesForADelegatingAgent(t *testing.T) 
 // digest set has no role entry. The gpt-5.5 case is the boundary: an entry
 // without a version delegates (ADR 0126), so its files are present.
 func TestCodexRuntimeBootstrap_NoRoleFilesWhenTheGateFails(t *testing.T) {
+	t.Setenv(codexSubagentModelEnv, "")
 	skill := t.TempDir()
 	writePersonaFile(t, skill, "correctness", codexTestPersona)
 	hooks := security.SandboxHookConfigFromHarness(&harness.Harness{})
@@ -1020,6 +1022,7 @@ func TestCodexRuntimeBootstrap_NoRoleFilesWhenTheGateFails(t *testing.T) {
 // The three new infrastructure failures are reported with their own message,
 // like the rows of TestCodexRuntimeBootstrap_ReportsInfrastructureFailures.
 func TestCodexRuntimeBootstrap_ReportsRoleFileFailures(t *testing.T) {
+	t.Setenv(codexSubagentModelEnv, "")
 	r := CodexRuntime{}
 	for name, tc := range map[string]struct{ match, want string }{
 		"roles dir":         {"mkdir -p " + shellQuote(r.codexRolesDir()), "creating codex roles dir"},
@@ -1043,6 +1046,7 @@ func TestCodexRuntimeBootstrap_ReportsRoleFileFailures(t *testing.T) {
 // exit 2 and a reason, through the installed hook adapter. Driven directly:
 // the multi-agent tools are still off, so no Codex process reaches the hook.
 func TestCodexBootstrap_PlantedRoleFileDeniesSpawn(t *testing.T) {
+	t.Setenv(codexSubagentModelEnv, "")
 	h := newCodexAdapterHarness(t)
 	storeDir := t.TempDir()
 	fakeOpenshellCodex(t, filepath.Join(t.TempDir(), "log"), storeDir, "codex-cli 0.152.1")
@@ -1089,4 +1093,102 @@ func TestCodexBootstrap_PlantedRoleFileDeniesSpawn(t *testing.T) {
 		assert.Equal(t, 2, got.exitCode)
 		assert.NotEmpty(t, got.stderr)
 	})
+}
+
+// codexDelegatingBootstrap runs Bootstrap for the delegating review agent
+// with one correctness persona, harness security on and the given subagents
+// map. It returns the runtime, the fake's argv log and Bootstrap's error.
+func codexDelegatingBootstrap(t *testing.T, storeDir string, subagents map[string]*string) (CodexRuntime, string, error) {
+	t.Helper()
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	fakeOpenshellCodex(t, logPath, storeDir, "codex-cli 0.152.1")
+	forgetRunnerHeldDigests("sb")
+	t.Cleanup(func() { forgetRunnerHeldDigests("sb") })
+	skill := t.TempDir()
+	writePersonaFile(t, skill, "correctness", codexTestPersona)
+
+	input := codexDelegatingHooksInput(t, skill)
+	input.agentSubagents = subagents
+	r := CodexRuntime{}
+	return r, logPath, r.Bootstrap(input)
+}
+
+// TestCodexRuntimeBootstrap_RejectsNonOpenAISubagentModel pins the wiring:
+// the subagents map, the catalog and the runner variable reach the resolver,
+// and a bad value fails Bootstrap naming the key before config.toml is
+// written. The breaking case is a pi-shaped review entry (xai and
+// google-vertex values) run with runtime codex.
+func TestCodexRuntimeBootstrap_RejectsNonOpenAISubagentModel(t *testing.T) {
+	for name, tc := range map[string]struct {
+		env       string
+		subagents map[string]*string
+		want      []string
+	}{
+		"a persona entry from another provider": {
+			subagents: map[string]*string{"correctness": strp("xai-vertex/xai/grok-4.6")},
+			want:      []string{"subagents.correctness", `"xai-vertex/xai/grok-4.6"`, "correctness: ~"}},
+		"a model the pinned catalog does not list": {
+			subagents: map[string]*string{"correctness": strp("openai/gpt-5.6-nova")},
+			want:      []string{`subagents.correctness: model "gpt-5.6-nova" is not in the bundled catalog`}},
+		"the runner variable": {env: "opus", want: []string{codexSubagentModelEnv, `"opus"`, "unset"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(codexSubagentModelEnv, tc.env)
+			r, logPath, err := codexDelegatingBootstrap(t, t.TempDir(), tc.subagents)
+			require.Error(t, err)
+			for _, w := range tc.want {
+				assert.Contains(t, err.Error(), w)
+			}
+			assert.NotContains(t, readFileString(t, logPath), r.codexConfigPath(),
+				"the model check runs before config.toml is written")
+		})
+	}
+}
+
+// The check applies to a delegating agent only. An agent without the Agent
+// tool, any agent with harness security off, and a delegating agent whose
+// parent model codex does not resolve to collaboration V1 (a V2 or unlisted
+// parent) keep codex's multi-agent tools off and ignore subagents (ADR 0126:
+// "Every other agent runs with Codex's multi-agent tools off").
+func TestCodexRuntimeBootstrap_NonDelegatingAgentIgnoresSubagents(t *testing.T) {
+	t.Setenv(codexSubagentModelEnv, "")
+	bad := map[string]*string{"correctness": strp("xai-vertex/xai/grok-4.6")}
+	hooks := security.SandboxHookConfigFromHarness(&harness.Harness{})
+	skill := t.TempDir()
+	writePersonaFile(t, skill, "correctness", codexTestPersona)
+
+	for name, tc := range map[string]struct {
+		input     BootstrapInput
+		preflight bool // part two of the gate read the catalog
+	}{
+		"no Agent tool, security on": {codexHooksBootstrapInput{
+			bootstrapInput: bootstrapInput{sandboxName: "sb", agentPath: writeAgentFile(t, codexTestAgentDef), agentName: "triage", agentSubagents: bad},
+			hooks:          hooks,
+		}, false},
+		"Agent tool, security off": {bootstrapInput{
+			sandboxName: "sb", agentPath: writeAgentFile(t, codexTestDelegatingAgentDef), agentName: "review", skillDirs: []string{skill}, agentSubagents: bad,
+		}, false},
+		"Agent tool, security on, run-level parent selects V2": {codexHooksBootstrapInput{
+			bootstrapInput: bootstrapInput{sandboxName: "sb", agentPath: writeAgentFile(t, codexTestDelegatingAgentDef), agentName: "review",
+				skillDirs: []string{skill}, parentModel: "openai/gpt-5.6-sol", agentSubagents: bad},
+			hooks: hooks,
+		}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			storeDir := t.TempDir()
+			logPath := filepath.Join(t.TempDir(), "openshell.log")
+			fakeOpenshellCodex(t, logPath, storeDir, "codex-cli 0.152.1")
+			forgetRunnerHeldDigests("sb")
+			t.Cleanup(func() { forgetRunnerHeldDigests("sb") })
+
+			r := CodexRuntime{}
+			require.NoError(t, r.Bootstrap(tc.input), "a bad subagents value is ignored: the chain is never resolved")
+			log := readFileString(t, logPath)
+			assert.Equal(t, tc.preflight, strings.Contains(log, "codex debug models --bundled"))
+			assert.NotContains(t, log, r.codexRolesDir(), "no role directory, no role file")
+			cfg := string(storedUpload(t, storeDir, r.codexConfigPath()))
+			assert.Contains(t, cfg, "[agents]\nenabled = false")
+			assert.Contains(t, cfg, "No fullsend sub-agent roster is available")
+		})
+	}
 }

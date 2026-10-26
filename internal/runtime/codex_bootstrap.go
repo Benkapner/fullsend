@@ -173,6 +173,15 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 			fmt.Fprintf(os.Stderr, "sub-agents: %s; native sub-agents need a parent Codex resolves to collaboration V1, running in one context\n", reason)
 		}
 	}
+	// Resolved before config.toml is written: a bad subagents value fails here.
+	var roles []codexRole
+	if delegating {
+		roles, _, err = resolveCodexChildModels(
+			codexRoles(input.SkillDirs(), agentName), input.AgentSubagents(), os.Getenv(codexSubagentModelEnv), catalog)
+		if err != nil {
+			return err
+		}
+	}
 	// The gateway provider is rendered only when the runner registered an
 	// inference.gateway block for this sandbox (PrepareGatewayRun).
 	gatewayBaseURL := codexGatewayRunFor(sandboxName)
@@ -285,14 +294,12 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		digests.HooksJSON = codexAssetSHA256(hooksJSON)
 		// The role files are agent-writable, so their digests join the
 		// runner-held set the spawn guard re-checks before every spawn.
-		// Codex's multi-agent tools stay off in config.toml until the
-		// dispatch note lands (#6970).
-		if delegating {
+		if len(roles) > 0 {
 			if err := codexExecOK(sandboxName, "mkdir -p "+shellQuote(r.codexRolesDir()), "creating codex roles dir"); err != nil {
 				return err
 			}
 			digests.RoleFiles = map[string]string{}
-			for _, role := range codexRoles(input.SkillDirs(), agentName) {
+			for _, role := range roles {
 				data := role.toml()
 				if err := uploadBytes(sandboxName, r.codexRolesDir()+"/"+role.Name+".toml", data); err != nil {
 					return fmt.Errorf("writing role %q: %w", role.Name, err)

@@ -86,9 +86,9 @@ func TestDiscoverPersonas_CarriesDescriptionAndBody(t *testing.T) {
 
 // The role shape the pinned CLI reads: three keys, each a basic string
 // (multi-line when the value holds a newline, as config.toml's
-// developer_instructions), nothing else. No model line in this PR (ADR 0126's
-// per-persona model arrives with delegation, #6970), and no dropped
-// frontmatter turned into text.
+// developer_instructions), nothing else. No model line without a subagents
+// entry (TestCodexRole_TOMLModelLine), and no dropped frontmatter turned into
+// text.
 func TestCodexRole_TOML(t *testing.T) {
 	t.Parallel()
 
@@ -109,7 +109,7 @@ func TestCodexRole_TOMLEscapesTheBody(t *testing.T) {
 	got := string(codexRole{Name: "x", Description: `say "hi"`, Instructions: "line\n\"\"\"\\end"}.toml())
 	assert.Equal(t, "name = \"x\"\ndescription = \"say \\\"hi\\\"\"\ndeveloper_instructions = \"\"\"\nline\n\\\"\\\"\\\"\\\\end\"\"\"\n", got,
 		"a persona body is arbitrary markdown; codexTOMLString keeps it inside one basic string, multi-line when it holds a newline")
-	assert.NotContains(t, got, "model", "no model line in this PR: ADR 0126's per-persona model arrives with delegation (#6970)")
+	assert.NotContains(t, got, "model", "no model line without a subagents entry")
 }
 
 func codexRoleNames(roles []codexRole) []string {
@@ -406,4 +406,260 @@ func TestCodexParentResolvesV1(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCodexChildModel pins the check a configured child model gets: an
+// OpenAI id, bare or prefixed; everything else, a gateway/ spec and
+// `inherit` included, fails naming the key and the entry's own fix.
+func TestCodexChildModel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		key     string
+		in      string
+		want    string
+		wantErr []string
+	}{
+		{name: "bare id", key: "subagents.correctness", in: "gpt-5.6-sol", want: "gpt-5.6-sol"},
+		{name: "openai prefix stripped", key: "subagents.correctness", in: "openai/gpt-5.6-sol", want: "gpt-5.6-sol"},
+		{name: "whitespace trimmed", key: "subagents.default", in: "  openai/gpt-6-astra ", want: "gpt-6-astra"},
+		{name: "another provider names the key and the tombstone", key: "subagents.correctness",
+			in: "xai-vertex/xai/grok-4.6", wantErr: []string{"subagents.correctness", `"xai-vertex/xai/grok-4.6"`, "correctness: ~"}},
+		{name: "google vertex on default", key: "subagents.default",
+			in: "google-vertex/gemini-3.8-flash", wantErr: []string{"subagents.default", `"google-vertex/gemini-3.8-flash"`, "default: ~"}},
+		{name: "claude alias", key: "subagents.security", in: "opus",
+			wantErr: []string{"subagents.security", `"opus"`, "security: ~"}},
+		{name: "gateway route names the key", key: "subagents.correctness", in: "gateway/vendor/org/model",
+			wantErr: []string{"subagents.correctness", `"gateway/vendor/org/model"`, "correctness: ~"}},
+		{name: "gateway route with an empty id", key: "subagents.correctness", in: "gateway/",
+			wantErr: []string{"subagents.correctness", `"gateway/"`, "correctness: ~"}},
+		{name: "inherit is refused", key: "subagents.correctness", in: "inherit",
+			wantErr: []string{"subagents.correctness", `"inherit"`, "correctness: ~"}},
+		{name: "inherit behind the prefix, any case", key: "subagents.correctness", in: "openai/Inherit",
+			wantErr: []string{`"openai/Inherit"`}},
+		{name: "empty value", key: "subagents.correctness", in: "", wantErr: []string{"subagents.correctness", `""`, "correctness: ~"}},
+		{name: "the runner variable says unset, not tombstone", key: codexSubagentModelEnv, in: "haiku",
+			wantErr: []string{"FULLSEND_CODEX_SUBAGENT_MODEL", `"haiku"`, "unset"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := codexChildModel(tt.key, tt.in)
+			if len(tt.wantErr) > 0 {
+				require.Error(t, err)
+				for _, w := range tt.wantErr {
+					assert.Contains(t, err.Error(), w)
+				}
+				assert.NotContains(t, err.Error(), "FULLSEND_CODEX_MODEL=", "the fix names the entry, not the run's own model")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// Every env × subagents.default × persona-entry combination of the chain:
+// only a persona with its own entry gets a role-file model; the second value
+// is the run-level default every other child takes.
+func TestResolveCodexChildModels_Precedence(t *testing.T) {
+	t.Parallel()
+
+	const (
+		absent    = "absent"
+		set       = "set"
+		tombstone = "tombstone"
+	)
+	tests := []struct {
+		name        string
+		env         string
+		defaultSet  bool
+		persona     string
+		wantModel   string // correctness's role-file model; "" = no model line
+		wantDefault string
+	}{
+		{"nothing configured", "", false, absent, "", "gpt-5.6-luna"},
+		{"persona entry only", "", false, set, "gpt-5.6-sol", "gpt-5.6-luna"},
+		{"persona tombstone only", "", false, tombstone, "", "gpt-5.6-luna"},
+		{"default only", "", true, absent, "", "gpt-6-astra"},
+		{"default and persona entry", "", true, set, "gpt-5.6-sol", "gpt-6-astra"},
+		{"default and persona tombstone", "", true, tombstone, "", "gpt-6-astra"},
+		{"env only", "openai/gpt-5.6-terra", false, absent, "", "gpt-5.6-terra"},
+		{"env and persona entry", "openai/gpt-5.6-terra", false, set, "gpt-5.6-sol", "gpt-5.6-terra"},
+		{"env and persona tombstone", "openai/gpt-5.6-terra", false, tombstone, "", "gpt-5.6-terra"},
+		{"env beats default", "openai/gpt-5.6-terra", true, absent, "", "gpt-5.6-terra"},
+		{"env, default and persona entry", "openai/gpt-5.6-terra", true, set, "gpt-5.6-sol", "gpt-5.6-terra"},
+		{"env, default and persona tombstone", "openai/gpt-5.6-terra", true, tombstone, "", "gpt-5.6-terra"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			roles := []codexRole{
+				{Name: "correctness", Description: "d", Instructions: "i"},
+				{Name: "default", Description: "d", Instructions: "i"},
+				{Name: "explore", Description: codexExploreRoleDescription, Instructions: "i"},
+			}
+			cfg := map[string]*string{}
+			if tt.defaultSet {
+				cfg["default"] = strp("gpt-6-astra")
+			}
+			switch tt.persona {
+			case set:
+				cfg["correctness"] = strp("openai/gpt-5.6-sol")
+			case tombstone:
+				cfg["correctness"] = nil
+			}
+
+			got, gotDefault, err := resolveCodexChildModels(roles, cfg, tt.env, codexTestCatalog())
+			require.NoError(t, err)
+			require.Len(t, got, 3)
+			assert.Equal(t, tt.wantModel, got[0].Model, "correctness")
+			assert.Empty(t, got[1].Model, "default never carries a model line: it takes agents.default_subagent_model")
+			assert.Empty(t, got[2].Model, "explore never carries a model line")
+			assert.Equal(t, tt.wantDefault, gotDefault)
+			assert.Empty(t, roles[0].Model, "the input slice is not mutated")
+			for i := range got {
+				assert.Equal(t, roles[i].Name, got[i].Name, "order and names are kept")
+			}
+		})
+	}
+}
+
+// A subagents key must name a discovered persona or `default`; anything else,
+// `explore` included (a reserved key), fails Bootstrap and names the key, as
+// pi does. A tombstoned unknown key is skipped, as on pi, because a tombstone
+// only removes an inherited entry.
+func TestResolveCodexChildModels_RejectsUnknownKeys(t *testing.T) {
+	t.Parallel()
+
+	roles := []codexRole{{Name: "correctness"}, {Name: "default"}, {Name: "explore"}}
+	tests := []struct {
+		name    string
+		roles   []codexRole
+		cfg     map[string]*string
+		wantErr []string
+	}{
+		{name: "explore is reserved", roles: roles, cfg: map[string]*string{"explore": strp("openai/gpt-5.6-sol")},
+			wantErr: []string{"subagents.explore", "correctness"}},
+		{name: "a typo", roles: roles, cfg: map[string]*string{"correctnes": strp("openai/gpt-5.6-sol")},
+			wantErr: []string{"subagents.correctnes", `"correctnes"`, "correctness"}},
+		{name: "no persona at all", roles: nil, cfg: map[string]*string{"correctness": strp("openai/gpt-5.6-sol")},
+			wantErr: []string{"subagents.correctness", "none"}},
+		{name: "a tombstoned unknown key is skipped", roles: roles, cfg: map[string]*string{"correctnes": nil}},
+		{name: "default is not a persona key error", roles: nil, cfg: map[string]*string{"default": strp("openai/gpt-5.6-sol")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := resolveCodexChildModels(tt.roles, tt.cfg, "", codexTestCatalog())
+			if len(tt.wantErr) == 0 {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			for _, w := range tt.wantErr {
+				assert.Contains(t, err.Error(), w)
+			}
+		})
+	}
+}
+
+// Every configured value is checked, whichever position of the chain wins:
+// a non-OpenAI value fails Bootstrap and names the key (#6970).
+func TestResolveCodexChildModels_NonOpenAIValueNamesTheKey(t *testing.T) {
+	t.Parallel()
+
+	roles := []codexRole{{Name: "correctness"}, {Name: "default"}, {Name: "explore"}}
+	tests := []struct {
+		name    string
+		env     string
+		cfg     map[string]*string
+		wantErr []string
+	}{
+		{name: "persona from xai vertex", cfg: map[string]*string{"correctness": strp("xai-vertex/xai/grok-4.6")},
+			wantErr: []string{"subagents.correctness", `"xai-vertex/xai/grok-4.6"`, "correctness: ~"}},
+		{name: "default from google vertex", cfg: map[string]*string{"default": strp("google-vertex/gemini-3.8-flash")},
+			wantErr: []string{"subagents.default", `"google-vertex/gemini-3.8-flash"`}},
+		{name: "default is checked even when env wins", env: "openai/gpt-5.6-terra",
+			cfg: map[string]*string{"default": strp("google-vertex/gemini-3.8-flash")}, wantErr: []string{"subagents.default"}},
+		{name: "runner variable", env: "opus", wantErr: []string{"FULLSEND_CODEX_SUBAGENT_MODEL", `"opus"`, "unset"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := resolveCodexChildModels(roles, tt.cfg, tt.env, codexTestCatalog())
+			require.Error(t, err)
+			for _, w := range tt.wantErr {
+				assert.Contains(t, err.Error(), w)
+			}
+		})
+	}
+}
+
+// codexTestCatalog lists every model the tables above use, with the versions
+// of testdata/codex/models-bundled-0.159.3.json; add any id a new row introduces.
+func codexTestCatalog() codexCatalog {
+	return codexCatalog{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-5.6-terra": "v2", "gpt-6-astra": "v2"}
+}
+
+// Every chain position is checked against the catalog, the floor included;
+// the error names the position that supplied the id.
+func TestResolveCodexChildModels_CatalogMembership(t *testing.T) {
+	t.Parallel()
+	catalog := codexCatalog{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-6-astra": "v2"}
+	sol, nova := "openai/gpt-5.6-sol", "openai/gpt-5.6-nova"
+	roles := []codexRole{{Name: "correctness"}, {Name: "default"}, {Name: "explore"}}
+	tests := []struct {
+		name      string
+		subagents map[string]*string
+		env       string
+		catalog   codexCatalog
+		wantErr   string
+	}{
+		{"listed everywhere", map[string]*string{"correctness": &sol, "default": &sol}, "gpt-6-astra", catalog, ""},
+		{"persona entry unlisted", map[string]*string{"correctness": &nova}, "", catalog, `subagents.correctness: model "gpt-5.6-nova" is not in the bundled catalog of the pinned codex`},
+		{"default unlisted", map[string]*string{"default": &nova}, "", catalog, `subagents.default: model "gpt-5.6-nova" is not in the bundled catalog of the pinned codex`},
+		{"runner variable unlisted", nil, "gpt-5.6-nova", catalog, `FULLSEND_CODEX_SUBAGENT_MODEL: model "gpt-5.6-nova" is not in the bundled catalog of the pinned codex`},
+		{"floor unlisted after a CLI bump", nil, "", codexCatalog{"gpt-5.6-sol": "v2"}, `built-in default: model "gpt-5.6-luna" is not in the bundled catalog of the pinned codex`},
+		{"floor unlisted but overridden", map[string]*string{"default": &sol}, "", codexCatalog{"gpt-5.6-sol": "v2"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := resolveCodexChildModels(roles, tt.subagents, tt.env, tt.catalog)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+// TestCodexRole_TOMLModelLine pins the role file with and without a model:
+// keys name, description, [model], developer_instructions, nothing else. The
+// bytes without a model are unchanged; the model line is the only difference.
+func TestCodexRole_TOMLModelLine(t *testing.T) {
+	t.Parallel()
+
+	role := codexRole{
+		Name:         "correctness",
+		Description:  "Evaluates logic correctness, edge cases, nil handling, API contracts, test adequacy/integrity.",
+		Instructions: "# Correctness\n\nYou are a senior software engineer reviewing for correctness.\n",
+	}
+	without := "name = \"correctness\"\n" +
+		"description = \"Evaluates logic correctness, edge cases, nil handling, API contracts, test adequacy/integrity.\"\n" +
+		"developer_instructions = \"\"\"\n# Correctness\n\nYou are a senior software engineer reviewing for correctness.\n\"\"\"\n"
+	assert.Equal(t, without, string(role.toml()))
+
+	role.Model = "gpt-5.6-sol"
+	with := "name = \"correctness\"\n" +
+		"description = \"Evaluates logic correctness, edge cases, nil handling, API contracts, test adequacy/integrity.\"\n" +
+		"model = \"gpt-5.6-sol\"\n" +
+		"developer_instructions = \"\"\"\n# Correctness\n\nYou are a senior software engineer reviewing for correctness.\n\"\"\"\n"
+	assert.Equal(t, with, string(role.toml()), "the model line sits between description and developer_instructions")
+
+	role.Model = "gpt-5.6-\"sol\""
+	assert.Contains(t, string(role.toml()), "model = \"gpt-5.6-\\\"sol\\\"\"\n", "quoted like every other value")
 }

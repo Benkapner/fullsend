@@ -3,11 +3,14 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/config"
 )
 
 // codexDelegates is part one of the ADR 0126 gate: an agent gets native
@@ -27,6 +30,10 @@ func codexDelegates(def *piAgentDef, securityEnabled bool) bool {
 // the dropped frontmatter (#6970).
 type codexRole struct {
 	Name, Description, Instructions string
+	// Model is the child's model, set only for a skill persona with its own
+	// subagents entry (the validated bare OpenAI id). Empty means no `model`
+	// line: the child takes agents.default_subagent_model.
+	Model string
 }
 
 // codexReservedRoleNames are persona names Codex treats specially: `enabled`
@@ -35,13 +42,126 @@ type codexRole struct {
 // therefore denies. The runtime-neutral reserved list is discoverPersonas's.
 var codexReservedRoleNames = []string{"enabled", "explorer", "worker"}
 
-// toml renders the role file: name, description and developer_instructions,
-// each through codexTOMLString, nothing else. No model line in this PR: ADR
-// 0126's per-persona model arrives with the PR of #6970 that makes delegation
-// reachable; default and explore never carry one.
+// codexDefaultSubagentModel is the last position of the child model chain
+// (#6970): children run the cheap tier by default.
+const codexDefaultSubagentModel = "gpt-5.6-luna"
+
+// codexSubagentModelEnv is the runner-side run-level child model (#6970), read
+// from the runner's own environment like FULLSEND_PI_SUBAGENT_THINKING.
+const codexSubagentModelEnv = "FULLSEND_CODEX_SUBAGENT_MODEL"
+
+// codexChildModel validates one configured child model and returns the bare
+// OpenAI id: translateCodexModel's rules, less a gateway/ spec (the route is
+// the run's own model's) and `inherit`, which codex does not resolve for a
+// child. key names the entry so the error says what to fix.
+func codexChildModel(key, value string) (string, error) {
+	fix := "unset it so subagents.default or " + codexDefaultSubagentModel + " applies"
+	if name, ok := strings.CutPrefix(key, "subagents."); ok {
+		fix = fmt.Sprintf("set an OpenAI id (%s/<id>) or tombstone the entry (`%s: ~` under subagents:) so the run-level default applies",
+			codexOpenAIProvider, name)
+	}
+	model, err := translateCodexModel(value, true)
+	if err != nil || model.Gateway || strings.EqualFold(model.ID, "inherit") {
+		return "", fmt.Errorf("%s: %q is not an OpenAI model id (%s/<id> or the bare id); %s", key, value, codexOpenAIProvider, fix)
+	}
+	return model.ID, nil
+}
+
+// codexListedModel is Bootstrap's catalog check: codex itself checks a
+// run-level default only at each spawn and a role-file model not at all (the
+// child fails on the provider's 404 instead), so every chain position is
+// checked here, naming the position.
+func codexListedModel(catalog codexCatalog, key, model string) error {
+	if catalog.has(model) {
+		return nil
+	}
+	return fmt.Errorf("%s: model %q is not in the bundled catalog of the pinned codex (`codex debug models --bundled`)", key, model)
+}
+
+// resolveCodexChildModels binds a persona's own subagents entry to its role
+// and resolves the run-level default (FULLSEND_CODEX_SUBAGENT_MODEL, then
+// subagents.default, then codexDefaultSubagentModel), which Bootstrap sets as
+// agents.default_subagent_model. A nil entry is a tombstone and reads as
+// absent; a key naming neither default nor a persona is an error, as on pi;
+// every configured value is validated whichever position wins, and every
+// resolved model must be in catalog (ADR 0126). The returned slice is a copy.
+func resolveCodexChildModels(roles []codexRole, subagents map[string]*string, envValue string, catalog codexCatalog) ([]codexRole, string, error) {
+	persona := make(map[string]bool, len(roles))
+	for _, role := range roles {
+		if !slices.Contains(config.ReservedSubagentKeys(), role.Name) {
+			persona[role.Name] = true
+		}
+	}
+	// Sorted, so a config with two bad keys names the same one every run.
+	for _, key := range slices.Sorted(maps.Keys(subagents)) {
+		if key == "default" || subagents[key] == nil || persona[key] {
+			continue
+		}
+		discovered := "none"
+		if len(persona) > 0 {
+			discovered = strings.Join(slices.Sorted(maps.Keys(persona)), ", ")
+		}
+		return nil, "", fmt.Errorf("subagents.%s: %q is not a registered codex role (a discovered persona that was skipped is reported above); registered personas: %s",
+			key, key, discovered)
+	}
+
+	out := slices.Clone(roles)
+	for i, role := range out {
+		value := subagents[role.Name]
+		if value == nil || !persona[role.Name] {
+			continue
+		}
+		model, err := codexChildModel("subagents."+role.Name, *value)
+		if err != nil {
+			return nil, "", err
+		}
+		if err := codexListedModel(catalog, "subagents."+role.Name, model); err != nil {
+			return nil, "", err
+		}
+		out[i].Model = model
+	}
+
+	defaultModel, source := codexDefaultSubagentModel, "built-in default"
+	if value := subagents["default"]; value != nil {
+		model, err := codexChildModel("subagents.default", *value)
+		if err != nil {
+			return nil, "", err
+		}
+		defaultModel, source = model, "subagents.default"
+	}
+	if strings.TrimSpace(envValue) != "" {
+		model, err := codexChildModel(codexSubagentModelEnv, envValue)
+		if err != nil {
+			return nil, "", err
+		}
+		defaultModel, source = model, codexSubagentModelEnv
+	}
+	if err := codexListedModel(catalog, source, defaultModel); err != nil {
+		return nil, "", err
+	}
+
+	// Echoed as pi does, so a user sees why a child resolved as it did.
+	fmt.Fprintf(os.Stderr, "subagents: default → %s (from %s; children that name no persona and personas without an entry)\n",
+		defaultModel, source)
+	for _, role := range out {
+		if role.Model != "" {
+			fmt.Fprintf(os.Stderr, "subagents: %s → %s (from subagents.%s)\n", role.Name, role.Model, role.Name)
+		}
+	}
+	return out, defaultModel, nil
+}
+
+// toml renders the role file: name, description, model for a persona with
+// its own subagents entry (#6970) and developer_instructions, each through
+// codexTOMLString, nothing else.
 func (role codexRole) toml() []byte {
+	model := ""
+	if role.Model != "" {
+		model = "model = " + codexTOMLString(role.Model) + "\n"
+	}
 	return []byte("name = " + codexTOMLString(role.Name) + "\n" +
 		"description = " + codexTOMLString(role.Description) + "\n" +
+		model +
 		"developer_instructions = " + codexTOMLString(role.Instructions) + "\n")
 }
 
@@ -102,8 +222,8 @@ func codexRoles(skillDirs []string, agentName string) []codexRole {
 			continue
 		}
 		if keys := codexDroppedFrontmatterKeys(p.Frontmatter); len(keys) > 0 {
-			fmt.Fprintf(os.Stderr, "Codex persona %q: frontmatter %s dropped; a role carries no model or tool "+
-				"restriction, so the run-level child model and the parent's tools apply\n",
+			fmt.Fprintf(os.Stderr, "Codex persona %q: frontmatter %s dropped; the frontmatter model is not applied on codex "+
+				"(the role's model is its subagents entry, else the run-level child model) and the parent's tools apply\n",
 				p.Name, strings.Join(keys, ", "))
 		}
 		roles = append(roles, codexRole{Name: p.Name, Description: p.Description, Instructions: codexChildNote + p.Body + "\n"})

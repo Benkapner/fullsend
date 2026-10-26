@@ -111,6 +111,13 @@ func TestCodexGolden(t *testing.T) {
 		{"roles/correctness.toml", func(t *testing.T) string { return string(codexGoldenRoles(t)[0].toml()) }},
 		{"roles/default.toml", func(t *testing.T) string { return string(codexGoldenRoles(t)[1].toml()) }},
 		{"roles/explore.toml", func(t *testing.T) string { return string(codexGoldenRoles(t)[2].toml()) }},
+		{"roles/correctness-model.toml", func(t *testing.T) string {
+			resolved, _, err := resolveCodexChildModels(codexGoldenRoles(t),
+				map[string]*string{"correctness": strp("openai/gpt-5.6-sol")}, "", codexTestCatalog())
+			require.NoError(t, err)
+			require.Equal(t, "correctness", resolved[0].Name, "codexRoles sorts by name")
+			return string(resolved[0].toml())
+		}},
 		{"launch-delegating.txt", func(t *testing.T) string {
 			return codexGoldenLaunch(buildCodexRunCommand(hooksOn, codexModel{ID: "gpt-5.6-luna"}, "high", true, codexGoldenDelegatingDigests(t)))
 		}},
