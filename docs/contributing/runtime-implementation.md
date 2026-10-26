@@ -1144,7 +1144,7 @@ flowchart TB
   0.159.3) its `.codex/skills` even with the project untrusted; both are covered by the host-side
   and in-sandbox context scans, which match `SKILL.md` anywhere in the repo. The agent reads those
   files through the shell, and Codex 0.157.0 truncates a single exec at 10,000 tokens (head and
-  tail), so `codexNoSubagentNote` tells it to count lines with `awk 'END { print NR }'` (`wc -l`
+  tail), so both runtime notes (`codexChunkedReadNote`) tell it to count lines with `awk 'END { print NR }'` (`wc -l`
   misses a last line with no trailing newline) then `sed -n` a long `SKILL.md` in at most
   200-line ranges, one per tool call (#7831). A native child runs with its role's
   `developer_instructions` in place of the parent's, so every role file opens with
@@ -1245,7 +1245,7 @@ Matcher translation, per group:
 |---|---|---|
 | `Bash` | `Bash` | codex's shell tool has the same name |
 | `Write`, `Edit`, `MultiEdit` | `apply_patch` | the canonical name; `Write`/`Edit` would also match as aliases |
-| `Agent`, `Task` | `spawn_agent` | not reachable in v1 — no sub-agent roster is wired |
+| `Agent`, `Task` | `spawn_agent` | reached by a delegating agent's spawns (ADR 0126); the spawn guard is the last row |
 | `Read`, `Glob`, `Grep`, `LS`, `WebFetch`, `WebSearch` | *dropped, with a note* | no codex tool; the `Bash` groups cover this work |
 | `*` (`security.AllTools`) | *matcher key omitted* | an absent matcher matches every tool |
 | `PostToolUseFailure` (any tools) | *not wired* | codex has no such event and does not need one — see below |
@@ -1505,11 +1505,8 @@ Two artefacts of the run are worth knowing about:
   and local smoke runs.
 - The rollout session files are archived as transcripts but not error-classified: only the tee'd
   `exec --json` capture yields a verdict, which is what the runner's exit-code override reads.
-- Sub-agent roles are generated (`agents/<role>.toml`, digest-guarded) for an agent with the `Agent`
-  tool under harness security whose parent model Codex resolves to collaboration V1 (ADR 0126), but
-  codex's multi-agent tools stay off (`[agents] enabled = false`), so `review`/`retro` are unsupported;
-  `Bootstrap` appends a runtime note telling the agent to execute sub-agent definitions itself, in
-  order, as it does for pi.
+- Native sub-agents (ADR 0126) have not completed a fleet-shaped run; `review`/`retro` stay on
+  Claude Code in the docs until one does.
 
 ### Re-check on a `CODEX_VERSION` bump
 
