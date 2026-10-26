@@ -28,8 +28,8 @@ const fullsendDispatchInclude = ".gitlab/ci/fullsend-dispatch.yml"
 
 // fullsendAgentTemplatePath and fullsendPollTemplatePath are the sibling
 // scaffold files that must land compatible content alongside the wrapper
-// (fullsendPipelineInclude) before typed dispatch activation migrates
-// schedules or enforces the pipeline-variable restriction — see
+// (fullsendPipelineInclude) before typed dispatch activation enforces
+// the pipeline-variable restriction — see
 // gitlabPollAndAgentTemplatesLanded.
 const fullsendAgentTemplatePath = ".gitlab/ci/fullsend-agent.yml"
 const fullsendPollTemplatePath = ".gitlab/ci/fullsend-poll.yml"
@@ -548,7 +548,9 @@ func MergeGitLabCI(existing []byte) ([]byte, error) {
 }
 
 // mergeGitLabCIWithWrapper uses the effective wrapper's schema, including
-// remote pinned templates. An old wrapper must keep its variables contract.
+// remote pinned templates. The wrapper must declare the typed pipeline-input
+// contract; a legacy variable-based wrapper is rejected (see
+// legacyGitLabWrapperError).
 func mergeGitLabCIWithWrapper(existing, wrapper []byte) ([]byte, error) {
 	if len(bytes.TrimSpace(existing)) == 0 {
 		existing = []byte("include: []\nworkflow:\n  name: 'fullsend $CI_PIPELINE_SOURCE'\n")
@@ -567,11 +569,8 @@ func mergeGitLabCIWithWrapper(existing, wrapper []byte) ([]byte, error) {
 		// decodes to zero non-empty documents. Normalize it to the same
 		// minimal placeholder body used for a genuinely empty file above
 		// and continue merging with the supplied wrapper, rather than
-		// discarding that wrapper for newGitLabCI's embedded typed-input
-		// default — delivering the default here could introduce a typed
-		// root forwarding inputs a pending legacy wrapper never declares,
-		// even though install already classified that wrapper as legacy.
-		// See the review finding on this fallback.
+		// discarding that wrapper for newGitLabCI's embedded default, so
+		// the merged root always matches the wrapper being delivered.
 		source = []byte("include: []\nworkflow:\n  name: 'fullsend $CI_PIPELINE_SOURCE'\n")
 		docs, err = decodeGitLabDocuments(source)
 		if err != nil {
@@ -590,27 +589,18 @@ func mergeGitLabCIWithWrapper(existing, wrapper []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing GitLab wrapper: %w", err)
 	}
-	var contract *yaml.Node
-	if gitlabWrapperHasDispatchInputs(wrapper) {
-		contract = contractDocs[0].Content[0]
-	} else if err := requireCompleteGitLabDispatchContract(wrapper); err != nil {
-		return nil, err
-	} else if gitlabWrapperHasDispatchInputs(existing) {
-		// A forced typed-to-legacy transition: the root already carries
-		// the typed spec:inputs header and include:inputs forwarding map
-		// from a previous typed install, but the wrapper being merged
-		// now is legacy and declares none of those inputs. Delivering it
-		// as-is would leave an invalid include (the root forwards inputs
-		// the legacy wrapper's include never declares) and stale
-		// no_one_allowed/variable-free schedules incompatible with
-		// legacy dispatch. There is no automatic rollback of the root
-		// contract, so refuse rather than commit a broken mix.
-		return nil, fmt.Errorf("refusing to merge a legacy GitLab wrapper: the installed root already carries the typed pipeline-input contract (spec:inputs and include:inputs forwarding), which the legacy wrapper does not declare; manually roll back the root contract before reverting to pipeline-variable dispatch")
-	}
-	if contract != nil {
-		if docs, err = mergeGitLabInputContract(docs, contract); err != nil {
+	if !gitlabWrapperHasDispatchInputs(wrapper) {
+		// Only the typed pipeline-input contract is supported; an
+		// incomplete contract or a legacy variable-based wrapper is
+		// rejected rather than merged.
+		if err := requireCompleteGitLabDispatchContract(wrapper); err != nil {
 			return nil, err
 		}
+		return nil, legacyGitLabWrapperError()
+	}
+	contract := contractDocs[0].Content[0]
+	if docs, err = mergeGitLabInputContract(docs, contract); err != nil {
+		return nil, err
 	}
 	if len(docs) > 2 {
 		return nil, fmt.Errorf(".gitlab-ci.yml must contain a spec header and one pipeline body")
@@ -618,30 +608,28 @@ func mergeGitLabCIWithWrapper(existing, wrapper []byte) ([]byte, error) {
 	if err := mergeInclude(root); err != nil {
 		return nil, err
 	}
-	if contract != nil {
-		addRootInputForwarding(root)
-		variables := findMappingValue(root, "variables")
-		if variables == nil {
-			variables = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-			root.Content = append(root.Content, scalarNode("variables"), variables)
-		}
-		if variables.Kind != yaml.MappingNode {
-			return nil, fmt.Errorf("variables: is not a mapping")
-		}
-		stage := findMappingValue(variables, "STAGE")
-		if stage == nil {
-			variables.Content = append(variables.Content, scalarNode("STAGE"), scalarNode("$[[ inputs.stage ]]"))
-		} else if !gitlabVariableBridgesInput(variables, "STAGE", "stage") {
-			// gitlabVariableBridgesInput accepts both GitLab's plain-scalar
-			// variable syntax and its extended ({value:, expand:}) form, so
-			// a compatible extended declaration such as
-			// STAGE: {value: '$[[ inputs.stage ]]', expand: false} is
-			// preserved here rather than rejected — comparing stage.Value
-			// directly would see an empty scalar on a mapping node and
-			// report a spurious conflict. See the review finding on this
-			// comparison.
-			return nil, fmt.Errorf("existing STAGE variable conflicts with the dispatch input bridge")
-		}
+	addRootInputForwarding(root)
+	variables := findMappingValue(root, "variables")
+	if variables == nil {
+		variables = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		root.Content = append(root.Content, scalarNode("variables"), variables)
+	}
+	if variables.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("variables: is not a mapping")
+	}
+	stage := findMappingValue(variables, "STAGE")
+	if stage == nil {
+		variables.Content = append(variables.Content, scalarNode("STAGE"), scalarNode("$[[ inputs.stage ]]"))
+	} else if !gitlabVariableBridgesInput(variables, "STAGE", "stage") {
+		// gitlabVariableBridgesInput accepts both GitLab's plain-scalar
+		// variable syntax and its extended ({value:, expand:}) form, so
+		// a compatible extended declaration such as
+		// STAGE: {value: '$[[ inputs.stage ]]', expand: false} is
+		// preserved here rather than rejected — comparing stage.Value
+		// directly would see an empty scalar on a mapping node and
+		// report a spurious conflict. See the review finding on this
+		// comparison.
+		return nil, fmt.Errorf("existing STAGE variable conflicts with the dispatch input bridge")
 	}
 	mergeStages(root)
 	if err := mergeWorkflow(root); err != nil {
@@ -709,34 +697,60 @@ func gitlabWrapperDeclaresSpecInputs(content []byte) bool {
 // spec:inputs mapping that attempts the pipeline-input dispatch contract
 // but is missing one or more of the required names. gitlabWrapperHasDispatchInputs
 // classifies such a wrapper as "not typed", the same verdict it gives a
-// genuinely legacy, variable-based wrapper — but an alternate or incomplete
-// typed contract is neither: silently treating it as legacy would skip the
-// compatibility validation and no_one_allowed restriction typed activation
-// depends on. Callers that gate security-relevant behavior on
-// gitlabWrapperHasDispatchInputs must also reject this case explicitly
-// (see requireCompleteGitLabDispatchContract) rather than falling through
-// to legacy handling.
+// legacy, variable-based wrapper; requireCompleteGitLabDispatchContract
+// uses this to report the incomplete contract specifically rather than
+// describing it as a legacy wrapper.
 func gitlabWrapperHasPartialDispatchInputs(content []byte) bool {
 	return gitlabWrapperDeclaresSpecInputs(content) && !gitlabWrapperHasDispatchInputs(content)
 }
 
 // errGitLabIncompatibleWrapper marks a wrapper whose transport contract is
-// incompatible (an incomplete typed contract, or a typed contract lacking
-// the literal-scheduled marker). Callers that inspect the *installed*
+// incompatible (an incomplete typed contract, a typed contract lacking
+// the literal-scheduled marker, or a legacy variable-based wrapper). Callers that inspect the *installed*
 // wrapper can use errors.Is to tell this content problem — which a scaffold
 // repair resolves — apart from an API/read failure.
 var errGitLabIncompatibleWrapper = errors.New("incompatible GitLab wrapper contract")
 
 // requireCompleteGitLabDispatchContract rejects a wrapper that declares an
-// incomplete spec:inputs pipeline-input contract — neither a supported
-// legacy (variable-based) wrapper nor a valid typed one. See
-// gitlabWrapperHasPartialDispatchInputs and the fail-open review finding on
-// typed-transport detection.
+// incomplete spec:inputs pipeline-input contract, which is not a valid
+// typed one. See gitlabWrapperHasPartialDispatchInputs and the fail-open
+// review finding on typed-transport detection.
 func requireCompleteGitLabDispatchContract(content []byte) error {
 	if gitlabWrapperHasPartialDispatchInputs(content) {
-		return fmt.Errorf("%w: GitLab wrapper declares an incomplete spec:inputs pipeline-input dispatch contract (missing one or more of the %d required inputs); this is neither a supported legacy wrapper nor a valid typed one and must not be delivered or activated", errGitLabIncompatibleWrapper, len(gitlabDispatchInputNames))
+		return fmt.Errorf("%w: GitLab wrapper declares an incomplete spec:inputs pipeline-input dispatch contract (missing one or more of the %d required inputs); this is not a valid typed contract and must not be delivered or activated", errGitLabIncompatibleWrapper, len(gitlabDispatchInputNames))
 	}
 	return nil
+}
+
+// gitlabFirstTypedDispatchRelease is the first fullsend release whose GitLab
+// scaffold carries the typed pipeline-input dispatch contract. Older pinned
+// scaffolds deliver the legacy variable-based wrapper, which is no longer
+// supported.
+const gitlabFirstTypedDispatchRelease = "v0.46.0"
+
+// errGitLabLegacyWrapper marks a wrapper on the former variable-based
+// dispatch contract. It wraps errGitLabIncompatibleWrapper, so callers that
+// defer on any incompatible wrapper also defer on a legacy one.
+var errGitLabLegacyWrapper = fmt.Errorf("%w: %s uses the legacy pipeline-variable dispatch contract, which is no longer supported", errGitLabIncompatibleWrapper, fullsendPipelineInclude)
+
+// legacyGitLabWrapperError reports a wrapper on the former variable-based
+// dispatch contract. The automatic migration away from that contract has
+// been removed, so such a wrapper is incompatible rather than handled.
+func legacyGitLabWrapperError() error {
+	return fmt.Errorf("%w; pin fullsend_ref to %s or later (or remove the pin) so the typed pipeline-input wrapper is delivered", errGitLabLegacyWrapper, gitlabFirstTypedDispatchRelease)
+}
+
+// requireTypedGitLabWrapper accepts only a wrapper on the complete typed
+// pipeline-input contract. An incomplete contract or a legacy
+// variable-based wrapper is rejected with errGitLabIncompatibleWrapper.
+func requireTypedGitLabWrapper(content []byte) error {
+	if gitlabWrapperHasDispatchInputs(content) {
+		return validateGitLabTypedContract(content)
+	}
+	if err := requireCompleteGitLabDispatchContract(content); err != nil {
+		return err
+	}
+	return legacyGitLabWrapperError()
 }
 
 func effectiveGitLabWrapper(ctx context.Context, client forge.Client, owner, repo string, pending []forge.TreeFile) ([]byte, error) {
@@ -752,24 +766,24 @@ func effectiveGitLabWrapper(ctx context.Context, client forge.Client, owner, rep
 	return content, err
 }
 
-// GitLabUsesTypedDispatch reports the installed wrapper's transport contract.
+// GitLabUsesTypedDispatch reports whether a wrapper is installed on the
+// default branch: it returns false with no error when none is committed yet.
 // A pending fresh install is gated separately against its queued scaffold.
-// An installed wrapper that declares an incomplete spec:inputs contract is
-// rejected rather than silently treated as legacy — see
-// requireCompleteGitLabDispatchContract.
+// An installed wrapper must carry the complete typed pipeline-input
+// contract; an incomplete contract or a legacy variable-based wrapper is
+// rejected with errGitLabIncompatibleWrapper — see requireTypedGitLabWrapper.
 func GitLabUsesTypedDispatch(ctx context.Context, client forge.Client, owner, repo string) (bool, error) {
 	content, err := effectiveGitLabWrapper(ctx, client, owner, repo, nil)
 	if err != nil {
 		return false, err
 	}
-	typed := gitlabWrapperHasDispatchInputs(content)
-	if typed {
-		return true, validateGitLabTypedContract(content)
+	if content == nil {
+		return false, nil
 	}
-	if err := requireCompleteGitLabDispatchContract(content); err != nil {
+	if err := requireTypedGitLabWrapper(content); err != nil {
 		return false, err
 	}
-	return false, nil
+	return true, nil
 }
 
 // gitlabRootDeclaresDispatchInputs reports whether the committed root
@@ -780,8 +794,8 @@ func GitLabUsesTypedDispatch(ctx context.Context, client forge.Client, owner, re
 // typed does not guarantee the sibling root migration committed too — an
 // unmerged root-repair MR can leave the root's include:inputs forwarding
 // map (or its spec:inputs header) stale or absent while the wrapper is
-// typed. ActivateGitLabTypedDispatch must not migrate schedules or enforce
-// the restriction against that incompatible root — see the review finding
+// typed. ActivateGitLabTypedDispatch must not enforce the restriction
+// against that incompatible root — see the review finding
 // on activation's incomplete guard.
 func gitlabRootDeclaresDispatchInputs(ctx context.Context, client forge.Client, owner, repo string) (bool, error) {
 	content, err := client.GetFileContent(ctx, owner, repo, ".gitlab-ci.yml")
@@ -959,8 +973,8 @@ func gitlabAgentBridgesDispatchInputs(content []byte) bool {
 // already landed as typed in an earlier run does not guarantee these
 // sibling templates did too: an unmerged repair MR touching only the
 // agent or poll template can leave them stale while the wrapper remains
-// typed. activateGitLabTypedDispatch must not migrate schedules or
-// enforce the pipeline-variable restriction against that stale state —
+// typed. activateGitLabTypedDispatch must not enforce the
+// pipeline-variable restriction against that stale state —
 // see the review finding at gitlab_pipeline_var_restriction.go.
 func gitlabPollAndAgentTemplatesLanded(ctx context.Context, client forge.Client, owner, repo string) (bool, error) {
 	agent, err := client.GetFileContent(ctx, owner, repo, fullsendAgentTemplatePath)

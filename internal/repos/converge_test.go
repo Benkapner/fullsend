@@ -2341,6 +2341,17 @@ func populateGitLabTypedRoot(t testing.TB, fc *forge.FakeClient, owner, repo str
 	fc.FileContents[owner+"/"+repo+"/.gitlab-ci.yml"] = migrated
 }
 
+// populateGitLabTypedWrapper replaces populateGitLabInstalled's stub
+// wrapper with the typed scaffold stamped at the same ref (v2.5.0) and a
+// matching root. Tests that converge without a fullsend_ref (so content
+// drift never repairs the wrapper) need this: a committed legacy wrapper
+// is no longer supported.
+func populateGitLabTypedWrapper(t testing.TB, fc *forge.FakeClient, owner, repo string) {
+	t.Helper()
+	populateGitLabScaffoldContent(t, fc, owner, repo, "v2.5.0")
+	populateGitLabTypedRoot(t, fc, owner, repo, fc.FileContents[owner+"/"+repo+"/"+fullsendPipelineInclude])
+}
+
 func TestConverge_GitLab_RepairsMissingTrustScript(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	populateGitLabInstalled(fc, "acme", "api")
@@ -3023,7 +3034,9 @@ func TestConverge_GitLab_RetiredVarsDryRunDoesNotDelete(t *testing.T) {
 
 func TestConverge_GitLab_CreatesMissingSchedules(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	// Schedules are only created for a committed typed installation.
+	populateGitLabScaffoldContent(t, fc, "acme", "api", "v2.5.0")
+	populateGitLabTypedRoot(t, fc, "acme", "api", fc.FileContents["acme/api/"+fullsendPipelineInclude])
 	// All variables present.
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
@@ -4582,7 +4595,8 @@ func TestConverge_GitLab_MissingSchedules_DryRun(t *testing.T) {
 
 func TestConverge_GitLab_ScheduleCreationError(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	populateGitLabScaffoldContent(t, fc, "acme", "api", "v2.5.0")
+	populateGitLabTypedRoot(t, fc, "acme", "api", fc.FileContents["acme/api/"+fullsendPipelineInclude])
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -4628,7 +4642,8 @@ func TestConverge_GitLab_ScheduleCreationError(t *testing.T) {
 
 func TestConverge_GitLab_GetRepoError_ScheduleCreation(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	populateGitLabScaffoldContent(t, fc, "acme", "api", "v2.5.0")
+	populateGitLabTypedRoot(t, fc, "acme", "api", fc.FileContents["acme/api/"+fullsendPipelineInclude])
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"

@@ -166,16 +166,6 @@ type ConvergeResult struct {
 	// error instead of silently skipping the fast-path.
 	NeedsGitLabWebhook bool
 
-	// GitLabTypedDispatch reports whether the GitLab wrapper this run
-	// installed (still possibly queued in an unmerged upgrade MR) uses the
-	// pipeline-input dispatch contract rather than the legacy
-	// pipeline-variable one. Set from InstallResult.GitLabTypedDispatch
-	// for fresh installs (see Installed). Post-install schedule setup
-	// must use this instead of re-reading the default branch, which can
-	// still show the prior or absent wrapper while the install MR is
-	// unmerged.
-	GitLabTypedDispatch bool
-
 	// Converged is true when the repo had drifted components that were
 	// repaired (variables, refs, or missing scaffold files).
 	Converged bool
@@ -1730,7 +1720,6 @@ func convergeRepo(ctx context.Context,
 
 		cr.Installed = true
 		cr.WIFProvider = installResult.WIFProvider
-		cr.GitLabTypedDispatch = installResult.GitLabTypedDispatch
 		cr.Actions = append(cr.Actions, ComponentAction{
 			Component: "all",
 			Action:    "add",
@@ -2084,9 +2073,8 @@ func withoutLegacyOpenAIConsumer(ctx context.Context, resolved ResolvedConfig, f
 // gitlabFreshInstallDryRunPreflight runs the read-only portion of the
 // GitLab-specific fresh-install checks Install performs before writes:
 // resolving the effective wrapper, validating the typed pipeline-input
-// contract (or rejecting an incomplete one) and the live pipeline-variable
-// override restriction, refusing a typed-to-legacy transition, and
-// confirming the root .gitlab-ci.yml would merge cleanly (e.g. no STAGE
+// contract (rejecting an incomplete or legacy one) and the live
+// pipeline-variable override restriction, and confirming the root .gitlab-ci.yml would merge cleanly (e.g. no STAGE
 // conflict), and confirming the project's push rule would let the
 // poll-state branches be created. It performs no writes and never mutates
 // project state. A fresh-install dry run that skips these checks can report
@@ -2110,26 +2098,17 @@ func gitlabFreshInstallDryRunPreflight(ctx context.Context, resolved ResolvedCon
 		return fmt.Errorf("reading effective GitLab wrapper: %w", err)
 	}
 
-	if gitlabWrapperHasDispatchInputs(wrapper) {
-		if err := validateGitLabTypedContract(wrapper); err != nil {
-			return err
-		}
-		if err := requireGitLabRestrictionBeforeDelivery(ctx, client, owner, repo); err != nil {
-			return err
-		}
-		if err := requireGitLabPipelineVariableRestriction(ctx, client, owner, repo, true); err != nil {
-			return err
-		}
-	} else if err := requireCompleteGitLabDispatchContract(wrapper); err != nil {
+	if err := requireTypedGitLabWrapper(wrapper); err != nil {
 		return err
-	} else if gitlabWrapperHasDispatchInputs(existing) {
-		return fmt.Errorf("refusing GitLab typed-to-legacy transition: the installed root still forwards the typed pipeline-input contract, which the legacy wrapper does not declare; manually roll back the root contract before reverting to pipeline-variable dispatch")
 	}
-
-	if !HasFullsendEntries(existing) || gitlabWrapperHasDispatchInputs(wrapper) {
-		if _, err := mergeGitLabCIWithWrapper(existing, wrapper); err != nil {
-			return fmt.Errorf("merging .gitlab-ci.yml: %w", err)
-		}
+	if err := requireGitLabRestrictionBeforeDelivery(ctx, client, owner, repo); err != nil {
+		return err
+	}
+	if err := requireGitLabPipelineVariableRestriction(ctx, client, owner, repo, true); err != nil {
+		return err
+	}
+	if _, err := mergeGitLabCIWithWrapper(existing, wrapper); err != nil {
+		return fmt.Errorf("merging .gitlab-ci.yml: %w", err)
 	}
 	return requireGitLabPushRuleAllowsPollStateBranches(ctx, client, owner, repo)
 }
@@ -2438,14 +2417,13 @@ func convergeSchedules(ctx context.Context,
 		return actions
 	}
 
-	// Legacy (non-typed) templates select poll mode from a schedule
-	// pipeline variable rather than the schedule description, so schedule
-	// creation/repair must still set it for repos that haven't migrated to
-	// the typed pipeline-input contract. Checked once per call against the
-	// currently effective wrapper — not any scaffold queued by this same
-	// convergence run, which hasn't committed yet. Checked before either
-	// mutation below (reactivating or creating), not just before creating:
-	// for a typed installation, both actions resume scheduled polling, and
+	// The installed wrapper must be on the typed pipeline-input contract;
+	// a legacy variable-based or otherwise incompatible wrapper defers
+	// schedule mutations until a scaffold repair lands. Checked once per
+	// call against the currently effective wrapper — not any scaffold
+	// queued by this same convergence run, which hasn't committed yet.
+	// Checked before either mutation below (reactivating or creating),
+	// not just before creating: both actions resume scheduled polling, and
 	// resuming it ahead of the required pipeline-variable override
 	// restriction would let credential-bearing polling run under a weaker
 	// policy with no rollback once convergeGitLabRootCIFiles reports the
@@ -2538,7 +2516,7 @@ func convergeSchedules(ctx context.Context,
 		}
 
 		_, createErr := client.CreatePipelineSchedule(
-			ctx, owner, repo, defaultBranch, spec.Description, spec.Cron, ScheduleVariablesFor(*spec, typed))
+			ctx, owner, repo, defaultBranch, spec.Description, spec.Cron, spec.Variables)
 		if createErr != nil {
 			actions = append(actions, ComponentAction{
 				Component: name,
@@ -2762,13 +2740,10 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 		}
 		// Validate only — never mutate — here. The wrapper checked above
 		// may still be queued in pending rather than already committed
-		// (see effectiveGitLabWrapper), so flipping the live schedule
-		// variables and project restriction at this point can activate
-		// typed dispatch before compatible templates actually reach the
-		// protected default branch. If the batched commit below then
-		// fails to land (or a later convergence step errors first), a
-		// legacy poller would be stranded behind a restriction it can't
-		// satisfy. The real activation runs from convergeRepo only after
+		// (see effectiveGitLabWrapper), so changing the project
+		// restriction at this point can activate typed dispatch before
+		// compatible templates actually reach the protected default
+		// branch. The real activation runs from convergeRepo only after
 		// commitScaffold succeeds, re-checking the now-committed wrapper.
 		if err := requireGitLabPipelineVariableRestriction(ctx, client, owner, repo, true); err != nil {
 			return nil, append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "error", Detail: err.Error()})
@@ -2794,23 +2769,10 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 			actions = append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "update", Detail: detail})
 			progress(repoFullName, progressAction, progressText)
 		}
-	} else if err := requireCompleteGitLabDispatchContract(wrapper); err != nil {
-		return nil, append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "error", Detail: err.Error()})
-	} else if gitlabWrapperHasDispatchInputs(content) {
-		// Forced typed-to-legacy transition: the committed root already
-		// carries the typed spec:inputs header and include:inputs
-		// forwarding map from a previous typed install, but the
-		// effective wrapper for this convergence is legacy and declares
-		// none of those inputs. Nothing above migrates or reverts the
-		// root in that direction, so delivering the legacy wrapper
-		// alongside an untouched typed root would leave an invalid
-		// include and restriction/schedule state incompatible with
-		// legacy dispatch. Refuse rather than commit that broken mix.
-		return nil, append(actions, ComponentAction{
-			Component: "gitlab-ci-inputs",
-			Action:    "error",
-			Detail:    "refusing GitLab typed-to-legacy transition: the installed root still forwards the typed pipeline-input contract, which the legacy wrapper does not declare; manually roll back the root contract before reverting to pipeline-variable dispatch",
-		})
+	} else if wrapper != nil {
+		// An incomplete or legacy variable-based wrapper (e.g. from a
+		// fullsend_ref pinned before typed dispatch) is not supported.
+		return nil, append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "error", Detail: requireTypedGitLabWrapper(wrapper).Error()})
 	}
 
 	if !changed {
