@@ -159,7 +159,9 @@ func requireServiceAccountScriptSupport(files []forge.TreeFile, serviceAccount s
 // gitlab.fullsend_ref pin and applies requireServiceAccountScriptSupport, so
 // install fails before any write and status reports the configuration error.
 // An unpinned or release-matching ref renders the running binary's embedded
-// script, which reads the variable. The fetch is read-only.
+// script, which reads the variable; an established install with no ref at
+// all is covered by checkEstablishedServiceAccountSupport. The fetch is
+// read-only.
 func checkPinnedServiceAccountSupport(ctx context.Context, resolved ResolvedConfig, upstreamRef, upstreamTag string, refResolver *RefResolver) error {
 	if resolved.Forge != ForgeGitLab || resolved.DeclaredServiceAccount == "" || resolved.Vendor {
 		return nil
@@ -178,6 +180,30 @@ func checkPinnedServiceAccountSupport(ctx context.Context, resolved ResolvedConf
 		return fmt.Errorf("%s: %w", repo, err)
 	}
 	return nil
+}
+
+// checkEstablishedServiceAccountSupport covers an established GitLab
+// installation for which no convergence will refresh scaffold content
+// (neither a manifest ref nor a build-time upstream ref): the agent job
+// script on the default branch is all there is, so a legacy one that never
+// reads FULLSEND_GCP_SERVICE_ACCOUNT must be rejected before the variable
+// is written rather than left on direct federation. The read is read-only.
+func checkEstablishedServiceAccountSupport(ctx context.Context, resolved ResolvedConfig, upstreamRef string) error {
+	if resolved.Forge != ForgeGitLab || resolved.DeclaredServiceAccount == "" ||
+		resolved.FullsendRef != "" || upstreamRef != "" {
+		return nil
+	}
+	repo := resolved.Owner + "/" + resolved.Repo
+	content, err := resolved.ForgeConfig.Client.GetFileContent(ctx, resolved.Owner, resolved.Repo, gitlabAgentJobScriptPath)
+	if err != nil && !forge.IsNotFound(err) {
+		return fmt.Errorf("%s: reading %s to verify inference.service_account support: %w", repo, gitlabAgentJobScriptPath, err)
+	}
+	if err == nil && bytes.Contains(content, []byte(forge.VarGCPServiceAccount)) {
+		return nil
+	}
+	return fmt.Errorf("%s: inference.service_account is not supported by the installed GitLab scaffold: its %s does not read %s and no scaffold ref is configured to refresh it; "+
+		"set gitlab.fullsend_ref (or run a release build) so the scaffold can be upgraded (existing variables were left unchanged)",
+		repo, gitlabAgentJobScriptPath, forge.VarGCPServiceAccount)
 }
 
 // applyGitLabExistingWIFTemplates applies the existing-provider options to a

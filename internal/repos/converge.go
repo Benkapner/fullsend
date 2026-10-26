@@ -1442,6 +1442,15 @@ func convergeRepo(ctx context.Context,
 		cr.Error = err
 		return cr
 	}
+	// With no ref at all nothing refreshes an established installation's
+	// scaffold, so its live agent job script must already read the
+	// variable. A fresh install renders the embedded templates.
+	if workflowPresent(d.components) {
+		if err := checkEstablishedServiceAccountSupport(ctx, resolved, cfg.UpstreamRef); err != nil {
+			cr.Error = err
+			return cr
+		}
+	}
 	// A release build supplies the target when an OpenAI WIF manifest is
 	// unpinned, including migration from an existing github setup install.
 	if auth == InferenceAuthOpenAIWIF && resolved.FullsendRef == "" && cfg.UpstreamRef != "" {

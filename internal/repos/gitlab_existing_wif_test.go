@@ -679,3 +679,83 @@ func TestRenderGitLabAgentAudience_MissingTemplate(t *testing.T) {
 	require.ErrorContains(t, err, "inference.wif_audience is declared")
 	assert.Equal(t, scaffold.GitLabAgentTemplatePath, fullsendAgentTemplatePath)
 }
+
+// unpinnedInstalledGitLabExistingWIF is installedGitLabExistingWIF with no
+// gitlab.fullsend_ref, so under a build with no upstream ref nothing will
+// refresh the live scaffold.
+func unpinnedInstalledGitLabExistingWIF(t *testing.T) (*forge.FakeClient, *Manifest) {
+	t.Helper()
+	fc, m := installedGitLabExistingWIF(t)
+	m.GitLab.FullsendRef = ""
+	return fc, m
+}
+
+func TestConverge_GitLabServiceAccountUnpinnedEstablishedInstall(t *testing.T) {
+	t.Run("legacy live script fails before writes", func(t *testing.T) {
+		fc, m := unpinnedInstalledGitLabExistingWIF(t)
+		fc.FileContents["group/project/"+gitlabAgentJobScriptPath] = []byte(legacyAgentJobScript)
+		spy := &spyScaffoldCommit{}
+		result, err := Converge(context.Background(), ConvergeConfig{Manifest: m, MaxConcurrency: 4, Direct: true},
+			newTestClientFactory(fc), spy.fn(), noopProgress)
+		require.NoError(t, err)
+		require.Len(t, result.Failed(), 1)
+		msg := result.Failed()[0].Error.Error()
+		assert.Contains(t, msg, "does not read FULLSEND_GCP_SERVICE_ACCOUNT")
+		assert.Contains(t, msg, "set gitlab.fullsend_ref")
+		_, written := fc.VariableValues["group/project/"+forge.VarGCPServiceAccount]
+		assert.False(t, written, "the variable is not written")
+		assert.Empty(t, fc.CreatedSecrets)
+		assert.Empty(t, spy.files, "no scaffold commit")
+	})
+
+	t.Run("current live script passes", func(t *testing.T) {
+		fc, m := unpinnedInstalledGitLabExistingWIF(t)
+		result, err := Converge(context.Background(), ConvergeConfig{Manifest: m, MaxConcurrency: 4, Direct: true},
+			newTestClientFactory(fc), (&spyScaffoldCommit{}).fn(), noopProgress)
+		require.NoError(t, err)
+		require.Empty(t, result.Failed(), "results: %+v", result.Results)
+		assert.Equal(t, testServiceAccount, fc.VariableValues["group/project/"+forge.VarGCPServiceAccount])
+	})
+}
+
+func TestStatus_GitLabServiceAccountUnpinnedLegacyLiveScript(t *testing.T) {
+	fc, m := unpinnedInstalledGitLabExistingWIF(t)
+	fc.FileContents["group/project/"+gitlabAgentJobScriptPath] = []byte(legacyAgentJobScript)
+	status, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	require.NoError(t, err)
+	require.Len(t, status.Repos, 1)
+	assert.Contains(t, status.Repos[0].Error,
+		"group/project: inference.service_account is not supported by the installed GitLab scaffold")
+
+	// The current live script clears the error.
+	current, err := scaffold.GitLabPerRepoFile(gitlabAgentJobScriptPath)
+	require.NoError(t, err)
+	fc.FileContents["group/project/"+gitlabAgentJobScriptPath] = current
+	status, err = Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	require.NoError(t, err)
+	assert.NotContains(t, status.Repos[0].Error, "inference.service_account")
+}
+
+func TestCheckEstablishedServiceAccountSupport(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	rc := ResolvedConfig{
+		Owner: "group", Repo: "project", Forge: ForgeGitLab,
+		DeclaredServiceAccount: testServiceAccount, ForgeConfig: ForgeConfig{Client: fc},
+	}
+	require.ErrorContains(t, checkEstablishedServiceAccountSupport(ctx, rc, ""), "does not read",
+		"a missing script is not current")
+	require.NoError(t, checkEstablishedServiceAccountSupport(ctx, rc, "v9.9.9"),
+		"a build-time ref refreshes the scaffold")
+	pinned := rc
+	pinned.FullsendRef = "v9.9.9"
+	require.NoError(t, checkEstablishedServiceAccountSupport(ctx, pinned, ""),
+		"a pin is checked by checkPinnedServiceAccountSupport")
+	none := rc
+	none.DeclaredServiceAccount = ""
+	require.NoError(t, checkEstablishedServiceAccountSupport(ctx, none, ""))
+
+	fc.Errors["GetFileContent"] = assert.AnError
+	require.ErrorContains(t, checkEstablishedServiceAccountSupport(ctx, rc, ""),
+		"to verify inference.service_account support")
+}
