@@ -669,9 +669,9 @@ must also be that release or later.
 
 An entry without `source:` makes `fullsend lint` fetch the agent from the
 agents repository, so the job needs network access; `GH_TOKEN` authenticates
-that request, and `--offline` cannot
-resolve that entry
-([#8743](https://github.com/fullsend-ai/fullsend/issues/8743)).
+that request. With `--offline`, `fullsend lint` resolves that entry from the
+local cache when an earlier run cached it, and fails only when the cache has no
+matching revision.
 
 ## See also
 
