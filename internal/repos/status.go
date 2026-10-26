@@ -322,6 +322,10 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 			status.Error = err.Error()
 			return status
 		}
+		if err := checkPinnedServiceAccountSupport(ctx, cfg, dcfg.UpstreamRef, dcfg.UpstreamTag, resolver); err != nil {
+			status.Error = err.Error()
+			return status
+		}
 	}
 	status.ExpectedMintURL = cfg.MintURL
 

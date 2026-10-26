@@ -1458,7 +1458,10 @@ Set the keys on a repository entry instead of the `gitlab` section if only
 some projects use the existing provider. Install checks the values without
 calling GCP. The service account must be a full email ending in
 `.iam.gserviceaccount.com`. The audience must be a single line and must not
-contain `$`, which GitLab would expand as a CI/CD variable.
+contain `$`, which GitLab would expand as a CI/CD variable. If
+`gitlab.fullsend_ref` pins a release whose `run-agent-job.sh` does not read
+`FULLSEND_GCP_SERVICE_ACCOUNT`, install and `repos status` report a
+configuration error; move the pin to a release with impersonation support.
 
 Install then:
 

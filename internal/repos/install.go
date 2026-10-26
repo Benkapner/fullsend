@@ -663,11 +663,12 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 		})
 	}
 	if cfg.Forge == ForgeGitLab {
-		// Rendered after collection so embedded and pinned (prebuilt)
-		// templates both carry the configured audience.
-		files, err = renderGitLabAgentAudience(files, cfg.InferenceWIFAudience)
+		// Applied after collection so embedded and pinned (prebuilt)
+		// templates both carry the configured audience and are checked
+		// for service-account support.
+		files, err = applyGitLabExistingWIFTemplates(files, cfg.InferenceWIFAudience, cfg.InferenceServiceAccount)
 		if err != nil {
-			return nil, fmt.Errorf("rendering GitLab agent token audience: %w", err)
+			return nil, fmt.Errorf("applying GitLab existing WIF provider options: %w", err)
 		}
 	}
 	if !cfg.ManagedConfigAdoptionRequired {

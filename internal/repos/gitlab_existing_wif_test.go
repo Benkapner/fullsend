@@ -273,7 +273,7 @@ func TestBuildScaffoldFiles_GitLabAgentAudience(t *testing.T) {
 	// A template without the shipped audience line cannot be rendered.
 	cfg.PrebuiltScaffoldFiles = scaffold.InstallFiles{{Path: fullsendAgentTemplatePath, Content: []byte("job: {}\n"), Mode: "100644"}}
 	_, err = BuildScaffoldFiles(cfg)
-	require.ErrorContains(t, err, "rendering GitLab agent token audience")
+	require.ErrorContains(t, err, "applying GitLab existing WIF provider options")
 }
 
 func TestManagedVarsForForge_GitLabServiceAccount(t *testing.T) {
@@ -564,4 +564,102 @@ func TestConverge_GitLabDeletesLeftoverServiceAccount(t *testing.T) {
 		}
 	}
 	assert.Equal(t, "deleted obsolete "+forge.VarGCPServiceAccount+" (inference.service_account is not declared)", detail)
+}
+
+// legacyAgentJobScript is a run-agent-job.sh from before service-account
+// impersonation: it never reads FULLSEND_GCP_SERVICE_ACCOUNT.
+const legacyAgentJobScript = "#!/usr/bin/env bash\n# pre-impersonation job script\nexport GOOGLE_APPLICATION_CREDENTIALS=/tmp/creds.json\n"
+
+func TestRequireServiceAccountScriptSupport(t *testing.T) {
+	current, err := scaffold.GitLabPerRepoFile(gitlabAgentJobScriptPath)
+	require.NoError(t, err)
+	supported := []forge.TreeFile{{Path: gitlabAgentJobScriptPath, Content: current}}
+	legacy := []forge.TreeFile{{Path: gitlabAgentJobScriptPath, Content: []byte(legacyAgentJobScript)}}
+
+	require.NoError(t, requireServiceAccountScriptSupport(supported, testServiceAccount))
+	require.NoError(t, requireServiceAccountScriptSupport(legacy, ""), "nothing to check without a service account")
+	require.NoError(t, requireServiceAccountScriptSupport(nil, testServiceAccount), "a set without the script passes")
+	err = requireServiceAccountScriptSupport(legacy, testServiceAccount)
+	require.Error(t, err)
+	assert.Equal(t, "inference.service_account needs a gitlab.fullsend_ref that includes service-account impersonation support (the pinned run-agent-job.sh does not read FULLSEND_GCP_SERVICE_ACCOUNT)", err.Error())
+}
+
+func TestBuildScaffoldFiles_GitLabServiceAccountNeedsScriptSupport(t *testing.T) {
+	cfg := InstallConfig{
+		Owner: "group", Repo: "project", Forge: ForgeGitLab, Roles: []string{"triage"},
+		InferenceServiceAccount: testServiceAccount,
+	}
+	_, err := BuildScaffoldFiles(cfg)
+	require.NoError(t, err, "the embedded script reads the variable")
+
+	cfg.PrebuiltScaffoldFiles = scaffold.InstallFiles{{Path: gitlabAgentJobScriptPath, Content: []byte(legacyAgentJobScript), Mode: "100755"}}
+	_, err = BuildScaffoldFiles(cfg)
+	require.ErrorContains(t, err, "does not read FULLSEND_GCP_SERVICE_ACCOUNT")
+}
+
+// pinGitLabLegacyAgentScript serves a pre-impersonation run-agent-job.sh at
+// the manifest's pinned gitlab.fullsend_ref.
+func pinGitLabLegacyAgentScript(fc *forge.FakeClient, m *Manifest) {
+	fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+gitlabAgentJobScriptUpstreamPath+"@"+m.GitLab.FullsendRef] = []byte(legacyAgentJobScript)
+}
+
+func TestConverge_GitLabServiceAccountRejectsLegacyPinnedScript(t *testing.T) {
+	t.Run("fresh install", func(t *testing.T) {
+		fc := newFakeClientForBatch("group/project")
+		m := gitlabExistingWIFManifest(t, "inference:\n  project: example-project\n  wif_provider: "+testExistingWIF+
+			"\n  service_account: "+testServiceAccount+"\n")
+		pinGitLabLegacyAgentScript(fc, m)
+		result, err := Converge(context.Background(), ConvergeConfig{Manifest: m, MaxConcurrency: 4, Direct: true},
+			newTestClientFactory(fc), (&fakeScaffoldCommit{}).fn(), noopProgress)
+		require.NoError(t, err)
+		require.Len(t, result.Failed(), 1)
+		assert.Contains(t, result.Failed()[0].Error.Error(), "needs a gitlab.fullsend_ref that includes service-account impersonation support")
+		assert.Empty(t, fc.CreatedSecrets, "nothing is written")
+		assert.Empty(t, fc.Variables, "nothing is written")
+	})
+
+	t.Run("established install", func(t *testing.T) {
+		fc, m := installedGitLabExistingWIF(t)
+		pinGitLabLegacyAgentScript(fc, m)
+		result, err := Converge(context.Background(), ConvergeConfig{Manifest: m, MaxConcurrency: 4, Direct: true},
+			newTestClientFactory(fc), (&fakeScaffoldCommit{}).fn(), noopProgress)
+		require.NoError(t, err)
+		require.Len(t, result.Failed(), 1)
+		assert.Contains(t, result.Failed()[0].Error.Error(), "does not read FULLSEND_GCP_SERVICE_ACCOUNT")
+		_, written := fc.VariableValues["group/project/"+forge.VarGCPServiceAccount]
+		assert.False(t, written, "the variable is not written")
+		assert.Empty(t, fc.CreatedSecrets)
+	})
+
+	t.Run("without a service account the legacy script is fine", func(t *testing.T) {
+		fc := newFakeClientForBatch("group/project")
+		m := gitlabExistingWIFManifest(t, "inference:\n  project: example-project\n  wif_provider: "+testExistingWIF+"\n")
+		pinGitLabLegacyAgentScript(fc, m)
+		require.NoError(t, checkPinnedServiceAccountSupport(context.Background(), ResolvedConfig{
+			Owner: "group", Repo: "project", Forge: ForgeGitLab, FullsendRef: m.GitLab.FullsendRef,
+		}, "", "", NewRefResolver(fc)))
+	})
+}
+
+func TestStatus_GitLabServiceAccountLegacyPinnedScript(t *testing.T) {
+	fc, m := installedGitLabExistingWIF(t)
+	pinGitLabLegacyAgentScript(fc, m)
+	status, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	require.NoError(t, err)
+	require.Len(t, status.Repos, 1)
+	assert.Contains(t, status.Repos[0].Error, "group/project: inference.service_account needs a gitlab.fullsend_ref")
+}
+
+func TestCheckPinnedServiceAccountSupport_SkipsReleaseMatchAndFetchErrors(t *testing.T) {
+	fc := forge.NewFakeClient()
+	rc := ResolvedConfig{
+		Owner: "group", Repo: "project", Forge: ForgeGitLab, FullsendRef: "v9.9.9",
+		DeclaredServiceAccount: testServiceAccount,
+	}
+	require.NoError(t, checkPinnedServiceAccountSupport(context.Background(), rc, "abc123", "v9.9.9", NewRefResolver(fc)),
+		"a release-matching ref renders the embedded script")
+	require.NoError(t, checkPinnedServiceAccountSupport(context.Background(), rc, "", "", nil), "no upstream client")
+
+	err := checkPinnedServiceAccountSupport(context.Background(), rc, "", "", NewRefResolver(fc))
+	require.ErrorContains(t, err, "to verify inference.service_account support")
 }

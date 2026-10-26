@@ -1435,6 +1435,13 @@ func convergeRepo(ctx context.Context,
 			}
 		}
 	}
+	// A pinned scaffold whose agent job script predates service-account
+	// impersonation would ignore FULLSEND_GCP_SERVICE_ACCOUNT; reject it
+	// before any variable is written.
+	if err := checkPinnedServiceAccountSupport(ctx, resolved, cfg.UpstreamRef, cfg.UpstreamTag, refResolver); err != nil {
+		cr.Error = err
+		return cr
+	}
 	// A release build supplies the target when an OpenAI WIF manifest is
 	// unpinned, including migration from an existing github setup install.
 	if auth == InferenceAuthOpenAIWIF && resolved.FullsendRef == "" && cfg.UpstreamRef != "" {
@@ -3044,7 +3051,7 @@ func convergeRefFiles(ctx context.Context,
 			}
 		}
 		if tplErr == nil {
-			templateFiles, tplErr = renderGitLabAgentAudience(templateFiles, resolved.DeclaredWIFAudience)
+			templateFiles, tplErr = applyGitLabExistingWIFTemplates(templateFiles, resolved.DeclaredWIFAudience, resolved.DeclaredServiceAccount)
 		}
 		if tplErr != nil {
 			actions = append(actions, ComponentAction{
@@ -3227,7 +3234,7 @@ func convergeScaffoldFiles(ctx context.Context,
 			gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest), templateRef, "",
 		)
 		if tplErr == nil {
-			templateFiles, tplErr = renderGitLabAgentAudience(templateFiles, resolved.DeclaredWIFAudience)
+			templateFiles, tplErr = applyGitLabExistingWIFTemplates(templateFiles, resolved.DeclaredWIFAudience, resolved.DeclaredServiceAccount)
 		}
 		if tplErr != nil {
 			actions = append(actions, ComponentAction{

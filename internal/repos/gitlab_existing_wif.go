@@ -1,7 +1,10 @@
 package repos
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 
@@ -118,4 +121,68 @@ func renderGitLabAgentAudience(files []forge.TreeFile, audience string) ([]forge
 		out[i].Content = rendered
 	}
 	return out, nil
+}
+
+// gitlabAgentJobScriptUpstreamPath is run-agent-job.sh in
+// fullsend-ai/fullsend, read at a pinned gitlab.fullsend_ref.
+const gitlabAgentJobScriptUpstreamPath = "internal/scaffold/fullsend-repo-gitlab/" + gitlabAgentJobScriptPath
+
+// requireServiceAccountScriptSupport fails when serviceAccount is declared
+// but the agent job script among files never reads
+// FULLSEND_GCP_SERVICE_ACCOUNT: install would write the variable and the
+// job would still use direct federation. Files without the script pass.
+func requireServiceAccountScriptSupport(files []forge.TreeFile, serviceAccount string) error {
+	if serviceAccount == "" {
+		return nil
+	}
+	for _, f := range files {
+		if f.Path != gitlabAgentJobScriptPath {
+			continue
+		}
+		if bytes.Contains(f.Content, []byte(forge.VarGCPServiceAccount)) {
+			return nil
+		}
+		return fmt.Errorf("inference.service_account needs a gitlab.fullsend_ref that includes service-account impersonation support (the pinned %s does not read %s)",
+			path.Base(gitlabAgentJobScriptPath), forge.VarGCPServiceAccount)
+	}
+	return nil
+}
+
+// checkPinnedServiceAccountSupport reads the agent job script at an explicit
+// gitlab.fullsend_ref pin and applies requireServiceAccountScriptSupport, so
+// install fails before any write and status reports the configuration error.
+// An unpinned or release-matching ref renders the running binary's embedded
+// script, which reads the variable. The fetch is read-only.
+func checkPinnedServiceAccountSupport(ctx context.Context, resolved ResolvedConfig, upstreamRef, upstreamTag string, refResolver *RefResolver) error {
+	if resolved.Forge != ForgeGitLab || resolved.DeclaredServiceAccount == "" || resolved.Vendor {
+		return nil
+	}
+	rref := resolveTargetRef(ctx, resolved.FullsendRef, upstreamRef, upstreamTag, refResolver)
+	if rref.manifestRef == "" || refResolver == nil {
+		return nil
+	}
+	repo := resolved.Owner + "/" + resolved.Repo
+	content, err := refResolver.client.GetFileContentAtRef(ctx, shimOwner, shimRepo, gitlabAgentJobScriptUpstreamPath, rref.manifestRef)
+	if err != nil {
+		return fmt.Errorf("%s: fetching %s at %s to verify inference.service_account support: %w", repo, gitlabAgentJobScriptPath, rref.manifestRef, err)
+	}
+	files := []forge.TreeFile{{Path: gitlabAgentJobScriptPath, Content: content}}
+	if err := requireServiceAccountScriptSupport(files, resolved.DeclaredServiceAccount); err != nil {
+		return fmt.Errorf("%s: %w", repo, err)
+	}
+	return nil
+}
+
+// applyGitLabExistingWIFTemplates applies the existing-provider options to a
+// full GitLab template set: it renders the agent job's token audience and
+// checks that the set's agent job script reads a declared service account.
+func applyGitLabExistingWIFTemplates(files []forge.TreeFile, audience, serviceAccount string) ([]forge.TreeFile, error) {
+	files, err := renderGitLabAgentAudience(files, audience)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireServiceAccountScriptSupport(files, serviceAccount); err != nil {
+		return nil, err
+	}
+	return files, nil
 }
