@@ -1089,9 +1089,13 @@ Pick the route that matches what you can change in GCP:
 
 | You can | Route |
 |---------|-------|
-| Create a Workload Identity provider and grant roles in your GCP project | Your own `gitlab-oidc` provider, described next. If Google cannot reach your GitLab instance, add [Private OIDC issuers (uploaded JWKS)](#private-oidc-issuers-uploaded-jwks) |
-| Only manage a service account, while a platform team runs a provider that trusts your GitLab instance | [Using an existing WIF provider](#using-an-existing-wif-provider) |
+| Create a Workload Identity provider and grant roles in your GCP project | Your own `gitlab-oidc` provider: the steps directly below. If Google cannot reach your GitLab instance, add [Private OIDC issuers (uploaded JWKS)](#private-oidc-issuers-uploaded-jwks) |
+| Only manage a service account, while a platform team runs a provider that trusts your GitLab instance | [Using an existing WIF provider](#using-an-existing-wif-provider); skip the own-provider steps below |
 | Skip GCP entirely | OpenAI with an API key; see [Installing Fullsend](#installing-fullsend) |
+
+**Own-provider route.** From here up to
+[Using an existing WIF provider](#using-an-existing-wif-provider), this
+section applies only when you run the `gitlab-oidc` provider yourself.
 
 Pass `--vertex-project`, or declare `inference.project` in the managed
 configuration (for example
@@ -1393,20 +1397,22 @@ impersonates a service account you control.
 
 What you need:
 
-- a GitLab project that uses `inference.auth` `vertex-wif`;
+- a GitLab project that uses `inference.auth` `vertex-wif`
+  (`fullsend repos set gitlab.inference.auth vertex-wif`; see
+  [Installing Fullsend](#installing-fullsend));
 - a GCP project with Vertex AI enabled (see
   [Getting Inference](getting-inference.md));
 - permission to manage one service account in that project.
 
-Installs that use this guide's own `gitlab-oidc` provider need none of
-this and behave as before.
+This route is an alternative to running your own `gitlab-oidc` provider.
+If you run your own, skip this section.
 
 #### 1. Collect the values
 
 Ask the provider's administrator for the provider resource name, the
 audience it accepts, and the principal it maps your GitLab project to.
-Find your GitLab project ID on the project's **Settings → General** page.
-Then set them once in your shell; the later steps use these variables:
+Then set the values once in your shell; the later steps use these
+variables:
 
 ```bash
 export GCP_PROJECT="<gcp-project>"            # your project that serves Vertex AI
@@ -1417,6 +1423,10 @@ export PRINCIPAL="principalSet://iam.googleapis.com/projects/<pool-project-numbe
 export SERVICE_ACCOUNT="<name>@${GCP_PROJECT}.iam.gserviceaccount.com"
 ```
 
+- Use the principal exactly as the administrator gives it. The template
+  above is the common shape for a provider that maps
+  `attribute.project_id`: put your GitLab project ID (**Settings →
+  General → Project ID**) in place of `<gitlab-project-id>`.
 - `WIF_AUDIENCE` above is right when the provider has no allowed audiences
   configured: Google then accepts only the provider's full resource name.
   If the administrator gives you an audience, use theirs.
@@ -1437,8 +1447,24 @@ gcloud iam service-accounts add-iam-policy-binding "$SERVICE_ACCOUNT" \
   --member="$PRINCIPAL"
 ```
 
+Check the binding:
+
+```bash
+gcloud iam service-accounts get-iam-policy "$SERVICE_ACCOUNT" \
+  --flatten="bindings[].members" \
+  --format="table(bindings.role, bindings.members)"
+```
+
+The output lists the binding:
+
+```text
+ROLE                            MEMBERS
+roles/iam.workloadIdentityUser  principalSet://iam.googleapis.com/projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/attribute.project_id/<gitlab-project-id>
+```
+
 The service account also needs `roles/aiplatform.user` in `$GCP_PROJECT`.
-If it does not have it yet, ask that project's administrator to run:
+If it does not have it yet, send this command, with your values filled in,
+to that project's administrator:
 
 ```bash
 gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
@@ -1472,8 +1498,10 @@ fullsend repos set gitlab.config.inference.service_account "$SERVICE_ACCOUNT"
 fullsend repos install "$PROJECT_PATH"
 ```
 
-To use the provider for some projects only, set the four keys on those
-projects' entries instead of the `gitlab` section.
+To use the provider for some projects only, set the keys on each
+project's entry instead, for example
+`fullsend repos set 'gitlab.repos["<group/project>"].config.inference.wif_provider' "$WIF_PROVIDER"`,
+and the same for `project`, `wif_audience` and `service_account`.
 
 A first install prints, among its other steps:
 
@@ -1511,11 +1539,13 @@ when:
   pins an older release. Move the pin to a release with impersonation
   support.
 
-**Already installed?** Install applies the new audience as a scaffold
-content change, in a new merge request. That needs `gitlab.fullsend_ref`
-set, or a release build of the CLI, which uses its own release. Without
-either, install says it skipped the content check and the job keeps
-`aud: "fullsend"`: set `gitlab.fullsend_ref` and run `repos install` again.
+**Already installed?** Install opens a new merge request that changes
+the audience in `.gitlab/ci/fullsend-agent.yml`. It can do this only when
+`gitlab.fullsend_ref` is set or you run a released `fullsend` binary. A
+locally built binary without `gitlab.fullsend_ref` prints
+`scaffold content drift not checked: gitlab.fullsend_ref is not set and this build has no release ref`,
+and the job keeps `aud: "fullsend"`. Set `gitlab.fullsend_ref` and run
+`repos install` again.
 `repos status` reports drift while the variable or the audience does not
 match the configuration.
 
@@ -1533,10 +1563,10 @@ AI logged:
   ✓ Agent exited with code 0 (56.0s)
 ```
 
-The job log does not show the token exchange. When the provider's
-principal has no role in your project, a successful model call means the
-impersonation worked; without it, the job fails with
-`aiplatform.endpoints.predict` denied.
+The job log does not show the token exchange. If the provider's
+principal has no role in your project, a successful model call proves the
+job used your service account. If impersonation is not set up, the call
+fails with `aiplatform.endpoints.predict` denied.
 
 #### Troubleshooting
 
@@ -1549,15 +1579,23 @@ impersonation worked; without it, the job fails with
 | `Permission 'iam.serviceAccounts.getAccessToken' denied on resource (or it may not exist)` | The principal cannot impersonate the service account: the binding from step 2 is missing or names another principal, or `inference.service_account` names another account | Repeat step 2 with the administrator's exact principal and the exact email in `inference.service_account` |
 | `Permission 'aiplatform.endpoints.predict' denied` | The service account lacks `roles/aiplatform.user` in `inference.project`, or `inference.service_account` is not set, so the job used the provider's principal, which has no role in your project | Grant the role (step 2), correct `inference.project`, or set `inference.service_account` |
 
-#### Going back to direct federation
+#### Leaving the existing provider
 
-Remove both keys and install again:
+To move back to your own `gitlab-oidc` provider, create it as described
+at the top of this section, then remove the three keys that point at the
+platform team's provider and install again:
 
 ```bash
 fullsend repos set --unset gitlab.config.inference.service_account
 fullsend repos set --unset gitlab.config.inference.wif_audience
+fullsend repos set --unset gitlab.config.inference.wif_provider
 fullsend repos install "$PROJECT_PATH"
 ```
+
+Keep `inference.wif_provider`, and remove only the other two keys, only if
+you want to keep the platform team's provider without impersonation. That
+works only when the provider accepts the audience `fullsend` and its
+principal has `roles/aiplatform.user` in `$GCP_PROJECT`.
 
 Install opens a merge request that restores `aud: "fullsend"` and prints
 `Keeping obsolete variable FULLSEND_GCP_SERVICE_ACCOUNT until the scaffold change is merged`.
