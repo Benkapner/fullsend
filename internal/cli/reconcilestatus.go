@@ -173,12 +173,7 @@ finalized, this is a no-op.`,
 			if reviewRun && termReason == statuscomment.ReasonCancelled {
 				var guidanceErr error
 				guidance, guidanceErr = resolveBuiltInGitHubReviewCancellationGuidance(
-					cmd.Context(), 
-          
-          
-          
-          , "review", forgePlatform, trackerSource,
-					project, number, sha,
+					cmd.Context(), statusForgeClient, "review", forgePlatform, trackerSource, project, number, sha,
 				)
 				if guidanceErr != nil {
 					fmt.Fprintf(os.Stderr, "WARNING: could not determine whether cancelled review was superseded; omitting retry guidance: %v\n", guidanceErr)
