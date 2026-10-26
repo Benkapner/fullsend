@@ -480,3 +480,88 @@ func TestConverge_GitLabExistingWIFOptionsOnInstalledRepo(t *testing.T) {
 	assert.Equal(t, testServiceAccount, fc.VariableValues["group/project/"+forge.VarGCPServiceAccount])
 	assert.Contains(t, gitlabAgentTemplate(t, spy.files), "aud: \""+testExistingAudience+"\"")
 }
+
+// installedGitLabWithLeftoverServiceAccount is an installed GitLab
+// repository that still carries FULLSEND_GCP_SERVICE_ACCOUNT under a
+// manifest that no longer declares inference.service_account.
+func installedGitLabWithLeftoverServiceAccount(t *testing.T) (*forge.FakeClient, *Manifest) {
+	t.Helper()
+	fc, _ := installedGitLabExistingWIF(t)
+	fc.VariableValues["group/project/"+forge.VarGCPServiceAccount] = testServiceAccount
+	m := gitlabExistingWIFManifest(t, "inference:\n  project: example-project\n  wif_provider: "+testExistingWIF+"\n")
+	m.GitLab.Repos[0].Name = "group/project"
+	return fc, m
+}
+
+func TestObsoleteInferenceVariables_ServiceAccount(t *testing.T) {
+	names := func(cfg ResolvedConfig) map[string]string {
+		out := map[string]string{}
+		for _, v := range obsoleteInferenceVariables(cfg) {
+			out[v.name] = v.reason
+		}
+		return out
+	}
+	gitlab := ResolvedConfig{Forge: ForgeGitLab, InferenceAuth: InferenceAuthVertexWIF}
+	assert.Equal(t, map[string]string{forge.VarGCPServiceAccount: "inference.service_account is not declared"}, names(gitlab))
+
+	gitlab.DeclaredServiceAccount = testServiceAccount
+	assert.Empty(t, names(gitlab), "a declared service account keeps the variable")
+
+	openai := ResolvedConfig{Forge: ForgeGitLab, InferenceAuth: InferenceAuthOpenAIAPIKey}
+	assert.Equal(t, map[string]string{
+		forge.VarGCPRegion:         "inference.auth is openai-api-key",
+		forge.VarGCPServiceAccount: "inference.auth is openai-api-key",
+	}, names(openai))
+
+	assert.Empty(t, names(ResolvedConfig{Forge: ForgeGitHub, InferenceAuth: InferenceAuthVertexWIF}),
+		"GitHub repositories never get the variable, so it is not Fullsend-owned there")
+}
+
+func TestStatus_GitLabLeftoverServiceAccountIsObsolete(t *testing.T) {
+	fc, m := installedGitLabWithLeftoverServiceAccount(t)
+	status, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	require.NoError(t, err)
+	require.Len(t, status.Repos, 1)
+	require.Empty(t, status.Repos[0].Error)
+	var found *Drift
+	for i, d := range status.Repos[0].Drifts {
+		if d.Field == forge.VarGCPServiceAccount {
+			found = &status.Repos[0].Drifts[i]
+		}
+	}
+	require.NotNil(t, found, "drifts: %+v", status.Repos[0].Drifts)
+	assert.Equal(t, "absent", found.Expected)
+	assert.Equal(t, "obsolete variable (inference.service_account is not declared)", found.Actual)
+
+	delete(fc.VariableValues, "group/project/"+forge.VarGCPServiceAccount)
+	status, err = Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	require.NoError(t, err)
+	assert.NotContains(t, driftFields(status.Repos[0].Drifts), forge.VarGCPServiceAccount)
+}
+
+func TestConverge_GitLabDeletesLeftoverServiceAccount(t *testing.T) {
+	fc, m := installedGitLabWithLeftoverServiceAccount(t)
+
+	dry, err := Converge(context.Background(), ConvergeConfig{Manifest: m, MaxConcurrency: 4, Direct: true, DryRun: true},
+		newTestClientFactory(fc), (&fakeScaffoldCommit{}).fn(), noopProgress)
+	require.NoError(t, err)
+	require.Empty(t, dry.Failed(), "results: %+v", dry.Results)
+	_, kept := fc.VariableValues["group/project/"+forge.VarGCPServiceAccount]
+	assert.True(t, kept, "a dry run deletes nothing")
+
+	// Cleanup waits until this run's scaffold changes are on the default
+	// branch, as for the other obsolete inference credentials.
+	result, err := Converge(context.Background(), ConvergeConfig{Manifest: m, MaxConcurrency: 4, Direct: true},
+		newTestClientFactory(fc), landingScaffoldCommit(fc, "group", "project"), noopProgress)
+	require.NoError(t, err)
+	require.Empty(t, result.Failed(), "results: %+v", result.Results)
+	_, kept = fc.VariableValues["group/project/"+forge.VarGCPServiceAccount]
+	assert.False(t, kept, "install deletes the undeclared variable")
+	var detail string
+	for _, a := range result.Results[0].Actions {
+		if a.Component == "var:"+forge.VarGCPServiceAccount {
+			detail = a.Detail
+		}
+	}
+	assert.Equal(t, "deleted obsolete "+forge.VarGCPServiceAccount+" (inference.service_account is not declared)", detail)
+}

@@ -503,6 +503,7 @@ func selectedCredentialContractLive(ctx context.Context, resolved ResolvedConfig
 type obsoleteInferenceItem struct {
 	name     string
 	variable bool
+	reason   string
 }
 
 // kind is the noun used in messages ("secret" or "variable").
@@ -540,10 +541,10 @@ func removeObsoleteInferenceSecrets(ctx context.Context, resolved ResolvedConfig
 	client := resolved.ForgeConfig.Client
 	var items []obsoleteInferenceItem
 	for _, name := range obsoleteInferenceSecrets(resolved.InferenceAuth) {
-		items = append(items, obsoleteInferenceItem{name: name})
+		items = append(items, obsoleteInferenceItem{name: name, reason: "inference.auth is " + resolved.InferenceAuth})
 	}
-	for _, name := range obsoleteInferenceVariables(resolved.InferenceAuth) {
-		items = append(items, obsoleteInferenceItem{name: name, variable: true})
+	for _, v := range obsoleteInferenceVariables(resolved) {
+		items = append(items, obsoleteInferenceItem{name: v.name, variable: true, reason: v.reason})
 	}
 	keepVerb := "kept"
 	if dryRun {
@@ -626,7 +627,7 @@ func removeObsoleteInferenceSecrets(ctx context.Context, resolved ResolvedConfig
 			actions = append(actions, ComponentAction{
 				Component: item.component(),
 				Action:    "delete",
-				Detail:    fmt.Sprintf("would delete obsolete %s (inference.auth is %s)", name, resolved.InferenceAuth),
+				Detail:    fmt.Sprintf("would delete obsolete %s (%s)", name, item.reason),
 			})
 			progress(repoFullName, "dry-run", fmt.Sprintf("Would delete obsolete %s %s", item.kind(), name))
 			continue
@@ -647,7 +648,7 @@ func removeObsoleteInferenceSecrets(ctx context.Context, resolved ResolvedConfig
 		actions = append(actions, ComponentAction{
 			Component: item.component(),
 			Action:    "delete",
-			Detail:    fmt.Sprintf("deleted obsolete %s (inference.auth is %s)", name, resolved.InferenceAuth),
+			Detail:    fmt.Sprintf("deleted obsolete %s (%s)", name, item.reason),
 		})
 		progress(repoFullName, "sync", fmt.Sprintf("Deleted obsolete %s %s", item.kind(), name))
 	}

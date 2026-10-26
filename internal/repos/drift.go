@@ -188,9 +188,11 @@ type OrphanVar struct {
 //
 // The managed set is computed using the FULL superset of possible
 // managed variables — conditional fields (InferenceRegion,
-// ReviewAppClientID, InferenceServiceAccount) are populated with placeholders so that variables
-// like FULLSEND_GCP_REGION are never flagged as orphans just because
-// the caller doesn't know their expected value.
+// ReviewAppClientID, InferenceServiceAccount) are populated with
+// placeholders so that variables like FULLSEND_GCP_REGION are never flagged
+// as orphans just because the caller doesn't know their expected value. A
+// leftover FULLSEND_GCP_SERVICE_ACCOUNT is reported as obsolete drift
+// instead (see obsoleteInferenceVariables).
 func CheckOrphanVars(ctx context.Context, client forge.Client,
 	owner, repo string, cfg InstallConfig, mintURL string) ([]OrphanVar, error) {
 

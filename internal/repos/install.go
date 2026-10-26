@@ -983,16 +983,35 @@ func obsoleteInferenceSecrets(auth string) []string {
 	}
 }
 
+// obsoleteVariable is a Fullsend-managed inference variable the
+// repository's configuration does not use, with the reason reported for it.
+type obsoleteVariable struct {
+	name   string
+	reason string
+}
+
 // obsoleteInferenceVariables returns the Fullsend-managed inference
-// variables that belong to a method auth did not select. Only Vertex uses
-// FULLSEND_GCP_REGION, so it is obsolete on openai-api-key repositories.
-// Like the obsolete secrets, convergence removes it only after the
-// selected method is established.
-func obsoleteInferenceVariables(auth string) []string {
-	if auth == InferenceAuthOpenAIAPIKey {
-		return []string{forge.VarGCPRegion}
+// variables the repository's effective configuration does not use. Only
+// Vertex uses FULLSEND_GCP_REGION, so it is obsolete on openai-api-key
+// repositories. FULLSEND_GCP_SERVICE_ACCOUNT is obsolete on GitLab whenever
+// inference.service_account does not apply (see applyExistingWIFOptions):
+// a leftover variable would keep the agent job impersonating. Like the
+// obsolete secrets, convergence removes them only after the selected method
+// is established.
+func obsoleteInferenceVariables(cfg ResolvedConfig) []obsoleteVariable {
+	authReason := "inference.auth is " + cfg.InferenceAuth
+	var vars []obsoleteVariable
+	if cfg.InferenceAuth == InferenceAuthOpenAIAPIKey {
+		vars = append(vars, obsoleteVariable{name: forge.VarGCPRegion, reason: authReason})
 	}
-	return nil
+	if cfg.Forge == ForgeGitLab && cfg.DeclaredServiceAccount == "" {
+		reason := "inference.service_account is not declared"
+		if cfg.InferenceAuth != InferenceAuthVertexWIF {
+			reason = authReason
+		}
+		vars = append(vars, obsoleteVariable{name: forge.VarGCPServiceAccount, reason: reason})
+	}
+	return vars
 }
 
 // inferenceRegionForAuth returns region when auth uses Vertex and ""

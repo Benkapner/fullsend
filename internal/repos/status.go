@@ -522,8 +522,9 @@ func ApplyGitLabTriggerAccountStatus(status *RepoStatus, diag GitLabTriggerAccou
 }
 
 // checkObsoleteInferenceConfig reports Fullsend-managed inference secrets
-// and variables that belong to a method the repository's inference.auth
-// does not select. A valid selection does not make leftover configuration
+// and variables the repository's effective configuration does not use (a
+// method inference.auth does not select, or an undeclared
+// inference.service_account on GitLab). A valid selection does not make leftover configuration
 // healthy desired state: convergence deletes these once the selected
 // method is established, so status reports them as drift. Secrets are
 // checked for presence only — secret values are never read. GitLab's
@@ -533,19 +534,19 @@ func checkObsoleteInferenceConfig(ctx context.Context, client forge.Client, cfg 
 	if status.Error != "" {
 		return
 	}
-	for _, name := range obsoleteInferenceVariables(cfg.InferenceAuth) {
-		_, exists, err := client.GetRepoVariable(ctx, cfg.Owner, cfg.Repo, name)
+	for _, v := range obsoleteInferenceVariables(cfg) {
+		_, exists, err := client.GetRepoVariable(ctx, cfg.Owner, cfg.Repo, v.name)
 		if err != nil {
-			status.Error = fmt.Sprintf("checking obsolete variable %s for %s/%s: %v", name, cfg.Owner, cfg.Repo, err)
+			status.Error = fmt.Sprintf("checking obsolete variable %s for %s/%s: %v", v.name, cfg.Owner, cfg.Repo, err)
 			return
 		}
 		if !exists {
 			continue
 		}
 		status.Drifts = append(status.Drifts, Drift{
-			Field:    name,
+			Field:    v.name,
 			Expected: "absent",
-			Actual:   fmt.Sprintf("obsolete variable (inference.auth is %s)", cfg.InferenceAuth),
+			Actual:   fmt.Sprintf("obsolete variable (%s)", v.reason),
 		})
 	}
 }

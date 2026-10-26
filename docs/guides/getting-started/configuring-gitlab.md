@@ -1501,9 +1501,10 @@ Credentials API, the service account's project also shows
 To return to direct federation, remove both keys
 (`fullsend repos set --unset gitlab.config.inference.service_account` and
 the same for `wif_audience`) and re-run `repos install`. Install restores
-`aud: "fullsend"` but does not delete `FULLSEND_GCP_SERVICE_ACCOUNT`, so
-delete that variable under **Settings → CI/CD → Variables**.
-`repos uninstall` removes it along with the other `FULLSEND_GCP_*` values.
+`aud: "fullsend"` and deletes `FULLSEND_GCP_SERVICE_ACCOUNT` once the
+scaffold change is on the default branch; until then `repos status` reports
+the variable as obsolete. `repos uninstall` removes it along with the other
+`FULLSEND_GCP_*` values.
 
 ### Private OIDC issuers (uploaded JWKS)
 
