@@ -66,11 +66,8 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forge
 		}
 	}
 	for _, c := range components {
-		// Capture the version marker even when the current carrier is
-		// missing: GitLab repos enrolled before #7707 still host it in
-		// the leftover dispatch stub. Presence of that stub is not
-		// install evidence; the ref is still useful once another
-		// required component proves the repo is installed.
+		// Record the installed version marker. It is only non-empty
+		// when the workflow carrier exists.
 		if c.Name == "workflow" {
 			state.FullsendRef = c.Actual
 		}
@@ -145,6 +142,10 @@ type RepoStatus struct {
 	// GitLabTriggerAccount is the trigger-only service account's readiness,
 	// drift, and the exact reasons for a deferral or unfinished cleanup.
 	GitLabTriggerAccount *GitLabTriggerAccountStatus `json:"gitlab_trigger_account,omitempty"`
+
+	// GitLabWebhook is the webhook fast path's readiness (ADR 0125): names,
+	// IDs and booleans only, never the trigger token, webhook secret or URL.
+	GitLabWebhook *GitLabWebhookStatus `json:"gitlab_webhook,omitempty"`
 }
 
 // StatusSummary provides aggregate counts across all repos.
@@ -491,6 +492,12 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		// Ledger and sink only; the CLI adds the live GitLab drift checks.
 		diag := DiagnoseGitLabTriggerAccount(ctx, client, nil, owner, repo, "")
 		ApplyGitLabTriggerAccountStatus(&status, diag)
+		// Identifying the managed webhook needs the instance base URL, which
+		// every live GitLab client exposes; a client without one has no
+		// webhook fast path to diagnose.
+		if GitLabBaseURL(client) != "" {
+			ApplyGitLabWebhookStatus(&status, DiagnoseGitLabWebhook(ctx, client, owner, repo))
+		}
 	}
 
 	return status

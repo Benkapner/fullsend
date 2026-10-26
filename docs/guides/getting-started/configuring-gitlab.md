@@ -40,9 +40,9 @@ GitHub repositories use a different command (`fullsend github setup`). See
   be `no_one_allowed` before typed pipeline-input dispatch can activate —
   install/converge refuse runnable template delivery on a weaker, unset,
   or unverifiable setting, even with automatic enforcement requested.
-  Follow [Typed-input dispatch migration](#typed-input-dispatch-migration)
-  before upgrading a legacy installation; legacy variable-based pins keep
-  their compatible setting. See [GitLab Role-Credential
+  Legacy variable-based installations are no longer supported; see
+  [Typed-input dispatch migration](#typed-input-dispatch-migration). See
+  [GitLab Role-Credential
   Contract](../../contributing/gitlab-role-credentials.md#how-a-job-selects-its-credential)
   for the remaining live-validation rollout gates for this transport.
 * If the project has a push rule with a branch name regex (**Settings >
@@ -63,32 +63,29 @@ and refuses delivery if it is weaker, unsupported, or unreadable. Setting
 pre-delivery check. A failed setting change must leave the new jobs undelivered,
 not runnable under an unsafe policy.
 
-For an existing variable-based installation, plan a maintenance window:
-stop its poller and prevent its legacy credential-bearing jobs from running,
-remove the managed schedules' obsolete `FULLSEND_POLL_MODE` variables, and
-apply and verify the GitLab restriction before installing the new templates.
-Do not apply the restriction to a running legacy installation: its dispatch
-and schedule variables would stop working. If preparation fails, keep jobs
-stopped and do not deliver or merge the typed setup. Inspect an asynchronous
-installation/repair MR before merging, keep the restriction in place, and
-rerun `repos install` after it merges to complete activation. Other user-owned
-schedule variables must be migrated separately; Fullsend does not delete them.
+The former variable-based dispatch path is no longer supported, and Fullsend
+no longer migrates installations off it automatically. Install and converge
+refuse to deliver a legacy variable-based wrapper (for example, from a
+`fullsend_ref` pinned before v0.46.0): pin v0.46.0 or later, or remove the
+pin. Typed activation refuses while any managed schedule still sets a
+pipeline variable. That includes an obsolete `FULLSEND_POLL_MODE` left from a
+legacy installation. Delete the variable, or delete the schedule so
+`repos install` recreates it, then rerun `repos install`. Fullsend never
+deletes schedule variables itself.
 
 Root, wrapper, agent, and poll templates are delivered together using the
-effective target version. Fullsend does not migrate managed schedule variables
-until the compatible wrapper **and** agent/poll templates are on the default
-branch, including when a repair MR is still open. Dry runs never mutate them.
-Typed jobs derive slash/event mode from the schedule description; legacy
-variable wrappers retain their existing restriction and schedule variables.
+effective target version. Activation waits until the compatible wrapper
+**and** agent/poll templates are on the default branch, including when a
+repair MR is still open. Inspect an asynchronous installation/repair MR
+before merging, keep the restriction in place, and rerun `repos install`
+after it merges to complete activation. Typed jobs derive slash/event mode
+from the schedule description, so managed schedules are variable-free.
 
-Version skew between the poller and the installed wrapper behaves as follows:
-
-| Poller | Installed wrapper | Result |
-| --- | --- | --- |
-| New | Typed | Dispatches with pipeline inputs. |
-| New | Legacy | Detects the legacy wrapper and falls back to pipeline variables. |
-| Old (sends variables) | Legacy | Dispatches with pipeline variables, as before. |
-| Old (sends variables) | Typed, after activation set `no_one_allowed` | Cannot dispatch: GitLab rejects the variables. Upgrade the poller. |
+The poller dispatches only with pipeline inputs. It refuses to dispatch to a
+repository whose wrapper, at the dispatch ref, does not declare the complete
+typed contract, and never falls back to pipeline variables. An older poller
+that still sends variables cannot dispatch once `no_one_allowed` is set:
+GitLab rejects the variables. Upgrade the poller.
 
 The transport declares eleven metadata inputs and nine base64 chunks, at
 most 1000 characters each. All three template layers validate the chunk
@@ -297,6 +294,39 @@ to the default branch instead. Preview with `--dry-run`.
 
 For the full list of install flags, see the
 [CLI reference](../../cli/repos.md#repos-install).
+
+### Least-privilege dispatch contract
+
+The webhook fast path and the polling backstop start agents without raising
+any runtime credential above Developer and without accepting caller-supplied
+pipeline variables:
+
+* **Developer-level API pipeline creation with typed inputs.** The poller and
+  the webhook dispatcher start agent pipelines with a Developer-level
+  credential: through the API with the Poller credential, or with the
+  trigger-only account's `CI_JOB_TOKEN` once its dispatch activation is
+  recorded. Dispatch fields travel as declared typed pipeline inputs
+  ([ADR 0131](../../ADRs/0131-gitlab-dispatch-pipeline-inputs-no-owner-role.md)),
+  never as pipeline variables.
+* **User-defined pipeline variables are rejected.**
+  `ci_pipeline_variables_minimum_override_role=no_one_allowed` makes GitLab
+  reject pipeline variables from every caller, including a trigger token, so
+  no caller can override values such as `CI_JOB_TOKEN`, `CI_API_V4_URL`, or
+  `FULLSEND_DISPATCH_SECRET`. Install verifies the setting before it delivers
+  runnable typed jobs or provisions the webhook.
+* **Native `TRIGGER_PAYLOAD` inside the job.** The fast path needs no
+  pipeline variables. GitLab's native webhook trigger exposes the webhook
+  body to the dispatcher job as the file-type `TRIGGER_PAYLOAD` variable,
+  which keeps working under `no_one_allowed`. The dispatcher treats its
+  contents as untrusted hints and re-fetches every referenced resource from
+  the GitLab API before it dispatches.
+* **Authenticated opaque dispatch data for larger payloads.** The event
+  payload is too large for one input, so it travels as base64 chunks
+  (`event_payload_chunk_00` through `event_payload_chunk_08`; see
+  [Typed-input dispatch migration](#typed-input-dispatch-migration)). The
+  agent job reassembles them as data, never as shell, and verifies its
+  creator and the dispatch HMAC, computed over the whole payload, before it
+  selects credentials or acts on the payload.
 
 ### Inherited CI/CD variable trust
 
@@ -1572,7 +1602,10 @@ Confirm:
   events that dispatch nothing. An issue edit that does not change labels
   (title, description, assignee) is ignored: the job logs
   `ignoring issue #N update without changes.labels` and succeeds without
-  starting an agent pipeline. A failed dispatcher job means the payload
+  starting an agent pipeline. An edited comment on an issue or merge
+  request is ignored the same way: the job logs
+  `webhook: ignoring note edit on ...` and succeeds without dispatching.
+  A failed dispatcher job means the payload
   was rejected, not ignored. Typical causes are a label change the API
   re-fetch contradicts or cannot tie to the acting user, a stale or
   replayed event, or an unsupported action such as a merge request edit

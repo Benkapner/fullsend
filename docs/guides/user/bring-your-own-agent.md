@@ -70,8 +70,9 @@ Next:
      ✓ Post-script completed (0.3s)
    ```
 
-   `.env.local` needs `GITHUB_ISSUE_URL`, `ISSUE_NUMBER`, `REPO_FULL_NAME`,
-   `GH_TOKEN`, and whatever the agent's route needs besides those — see
+   `.env.local` needs `FULLSEND_WORK_ITEM_URL`, `ISSUE_NUMBER`,
+   `REPO_FULL_NAME`, `GH_TOKEN`, and whatever the agent's route needs besides
+   those — see
    [Pick a route](#pick-a-route). `GH_TOKEN` must be a real token: a
    connectivity check runs before the agent does. See
    [Running agents locally](running-agents-locally.md).
@@ -82,8 +83,8 @@ Next:
 
 The route — which model, on which credential path — decides what a local
 run needs in `.env.local` beyond the GitHub variables every route uses
-(`GITHUB_ISSUE_URL`, `ISSUE_NUMBER`, `REPO_FULL_NAME`, `GH_TOKEN`). Pick the
-row that matches the agent you want; CI is covered below the table.
+(`FULLSEND_WORK_ITEM_URL`, `ISSUE_NUMBER`, `REPO_FULL_NAME`, `GH_TOKEN`).
+Pick the row that matches the agent you want; CI is covered below the table.
 
 | Route | `agent new` flags | harness `providers:` | Env beyond the GitHub variables |
 |-------|-------------------|-----------------------|----------------------------------|
@@ -489,12 +490,16 @@ overlays:
   post_script: scripts/post-triage.sh
   env:
     runner:
-      GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}
+      ISSUE_URL: ${GITHUB_ISSUE_URL}
       GH_TOKEN: ${GH_TOKEN}
+      FULLSEND_FORGE: github
     sandbox:
-      GITHUB_ISSUE_URL: "${GITHUB_ISSUE_URL}"
-      GH_TOKEN: "${GH_TOKEN}"
+      ISSUE_URL: "${GITHUB_ISSUE_URL}"
+      FULLSEND_FORGE: github
 ```
+
+New agents should map `ISSUE_URL` from `FULLSEND_WORK_ITEM_URL`; the example
+above shows the current built-in GitHub overlay before that migration.
 
 Key patterns to note:
 
@@ -610,7 +615,7 @@ ops:
 
 ```bash
 POST_LINT_DOCS_DRY_RUN=1 \
-  GITHUB_ISSUE_URL="https://github.com/OWNER/REPO/pull/99" \
+  FULLSEND_WORK_ITEM_URL="https://github.com/OWNER/REPO/pull/99" \
   ISSUE_NUMBER=99 \
   REPO_FULL_NAME=OWNER/REPO \
   GH_TOKEN="$(gh auth token)" \
@@ -650,7 +655,6 @@ fullsend agent remove triage
 
 ```yaml
 version: "1"
-roles: [triage, coder, review]
 agents:
   - https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/triage.yaml#sha256=abc...
   - name: my-cool-agent
@@ -661,7 +665,6 @@ allowed_remote_resources:
 ```
 
 **Notes:**
-- `roles` controls which built-in agent roles are enabled. Valid values: `fullsend`, `triage`, `coder`, `review`, `fix`, `retro`, `prioritize`. Custom agents registered via `agents:` do not need to appear in this list.
 - URL entries are automatically pinned with `#sha256=...` by `fullsend agent add`.
 - URLs must be covered by `allowed_remote_resources` in the same config.
 - On name collision, config-registered agents take precedence over built-in agents.

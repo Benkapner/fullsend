@@ -88,13 +88,6 @@ var gitlabScaffoldPaths = []string{
 	".fullsend/config.yaml",
 }
 
-// gitlabRetiredScaffoldPaths are files previous GitLab installs wrote
-// that the current template no longer produces. Converge deletes them
-// (unlike generic orphans, which are reported but left in place).
-var gitlabRetiredScaffoldPaths = []string{
-	fullsendDispatchInclude,
-}
-
 const gitlabTrustScriptPath = ".gitlab/ci/scripts/trust-ci-server-ca.sh"
 
 const gitlabPinCIJobIdentityScriptPath = ".gitlab/ci/scripts/pin-ci-job-identity.sh"

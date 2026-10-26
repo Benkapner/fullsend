@@ -166,16 +166,6 @@ type ConvergeResult struct {
 	// error instead of silently skipping the fast-path.
 	NeedsGitLabWebhook bool
 
-	// GitLabTypedDispatch reports whether the GitLab wrapper this run
-	// installed (still possibly queued in an unmerged upgrade MR) uses the
-	// pipeline-input dispatch contract rather than the legacy
-	// pipeline-variable one. Set from InstallResult.GitLabTypedDispatch
-	// for fresh installs (see Installed). Post-install schedule setup
-	// must use this instead of re-reading the default branch, which can
-	// still show the prior or absent wrapper while the install MR is
-	// unmerged.
-	GitLabTypedDispatch bool
-
 	// Converged is true when the repo had drifted components that were
 	// repaired (variables, refs, or missing scaffold files).
 	Converged bool
@@ -1730,7 +1720,6 @@ func convergeRepo(ctx context.Context,
 
 		cr.Installed = true
 		cr.WIFProvider = installResult.WIFProvider
-		cr.GitLabTypedDispatch = installResult.GitLabTypedDispatch
 		cr.Actions = append(cr.Actions, ComponentAction{
 			Component: "all",
 			Action:    "add",
@@ -2084,9 +2073,8 @@ func withoutLegacyOpenAIConsumer(ctx context.Context, resolved ResolvedConfig, f
 // gitlabFreshInstallDryRunPreflight runs the read-only portion of the
 // GitLab-specific fresh-install checks Install performs before writes:
 // resolving the effective wrapper, validating the typed pipeline-input
-// contract (or rejecting an incomplete one) and the live pipeline-variable
-// override restriction, refusing a typed-to-legacy transition, and
-// confirming the root .gitlab-ci.yml would merge cleanly (e.g. no STAGE
+// contract (rejecting an incomplete or legacy one) and the live
+// pipeline-variable override restriction, and confirming the root .gitlab-ci.yml would merge cleanly (e.g. no STAGE
 // conflict), and confirming the project's push rule would let the
 // poll-state branches be created. It performs no writes and never mutates
 // project state. A fresh-install dry run that skips these checks can report
@@ -2110,26 +2098,17 @@ func gitlabFreshInstallDryRunPreflight(ctx context.Context, resolved ResolvedCon
 		return fmt.Errorf("reading effective GitLab wrapper: %w", err)
 	}
 
-	if gitlabWrapperHasDispatchInputs(wrapper) {
-		if err := validateGitLabTypedContract(wrapper); err != nil {
-			return err
-		}
-		if err := requireGitLabRestrictionBeforeDelivery(ctx, client, owner, repo); err != nil {
-			return err
-		}
-		if err := requireGitLabPipelineVariableRestriction(ctx, client, owner, repo, true); err != nil {
-			return err
-		}
-	} else if err := requireCompleteGitLabDispatchContract(wrapper); err != nil {
+	if err := requireTypedGitLabWrapper(wrapper); err != nil {
 		return err
-	} else if gitlabWrapperHasDispatchInputs(existing) {
-		return fmt.Errorf("refusing GitLab typed-to-legacy transition: the installed root still forwards the typed pipeline-input contract, which the legacy wrapper does not declare; manually roll back the root contract before reverting to pipeline-variable dispatch")
 	}
-
-	if !HasFullsendEntries(existing) || gitlabWrapperHasDispatchInputs(wrapper) {
-		if _, err := mergeGitLabCIWithWrapper(existing, wrapper); err != nil {
-			return fmt.Errorf("merging .gitlab-ci.yml: %w", err)
-		}
+	if err := requireGitLabRestrictionBeforeDelivery(ctx, client, owner, repo); err != nil {
+		return err
+	}
+	if err := requireGitLabPipelineVariableRestriction(ctx, client, owner, repo, true); err != nil {
+		return err
+	}
+	if _, err := mergeGitLabCIWithWrapper(existing, wrapper); err != nil {
+		return fmt.Errorf("merging .gitlab-ci.yml: %w", err)
 	}
 	return requireGitLabPushRuleAllowsPollStateBranches(ctx, client, owner, repo)
 }
@@ -2438,14 +2417,13 @@ func convergeSchedules(ctx context.Context,
 		return actions
 	}
 
-	// Legacy (non-typed) templates select poll mode from a schedule
-	// pipeline variable rather than the schedule description, so schedule
-	// creation/repair must still set it for repos that haven't migrated to
-	// the typed pipeline-input contract. Checked once per call against the
-	// currently effective wrapper — not any scaffold queued by this same
-	// convergence run, which hasn't committed yet. Checked before either
-	// mutation below (reactivating or creating), not just before creating:
-	// for a typed installation, both actions resume scheduled polling, and
+	// The installed wrapper must be on the typed pipeline-input contract;
+	// a legacy variable-based or otherwise incompatible wrapper defers
+	// schedule mutations until a scaffold repair lands. Checked once per
+	// call against the currently effective wrapper — not any scaffold
+	// queued by this same convergence run, which hasn't committed yet.
+	// Checked before either mutation below (reactivating or creating),
+	// not just before creating: both actions resume scheduled polling, and
 	// resuming it ahead of the required pipeline-variable override
 	// restriction would let credential-bearing polling run under a weaker
 	// policy with no rollback once convergeGitLabRootCIFiles reports the
@@ -2538,7 +2516,7 @@ func convergeSchedules(ctx context.Context,
 		}
 
 		_, createErr := client.CreatePipelineSchedule(
-			ctx, owner, repo, defaultBranch, spec.Description, spec.Cron, ScheduleVariablesFor(*spec, typed))
+			ctx, owner, repo, defaultBranch, spec.Description, spec.Cron, spec.Variables)
 		if createErr != nil {
 			actions = append(actions, ComponentAction{
 				Component: name,
@@ -2673,26 +2651,21 @@ func activatePipelineSchedules(ctx context.Context, client forge.Client,
 	return actions
 }
 
-// convergeGitLabRootCIFiles migrates already-enrolled GitLab repos whose
-// root .gitlab-ci.yml still carries entries that fullsend no longer
-// requires — obsolete workflow:rules (the native merge_request_event
-// dispatch rule removed in #7322) and obsolete stages (the empty
-// "dispatch" stage removed in #7337) — and backfills entries a newer
-// fullsend version now requires but an older enrollment never received
-// (the CI_DEBUG_TRACE deny-before-admit rule added by ADR 0125). The root
-// file is user-owned and is otherwise only touched by the install merge
-// path (fresh installs, or installs onto a repo HasFullsendEntries judges
-// incompletely migrated) and the uninstall unmerge path (teardown) —
-// neither runs during upgrade/converge, so without this step a missing or
-// obsolete entry would survive convergence forever.
-// StripObsoleteGitLabWorkflowRules and MergeMissingGitLabDebugTraceRule
-// only rewrite the file when they can prove fullsend owns the workflow
-// block (see gitlabCIWorkflowIsFullsendOwned), so merge-path enrollments
-// without the fullsend workflow.name are intentionally left for manual
-// cleanup rather than risking a user's own configuration. StripObsoleteGitLabStages
-// gates on the fullsend pipeline include plus a current fullsend stage
-// (see that function's doc comment). It does not commit — the caller
-// batches all scaffold file changes into a single atomic commit.
+// convergeGitLabRootCIFiles backfills entries a newer fullsend version
+// requires in an already-enrolled GitLab repo's root .gitlab-ci.yml but
+// that an older enrollment never received (the CI_DEBUG_TRACE
+// deny-before-admit rule added by ADR 0125, and the typed pipeline-input
+// contract). The root file is user-owned and is otherwise only touched by
+// the install merge path (fresh installs, or installs onto a repo
+// HasFullsendEntries judges incompletely migrated) and the uninstall
+// unmerge path (teardown) — neither runs during upgrade/converge, so
+// without this step a missing entry would never be added.
+// MergeMissingGitLabDebugTraceRule only rewrites the file when it can
+// prove fullsend owns the workflow block (see
+// gitlabCIWorkflowIsFullsendOwned), so merge-path enrollments without the
+// fullsend workflow.name are intentionally left for manual repair rather
+// than risking a user's own configuration. It does not commit — the
+// caller batches all scaffold file changes into a single atomic commit.
 func convergeGitLabRootCIFiles(ctx context.Context,
 	resolved ResolvedConfig,
 	cfg ConvergeConfig,
@@ -2725,35 +2698,6 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 			Detail: fmt.Sprintf("error reading effective GitLab wrapper: %v", wrapperErr)}}
 	}
 
-	stripped, rulesChanged, stripErr := StripObsoleteGitLabWorkflowRules(content)
-	if stripErr != nil {
-		actions = append(actions, ComponentAction{
-			Component: "gitlab-ci-rules",
-			Action:    "error",
-			Detail:    fmt.Sprintf("error checking .gitlab-ci.yml for obsolete workflow rules: %v", stripErr),
-		})
-		return nil, actions
-	}
-	if rulesChanged {
-		content = stripped
-		changed = true
-		if cfg.DryRun {
-			actions = append(actions, ComponentAction{
-				Component: "gitlab-ci-rules",
-				Action:    "update",
-				Detail:    "would remove obsolete merge_request_event workflow rule from .gitlab-ci.yml",
-			})
-			progress(repoFullName, "dry-run", "Would remove obsolete merge_request_event workflow rule from .gitlab-ci.yml")
-		} else {
-			actions = append(actions, ComponentAction{
-				Component: "gitlab-ci-rules",
-				Action:    "update",
-				Detail:    "removed obsolete merge_request_event workflow rule from .gitlab-ci.yml",
-			})
-			progress(repoFullName, "repair", "Removing obsolete merge_request_event workflow rule from .gitlab-ci.yml")
-		}
-	}
-
 	merged, debugTraceRuleAdded, mergeErr := MergeMissingGitLabDebugTraceRule(content)
 	if mergeErr != nil {
 		actions = append(actions, ComponentAction{
@@ -2783,53 +2727,6 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 		}
 	}
 
-	stripped, stagesChanged, stripErr := StripObsoleteGitLabStages(content)
-	if stripErr != nil {
-		actions = append(actions, ComponentAction{
-			Component: "gitlab-ci-stages",
-			Action:    "error",
-			Detail:    fmt.Sprintf("error checking .gitlab-ci.yml for obsolete stages: %v", stripErr),
-		})
-		return nil, actions
-	}
-	if stagesChanged {
-		// StripObsoleteGitLabStages only scanned the root file. Before
-		// trusting its verdict, confirm the on-repo pipeline wrapper it
-		// gated on doesn't itself still pull in the obsolete native-dispatch
-		// job — see gitlabPipelineWrapperStillIncludesDispatch.
-		pullsInDispatch, wrapperErr := gitlabWrapperContentIncludesDispatch(wrapper)
-		if wrapperErr != nil {
-			actions = append(actions, ComponentAction{
-				Component: "gitlab-ci-stages",
-				Action:    "error",
-				Detail:    fmt.Sprintf("error checking %s for obsolete dispatch include: %v", fullsendPipelineInclude, wrapperErr),
-			})
-			return nil, actions
-		}
-		if pullsInDispatch {
-			stagesChanged = false
-		}
-	}
-	if stagesChanged {
-		content = stripped
-		changed = true
-		if cfg.DryRun {
-			actions = append(actions, ComponentAction{
-				Component: "gitlab-ci-stages",
-				Action:    "update",
-				Detail:    "would remove obsolete dispatch stage from .gitlab-ci.yml",
-			})
-			progress(repoFullName, "dry-run", "Would remove obsolete dispatch stage from .gitlab-ci.yml")
-		} else {
-			actions = append(actions, ComponentAction{
-				Component: "gitlab-ci-stages",
-				Action:    "update",
-				Detail:    "removed obsolete dispatch stage from .gitlab-ci.yml",
-			})
-			progress(repoFullName, "repair", "Removing obsolete dispatch stage from .gitlab-ci.yml")
-		}
-	}
-
 	// Dispatch now uses typed pipeline inputs. Existing installations were
 	// merged from the user's root file rather than the embedded root
 	// scaffold, so converge the root contract before an upgraded poller can
@@ -2843,13 +2740,10 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 		}
 		// Validate only — never mutate — here. The wrapper checked above
 		// may still be queued in pending rather than already committed
-		// (see effectiveGitLabWrapper), so flipping the live schedule
-		// variables and project restriction at this point can activate
-		// typed dispatch before compatible templates actually reach the
-		// protected default branch. If the batched commit below then
-		// fails to land (or a later convergence step errors first), a
-		// legacy poller would be stranded behind a restriction it can't
-		// satisfy. The real activation runs from convergeRepo only after
+		// (see effectiveGitLabWrapper), so changing the project
+		// restriction at this point can activate typed dispatch before
+		// compatible templates actually reach the protected default
+		// branch. The real activation runs from convergeRepo only after
 		// commitScaffold succeeds, re-checking the now-committed wrapper.
 		if err := requireGitLabPipelineVariableRestriction(ctx, client, owner, repo, true); err != nil {
 			return nil, append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "error", Detail: err.Error()})
@@ -2875,23 +2769,10 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 			actions = append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "update", Detail: detail})
 			progress(repoFullName, progressAction, progressText)
 		}
-	} else if err := requireCompleteGitLabDispatchContract(wrapper); err != nil {
-		return nil, append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "error", Detail: err.Error()})
-	} else if gitlabWrapperHasDispatchInputs(content) {
-		// Forced typed-to-legacy transition: the committed root already
-		// carries the typed spec:inputs header and include:inputs
-		// forwarding map from a previous typed install, but the
-		// effective wrapper for this convergence is legacy and declares
-		// none of those inputs. Nothing above migrates or reverts the
-		// root in that direction, so delivering the legacy wrapper
-		// alongside an untouched typed root would leave an invalid
-		// include and restriction/schedule state incompatible with
-		// legacy dispatch. Refuse rather than commit that broken mix.
-		return nil, append(actions, ComponentAction{
-			Component: "gitlab-ci-inputs",
-			Action:    "error",
-			Detail:    "refusing GitLab typed-to-legacy transition: the installed root still forwards the typed pipeline-input contract, which the legacy wrapper does not declare; manually roll back the root contract before reverting to pipeline-variable dispatch",
-		})
+	} else if wrapper != nil {
+		// An incomplete or legacy variable-based wrapper (e.g. from a
+		// fullsend_ref pinned before typed dispatch) is not supported.
+		return nil, append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "error", Detail: requireTypedGitLabWrapper(wrapper).Error()})
 	}
 
 	if !changed {
@@ -3496,13 +3377,10 @@ func convergeContentDriftFiles(ctx context.Context,
 
 	// Orphan file detection: check for managed scaffold files that
 	// exist on the forge but are no longer produced by the current
-	// template. Generic orphans are reported but not deleted — removal
-	// is a destructive action that requires explicit user intent
-	// (uninstall). Known-retired GitLab paths (see
-	// gitlabRetiredScaffoldPaths) are deleted as a migration: they are
-	// leftover stubs with no user content. Runs in both dry-run and
-	// live modes so that --dry-run previews the same information as the
-	// live path and repos status.
+	// template. Orphans are reported but not deleted — removal is a
+	// destructive action that requires explicit user intent (uninstall).
+	// Runs in both dry-run and live modes so that --dry-run previews the
+	// same information as the live path and repos status.
 	orphanFiles, orphanErr := CheckOrphanFiles(
 		ctx, resolved.ForgeConfig.Client,
 		resolved.Owner, resolved.Repo,
@@ -3519,54 +3397,6 @@ func convergeContentDriftFiles(ctx context.Context,
 	}
 	for _, o := range orphanFiles {
 		if coveredPaths[o.Path] {
-			continue
-		}
-		if slices.Contains(gitlabRetiredScaffoldPaths, o.Path) {
-			if o.Path == fullsendDispatchInclude {
-				stillIncluded, wrapperErr := gitlabPipelineWrapperWillIncludeDispatch(
-					ctx, resolved.ForgeConfig.Client, resolved.Owner, resolved.Repo, expectedFiles)
-				if wrapperErr != nil {
-					progress(repoFullName, "warning",
-						fmt.Sprintf("checking pipeline wrapper for dispatch include: %v", wrapperErr))
-				}
-				if stillIncluded {
-					// The wrapper that will remain committed (either
-					// just-repaired this run or already on the forge)
-					// still pulls this file in — e.g. a repo pinned to a
-					// pre-#7322 fullsend_ref. Deleting it now would break
-					// the pipeline on a missing local include, so leave it
-					// as a reported orphan instead.
-					actions = append(actions, ComponentAction{
-						Component: o.Path,
-						Action:    "orphan",
-						Detail:    fmt.Sprintf("orphan file %s exists on forge but the pipeline wrapper still includes it; leaving in place", o.Path),
-					})
-					progress(repoFullName, "warning",
-						fmt.Sprintf("Leaving %s in place: pipeline wrapper still references it", o.Path))
-					continue
-				}
-			}
-			if cfg.DryRun {
-				actions = append(actions, ComponentAction{
-					Component: o.Path,
-					Action:    "update",
-					Detail:    fmt.Sprintf("would remove obsolete %s", o.Path),
-				})
-				progress(repoFullName, "dry-run",
-					fmt.Sprintf("Would remove obsolete %s", o.Path))
-			} else {
-				repairFiles = append(repairFiles, forge.TreeFile{
-					Path:   o.Path,
-					Delete: true,
-				})
-				actions = append(actions, ComponentAction{
-					Component: o.Path,
-					Action:    "update",
-					Detail:    fmt.Sprintf("removed obsolete %s", o.Path),
-				})
-				progress(repoFullName, "repair",
-					fmt.Sprintf("Removing obsolete %s", o.Path))
-			}
 			continue
 		}
 		actions = append(actions, ComponentAction{

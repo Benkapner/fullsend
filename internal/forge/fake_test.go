@@ -1029,9 +1029,6 @@ func fakeClientCalls(ctx context.Context) map[string]func(fc *FakeClient) []any 
 		},
 		"DeletePipelineSchedule": func(fc *FakeClient) []any { return pack(fc.DeletePipelineSchedule(ctx, "o", "r", 2)) },
 		"GetPipelineSchedule":    func(fc *FakeClient) []any { return pack(fc.GetPipelineSchedule(ctx, "o", "r", 1)) },
-		"DeletePipelineScheduleVariable": func(fc *FakeClient) []any {
-			return pack(fc.DeletePipelineScheduleVariable(ctx, "o", "r", 1, "K"))
-		},
 		"ListPipelineSchedules":  func(fc *FakeClient) []any { return pack(fc.ListPipelineSchedules(ctx, "o", "r")) },
 		"UpdatePipelineSchedule": func(fc *FakeClient) []any { return pack(fc.UpdatePipelineSchedule(ctx, "o", "r", 1, true)) },
 		"UpdateCIVariable":       func(fc *FakeClient) []any { return pack(fc.UpdateCIVariable(ctx, "o", "r", "n", "v", true)) },

@@ -1151,6 +1151,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Environment validation failed")
 		return fmt.Errorf("validating env: %w", err)
 	}
+	// Collect lint diagnostics before the ${VAR} expansion below: Lint()
+	// scans env values for deprecated variable references (e.g.
+	// GITHUB_ISSUE_URL) that os.Expand would rewrite before they can be
+	// seen. Emission happens after ValidateFilesExist, further below.
+	lintDiags := h.Lint()
 	for k, v := range h.RunnerEnv {
 		h.RunnerEnv[k] = os.Expand(v, expander)
 	}
@@ -1175,9 +1180,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
 		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
 	}
-	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.PreflightCheck, "${") {
-		h.ValidationLoop.PreflightCheck = os.Expand(h.ValidationLoop.PreflightCheck, expander)
-	}
 
 	if err := h.ValidateFilesExist(); err != nil {
 		printer.StepFail("File validation failed")
@@ -1199,12 +1201,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	printer.StepDone(fmt.Sprintf("Harness loaded (%.1fs)", time.Since(harnessStart).Seconds()))
 
-	// Run lint checks before merging env.runner into RunnerEnv so that
-	// Lint() sees the original YAML state and only warns when runner_env
-	// was actually declared (not when env.runner entries are merged in).
+	// Emit the lint diagnostics collected before ${VAR} expansion above.
+	// Collected there (not here) so value-based deprecation checks still
+	// see declared references; emitted here (before env.runner is merged
+	// into RunnerEnv) so runner_env diagnostics reflect the declared YAML.
 	// reservedSandboxEnvDiagnostics rides along: it names the env.sandbox
 	// keys this run will drop instead of exporting them (#3373).
-	for _, diag := range append(h.Lint(), reservedSandboxEnvDiagnostics(h)...) {
+	for _, diag := range append(lintDiags, reservedSandboxEnvDiagnostics(h)...) {
 		emitDiagnostic(printer, diag)
 	}
 
@@ -1439,27 +1442,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// When a validation_loop declares a preflight_check command, run it now
 	// to catch missing host dependencies (e.g. python3-jsonschema) before
 	// sandbox creation — not after the agent has already finished. See #5074.
+	// The command runs against the preflight allowlist environment; its
+	// ${VAR} references are validated and expanded in runPreflightCheck,
+	// which rejects credential references before any shell sees them.
 	if h.ValidationLoop != nil && h.ValidationLoop.PreflightCheck != "" {
-		printer.StepStart("Preflight: checking validation_loop dependencies")
-		preflightCtx, preflightCancel := context.WithTimeout(ctx, preflightCheckTimeout)
-		defer preflightCancel()
-		preflightCmd := exec.CommandContext(preflightCtx, "sh", "-c", h.ValidationLoop.PreflightCheck)
-		// Use childScriptEnv to strip OIDC credential vars (#5832).
-		preflightCmd.Env = childScriptEnv(h.RunnerEnv, "")
-		preflightOut, preflightErr := preflightCmd.CombinedOutput()
-		if preflightErr != nil {
-			printer.StepFail("Preflight dependency check failed")
-			if preflightCtx.Err() == context.DeadlineExceeded {
-				return fmt.Errorf("validation_loop.preflight_check timed out after %s: %s", preflightCheckTimeout, h.ValidationLoop.PreflightCheck)
-			}
-			// Redact before the message reaches the CLI error, the trace and
-			// the completion comment: the command runs with env.runner.
-			// Redact the raw capture first, because validationFailMessage
-			// trims it and a padded secret would then miss the literal match.
-			redactedOut := []byte(redactFeedback(string(preflightOut), h.RunnerEnv))
-			return fmt.Errorf("validation_loop.preflight_check failed: %s\n%s\nInstall the missing dependency before running this agent", h.ValidationLoop.PreflightCheck, redactFeedback(validationFailMessage(redactedOut, preflightErr), h.RunnerEnv))
+		if err := runPreflightCheck(ctx, printer, "validation_loop.preflight_check", h.ValidationLoop.PreflightCheck, h.RunnerEnv, absFullsendDir); err != nil {
+			return err
 		}
-		printer.StepDone("Preflight dependency check passed")
 	}
 
 	// 2. Check openshell availability.
@@ -2278,10 +2267,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	// 6. Start runtime fetch service (Phase 4, ADR-0038).
 	var fetchEnvVal fetchServiceEnv
-	startFetch, deprecationWarning := shouldStartFetchService(h)
-	if deprecationWarning != "" {
-		printer.StepWarn(deprecationWarning)
-	}
+	startFetch := shouldStartFetchService(h)
 	if startFetch {
 		env, fetchShutdown, fetchErr := setupFetchService(ctx, rFlags.treeFetcher, rFlags.gitToken, h, resolveToken, fetchsvc.ServiceConfig{
 			Harness:       h,
@@ -2714,6 +2700,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			Effort:            h.Effort,
 			FallbackModels:    overrides.fallbackModels,
 			RepoDir:           remoteRepositoryDir,
+			HostRepoDir:       hostRepositoryDir,
 			FullsendDir:       absFullsendDir,
 			PluginDirs:        pluginDirs,
 			Plugins:           boot.Plugins(),
@@ -3202,21 +3189,16 @@ type fetchServiceEnv struct {
 	token string // bearer token
 }
 
-const deprecatedImplicitFetchWarning = "Harness declares allowed_remote_resources without allow_runtime_fetch: true; " +
-	"the runtime fetch service will start for backward compatibility, but this behavior is " +
-	"deprecated — add allow_runtime_fetch: true to the harness to silence this warning"
-
 // shouldStartFetchService decides whether the runtime fetch HTTP service
-// should be started, and returns a deprecation warning if the harness relies
-// on the legacy implicit opt-in via allowed_remote_resources.
-func shouldStartFetchService(h *harness.Harness) (start bool, deprecationWarning string) {
+// should be started. A bare allowed_remote_resources declaration still
+// starts it for backward compatibility, but that implicit opt-in is
+// deprecated — the warning lives in Harness.Lint() so lint/lock/run all
+// report it once, from one place.
+func shouldStartFetchService(h *harness.Harness) bool {
 	if h.HasURLDirResources() || h.AllowRuntimeFetch {
-		return true, ""
+		return true
 	}
-	if len(h.AllowedRemoteResources) > 0 {
-		return true, deprecatedImplicitFetchWarning
-	}
-	return false, ""
+	return len(h.AllowedRemoteResources) > 0
 }
 
 // setupFetchService resolves a git token for runtime fetching and starts
@@ -7390,6 +7372,8 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 		return "", none, false
 	}
 	if composeOpts.FetchPolicy.Offline {
+		// No offline cache path: the URL embeds the commit SHA of main,
+		// which needs a network request to resolve (#8743).
 		return "", none, false
 	}
 	if forgeClient == nil {

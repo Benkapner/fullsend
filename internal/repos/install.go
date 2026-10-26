@@ -183,17 +183,6 @@ type InstallResult struct {
 	// (from InstallConfig) or newly provisioned.
 	WIFProvider string
 
-	// GitLabTypedDispatch reports whether the GitLab wrapper queued for
-	// commit (the pending scaffold files, not a live re-read) uses the
-	// pipeline-input dispatch contract rather than the legacy
-	// pipeline-variable one. Only meaningful for ForgeGitLab installs.
-	// Callers that need to act on the install's dispatch transport (e.g.
-	// post-install schedule creation) must use this instead of re-reading
-	// the default branch: that commit may still be an unmerged upgrade MR,
-	// in which case a live read would see the prior (or absent) wrapper
-	// and misclassify a pending typed installation as legacy.
-	GitLabTypedDispatch bool
-
 	// ScaffoldFiles are the files delivered to the repository. Delivery can
 	// open an unmerged pull/merge request instead of landing on the default
 	// branch, so callers must not treat them as live (see
@@ -326,8 +315,8 @@ func Install(ctx context.Context, cfg InstallConfig,
 	// static scaffold skips .gitlab-ci.yml; we generate it dynamically
 	// by reading the existing file and merging fullsend entries.
 	//
-	// When the existing file already contains all fullsend entries,
-	// skip the write to avoid unnecessary YAML formatting churn.
+	// When the merge leaves the existing file unchanged, skip the write
+	// to avoid unnecessary YAML formatting churn.
 	if cfg.Forge == ForgeGitLab {
 		existing, err := client.GetFileContent(ctx, cfg.Owner, cfg.Repo, ".gitlab-ci.yml")
 		if err != nil && !forge.IsNotFound(err) {
@@ -337,49 +326,31 @@ func Install(ctx context.Context, cfg InstallConfig,
 		if wrapperErr != nil {
 			return result, fmt.Errorf("reading effective GitLab wrapper: %w", wrapperErr)
 		}
-		result.GitLabTypedDispatch = gitlabWrapperHasDispatchInputs(wrapper)
-		if result.GitLabTypedDispatch {
-			if err := validateGitLabTypedContract(wrapper); err != nil {
-				return result, err
-			}
-			// Require the live restriction before delivering runnable jobs.
-			// Neither a planned update nor an error after delivery closes
-			// the unsafe interval. Do not strand a legacy poller by changing
-			// its setting or schedules before compatible templates land.
-			if err := requireGitLabRestrictionBeforeDelivery(ctx, client, cfg.Owner, cfg.Repo); err != nil {
-				return result, err
-			}
-			if err := requireGitLabPipelineVariableRestriction(ctx, client, cfg.Owner, cfg.Repo, true); err != nil {
-				return result, err
-			}
-		} else if err := requireCompleteGitLabDispatchContract(wrapper); err != nil {
+		// Only the typed pipeline-input contract can be delivered; a
+		// legacy variable-based wrapper (e.g. from an old fullsend_ref
+		// pin) is refused before any write.
+		if err := requireTypedGitLabWrapper(wrapper); err != nil {
 			return result, err
-		} else if gitlabWrapperHasDispatchInputs(existing) {
-			// Forced typed-to-legacy transition: the committed root
-			// already carries the typed spec:inputs header and
-			// include:inputs forwarding map from a previous typed
-			// install, but the wrapper this install would deliver is
-			// legacy and declares none of those inputs. The merge below
-			// is only invoked when HasFullsendEntries(existing) is false
-			// or the wrapper is typed, so it would never touch (or
-			// revert) that stale root contract here — delivering the
-			// legacy wrapper alongside it would leave an invalid include
-			// and restriction/schedule state incompatible with legacy
-			// dispatch. Refuse rather than commit that broken mix.
-			return result, fmt.Errorf("refusing GitLab typed-to-legacy transition: the installed root still forwards the typed pipeline-input contract, which the legacy wrapper does not declare; manually roll back the root contract before reverting to pipeline-variable dispatch")
 		}
-		if !HasFullsendEntries(existing) || gitlabWrapperHasDispatchInputs(wrapper) {
-			mergedRoot, mergeErr := mergeGitLabCIWithWrapper(existing, wrapper)
-			if mergeErr != nil {
-				return result, fmt.Errorf("merging .gitlab-ci.yml: %w", mergeErr)
-			}
-			if !bytes.Equal(existing, mergedRoot) {
-				files = append(files, forge.TreeFile{
-					Path:    ".gitlab-ci.yml",
-					Content: mergedRoot,
-					Mode:    "100644",
-				})
-			}
+		// Require the live restriction before delivering runnable jobs.
+		// Neither a planned update nor an error after delivery closes
+		// the unsafe interval.
+		if err := requireGitLabRestrictionBeforeDelivery(ctx, client, cfg.Owner, cfg.Repo); err != nil {
+			return result, err
+		}
+		if err := requireGitLabPipelineVariableRestriction(ctx, client, cfg.Owner, cfg.Repo, true); err != nil {
+			return result, err
+		}
+		mergedRoot, mergeErr := mergeGitLabCIWithWrapper(existing, wrapper)
+		if mergeErr != nil {
+			return result, fmt.Errorf("merging .gitlab-ci.yml: %w", mergeErr)
+		}
+		if !bytes.Equal(existing, mergedRoot) {
+			files = append(files, forge.TreeFile{
+				Path:    ".gitlab-ci.yml",
+				Content: mergedRoot,
+				Mode:    "100644",
+			})
 		}
 		// Step 5b creates the poll-state branches; refuse before any
 		// write if the project's push rule would reject their names.
@@ -453,9 +424,8 @@ func Install(ctx context.Context, cfg InstallConfig,
 	result.ScaffoldFiles = files
 
 	// Step 7b: Now that scaffold delivery has succeeded, perform the
-	// typed-dispatch activation validated (but not applied) in step 4b:
-	// migrate managed schedule variables under the already-required
-	// restriction. commitScaffold can fall back to a merge
+	// typed-dispatch activation validated (but not applied) in step 4b
+	// against the committed templates. commitScaffold can fall back to a merge
 	// request instead of landing a direct commit (see ScaffoldCommitFunc),
 	// so activateGitLabTypedDispatch independently re-reads the wrapper
 	// and only activates once it actually observes the typed contract —
