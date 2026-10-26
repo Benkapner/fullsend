@@ -333,7 +333,7 @@ func TestCodexDeveloperInstructions(t *testing.T) {
 
 	def, err := parsePiAgent([]byte(codexTestAgentDef))
 	require.NoError(t, err)
-	got := codexDeveloperInstructions("triage", def)
+	got := codexDeveloperInstructions("triage", def, nil)
 
 	assert.Contains(t, got, "# Agent: triage")
 	assert.Contains(t, got, "Inspect an issue.")
@@ -907,7 +907,7 @@ func TestCodexRolesDir(t *testing.T) {
 
 // TestCodexRuntimeBootstrap_WritesRoleFilesForADelegatingAgent covers the
 // gate passing: one regular file per role under agents/, digests recorded
-// for the spawn guard, and everything else byte-equal to today.
+// for the spawn guard.
 func TestCodexRuntimeBootstrap_WritesRoleFilesForADelegatingAgent(t *testing.T) {
 	t.Setenv(codexSubagentModelEnv, "")
 	logPath := filepath.Join(t.TempDir(), "openshell.log")
@@ -940,16 +940,6 @@ func TestCodexRuntimeBootstrap_WritesRoleFilesForADelegatingAgent(t *testing.T) 
 		assert.Equal(t, role.toml(), got, "role file %s", path)
 		assert.Equal(t, codexAssetSHA256(got), held.RoleFiles[role.Name], "the spawn guard's digest for %s is bound to the file name", role.Name)
 	}
-
-	// Nothing else changes until delegation is turned on: the multi-agent
-	// tools stay off and the runtime note still says there is no roster.
-	def, err := parsePiAgent([]byte(codexTestDelegatingAgentDef))
-	require.NoError(t, err)
-	wantConfig, err := renderCodexConfig(r.ConfigDir(), "/sandbox/workspace/repo", codexDeveloperInstructions("review", def), "")
-	require.NoError(t, err)
-	assert.Equal(t, wantConfig, storedUpload(t, storeDir, r.codexConfigPath()), "config.toml is byte-equal to a non-delegating render")
-	assert.Contains(t, string(wantConfig), "[agents]\nenabled = false")
-	assert.Contains(t, string(wantConfig), "No fullsend sub-agent roster is available")
 }
 
 // len(RoleFiles) > 0 exactly when the ADR 0126 gate holds: part one
@@ -1044,7 +1034,8 @@ func TestCodexRuntimeBootstrap_ReportsRoleFileFailures(t *testing.T) {
 // digests (#6970): the files Bootstrap wrote admit a registered role; one
 // extra file in agents/, which is agent-writable, denies every spawn with
 // exit 2 and a reason, through the installed hook adapter. Driven directly:
-// the multi-agent tools are still off, so no Codex process reaches the hook.
+// no Codex process runs here; the hook is invoked with the spawn input the
+// test builds.
 func TestCodexBootstrap_PlantedRoleFileDeniesSpawn(t *testing.T) {
 	t.Setenv(codexSubagentModelEnv, "")
 	h := newCodexAdapterHarness(t)
@@ -1191,4 +1182,118 @@ func TestCodexRuntimeBootstrap_NonDelegatingAgentIgnoresSubagents(t *testing.T) 
 			assert.Contains(t, cfg, "No fullsend sub-agent roster is available")
 		})
 	}
+}
+
+// TestCodexSubagentNote_CarriesTheDispatchContract pins the sentences the
+// agents repository's pr-review skill keys on and the content the note must
+// carry: the spawn arguments, the four-slot rule with close, no resume, only
+// the registered roles, an errored child final, and the chunked-read
+// paragraph byte-equal to the single-context note's.
+func TestCodexSubagentNote_CarriesTheDispatchContract(t *testing.T) {
+	t.Parallel()
+
+	roles := []codexRole{{Name: "challenger"}, {Name: "correctness"}, {Name: "default"}, {Name: "explore"}, {Name: "security"}}
+	got := codexSubagentNote(roles)
+
+	assert.True(t, strings.HasPrefix(got, "\n## Runtime note\n\n"), "the heading the pr-review skill looks for")
+	// The first sentence.
+	assert.Contains(t, got, "This agent runs on the codex runtime (FULLSEND_RUNTIME=codex).")
+	// The roster sentence, in roster order (codexRoles sorts).
+	assert.Contains(t, got, "Registered sub-agent roles: challenger, correctness, default, explore, security.")
+	// The denied-spawn sentence, verbatim.
+	assert.Contains(t, got, "A denied spawn is final for that role: do not retry it, execute that sub-agent "+
+		"definition yourself with the same context package, and treat the output as that sub-agent's result.")
+	assert.NotContains(t, got, "No fullsend sub-agent roster")
+
+	for _, want := range []string{
+		"`spawn_agent`", "`agent_type`", "`message`",
+		"`explore`", "for a task that names no persona, omit `agent_type`",
+		"`fork_context: false`", "never pass a `model` or `reasoning_effort` argument",
+		"`explorer` and `worker`",
+		"Spawn only the sub-agents the skill selected",
+		"At most four children can be open at once", "keeps its slot until it is closed",
+		"`wait_agent` on one child at a time", "`close_agent`",
+		"Close every child you spawned and never resume one",
+		"`timed_out: true` and no status has timed out, not failed: call it again",
+		"`errored` is final for that role",
+	} {
+		assert.Contains(t, got, want)
+	}
+	assert.True(t, strings.HasSuffix(got, codexChunkedReadNote), "the chunked-read paragraph, byte-equal")
+	assert.Equal(t, 1, strings.Count(got, "contiguous ranges of at most 200 lines"), "the chunked-read rule appears once")
+	assert.NotContains(t, got, "You are a sub-agent", "the child contract is the role file's (codexChildNote), not the parent's")
+}
+
+func TestCodexDeveloperInstructions_DelegatingAgentGetsTheDispatchNote(t *testing.T) {
+	t.Parallel()
+
+	def, err := parsePiAgent([]byte(codexTestDelegatingAgentDef))
+	require.NoError(t, err)
+	roles := []codexRole{{Name: "correctness"}, {Name: "default"}, {Name: "explore"}}
+
+	got := codexDeveloperInstructions("review", def, roles)
+	assert.Contains(t, got, "# Agent: review")
+	assert.Contains(t, got, "Review a pull request.")
+	assert.Contains(t, got, "You are the review agent.")
+	assert.Contains(t, got, "Registered sub-agent roles: correctness, default, explore.")
+	assert.Contains(t, got, "A denied spawn is final for that role")
+	assert.Contains(t, got, "at most 200 lines")
+	assert.NotContains(t, got, "No fullsend sub-agent roster")
+
+	single := codexDeveloperInstructions("review", def, nil)
+	assert.Contains(t, single, "No fullsend sub-agent roster is available")
+	assert.NotContains(t, single, "Registered sub-agent roles")
+	assert.Equal(t, strings.TrimSuffix(single, codexNoSubagentNote), strings.TrimSuffix(got, codexSubagentNote(roles)),
+		"the two notes are the only difference")
+}
+
+// TestCodexRuntimeBootstrap_DelegatingAgentRunsNativeChildren is the switch:
+// with the Agent tool, harness security on and a V1 parent (the ADR 0126
+// gate), config.toml turns the multi-agent tools on with the roster, the
+// persona's own model lands in its role file and in the runner-held digest,
+// and the dispatch note replaces the single-context note.
+func TestCodexRuntimeBootstrap_DelegatingAgentRunsNativeChildren(t *testing.T) {
+	t.Setenv(codexSubagentModelEnv, "")
+	storeDir := t.TempDir()
+	r, logPath, err := codexDelegatingBootstrap(t, storeDir, map[string]*string{"correctness": strp("openai/gpt-5.6-sol")})
+	require.NoError(t, err)
+
+	cfg := string(storedUpload(t, storeDir, r.codexConfigPath()))
+	assert.Contains(t, cfg, "[agents]\nenabled = true\nmax_concurrent_threads_per_session = 4\nmax_depth = 1\ndefault_subagent_model = \"gpt-5.6-luna\"\n")
+	for _, role := range []string{"correctness", "default", "explore"} {
+		assert.Contains(t, cfg, "[agents.\""+role+"\"]\n")
+		assert.Contains(t, cfg, "config_file = \""+r.codexRolesDir()+"/"+role+".toml\"\n")
+	}
+	assert.NotContains(t, cfg, "[agents]\nenabled = false")
+	assert.Contains(t, cfg, "trust_level = \"untrusted\"", "the project pin stays")
+	assert.Contains(t, cfg, "Registered sub-agent roles: correctness, default, explore.")
+	assert.Contains(t, cfg, "A denied spawn is final for that role")
+	assert.Contains(t, cfg, "at most 200 lines", "the chunked-read rule stays (#7832)")
+	assert.NotContains(t, cfg, "No fullsend sub-agent roster")
+
+	correctness := storedUpload(t, storeDir, r.codexRolesDir()+"/correctness.toml")
+	assert.Contains(t, string(correctness), "\nmodel = \"gpt-5.6-sol\"\n")
+	assert.NotContains(t, string(storedUpload(t, storeDir, r.codexRolesDir()+"/default.toml")), "model = ")
+	assert.NotContains(t, string(storedUpload(t, storeDir, r.codexRolesDir()+"/explore.toml")), "model = ")
+
+	held, ok := lookupRunnerHeldDigests("sb")
+	require.True(t, ok)
+	assert.Equal(t, codexAssetSHA256(correctness), held.RoleFiles["correctness"], "the digest covers the model line")
+	assert.Equal(t, codexAssetSHA256([]byte(cfg)), held.ConfigTOML)
+	assert.Contains(t, readFileString(t, logPath), r.codexHooksPath(), "hooks.json is still written: the guard is installed")
+}
+
+// FULLSEND_CODEX_SUBAGENT_MODEL beats subagents.default for the run-level
+// default; a persona without its own entry still gets no model line.
+func TestCodexRuntimeBootstrap_SubagentModelEnvBeatsTheConfigDefault(t *testing.T) {
+	t.Setenv(codexSubagentModelEnv, "openai/gpt-5.6-terra")
+	storeDir := t.TempDir()
+	r, _, err := codexDelegatingBootstrap(t, storeDir, map[string]*string{"default": strp("openai/gpt-5.6-sol")})
+	require.NoError(t, err)
+
+	cfg := string(storedUpload(t, storeDir, r.codexConfigPath()))
+	assert.Contains(t, cfg, "default_subagent_model = \"gpt-5.6-terra\"\n")
+	assert.NotContains(t, cfg, "gpt-5.6-sol")
+	assert.NotContains(t, string(storedUpload(t, storeDir, r.codexRolesDir()+"/correctness.toml")), "model = ",
+		"the run-level default is bound in config.toml, not copied into role files")
 }

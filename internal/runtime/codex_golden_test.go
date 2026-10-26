@@ -75,13 +75,23 @@ func TestCodexGolden(t *testing.T) {
 	}{
 		{"config.toml", func(t *testing.T) string {
 			data, err := renderCodexConfig(sandbox.SandboxCodexConfig, repo,
-				codexDeveloperInstructions("triage", def), "")
+				codexDeveloperInstructions("triage", def, nil), "", nil, "")
 			require.NoError(t, err)
 			return string(data)
 		}},
 		{"config-gateway.toml", func(t *testing.T) string {
 			data, err := renderCodexConfig(sandbox.SandboxCodexConfig, repo,
-				codexDeveloperInstructions("triage", def), testCodexGatewayBaseURL)
+				codexDeveloperInstructions("triage", def, nil), testCodexGatewayBaseURL, nil, "")
+			require.NoError(t, err)
+			return string(data)
+		}},
+		{"config-delegating.toml", func(t *testing.T) string {
+			review, err := parsePiAgent([]byte(codexTestDelegatingAgentDef))
+			require.NoError(t, err)
+			roles, defaultModel, err := resolveCodexChildModels(codexGoldenRoles(t), nil, "", codexTestCatalog())
+			require.NoError(t, err)
+			data, err := renderCodexConfig(sandbox.SandboxCodexConfig, repo,
+				codexDeveloperInstructions("review", review, roles), "", roles, defaultModel)
 			require.NoError(t, err)
 			return string(data)
 		}},

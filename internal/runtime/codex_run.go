@@ -513,8 +513,8 @@ func buildCodexRunCommand(params RunParams, model codexModel, effort string, hoo
 }
 
 // Run executes one agent iteration and normalizes codex's `exec --json` stream
-// into AgentEvents. codex exits 0 on a failed turn and on an interrupted one,
-// so the stream's verdict overrides the exit code, as it does for pi.
+// into AgentEvents. The stream's verdict overrides a zero exit code, as it
+// does for pi, so a failed turn fails the run whatever codex exits.
 func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (int, error) {
 	m, err := readCodexManifest(params.SandboxName, r.codexManifestPath())
 	if err != nil {
@@ -702,8 +702,9 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	// non-zero exit does not fail the run; an error from Run does, and a
 	// failed read or an unread spawn item is one too, unlike the usage read
 	// above. A dropped stream notification can hide a completed spawn, but
-	// nothing can spawn until the multi-agent tools are switched on, so it
-	// is a warning until then.
+	// the count cannot tell one from a harmless drop (exec re-reads the
+	// turn's persisted items from the thread at turn/completed), so it stays
+	// a warning.
 	if stderr.Dropped > 0 {
 		msg := fmt.Sprintf("codex dropped %d stream notification(s) under backpressure", stderr.Dropped)
 		if stderr.BackfillFailed > 0 {
