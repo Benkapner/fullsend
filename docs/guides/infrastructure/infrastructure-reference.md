@@ -373,10 +373,9 @@ Ordinary unflagged `repos install` provisions role credentials; it does not remo
 **Poll-state branches:** `repos install` (on both fresh installs and
 re-run/convergence of already-enrolled repos) creates
 `fullsend-poll-state-slash` and `fullsend-poll-state-events` (unprotected)
-with an initial HMAC-signed `state.json`. Legacy CI/CD-variable values
-are folded in when present (`*Fast` → slash, `*Full` + `LabelState` →
-events); otherwise each branch is an empty signed baseline. Existing
-branch documents are not overwritten. `repos uninstall` deletes both
+with an initial HMAC-signed `state.json`. Each missing branch is seeded
+with an empty signed baseline; existing branch documents are left
+untouched and not overwritten. `repos uninstall` deletes both
 branches via `DeleteRef` (a missing branch is ignored).
 
 Each poll cycle performs a single save of that mode's `state.json`
