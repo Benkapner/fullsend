@@ -206,10 +206,7 @@ func TestGitLabScaffoldListsIncludeTrustScript(t *testing.T) {
 		t.Error("remote GitLab scaffold paths must not fetch obsolete fullsend-dispatch.yml")
 	}
 	if !slices.Contains(gitlabScaffoldPaths, fullsendDispatchInclude) {
-		t.Error("gitlabScaffoldPaths must still list fullsend-dispatch.yml so uninstall/converge can remove it from legacy repos")
-	}
-	if !slices.Contains(gitlabRetiredScaffoldPaths, fullsendDispatchInclude) {
-		t.Error("gitlabRetiredScaffoldPaths must list fullsend-dispatch.yml so converge deletes it")
+		t.Error("gitlabScaffoldPaths must still list fullsend-dispatch.yml so uninstall can remove it from legacy repos")
 	}
 }
 

@@ -137,28 +137,6 @@ func TestMergeGitLabCI_ReindentedFileKeepsBlankLines(t *testing.T) {
 	assert.Contains(t, out, "on_new_commit: none\n\nbuild:\n")
 }
 
-func TestStripObsoleteGitLabWorkflowRules_PreservesBlankLines(t *testing.T) {
-	existing := `include:
-  - local: .gitlab/ci/fullsend-pipeline.yml
-
-workflow:
-  name: 'fullsend $CI_PIPELINE_SOURCE'
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_PIPELINE_SOURCE == "schedule"
-
-build:
-  script: echo
-`
-	result, changed, err := StripObsoleteGitLabWorkflowRules([]byte(existing))
-	require.NoError(t, err)
-	require.True(t, changed)
-	out := string(result)
-	assert.NotContains(t, out, "merge_request_event")
-	assert.Contains(t, out, "fullsend-pipeline.yml\n\nworkflow:\n")
-	assert.Contains(t, out, "\"schedule\"\n\nbuild:\n")
-}
-
 func TestUnmergeGitLabCI_PreservesBlankLines(t *testing.T) {
 	merged, err := MergeGitLabCI([]byte(userGitLabCIWithBlankLines))
 	require.NoError(t, err)

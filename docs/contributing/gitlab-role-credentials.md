@@ -379,9 +379,13 @@ Rotation-state writes use schema version 2
 ([#8242](https://github.com/fullsend-ai/fullsend/issues/8242)). Version 2
 state adds managed service-account IDs and supplied-account
 ownership/exclusions to the `FULLSEND_GITLAB_ROLE_ROTATION` document and still
-never stores token values. Unversioned and version 1 state remain readable;
-unsupported versions fail closed and are not rewritten. Version 1 is never
-written: CLIs built with the tolerant reader
+never stores token values. Version 2 is the only version read: unversioned
+and version 1 state, unsupported future versions, and documents with unknown
+fields fail closed and are not rewritten
+([#8246](https://github.com/fullsend-ai/fullsend/issues/8246)). Because older
+readers reject unknown fields, every schema change, additive ones included,
+must bump the state version. Version 1 is
+never written: CLIs built with the tolerant reader
 ([#8233](https://github.com/fullsend-ai/fullsend/issues/8233)) accept it but
 ignore the ownership fields during outgoing-token selection and grace cleanup.
 They reject version 2 before touching any credential, and CLIs older still
@@ -391,9 +395,9 @@ publishes missing supplied or minted secrets before recording distribution
 state, and older uninstall cleanup never reads rotation state: it deletes
 identity variables and revokes active role-named project tokens, supplied ones
 included, so those paths are not protected by the version gate.
-`gitlab_roles_rotate_version_gate_test.go` runs the older reader against a
-written document with a supplied PAT. It proves the older reader's rotation
-never selects, schedules or revokes that PAT, and never rewrites the
+`gitlab_roles_rotate_version_gate_test.go` runs rotation against unversioned
+and version 1 documents with a supplied PAT. It proves rotation refuses them
+before it selects, schedules or revokes that PAT, and never rewrites the
 document. Operators must still upgrade every CLI that runs install, converge
 or uninstall.
 
@@ -1467,14 +1471,33 @@ Agent input bridges explicitly disable expansion, and poll-job links are
 logged only after creator/HMAC authentication.
 The webhook fast-path's `TRIGGER_PAYLOAD` classification
 and the `CI_JOB_TOKEN` running-job identity pin are implemented. Live GitLab
-validation covers GitLab.com Free, self-managed EE, and self-managed CE; only
-stock agents on custom-port CE remain unverified: see
+validation of issue-to-agent dispatch passed on GitLab.com Free and
+self-managed EE; that run covered issue-open and polling dispatch, not
+issue-update dispatch. Self-managed CE is non-gating: earlier CE runs used a
+patched agents helper, and the latest CE rerun was stopped by the sandbox SSRF
+guard before the agents read issue data, so stock agents on custom-port CE
+remain unverified: see
 [GitLab webhook validation status](../normative/normalized-event/v1/README.md#gitlab-webhook-validation-status)
 and ADR 0125 (Caveats). Flip the env var to `enforced` fleet-wide only after
-the remaining live-validation gates close. Poll jobs
+the [#8245](https://github.com/fullsend-ai/fullsend/issues/8245)
+live-validation gate closes. Poll jobs
 resolve `FULLSEND_GITLAB_POLLER_TOKEN` once, after the schedule-only pin.
 The Go CLI then overrides `GITLAB_TOKEN` / `PUSH_TOKEN` from the
 registered role credential; nothing restores `FULLSEND_FORGE_TOKEN`.
+
+The poll and dispatcher jobs also need the Analyst's numeric user ID
+(#8807). The review stage posts its `<!-- fullsend:changes-requested -->`
+marker as the Analyst. The poller retains a bot-authored marker note for
+the fix stage only when that note's author is the Analyst. Markers from
+the Poller or any other bot stay filtered. Before blanking sibling role
+secrets, `run-poll-job.sh` and `run-dispatcher-job.sh` call
+`fullsend_resolve_gitlab_analyst_user_id` (in `pin-ci-job-identity.sh`).
+That function selects the Analyst credential in a subshell for a single
+`GET /user` and exports only the job-local
+`FULLSEND_GITLAB_ANALYST_USER_ID`. The Analyst credential never replaces
+`FULLSEND_JOB_TOKEN` and is still blanked before `fullsend poll` runs. An
+inherited value is discarded first. A failed lookup only warns and leaves
+the variable unset, and the poller then retains no marker.
 
 The `STAGE=fix` review-body pre-fetch is a separate case: it looks up
 the prior review note, which is always authored by the Analyst identity

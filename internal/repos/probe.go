@@ -87,12 +87,7 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 func ProbeComponentsForAuth(ctx context.Context, client forge.Client, owner, repo, forgeName, auth string, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
 	var results []ComponentStatus
 
-	// Workflow presence is the current carrier (WorkflowPaths). GitLab
-	// still reads a leftover dispatch stub for the version ref so repos
-	// enrolled before #7707 keep reporting the installed version until
-	// converge writes the marker onto the pipeline wrapper and deletes
-	// the stub. Presence stays false when only the stub exists, so the
-	// missing wrapper is repaired.
+	// Workflow presence is the current carrier (WorkflowPaths).
 	content, _, carrierPresent, err := readWorkflowMarker(ctx, client, owner, repo, fc)
 	if err != nil {
 		return nil, fmt.Errorf("checking workflow file: %w", err)
