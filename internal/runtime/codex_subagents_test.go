@@ -1121,15 +1121,27 @@ func TestCodexRuntime_ClearIterationArtifacts_KeepsTheFindingsLog(t *testing.T) 
 	}
 	require.NotEmpty(t, clear, "the file cleanup ran")
 
-	ws := t.TempDir()
-	for _, p := range []string{".security/findings.jsonl", "output/result.txt"} {
-		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(ws, p)), 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(ws, p), []byte("x\n"), 0o600))
+	// Both sandbox roots are rewritten to temp dirs before the command runs
+	// on the host: run inside a sandbox, an absolute operand would clear the
+	// live agent's own sessions.
+	ws, cfg := t.TempDir(), t.TempDir()
+	clear = strings.NewReplacer(sandbox.SandboxWorkspace, ws, sandbox.SandboxCodexConfig, cfg).Replace(clear)
+	require.NotContains(t, clear, "/sandbox", "no sandbox path may survive the rewrite")
+	for _, p := range []string{
+		filepath.Join(ws, ".security", "findings.jsonl"),
+		filepath.Join(ws, "output", "result.txt"),
+		filepath.Join(cfg, "sessions", "2026", "10", "22", "rollout-x.jsonl"),
+		filepath.Join(cfg, codexLastMessageFile),
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+		require.NoError(t, os.WriteFile(p, []byte("x\n"), 0o600))
 	}
-	out, err := exec.Command("/bin/sh", "-c", strings.ReplaceAll(clear, sandbox.SandboxWorkspace, ws)).CombinedOutput()
+	out, err := exec.Command("/bin/sh", "-c", clear).CombinedOutput()
 	require.NoError(t, err, string(out))
 	assert.FileExists(t, filepath.Join(ws, ".security", "findings.jsonl"), "the admissions of earlier iterations stay")
 	assert.NoFileExists(t, filepath.Join(ws, "output", "result.txt"))
+	assert.NoFileExists(t, filepath.Join(cfg, "sessions", "2026", "10", "22", "rollout-x.jsonl"), "the iteration's rollouts go")
+	assert.NoFileExists(t, filepath.Join(cfg, codexLastMessageFile))
 }
 
 func TestCodexStderrDrops_CountsAcrossChunks(t *testing.T) {
