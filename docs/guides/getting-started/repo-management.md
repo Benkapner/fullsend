@@ -797,9 +797,7 @@ passed; GitLab pipeline-variable override-role inspection — typed
 dispatch activation fails closed without `no_one_allowed`;
 runnable typed templates require the setting to be verified before delivery,
 even when enforcement is requested; legacy variable-based wrappers are exempt), scaffold content drift (including structural rewrites of
-`.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref, and
-removal of a leftover `.gitlab/ci/fullsend-dispatch.yml` from installs
-predating #7707),
+`.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref),
 declared configuration-preset drift, managed `.fullsend/config.yaml` drift,
 stale vendored assets (`vendored-assets` drift when a GitHub repo resolves
 `vendor: false`; see [Turning vendoring off](../../cli/repos.md#turning-vendoring-off)),
