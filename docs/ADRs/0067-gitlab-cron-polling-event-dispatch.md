@@ -443,6 +443,12 @@ protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
 > CI/CD-variable state when present). The poller self-heals a deleted
 > branch within one cycle. `repos uninstall` deletes both branches.
 >
+> **Update (2026-10, #8032):** The legacy CI/CD-variable migration was
+> removed. Install and converge seed missing branches with an empty
+> signed baseline and neither read nor delete the retired variables.
+> The orphan detector still ignores them, and uninstall still deletes
+> them.
+>
 > Phase 3c (#7381) dropped the created bot PAT from Maintainer (40)
 > to Developer (30); Developer can force-write and delete an
 > unprotected branch. The historical Maintainer-role description

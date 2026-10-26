@@ -376,20 +376,13 @@ func Install(ctx context.Context, cfg InstallConfig,
 	progress(repoFullName, "vars", fmt.Sprintf("Set %d repository variables", len(repoVars)))
 
 	// Step 5b: GitLab poll-state branches. Create both HMAC-signed
-	// state documents now, seeded from any leftover legacy CI/CD
-	// vars, then delete those vars so they are not re-seeded.
+	// state documents now with an empty baseline.
 	if cfg.Forge == ForgeGitLab {
 		progress(repoFullName, "poll-state", "Seeding poll-state branches")
 		if err := seedGitLabPollState(ctx, client, cfg.Owner, cfg.Repo); err != nil {
 			return result, err
 		}
 		progress(repoFullName, "poll-state", "Poll-state branches seeded")
-		progress(repoFullName, "poll-state", "Retiring legacy poll-state variables")
-		for _, a := range retireGitLabLegacyVars(ctx, client, cfg.Owner, cfg.Repo, false, progress) {
-			if a.Action == "error" {
-				return result, errors.New(a.Detail)
-			}
-		}
 	}
 
 	// Step 6: Write repository secrets. Skipped entirely when reusing the
@@ -776,9 +769,9 @@ var requiredSecrets = []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvi
 // gitlabRetiredLegacyVars is the set of GitLab poller CI/CD variables
 // superseded by HMAC-signed state.json on fullsend-poll-state-slash
 // and fullsend-poll-state-events. Distinct from the active managed
-// set: install does not seed them, CheckOrphanVars treats them as
-// known-retired (no spurious warnings), and converge migrate-then-
-// deletes any that are still present.
+// set: install and converge neither seed, read, nor delete them, and
+// CheckOrphanVars treats them as known-retired (no spurious warnings).
+// Uninstall still deletes any leftovers (gitlabUninstallVars).
 var gitlabRetiredLegacyVars = []string{
 	forge.VarLastPollAtFast, forge.VarLastPollAtFull, forge.VarLabelState,
 	forge.VarDispatchedKeysFast, forge.VarDispatchedKeysFull,
@@ -796,9 +789,8 @@ var gitlabPollStateBranches = []string{
 }
 
 // seedGitLabPollState provisions FULLSEND_DISPATCH_SECRET if missing
-// and creates both poll-state branches with HMAC-signed state.json,
-// migrating any present legacy CI/CD variables. Idempotent: existing
-// signed documents are left untouched.
+// and creates both poll-state branches with an empty HMAC-signed
+// state.json. Idempotent: existing signed documents are left untouched.
 func seedGitLabPollState(ctx context.Context, client forge.Client, owner, repo string) error {
 	secret, _, err := poll.EnsureDispatchSecret(ctx, client, owner, repo)
 	if err != nil {
@@ -808,73 +800,6 @@ func seedGitLabPollState(ctx context.Context, client forge.Client, owner, repo s
 		return fmt.Errorf("seeding poll-state branches: %w", err)
 	}
 	return nil
-}
-
-// retireGitLabLegacyVars migrates still-present retired poll-state
-// CI/CD variables into the branch-backed store (if the branches are
-// missing) and then deletes the variables. Idempotent: a repo whose
-// retired vars are already gone is a no-op. Dry-run reports the
-// deletions without writing.
-func retireGitLabLegacyVars(ctx context.Context, client forge.Client, owner, repo string, dryRun bool, progress ProgressFunc) []ComponentAction {
-	repoFullName := owner + "/" + repo
-	vars, err := client.ListRepoVariables(ctx, owner, repo)
-	if err != nil {
-		return []ComponentAction{{
-			Component: "variables",
-			Action:    "error",
-			Detail:    fmt.Sprintf("listing variables to retire legacy poll state: %v", err),
-		}}
-	}
-
-	var present []string
-	for _, name := range gitlabRetiredLegacyVars {
-		if _, ok := vars[name]; ok {
-			present = append(present, name)
-		}
-	}
-	if len(present) == 0 {
-		return nil
-	}
-
-	if dryRun {
-		var actions []ComponentAction
-		for _, name := range present {
-			actions = append(actions, ComponentAction{
-				Component: "var:" + name,
-				Action:    "delete",
-				Detail:    fmt.Sprintf("would migrate then delete retired variable %s", name),
-			})
-			progress(repoFullName, "dry-run", fmt.Sprintf("Would migrate then delete retired variable %s", name))
-		}
-		return actions
-	}
-
-	if err := seedGitLabPollState(ctx, client, owner, repo); err != nil {
-		return []ComponentAction{{
-			Component: "poll-state",
-			Action:    "error",
-			Detail:    fmt.Sprintf("migrating retired poll-state variables into branches: %v", err),
-		}}
-	}
-
-	var actions []ComponentAction
-	for _, name := range present {
-		if err := client.DeleteRepoVariable(ctx, owner, repo, name); err != nil {
-			actions = append(actions, ComponentAction{
-				Component: "var:" + name,
-				Action:    "error",
-				Detail:    fmt.Sprintf("failed to delete retired variable %s: %v", name, err),
-			})
-			continue
-		}
-		actions = append(actions, ComponentAction{
-			Component: "var:" + name,
-			Action:    "delete",
-			Detail:    fmt.Sprintf("migrated then deleted retired variable %s", name),
-		})
-		progress(repoFullName, "sync", fmt.Sprintf("Deleted retired variable %s", name))
-	}
-	return actions
 }
 
 func requiredVarsForForge(forgeName string) []string {

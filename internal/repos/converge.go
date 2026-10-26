@@ -3540,15 +3540,6 @@ func convergeRepoCredentials(ctx context.Context, d convergeDiscovery, wifProvid
 	varActions := convergeVariables(ctx, resolved, d.components, cfg.DryRun, progress)
 	actions = append(actions, varActions...)
 
-	// 2a-ii: GitLab retired poll-state CI/CD vars. Migrate leftover
-	// values into poll-state branches, then delete the vars. Known-
-	// retired: CheckOrphanVars will not warn about them.
-	if resolved.Forge == ForgeGitLab {
-		retireActions := retireGitLabLegacyVars(ctx, resolved.ForgeConfig.Client,
-			resolved.Owner, resolved.Repo, cfg.DryRun, progress)
-		actions = append(actions, retireActions...)
-	}
-
 	// 2b: Converge secrets (existence-only — values cannot be read back).
 	secretActions := convergeSecrets(ctx, d, wifProvider, cfg, progress)
 	actions = append(actions, secretActions...)

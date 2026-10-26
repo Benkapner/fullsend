@@ -183,8 +183,7 @@ type OrphanVar struct {
 // for the given forge. These are orphan variables — leftover from a
 // previous installation or a removed feature. GitLab retired poll-state
 // variables (gitlabRetiredLegacyVars) are known-retired: they are not
-// reported as orphans so already-installed repos do not warn during the
-// migrate-then-delete transition.
+// reported as orphans, so leftovers on older installations do not warn.
 //
 // The managed set is computed using the FULL superset of possible
 // managed variables — conditional fields (InferenceRegion,

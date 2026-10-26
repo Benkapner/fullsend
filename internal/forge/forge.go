@@ -54,7 +54,8 @@ const (
 
 	// Retired GitLab poller state variables. Superseded by HMAC-signed
 	// state.json on fullsend-poll-state-slash / fullsend-poll-state-events.
-	// Install no longer seeds them; converge migrate-then-deletes them.
+	// Install and converge neither seed nor migrate them; uninstall
+	// deletes any leftovers.
 	VarLastPollAtFast     = "FULLSEND_LAST_POLL_AT_FAST"
 	VarLastPollAtFull     = "FULLSEND_LAST_POLL_AT_FULL"
 	VarLabelState         = "FULLSEND_LABEL_STATE"
