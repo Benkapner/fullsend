@@ -66,11 +66,8 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forge
 		}
 	}
 	for _, c := range components {
-		// Capture the version marker even when the current carrier is
-		// missing: GitLab repos enrolled before #7707 still host it in
-		// the leftover dispatch stub. Presence of that stub is not
-		// install evidence; the ref is still useful once another
-		// required component proves the repo is installed.
+		// Record the installed version marker. It is only non-empty
+		// when the workflow carrier exists.
 		if c.Name == "workflow" {
 			state.FullsendRef = c.Actual
 		}
