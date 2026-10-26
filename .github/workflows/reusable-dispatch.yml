@@ -24,6 +24,9 @@
 #
 # Security: all user-controlled inputs (comment body, labels, usernames)
 # are passed via env: variables, not interpolated in run: blocks.
+# The route and harness-dispatch jobs need OIDC for mint-backed identity
+# lookup. Callers must grant id-token: write; keep the token within each job
+# and never write it to workflow outputs, logs, or matrix data.
 name: Dispatch
 
 on:
@@ -116,6 +119,7 @@ jobs:
     runs-on: ${{ inputs.runner_image }}
     permissions:
       contents: read
+      id-token: write
       issues: read
       pull-requests: read
     outputs:
@@ -703,6 +707,7 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ inputs.event_action }}
           ROUTE_AGENT: ${{ steps.cel-opt-in.outputs.agent }}
+          FULLSEND_MINT_URL: ${{ inputs.mint_url }}
         run: |
           set -euo pipefail
           # gha_text makes a value safe inside a ::notice::/::warning::/::error::
@@ -1849,6 +1854,7 @@ jobs:
     permissions:
       actions: write
       contents: read
+      id-token: write
       pull-requests: read
     outputs:
       matrix: ${{ steps.dispatch.outputs.matrix }}
@@ -1984,6 +1990,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ inputs.event_action }}
+          FULLSEND_MINT_URL: ${{ inputs.mint_url }}
         run: |
           set -euo pipefail
           if [[ "${{ steps.triggers.outputs.has_triggers }}" != "true" ]]; then
