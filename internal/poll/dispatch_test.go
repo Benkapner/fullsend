@@ -159,6 +159,9 @@ func TestDispatch_SelectsTransportFromTargetRepositoryContract(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "legacy pipeline-variable dispatch path is no longer supported") {
 				t.Fatalf("expected a typed-contract refusal, got %v", err)
 			}
+			if !strings.Contains(err.Error(), "fullsend_ref to "+firstTypedDispatchRelease) {
+				t.Fatalf("expected the refusal to name fullsend_ref and the minimum release, got %v", err)
+			}
 			if len(mc.pipelineCalls) != 0 {
 				t.Fatalf("expected no pipeline call, got %+v", mc.pipelineCalls)
 			}

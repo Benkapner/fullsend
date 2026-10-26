@@ -26,6 +26,12 @@ import (
 // copy, like dispatchInputNames below and gitlabDispatchInputNames there.
 const fullsendPipelineIncludePath = ".gitlab/ci/fullsend-pipeline.yml"
 
+// firstTypedDispatchRelease is the first fullsend release whose GitLab
+// scaffold carries the typed pipeline-input dispatch contract. Keep in sync
+// with gitlabFirstTypedDispatchRelease in internal/repos/gitlabci.go (same
+// import-cycle reason as fullsendPipelineIncludePath above).
+const firstTypedDispatchRelease = "v0.46.0"
+
 // resourceKey returns a stable entity-based key for concurrency control.
 func resourceKey(event RoutableEvent) string {
 	prefix := "issue"
@@ -111,7 +117,7 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 		return fmt.Errorf("checking GitLab dispatch transport for %s/%s: %w", stage, rk, err)
 	}
 	if !typed {
-		return fmt.Errorf("dispatch for %s/%s requires the typed pipeline-input contract in %s at ref %q; the legacy pipeline-variable dispatch path is no longer supported, so upgrade the repository's fullsend installation", stage, rk, fullsendPipelineIncludePath, p.opts.PipelineRef)
+		return fmt.Errorf("dispatch for %s/%s requires the typed pipeline-input contract in %s at ref %q; the legacy pipeline-variable dispatch path is no longer supported, so pin the repository's fullsend_ref to %s or later (or remove the pin) and rerun repos install", stage, rk, fullsendPipelineIncludePath, p.opts.PipelineRef, firstTypedDispatchRelease)
 	}
 
 	inputs, inputsErr := dispatchInputs(variables)
