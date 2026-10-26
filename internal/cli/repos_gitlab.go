@@ -24,9 +24,7 @@ import (
 
 // provisionGitLabPollState ensures FULLSEND_DISPATCH_SECRET exists so
 // poll-state HMAC signing is on by default, then creates both poll-state
-// branches with an initial signed document. Legacy CI/CD variables are
-// folded in when present (*Fast → slash, *Full + LabelState → events);
-// otherwise each branch is seeded with an empty signed baseline.
+// branches with an empty signed baseline document.
 //
 // Only called for already-enrolled (converged / already-current) repos —
 // fresh installs are handled by repos.Install() itself. Safe to run on
@@ -51,7 +49,7 @@ func provisionGitLabPollState(ctx context.Context, client forge.Client, printer 
 		return seedErr
 	}
 	if seeded {
-		printer.StepDone(fmt.Sprintf("[%s] Seeded poll-state branches from legacy vars (or empty baseline)", repoFullName))
+		printer.StepDone(fmt.Sprintf("[%s] Seeded poll-state branches", repoFullName))
 	}
 	return nil
 }

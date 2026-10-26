@@ -1089,8 +1089,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// GitLab poll-state provisioning for already-enrolled repos.
 	// Fresh installs are handled above via repos.Install (Step 5b);
 	// converged and already-current repos still need
-	// FULLSEND_DISPATCH_SECRET and the two poll-state branches, with
-	// any legacy CI/CD variables migrated into signed documents. This
+	// FULLSEND_DISPATCH_SECRET and the two poll-state branches. This
 	// runs with the operator's Maintainer-level client and never
 	// touches the bot PAT, so it is safe on live repos.
 	var pollStateFail int

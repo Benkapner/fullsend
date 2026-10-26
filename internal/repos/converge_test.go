@@ -2932,7 +2932,9 @@ func TestConverge_GitLab_DoesNotSeedRetiredPollVariables(t *testing.T) {
 	}
 }
 
-func TestConverge_GitLab_MigrateThenDeleteRetiredVars(t *testing.T) {
+// Retired poll-state variables are no longer migrated: converge leaves
+// leftovers in place and the orphan detector still does not flag them.
+func TestConverge_GitLab_LeavesRetiredVarsUntouched(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	populateGitLabInstalled(fc, "acme", "api")
 	for _, name := range gitlabRetiredLegacyVars {
@@ -2952,29 +2954,24 @@ func TestConverge_GitLab_MigrateThenDeleteRetiredVars(t *testing.T) {
 		t.Fatalf("unexpected failure: %v", result.Failed()[0].Error)
 	}
 
-	deleted := map[string]bool{}
 	for _, a := range result.Results[0].Actions {
-		if a.Action == "orphan" && strings.HasPrefix(a.Component, "var:FULLSEND_") {
-			name := DriftFieldName(a.Component)
-			for _, retired := range gitlabRetiredLegacyVars {
-				if name == retired {
-					t.Errorf("retired variable %s flagged as orphan", name)
-				}
-			}
+		if !strings.HasPrefix(a.Component, "var:") {
+			continue
 		}
-		if a.Action == "delete" {
-			deleted[DriftFieldName(a.Component)] = true
+		if slices.Contains(gitlabRetiredLegacyVars, DriftFieldName(a.Component)) {
+			t.Errorf("unexpected action for retired variable: %+v", a)
 		}
 	}
 	for _, name := range gitlabRetiredLegacyVars {
-		if !deleted[name] {
-			t.Errorf("expected delete action for %s", name)
-		}
-		if _, ok := fc.VariableValues["acme/api/"+name]; ok {
-			t.Errorf("retired variable %s still present on forge", name)
+		if _, ok := fc.VariableValues["acme/api/"+name]; !ok {
+			t.Errorf("retired variable %s was deleted, want it left untouched", name)
 		}
 	}
-	assertPollStateBranchesSeeded(t, fc, "acme", "api")
+	for _, v := range fc.DeletedVariables {
+		if slices.Contains(gitlabRetiredLegacyVars, v.Name) {
+			t.Errorf("converge deleted retired variable %s", v.Name)
+		}
+	}
 }
 
 func TestConverge_GitLab_RetiredVarsIdempotentOnceGone(t *testing.T) {
@@ -3015,17 +3012,10 @@ func TestConverge_GitLab_RetiredVarsDryRunDoesNotDelete(t *testing.T) {
 		t.Fatalf("Converge() error: %v", err)
 	}
 
-	found := false
 	for _, a := range result.Results[0].Actions {
-		if a.Component == "var:"+forge.VarLastPollAtFast && a.Action == "delete" {
-			found = true
-			if !strings.Contains(a.Detail, "would migrate then delete") {
-				t.Errorf("detail = %q, want dry-run wording", a.Detail)
-			}
+		if a.Component == "var:"+forge.VarLastPollAtFast {
+			t.Errorf("unexpected dry-run action for retired var: %+v", a)
 		}
-	}
-	if !found {
-		t.Error("expected dry-run delete action for retired var")
 	}
 	if fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] == "" {
 		t.Error("dry-run must not delete the retired var")

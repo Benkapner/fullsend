@@ -405,12 +405,12 @@ than one hour, the first discovery starts at the cutoff rather than one hour
 back.
 
 **Retired poll-state CI/CD variables (#7343 phase 3b / #7380):** the
-following seven variables are no longer seeded at install. `repos
-converge` migrates any still-present values into the poll-state
-branches (`*Fast` → slash, `*Full` + `LabelState` → events) and then
-deletes the variables. The orphan detector treats them as known-retired,
-so already-installed repos do not emit spurious orphan-variable warnings
-during the transition. The two poll-state branches are managed git refs
+following seven variables are no longer seeded or migrated. `repos
+install` and `repos converge` neither read nor delete them; poll-state
+branches are seeded with an empty signed baseline. The orphan detector
+treats them as known-retired, so leftovers on older installations do not
+emit spurious orphan-variable warnings, and `repos uninstall` deletes
+them. The two poll-state branches are managed git refs
 and are never reported as orphan files. The poller no longer reads or
 writes any of these variables via `GetCIVariable`/`UpdateCIVariable`.
 Poll state (watermarks, label sync state, dispatched/failed-key dedup)
