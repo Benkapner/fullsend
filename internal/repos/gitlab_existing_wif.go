@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
@@ -60,22 +61,39 @@ func validateExistingWIFOptionFormats(audience, serviceAccount string) error {
 	return nil
 }
 
-// validateExistingWIFOptions rejects the GitLab existing-provider options
-// (inference.wif_audience, inference.service_account) where they would be
-// ignored: they only change the GitLab agent job's Vertex credentials, so
-// they require a GitLab repository whose inference.auth is vertex-wif.
-func (c ResolvedConfig) validateExistingWIFOptions() error {
-	if c.DeclaredWIFAudience == "" && c.DeclaredServiceAccount == "" {
-		return nil
-	}
-	if c.Forge != ForgeGitLab {
-		return fmt.Errorf("%s/%s: inference.wif_audience and inference.service_account apply only to GitLab repositories", c.Owner, c.Repo)
-	}
-	if c.InferenceAuth != InferenceAuthVertexWIF {
-		return fmt.Errorf("%s/%s: inference.wif_audience and inference.service_account apply only to inference.auth %s (this repository uses %q)", c.Owner, c.Repo, InferenceAuthVertexWIF, c.InferenceAuth)
-	}
+// applyExistingWIFOptions checks the format of the GitLab existing-provider
+// options (inference.wif_audience, inference.service_account) wherever they
+// are declared, then clears them where they do not apply. They only change
+// the GitLab agent job's Vertex credentials, so on GitHub repositories (which
+// can inherit them from defaults.config) and on GitLab repositories whose
+// inference.auth is not vertex-wif they are inert: no variable is written and
+// no audience is rendered.
+func (c *ResolvedConfig) applyExistingWIFOptions() error {
 	if err := validateExistingWIFOptionFormats(c.DeclaredWIFAudience, c.DeclaredServiceAccount); err != nil {
 		return fmt.Errorf("%s/%s: effective configuration: %w", c.Owner, c.Repo, err)
+	}
+	if c.Forge != ForgeGitLab || c.InferenceAuth != InferenceAuthVertexWIF {
+		c.DeclaredWIFAudience = ""
+		c.DeclaredServiceAccount = ""
+	}
+	return nil
+}
+
+// rejectGitLabOnlyInferenceKeys refuses the GitLab existing-provider options
+// in a GitHub layer (github.config or a GitHub repository's config), where
+// they could never apply.
+func rejectGitLabOnlyInferenceKeys(field string, o config.ManagedConfig) error {
+	if !o.IsSet() {
+		return nil
+	}
+	r := o.Writer()
+	for _, key := range []struct{ name, value string }{
+		{"inference.wif_audience", r.ConfigInferenceWIFAudience()},
+		{"inference.service_account", r.ConfigInferenceServiceAccount()},
+	} {
+		if key.value != "" {
+			return fmt.Errorf("%s.%s applies only to GitLab repositories; set it under gitlab.config or on a gitlab.repos entry", field, key.name)
+		}
 	}
 	return nil
 }

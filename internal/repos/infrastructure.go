@@ -76,7 +76,8 @@ func PreflightEffectiveInfrastructure(ctx context.Context, m *Manifest, clients 
 //   - DeclaredInferenceProject / DeclaredWIFProvider: the declared Vertex
 //     credential values, consumed by vertexCredentialInputs.
 //   - DeclaredWIFAudience / DeclaredServiceAccount: the GitLab vertex-wif
-//     options for an existing WIF provider (see validateExistingWIFOptions).
+//     options for an existing WIF provider, cleared where they do not apply
+//     (see applyExistingWIFOptions).
 func (c *ResolvedConfig) applyEffectiveInfrastructure() error {
 	declared, err := config.DeclaredInfrastructureValues(c.Managed, c.ProposedBase)
 	if err != nil {
@@ -133,7 +134,7 @@ func (c *ResolvedConfig) applyEffectiveInfrastructure() error {
 	c.DeclaredWIFProvider = declared.InferenceWIFProvider
 	c.DeclaredWIFAudience = declared.InferenceWIFAudience
 	c.DeclaredServiceAccount = declared.InferenceServiceAccount
-	return c.validateExistingWIFOptions()
+	return c.applyExistingWIFOptions()
 }
 
 // expectedInferenceRegion is the FULLSEND_GCP_REGION value install, dry run

@@ -359,7 +359,11 @@ flag is an error). See
   unset, which keeps direct federated identity.
 
   Both keys require an explicitly supplied `wif_provider` (or
-  `--vertex-wif-provider`) and are read only at install time. See
+  `--vertex-wif-provider`) and are read only at install time. In `repos.yaml`,
+  set them under `gitlab.config` or on `gitlab.repos` entries: `github.config`
+  and `github.repos` entries reject them, and values inherited from
+  `defaults.config` are ignored on GitHub repositories and on GitLab
+  repositories that do not use `vertex-wif`. See
   [Using an existing WIF provider](../guides/getting-started/configuring-gitlab.md#using-an-existing-wif-provider).
 - **`openai`** — OpenAI Workload Identity Federation identifiers
   ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). The

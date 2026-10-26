@@ -339,9 +339,12 @@ Install, `--dry-run`, and `repos status` derive each repository's infrastructure
   write. Declare `inference.wif_provider` so `repos status` can check them
   without the flag. `inference.service_account` must be a full email ending
   in `.iam.gserviceaccount.com`, and `inference.wif_audience` a single line
-  without `$`, which GitLab would expand as a variable. Either key on a
-  GitHub repository, or on any other `inference.auth`, is an error. Install
-  makes no GCP calls to check them. Removing `inference.service_account`
+  without `$`, which GitLab would expand as a variable. Set them under
+  `gitlab.config` or on `gitlab.repos` entries; either key in `github.config`
+  or on a `github.repos` entry fails validation. Values a GitHub repository
+  inherits from `defaults.config`, or that reach a GitLab repository whose
+  `inference.auth` is not `vertex-wif`, are ignored there (format is still
+  checked). Install makes no GCP calls to check them. Removing `inference.service_account`
   does not delete an existing `FULLSEND_GCP_SERVICE_ACCOUNT` variable;
   delete it in the project's CI/CD settings to return to direct federation.
   See

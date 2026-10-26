@@ -104,23 +104,79 @@ func TestApplyEffectiveInfrastructure_ExistingWIFOptionsFromPreset(t *testing.T)
 	assert.Contains(t, err.Error(), "full service account email")
 }
 
-func TestApplyEffectiveInfrastructure_ExistingWIFOptionsRejectedOutsideGitLabVertexWIF(t *testing.T) {
-	t.Run("GitHub", func(t *testing.T) {
+func TestApplyEffectiveInfrastructure_ExistingWIFOptionsInertOutsideGitLabVertexWIF(t *testing.T) {
+	const options = "inference:\n  wif_audience: custom-audience\n  service_account: " + testServiceAccount + "\n"
+	t.Run("GitHub inherits from defaults.config", func(t *testing.T) {
 		m := newConvergeManifest("acme/api")
-		m.GitHub.Repos[0].Config = mustManagedConfig(t, "inference:\n  service_account: "+testServiceAccount+"\n")
-		_, err := resolvedFor(t, m, "acme", "api", "")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "apply only to GitLab repositories")
+		m.Defaults.Config = mustManagedConfig(t, options)
+		require.NoError(t, m.Validate())
+		rc, err := resolvedFor(t, m, "acme", "api", "")
+		require.NoError(t, err)
+		assert.Empty(t, rc.DeclaredWIFAudience)
+		assert.Empty(t, rc.DeclaredServiceAccount)
+		_, _, err = vertexCredentialInputs(ConvergeConfig{}, rc)
+		assert.NoError(t, err, "no explicit-provider requirement where the options are inert")
 	})
 	for _, auth := range []string{InferenceAuthOpenAIAPIKey, InferenceAuthOpenAIWIF} {
 		t.Run(auth, func(t *testing.T) {
-			m := gitlabExistingWIFManifest(t, "inference:\n  wif_audience: custom-audience\n")
+			m := gitlabExistingWIFManifest(t, options)
 			m.Defaults.Inference.Auth = auth
-			_, err := resolvedFor(t, m, "group", "project", "")
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "apply only to inference.auth vertex-wif")
+			rc, err := resolvedFor(t, m, "group", "project", "")
+			require.NoError(t, err)
+			assert.Empty(t, rc.DeclaredWIFAudience)
+			assert.Empty(t, rc.DeclaredServiceAccount)
 		})
 	}
+	t.Run("format is still checked", func(t *testing.T) {
+		m := newConvergeManifest("acme/api")
+		m.Defaults.Config = mustManagedConfig(t, "inference:\n  service_account: agent-sa\n")
+		require.ErrorContains(t, m.Validate(), "full service account email")
+		_, err := resolvedFor(t, m, "acme", "api", "")
+		require.ErrorContains(t, err, "full service account email")
+	})
+}
+
+func TestManifestValidate_ExistingWIFOptionsRejectedInGitHubLayers(t *testing.T) {
+	for _, key := range []string{"wif_audience: custom-audience", "service_account: " + testServiceAccount} {
+		raw := "inference:\n  " + key + "\n"
+		name := strings.SplitN(key, ":", 2)[0]
+
+		m := newConvergeManifest("acme/api")
+		m.GitHub.Config = mustManagedConfig(t, raw)
+		err := m.Validate()
+		require.Error(t, err, key)
+		assert.Contains(t, err.Error(), "github.config.inference."+name+" applies only to GitLab repositories")
+		assert.Contains(t, err.Error(), "gitlab.config")
+
+		m = newConvergeManifest("acme/api")
+		m.GitHub.Repos[0].Config = mustManagedConfig(t, raw)
+		err = m.Validate()
+		require.Error(t, err, key)
+		assert.Contains(t, err.Error(), "github.repos[acme/api].config.inference."+name)
+	}
+
+	// The same keys are accepted on the GitLab side.
+	m := gitlabExistingWIFManifest(t, "inference:\n  project: example-project\n  wif_provider: "+testExistingWIF+
+		"\n  wif_audience: custom-audience\n  service_account: "+testServiceAccount+"\n")
+	m.GitLab.Repos[0].Config = mustManagedConfig(t, "inference:\n  service_account: "+testServiceAccount+"\n")
+	require.NoError(t, m.Validate())
+}
+
+// A GitLab repository whose inference.auth is not vertex-wif installs
+// without the variable or a rendered audience even when the options are
+// inherited.
+func TestConverge_GitLabExistingWIFOptionsInertForOpenAI(t *testing.T) {
+	fc := newFakeClientForBatch("group/project")
+	m := gitlabExistingWIFManifest(t, "inference:\n  wif_audience: custom-audience\n  service_account: "+testServiceAccount+"\n")
+	m.Defaults.Inference.Auth = InferenceAuthOpenAIAPIKey
+	spy := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), ConvergeConfig{Manifest: m, MaxConcurrency: 4, Direct: true, OpenAIAPIKey: "sk-test-key-0123456789"},
+		newTestClientFactory(fc), spy.fn(), noopProgress)
+	require.NoError(t, err)
+	require.Empty(t, result.Failed(), "results: %+v", result.Results)
+	_, written := fc.VariableValues["group/project/"+forge.VarGCPServiceAccount]
+	assert.False(t, written)
+	assert.Contains(t, gitlabAgentTemplate(t, spy.files), "\n      aud: \"fullsend\"\n")
 }
 
 func TestVertexCredentialInputs_ExistingWIFOptionsRequireExplicitProvider(t *testing.T) {

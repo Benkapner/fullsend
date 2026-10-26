@@ -305,6 +305,11 @@ func validateManifestManaged(m *Manifest) error {
 		if err := validateManagedBlock(p.name+".config", p.cfg.Config); err != nil {
 			return err
 		}
+		if p.name == ForgeGitHub {
+			if err := rejectGitLabOnlyInferenceKeys(p.name+".config", p.cfg.Config); err != nil {
+				return err
+			}
+		}
 		for i, entry := range p.cfg.Repos {
 			field := fmt.Sprintf("%s.repos[%d].config", p.name, i)
 			if entry.Name != "" {
@@ -312,6 +317,11 @@ func validateManifestManaged(m *Manifest) error {
 			}
 			if err := validateManagedBlock(field, entry.Config); err != nil {
 				return err
+			}
+			if p.name == ForgeGitHub {
+				if err := rejectGitLabOnlyInferenceKeys(field, entry.Config); err != nil {
+					return err
+				}
 			}
 			if err := rejectAllowlistBelowReset([]allowlistLayer{
 				{"defaults.config", m.Defaults.Config},
