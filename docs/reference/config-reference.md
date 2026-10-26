@@ -88,6 +88,8 @@ inference:
   project: my-gcp-project           # GCP project ID (must be provided by installer)
   region: global                     # GCP region for inference requests
   wif_provider: projects/123/locations/global/workloadIdentityPools/pool/providers/prov  # WIF provider resource name
+  wif_audience: ""                   # GitLab: agent job ID token audience for an existing provider (default "fullsend")
+  service_account: ""                # GitLab: service account email the agent job impersonates (default none)
   openai:                            # OpenAI Workload Identity Federation (ADR 0092)
     audience: ""                     # OpenAI WIF audience
     identity_provider_id: ""         # OpenAI WIF identity provider ID
@@ -345,6 +347,20 @@ flag is an error). See
 - **`region`** — GCP region for inference. Default: `global`.
 - **`wif_provider`** — Full Workload Identity Federation provider resource
   name. No default — must be provided by the installer.
+- **`wif_audience`** — GitLab `vertex-wif` only. The audience the GitLab
+  agent job requests for its ID token (`FULLSEND_ID_TOKEN`), for an existing
+  WIF provider that does not accept `fullsend`. `fullsend repos install`
+  renders it into `.gitlab/ci/fullsend-agent.yml`. Default: unset, which
+  keeps `aud: "fullsend"`. Must be a single line without `$`.
+- **`service_account`** — GitLab `vertex-wif` only. The email of a service
+  account the agent job impersonates after the federated token exchange
+  (`<name>@<project>.iam.gserviceaccount.com`). `fullsend repos install`
+  writes it as the `FULLSEND_GCP_SERVICE_ACCOUNT` CI/CD variable. Default:
+  unset, which keeps direct federated identity.
+
+  Both keys require an explicitly supplied `wif_provider` (or
+  `--vertex-wif-provider`) and are read only at install time. See
+  [Using an existing WIF provider](../guides/getting-started/configuring-gitlab.md#using-an-existing-wif-provider).
 - **`openai`** — OpenAI Workload Identity Federation identifiers
   ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). The
   `FULLSEND_OPENAI_*` runner variables, when set, replace the resolved block

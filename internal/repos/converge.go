@@ -967,11 +967,12 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			// FULLSEND_REVIEW_CLIENT_ID, and FULLSEND_APP_SET. The mint
 			// URL and region are the effective configuration's values.
 			expectedVars, varValErr := staticExpectedVarValues(InstallConfig{
-				Forge:             resolved.Forge,
-				MintURL:           resolved.MintURL,
-				InferenceRegion:   resolved.expectedInferenceRegion(),
-				ReviewAppClientID: reviewClientID,
-				AppSet:            effectiveAppSet,
+				Forge:                   resolved.Forge,
+				MintURL:                 resolved.MintURL,
+				InferenceRegion:         resolved.expectedInferenceRegion(),
+				InferenceServiceAccount: resolved.DeclaredServiceAccount,
+				ReviewAppClientID:       reviewClientID,
+				AppSet:                  effectiveAppSet,
 			}, resolved.MintURL)
 			if varValErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: varValErr}
@@ -1591,6 +1592,10 @@ func convergeRepo(ctx context.Context,
 			ControlRunnerTags: gitlabControlRunnerTags(cfg.Manifest),
 			Runtime:           resolved.Runtime,
 			Direct:            cfg.Direct,
+			// GitLab existing-provider options (validated by
+			// applyEffectiveInfrastructure and vertexCredentialInputs).
+			InferenceWIFAudience:    resolved.DeclaredWIFAudience,
+			InferenceServiceAccount: resolved.DeclaredServiceAccount,
 			// Supplied inputs replace every secret of the selected
 			// method; without inputs the existing secrets are reused
 			// (validation already required them to be present).
@@ -3037,6 +3042,9 @@ func convergeRefFiles(ctx context.Context,
 				templateFiles = append(templateFiles, forge.TreeFile{Path: file.Path, Content: file.Content, Mode: file.Mode})
 			}
 		}
+		if tplErr == nil {
+			templateFiles, tplErr = renderGitLabAgentAudience(templateFiles, resolved.DeclaredWIFAudience)
+		}
 		if tplErr != nil {
 			actions = append(actions, ComponentAction{
 				Component: "ref",
@@ -3217,6 +3225,9 @@ func convergeScaffoldFiles(ctx context.Context,
 		templateFiles, tplErr := collectGitLabUpgradeTemplates(
 			gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest), templateRef, "",
 		)
+		if tplErr == nil {
+			templateFiles, tplErr = renderGitLabAgentAudience(templateFiles, resolved.DeclaredWIFAudience)
+		}
 		if tplErr != nil {
 			actions = append(actions, ComponentAction{
 				Component: "scaffold",

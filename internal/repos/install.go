@@ -45,6 +45,16 @@ type InstallConfig struct {
 	InferenceProject string
 	InferenceRegion  string
 
+	// InferenceWIFAudience is the GitLab agent job's FULLSEND_ID_TOKEN
+	// audience (config.inference.wif_audience). Empty keeps the shipped
+	// aud "fullsend". GitLab only; validated by applyEffectiveInfrastructure.
+	InferenceWIFAudience string
+
+	// InferenceServiceAccount is the service account email the GitLab
+	// agent job impersonates (config.inference.service_account), written
+	// as FULLSEND_GCP_SERVICE_ACCOUNT. Empty writes no variable. GitLab only.
+	InferenceServiceAccount string
+
 	// InferenceAuth is the repository's effective inference.auth
 	// (InferenceAuthVertexWIF, InferenceAuthOpenAIAPIKey or
 	// InferenceAuthOpenAIWIF). It selects
@@ -292,6 +302,9 @@ func Install(ctx context.Context, cfg InstallConfig,
 	if cfg.InferenceRegion != "" && !IsValidGCPRegion(cfg.InferenceRegion) {
 		return result, fmt.Errorf("invalid GCP region %q", cfg.InferenceRegion)
 	}
+	if err := validateExistingWIFOptionFormats(cfg.InferenceWIFAudience, cfg.InferenceServiceAccount); err != nil {
+		return result, err
+	}
 
 	// Validate WIF provider when Vertex inference secrets will be written.
 	if !cfg.ReuseSecrets && cfg.InferenceAuth != InferenceAuthOpenAIAPIKey && cfg.InferenceProject != "" {
@@ -490,6 +503,10 @@ func driftInstallConfig(resolved ResolvedConfig, dcfg DriftConfig) InstallConfig
 		ReviewAppClientID: dcfg.ReviewAppClientID,
 		AgentRunnerTags:   dcfg.AgentRunnerTags,
 		ControlRunnerTags: dcfg.ControlRunnerTags,
+		// The configured token audience is rendered into the GitLab agent
+		// template, so content drift compares against the rendered file.
+		InferenceWIFAudience:    resolved.DeclaredWIFAudience,
+		InferenceServiceAccount: resolved.DeclaredServiceAccount,
 	}
 }
 
@@ -645,6 +662,14 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 			Mode:    f.Mode,
 		})
 	}
+	if cfg.Forge == ForgeGitLab {
+		// Rendered after collection so embedded and pinned (prebuilt)
+		// templates both carry the configured audience.
+		files, err = renderGitLabAgentAudience(files, cfg.InferenceWIFAudience)
+		if err != nil {
+			return nil, fmt.Errorf("rendering GitLab agent token audience: %w", err)
+		}
+	}
 	if !cfg.ManagedConfigAdoptionRequired {
 		files = append(files, forge.TreeFile{
 			Path:    ".fullsend/config.yaml",
@@ -699,6 +724,9 @@ func managedVarsForForge(cfg InstallConfig, mintURL string) ([]ManagedVar, error
 		var vars []ManagedVar
 		if cfg.InferenceRegion != "" {
 			vars = append(vars, ManagedVar{Name: forge.VarGCPRegion, Value: cfg.InferenceRegion})
+		}
+		if cfg.InferenceServiceAccount != "" {
+			vars = append(vars, ManagedVar{Name: forge.VarGCPServiceAccount, Value: cfg.InferenceServiceAccount})
 		}
 		return vars, nil
 	default:

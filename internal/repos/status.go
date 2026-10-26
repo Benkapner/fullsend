@@ -337,11 +337,12 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		appSet = cfg.AppSet
 	}
 	expectedVars, varValErr := staticExpectedVarValues(InstallConfig{
-		Forge:             cfg.Forge,
-		MintURL:           cfg.MintURL,
-		InferenceRegion:   cfg.expectedInferenceRegion(),
-		ReviewAppClientID: dcfg.ReviewAppClientID,
-		AppSet:            appSet,
+		Forge:                   cfg.Forge,
+		MintURL:                 cfg.MintURL,
+		InferenceRegion:         cfg.expectedInferenceRegion(),
+		InferenceServiceAccount: cfg.DeclaredServiceAccount,
+		ReviewAppClientID:       dcfg.ReviewAppClientID,
+		AppSet:                  appSet,
 	}, cfg.MintURL)
 	if varValErr != nil {
 		status.Error = fmt.Sprintf("building expected variable values for %s/%s: %v", owner, repo, varValErr)

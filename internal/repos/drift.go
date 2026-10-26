@@ -188,7 +188,7 @@ type OrphanVar struct {
 //
 // The managed set is computed using the FULL superset of possible
 // managed variables — conditional fields (InferenceRegion,
-// ReviewAppClientID) are populated with placeholders so that variables
+// ReviewAppClientID, InferenceServiceAccount) are populated with placeholders so that variables
 // like FULLSEND_GCP_REGION are never flagged as orphans just because
 // the caller doesn't know their expected value.
 func CheckOrphanVars(ctx context.Context, client forge.Client,
@@ -205,6 +205,9 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 	}
 	if maxCfg.AppSet == "" {
 		maxCfg.AppSet = "placeholder"
+	}
+	if maxCfg.InferenceServiceAccount == "" {
+		maxCfg.InferenceServiceAccount = "placeholder"
 	}
 	managed, err := managedVarsForForge(maxCfg, mintURL)
 	if err != nil {

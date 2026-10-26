@@ -566,10 +566,49 @@ func gitlabJobChainProblem(ctx context.Context, client forge.Client, owner, repo
 		"__AGENT_RUNNER_TAGS__", scaffold.FormatRunnerTags(gitlabAgentRunnerTags(manifest)),
 		"__CONTROL_RUNNER_TAGS__", scaffold.FormatRunnerTags(gitlabControlRunnerTags(manifest)),
 	).Replace(string(shipped)))
+	if job.templatePath == fullsendAgentTemplatePath {
+		// The installer also renders config.inference.wif_audience into the
+		// agent job's id_tokens audience. The audience only selects which
+		// relying party accepts the token; it runs nothing. Accept a committed
+		// audience that passes the same validation as the configured value by
+		// rendering it into the shipped job; anything else still mismatches.
+		if aud, ok := gitlabCommittedAgentAudience(committed, job.jobName); ok {
+			if rendered, renderErr := scaffold.RenderGitLabAgentAudience(shipped, aud); renderErr == nil {
+				shipped = rendered
+			}
+		}
+	}
 	if !gitlabJobRunsShippedScript(committed, shipped, job.jobName) {
 		return "the committed " + job.label + " in " + job.templatePath + " does not run " + job.scriptPath + " under the shipped job configuration, so " + job.consequence + "; merge the scaffold repair first"
 	}
 	return ""
+}
+
+// gitlabCommittedAgentAudience returns the literal FULLSEND_ID_TOKEN audience
+// of the committed agent job. ok is false when the job or the audience cannot
+// be read as a literal scalar, or the audience would fail
+// inference.wif_audience validation.
+func gitlabCommittedAgentAudience(committed []byte, jobName string) (string, bool) {
+	job, ok := gitlabJobNode(committed, jobName)
+	if !ok {
+		return "", false
+	}
+	node := job
+	for _, key := range []string{"id_tokens", "FULLSEND_ID_TOKEN", "aud"} {
+		value, found := effectiveMappingValue(node, key)
+		if !found || value == nil {
+			return "", false
+		}
+		node = resolveAlias(value)
+		if node == nil {
+			return "", false
+		}
+	}
+	aud, ok := isLiteralScalarValue(node)
+	if !ok || validateWIFAudience(aud) != nil {
+		return "", false
+	}
+	return aud, true
 }
 
 // gitlabJobRunsShippedScript reports whether the named job in the committed
