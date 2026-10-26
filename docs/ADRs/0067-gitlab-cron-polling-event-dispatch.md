@@ -219,6 +219,13 @@ trigger-token threat model for the new inbound-surface controls.
 > dropped the leftover empty `dispatch` stage from the required stage
 > list and strips it from already-enrolled root files on converge
 > (`StripObsoleteGitLabStages`).
+>
+> **Update (2026-10, #8031):** After the webhook-dispatch rollout, these
+> converge-time migrations were removed, as were the converge deletion
+> of a leftover `fullsend-dispatch.yml` and the status/upgrade read of
+> its version marker. Converge now reports a leftover stub as an orphan.
+> Uninstall still deletes it, and still removes the obsolete
+> `merge_request_event` rule from a fullsend-owned `workflow:` block.
 
 ## Context
 
