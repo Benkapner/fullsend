@@ -104,12 +104,15 @@ func rejectGitLabOnlyInferenceKeys(field string, o config.ManagedConfig) error {
 // renderGitLabAgentAudience sets the configured FULLSEND_ID_TOKEN audience
 // in the GitLab agent template among files. An empty audience leaves the
 // files unchanged, so the shipped aud "fullsend" stays byte for byte.
+// files is a full template set, so a declared audience without the agent
+// template is an error rather than a silently unrendered job.
 func renderGitLabAgentAudience(files []forge.TreeFile, audience string) ([]forge.TreeFile, error) {
 	if audience == "" {
 		return files, nil
 	}
 	out := make([]forge.TreeFile, len(files))
 	copy(out, files)
+	found := false
 	for i, f := range out {
 		if f.Path != fullsendAgentTemplatePath {
 			continue
@@ -119,6 +122,10 @@ func renderGitLabAgentAudience(files []forge.TreeFile, audience string) ([]forge
 			return nil, err
 		}
 		out[i].Content = rendered
+		found = true
+	}
+	if !found {
+		return nil, fmt.Errorf("inference.wif_audience is declared but the GitLab template set has no %s to render it into", fullsendAgentTemplatePath)
 	}
 	return out, nil
 }

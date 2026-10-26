@@ -270,6 +270,11 @@ func TestBuildScaffoldFiles_GitLabAgentAudience(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, custom, gitlabAgentTemplate(t, prebuilt))
 
+	// A full set without the agent template cannot carry the audience.
+	cfg.PrebuiltScaffoldFiles = scaffold.InstallFiles{{Path: gitlabAgentJobScriptPath, Content: []byte("#!/bin/sh\n"), Mode: "100755"}}
+	_, err = BuildScaffoldFiles(cfg)
+	require.ErrorContains(t, err, "has no "+fullsendAgentTemplatePath+" to render it into")
+
 	// A template without the shipped audience line cannot be rendered.
 	cfg.PrebuiltScaffoldFiles = scaffold.InstallFiles{{Path: fullsendAgentTemplatePath, Content: []byte("job: {}\n"), Mode: "100644"}}
 	_, err = BuildScaffoldFiles(cfg)
@@ -662,4 +667,15 @@ func TestCheckPinnedServiceAccountSupport_SkipsReleaseMatchAndFetchErrors(t *tes
 
 	err := checkPinnedServiceAccountSupport(context.Background(), rc, "", "", NewRefResolver(fc))
 	require.ErrorContains(t, err, "to verify inference.service_account support")
+}
+
+func TestRenderGitLabAgentAudience_MissingTemplate(t *testing.T) {
+	files := []forge.TreeFile{{Path: gitlabAgentJobScriptPath, Content: []byte("#!/bin/sh\n")}}
+	got, err := renderGitLabAgentAudience(files, "")
+	require.NoError(t, err, "nothing to render without an audience")
+	assert.Equal(t, files, got)
+
+	_, err = renderGitLabAgentAudience(files, testExistingAudience)
+	require.ErrorContains(t, err, "inference.wif_audience is declared")
+	assert.Equal(t, scaffold.GitLabAgentTemplatePath, fullsendAgentTemplatePath)
 }
