@@ -351,7 +351,8 @@ flag is an error). See
   agent job requests for its ID token (`FULLSEND_ID_TOKEN`), for an existing
   WIF provider that does not accept `fullsend`. `fullsend repos install`
   renders it into `.gitlab/ci/fullsend-agent.yml`. Default: unset, which
-  keeps `aud: "fullsend"`. Must be a single line without `$`.
+  keeps `aud: "fullsend"`. Must be a single line of printable ASCII with no
+  surrounding spaces and no `$`.
 - **`service_account`** — GitLab `vertex-wif` only. The email of a service
   account the agent job impersonates after the federated token exchange
   (`<name>@<project>.iam.gserviceaccount.com`). `fullsend repos install`

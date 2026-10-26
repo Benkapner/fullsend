@@ -1498,8 +1498,21 @@ and the job keeps `aud: "fullsend"`; set `gitlab.fullsend_ref` and re-run
 #### 4. Check an agent job
 
 Run an agent job as described in [Testing Fullsend](#testing-fullsend). A
-working setup produces no Google credential errors in the agent job log.
-The agent's first model request succeeds and the agent posts its result.
+working setup produces no Google credential errors in the agent job log,
+and the agent finishes. For example, a triage job on Claude through Vertex
+AI logged:
+
+```text
+  ✓ Provider ready: vertex-ai (0.1s)
+→ Agent: claude-opus-5-5 (v2.1.306)
+→ Result: success
+  ✓ Agent exited with code 0 (56.0s)
+```
+
+The job log does not show the token exchange itself. When the provider's
+principal has no role in your project, a successful model call means the
+impersonation worked; without it the job fails with
+`aiplatform.endpoints.predict` denied (see the table below).
 If Data Access audit logs are enabled for the IAM Service Account
 Credentials API, the service account's project also shows
 `GenerateAccessToken` calls from the provider's principal.
@@ -1508,19 +1521,22 @@ Credentials API, the service account's project also shows
 
 | Error in the agent job log | Cause | Fix |
 |----------------------------|-------|-----|
-| `invalid_target` ("The target service indicated by the "audience" parameters is invalid") | `FULLSEND_GCP_WIF_PROVIDER` does not name an active provider: a wrong project number, pool ID or provider ID, or a disabled or deleted provider | Compare `inference.wif_provider` with the administrator's provider resource name, then re-run `repos install` |
-| `invalid_grant` ("The audience in ID Token [...] does not match the expected audience") | The agent job's token audience is not one the provider accepts | Set `inference.wif_audience` to an allowed audience (or the provider's full resource name when it has none) and re-run `repos install`. Check that the committed `.gitlab/ci/fullsend-agent.yml` shows it |
-| `invalid_grant` ("The given credential is rejected by the attribute condition") | The provider's condition does not admit this GitLab project or ref | Ask the provider's administrator to admit the project |
+| `invalid_target` ("The target service indicated by the "audience" parameters is invalid. This might either be because the pool or provider is disabled or deleted or because it doesn't exist.") | `FULLSEND_GCP_WIF_PROVIDER` does not name an active provider: a wrong project number, pool ID or provider ID, or a disabled or deleted provider | Compare `inference.wif_provider` with the administrator's provider resource name, then re-run `repos install` |
+| `invalid_grant` ("The audience in ID Token [fullsend] does not match the expected audience.") | The agent job's token audience is not one the provider accepts | Set `inference.wif_audience` to an allowed audience (or the provider's full resource name when it has none) and re-run `repos install`. Check that the committed `.gitlab/ci/fullsend-agent.yml` shows it |
+| `unauthorized_client` ("The given credential is rejected by the attribute condition.") | The provider's condition does not admit this GitLab project or ref | Ask the provider's administrator to admit the project |
 | `invalid_grant` ("Error connecting to the given credential's issuer") | Google cannot reach the GitLab instance's keys | See [Private OIDC issuers](#private-oidc-issuers-uploaded-jwks); the provider's administrator applies it |
 | `Permission 'iam.serviceAccounts.getAccessToken' denied on resource (or it may not exist)` | The provider's principal cannot impersonate the service account: the `roles/iam.workloadIdentityUser` binding is missing or names a different principal, or `inference.service_account` names another account | Re-check step 2 with the exact principal from the administrator and the exact email in `inference.service_account` |
-| `Permission 'aiplatform.endpoints.predict' denied` | The service account lacks `roles/aiplatform.user` in the Vertex AI project, or `inference.project` names another project | Grant the role (step 2) or correct `inference.project` |
+| `Permission 'aiplatform.endpoints.predict' denied` | The service account lacks `roles/aiplatform.user` in the Vertex AI project, or `inference.project` names another project. Without `inference.service_account`, the job uses the provider's principal directly, which has no role in your project | Grant the role (step 2), correct `inference.project`, or set `inference.service_account` |
 
 To return to direct federation, remove both keys
 (`fullsend repos set --unset gitlab.config.inference.service_account` and
 the same for `wif_audience`) and re-run `repos install`. Install restores
 `aud: "fullsend"` and deletes `FULLSEND_GCP_SERVICE_ACCOUNT` once the
-scaffold change is on the default branch; until then `repos status` reports
-the variable as obsolete. `repos uninstall` removes it along with the other
+scaffold change is on the default branch. Until then install prints
+`Keeping obsolete variable FULLSEND_GCP_SERVICE_ACCOUNT until the scaffold change is merged`,
+and `repos status` shows `FULLSEND_GCP_SERVICE_ACCOUNT differs`
+(`repos status --json` gives the reason: `obsolete variable
+(inference.service_account is not declared)`). `repos uninstall` removes it along with the other
 `FULLSEND_GCP_*` values.
 
 ### Private OIDC issuers (uploaded JWKS)

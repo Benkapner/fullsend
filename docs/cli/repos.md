@@ -347,7 +347,8 @@ Install, `--dry-run`, and `repos status` derive each repository's infrastructure
   checked). Install makes no GCP calls to check them. When
   `inference.service_account` is not declared (or does not apply), an
   existing `FULLSEND_GCP_SERVICE_ACCOUNT` variable is obsolete: `repos status`
-  reports it and install deletes it, so removing the key returns the agent
+  reports it as drift (`--json` shows `expected absent`) and install deletes
+  it, so removing the key returns the agent
   job to direct federation. See
   [Using an existing WIF provider](../guides/getting-started/configuring-gitlab.md#using-an-existing-wif-provider)
   for a walkthrough.
