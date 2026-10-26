@@ -423,10 +423,13 @@ may be public, so still do not put a credential in the path of a manifest
 URL on a recognized host. A manifest loaded from a local path records
 no source line, because its location on the operator's machine is not
 meaningful to readers and would differ between operators. The line is
-part of the managed content, so changing the manifest URL (or switching
-between a URL and a local path) is reported as drift and rewrites the
-file. A file written before this line existed still carries the
-ownership marker, so it converges as ordinary drift, not adoption.
+informational: `repos status` and `repos install` ignore it when comparing
+the installed file with the managed configuration, so changing the
+manifest URL (or switching between a URL and a local path for the same
+manifest content) is not reported as drift and does not rewrite the file.
+The line is updated the next time a configuration change rewrites the
+file. A file without this line still carries the ownership marker, so it
+never requires adoption.
 
 If a config-managed repository already has an existing
 `.fullsend/config.yaml` without that marker, `repos status` reports it as
@@ -588,6 +591,11 @@ Install runs in two phases:
 > repository, the install command creates a fork and submits the scaffold
 > PR from the fork. To avoid fork-based delivery, ensure you have write
 > (or admin) access to the target repositories before running install.
+> GitHub App installation tokens never fork: they push a branch and open the
+> scaffold PR in the target repository. Install the App on each target
+> repository with Contents, Pull requests and Workflows read and write
+> permissions. See
+> [Scaffold PR delivery](../../cli/repos.md#scaffold-pr-delivery).
 
 Preview what would change without making modifications:
 
@@ -724,6 +732,21 @@ a token value. Every state except `not-installed`, `deferred`, and `ready` is
 drift. The managed `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET`
 variables are not reported as orphans; any other unrecognised `FULLSEND_`
 variable still is.
+
+For GitLab repos, status also reports the webhook fast path as a
+`gitlab_webhook` object with a `state`, the booleans `webhook_present`,
+`webhook_configured`, `trigger_token_ready` and `webhook_secret_ready`, and the
+reasons, never a token, secret or webhook URL. The states are `ready`,
+`missing` (no managed webhook yet), `drifted` (misconfigured, or an unmet safety
+or readiness contract), `deferred` (nothing provisioned and the pipeline
+wrapper does not include the dispatcher yet), and `unreadable`. Every state
+except `ready` and `deferred` is `gitlab-webhook` drift, so it makes the command
+exit non-zero. See [`repos status` output](../../cli/repos.md#output) for what
+each state means. Once the scaffold is merged to a protected default branch and
+the poller is deployed, the poller is the dispatch backstop, so a fast path that
+is not `ready` delays dispatch by up to one poll interval instead of stopping
+it. A fresh install whose scaffold merge request is still open, or whose default
+branch is unprotected, dispatches nothing on either path until then.
 
 Use `--json` for machine-readable output:
 

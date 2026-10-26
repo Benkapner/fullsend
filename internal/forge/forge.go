@@ -147,6 +147,13 @@ const (
 	// GitLabDispatchRouteAPI is the VarGitLabDispatchRoute value that keeps
 	// the Poller-credential pipelines API dispatch route.
 	GitLabDispatchRouteAPI = "api"
+	// VarGitLabAnalystUserID is the job-local numeric GitLab user ID of the
+	// registered Analyst identity, which the GitLab poll and dispatcher job
+	// scripts resolve with the Analyst credential before blanking it and
+	// export for `fullsend poll` (#8807). It is never a CI/CD variable.
+	// Unset means unknown: no changes-requested marker reaches the fix
+	// stage.
+	VarGitLabAnalystUserID = "FULLSEND_GITLAB_ANALYST_USER_ID"
 
 	// VarGitLabRoleRegistry is the administrator-controlled GitLab role
 	// registry (JSON policy and credential *references*, never raw
@@ -564,6 +571,13 @@ type Issue struct {
 	Body   string
 	URL    string
 	Labels []string
+	// State is "open" or "closed". It is only populated by GetIssue;
+	// other issue reads leave it empty.
+	State string
+	// StateReason is GitHub's state_reason: "completed", "not_planned"
+	// or "duplicate" for a closed issue, "reopened" or empty otherwise.
+	// GitLab does not report one. Only populated by GetIssue.
+	StateReason string
 }
 
 // IssueComment represents a comment on an issue.
