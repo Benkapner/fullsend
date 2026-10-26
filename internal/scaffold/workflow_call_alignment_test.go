@@ -847,6 +847,65 @@ func TestReusableDispatchWorkflowContent(t *testing.T) {
 	assert.Regexp(t, `(?s)ready-for-review"\s*\]\];\s*then\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
 }
 
+// TestReusableDispatchJobsReceiveMintOIDC validates permissions and mint URL
+// wiring for both gha-event dispatch steps (#8814). The OIDC token remains
+// job-local and is not copied into outputs, logs, or matrix data.
+func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
+	type workflowStep struct {
+		Name string            `yaml:"name"`
+		Run  string            `yaml:"run"`
+		Env  map[string]string `yaml:"env"`
+	}
+	type workflowJob struct {
+		Permissions map[string]string `yaml:"permissions"`
+		Outputs     map[string]string `yaml:"outputs"`
+		Steps       []workflowStep    `yaml:"steps"`
+	}
+	var workflow struct {
+		Jobs map[string]workflowJob `yaml:"jobs"`
+	}
+
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	require.NoError(t, yaml.Unmarshal(content, &workflow))
+
+	for _, tc := range []struct {
+		jobName  string
+		stepName string
+	}{
+		{jobName: "route", stepName: "Evaluate CEL route"},
+		{jobName: "harness-dispatch", stepName: "Run fullsend dispatch"},
+	} {
+		t.Run(tc.jobName, func(t *testing.T) {
+			job, ok := workflow.Jobs[tc.jobName]
+			require.True(t, ok, "job %q must exist", tc.jobName)
+			assert.Equal(t, "write", job.Permissions["id-token"],
+				"job %q must be able to request an OIDC token", tc.jobName)
+
+			var dispatch workflowStep
+			for _, step := range job.Steps {
+				if step.Name == tc.stepName {
+					dispatch = step
+					break
+				}
+			}
+			require.NotEmpty(t, dispatch.Name, "job %q must include step %q", tc.jobName, tc.stepName)
+			assert.Contains(t, dispatch.Run, "--input-driver gha-event",
+				"step %q must use the GitHub event driver", tc.stepName)
+			assert.Equal(t, "${{ inputs.mint_url }}", dispatch.Env["FULLSEND_MINT_URL"],
+				"step %q must receive the configured mint URL", tc.stepName)
+			for name, value := range job.Outputs {
+				assert.NotContains(t, name, "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+					"job %q output names must not expose the OIDC request token", tc.jobName)
+				assert.NotContains(t, value, "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+					"job %q outputs must not expose the OIDC request token", tc.jobName)
+			}
+		})
+	}
+	assert.NotContains(t, string(content), "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+		"the workflow must not copy the OIDC request token into logs or matrix data")
+}
+
 // TestCustomAppSetReviewBotWiring ensures every GitHub review/fix dispatch
 // path receives the configured app-set prefix and recognizes its exact review
 // bot identity.
