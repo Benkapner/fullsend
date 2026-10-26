@@ -1085,6 +1085,14 @@ the pipeline-ref falls back to `CI_COMMIT_REF_NAME` then
 
 ## Inference Setup
 
+Pick the route that matches what you can change in GCP:
+
+| You can | Route |
+|---------|-------|
+| Create a Workload Identity provider and grant roles in your GCP project | Your own `gitlab-oidc` provider, described next. If Google cannot reach your GitLab instance, add [Private OIDC issuers (uploaded JWKS)](#private-oidc-issuers-uploaded-jwks) |
+| Only manage a service account, while a platform team runs a provider that trusts your GitLab instance | [Using an existing WIF provider](#using-an-existing-wif-provider) |
+| Skip GCP entirely | OpenAI with an API key; see [Installing Fullsend](#installing-fullsend) |
+
 Pass `--vertex-project`, or declare `inference.project` in the managed
 configuration (for example
 `fullsend repos set gitlab.config.inference.project <gcp-project>`), so
@@ -1377,106 +1385,112 @@ declared region, install keeps an existing variable as it is. See
 
 ### Using an existing WIF provider
 
-Use this route when you cannot create the `gitlab-oidc` provider or grant
-project IAM roles yourself, but a platform team already runs a Workload
-Identity provider that trusts your GitLab instance, for example one provider
-for every project on the instance. The agent job requests a token with the
-audience that provider accepts, exchanges it, and then impersonates a
-service account you control. Installs that use this guide's own
-`gitlab-oidc` provider need none of this and behave as before.
+Use this route when a platform team already runs a Workload Identity
+provider that trusts your GitLab instance, and you cannot create the
+`gitlab-oidc` provider or grant roles in your GCP project yourself. The
+agent job requests a token for that provider, exchanges it, and then
+impersonates a service account you control.
 
-This route applies to `inference.auth` `vertex-wif` on GitLab only.
+What you need:
 
-#### 1. Get the provider details from its administrator
+- a GitLab project that uses `inference.auth` `vertex-wif`;
+- a GCP project with Vertex AI enabled (see
+  [Getting Inference](getting-inference.md));
+- permission to manage one service account in that project.
 
-Ask the provider's administrator for three values:
+Installs that use this guide's own `gitlab-oidc` provider need none of
+this and behave as before.
 
-| Value | Example shape |
-|-------|---------------|
-| Provider resource name | `projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>` |
-| Audience the provider accepts | One of its allowed audiences. If the provider has no allowed audiences configured, Google accepts only the provider's full resource name: `//iam.googleapis.com/projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>` (with or without an `https:` prefix) |
-| Principal for your project | The principal or principal set the provider maps your GitLab project to, for example `principalSet://iam.googleapis.com/projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/attribute.project_id/<gitlab-project-id>` |
+#### 1. Collect the values
 
-The pool's project number is usually not your GCP project. Use the
-administrator's values exactly; they are not derived from your project.
+Ask the provider's administrator for the provider resource name, the
+audience it accepts, and the principal it maps your GitLab project to.
+Find your GitLab project ID on the project's **Settings → General** page.
+Then set them once in your shell; the later steps use these variables:
+
+```bash
+export GCP_PROJECT="<gcp-project>"            # your project that serves Vertex AI
+export PROJECT_PATH="<group/project>"         # the GitLab project to install
+export WIF_PROVIDER="projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>"
+export WIF_AUDIENCE="//iam.googleapis.com/${WIF_PROVIDER}"
+export PRINCIPAL="principalSet://iam.googleapis.com/projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/attribute.project_id/<gitlab-project-id>"
+export SERVICE_ACCOUNT="<name>@${GCP_PROJECT}.iam.gserviceaccount.com"
+```
+
+- `WIF_AUDIENCE` above is right when the provider has no allowed audiences
+  configured: Google then accepts only the provider's full resource name.
+  If the administrator gives you an audience, use theirs.
+- The pool's project number usually belongs to the platform team, not to
+  your GCP project. Copy the administrator's values exactly.
+- `SERVICE_ACCOUNT` must be a user-managed service account. The Compute
+  Engine and App Engine default accounts are not accepted.
 
 #### 2. Let the provider's principal use your service account
 
-Choose the service account the agent job runs as, in a GCP project where
-Vertex AI is enabled (see [Getting Inference](getting-inference.md)). It must
-be a user-managed service account with an
-`<name>@<gcp-project>.iam.gserviceaccount.com` address; the Compute Engine
-and App Engine default service accounts are not accepted. Grant
-the principal from step 1 `roles/iam.workloadIdentityUser` on that service
-account. This binding is on the service account, not the project, so you
+Grant the principal `roles/iam.workloadIdentityUser` on the service
+account. The binding is on the service account, not the project, so you
 need permission to manage the service account only:
 
 ```bash
-export SERVICE_ACCOUNT="<name>@<gcp-project>.iam.gserviceaccount.com"
-export PRINCIPAL="principalSet://iam.googleapis.com/projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/attribute.project_id/<gitlab-project-id>"
-
 gcloud iam service-accounts add-iam-policy-binding "$SERVICE_ACCOUNT" \
   --role="roles/iam.workloadIdentityUser" \
   --member="$PRINCIPAL"
 ```
 
-> **Trust trade-off:** the principal you bind decides who can act as the
-> service account. A principal set bound by GitLab project ID trusts every
-> pipeline in that project that can request a token with the provider's
-> audience, not only Fullsend's agent jobs. The agent sandbox itself
-> receives the federated GitLab ID token minted for that audience (at
-> `/sandbox/workspace/.gcp-oidc-token`) and can exchange it, so everything
-> granted to the provider's principal for this GitLab project is reachable
-> from the agent, not only the impersonated service account. Ask the
-> provider's administrator which bindings exist for that principal. Bind the
-> narrowest principal the provider offers. Prefer one per project over one
-> per group or instance, and treat everyone who can run pipelines in the
-> project as able to use the service account.
-
-The service account also needs `roles/aiplatform.user` in the GCP project
-that serves Vertex AI. If it does not have it yet, ask that project's
-administrator to grant it once:
+The service account also needs `roles/aiplatform.user` in `$GCP_PROJECT`.
+If it does not have it yet, ask that project's administrator to run:
 
 ```bash
-gcloud projects add-iam-policy-binding "<gcp-project>" \
+gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
   --role="roles/aiplatform.user" \
   --member="serviceAccount:$SERVICE_ACCOUNT" \
   --condition=None
 ```
 
+> **Trust trade-off.** The principal you bind decides who can act as the
+> service account.
+>
+> - A principal set bound by GitLab project ID trusts every pipeline in
+>   that project that can request a token with the provider's audience,
+>   not only Fullsend's agent jobs.
+> - The agent sandbox receives that token (at
+>   `/sandbox/workspace/.gcp-oidc-token`) and can exchange it itself. The
+>   agent can reach everything granted to the provider's principal for
+>   your project, not only this service account. Ask the administrator
+>   which bindings exist for that principal.
+>
+> Bind the narrowest principal the provider offers: one per project rather
+> than per group or instance.
+
 #### 3. Declare the provider and install
 
-Declare the project, the provider, the audience and the service account in
-the managed configuration, then install. The provider must be named
-explicitly. `inference.wif_audience` and `inference.service_account`
-cannot be combined with the derived per-project `gitlab-oidc` provider,
-and install fails before any write if you try:
-
 ```bash
-fullsend repos set gitlab.config.inference.project "<gcp-project>"
-fullsend repos set gitlab.config.inference.wif_provider \
-  "projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>"
-fullsend repos set gitlab.config.inference.wif_audience \
-  "//iam.googleapis.com/projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>"
+fullsend repos set gitlab.config.inference.project "$GCP_PROJECT"
+fullsend repos set gitlab.config.inference.wif_provider "$WIF_PROVIDER"
+fullsend repos set gitlab.config.inference.wif_audience "$WIF_AUDIENCE"
 fullsend repos set gitlab.config.inference.service_account "$SERVICE_ACCOUNT"
-fullsend repos install "<group/project>"
+fullsend repos install "$PROJECT_PATH"
 ```
 
-Set the keys on a repository entry instead of the `gitlab` section if only
-some projects use the existing provider. Install checks the values without
-calling GCP. The service account must be a full email ending in
-`.iam.gserviceaccount.com`. The audience must be a single line and must not
-contain `$`, which GitLab would expand as a CI/CD variable. If
-`gitlab.fullsend_ref` pins a release whose `run-agent-job.sh` does not read
-`FULLSEND_GCP_SERVICE_ACCOUNT`, install and `repos status` report a
-configuration error; move the pin to a release with impersonation support.
+To use the provider for some projects only, set the four keys on those
+projects' entries instead of the `gitlab` section.
 
-Install then:
+A first install prints, among its other steps:
 
-- writes `FULLSEND_GCP_PROJECT_ID` and `FULLSEND_GCP_WIF_PROVIDER` as
-  usual;
-- writes the `FULLSEND_GCP_SERVICE_ACCOUNT` CI/CD variable; and
-- sets the agent job's token audience in `.gitlab/ci/fullsend-agent.yml`:
+```text
+    [group/project] Set 2 repository variables
+    [group/project] Set 2 repository secrets
+  ✓ Created PR #1: https://gitlab.example.com/group/project/-/merge_requests/1
+    Merge the PR to apply these changes
+  ✓ Install complete: 1 installed, 0 converged, 0 already current, 0 failed
+```
+
+Merge that merge request. Agent jobs use the files on the default branch,
+so the new audience takes effect only after the merge. Install has then:
+
+- written `FULLSEND_GCP_PROJECT_ID` and `FULLSEND_GCP_WIF_PROVIDER` (CI/CD
+  secrets) and `FULLSEND_GCP_SERVICE_ACCOUNT` (a plain CI/CD variable);
+- set the token audience in `.gitlab/ci/fullsend-agent.yml`:
 
   ```yaml
   id_tokens:
@@ -1484,16 +1498,26 @@ Install then:
       aud: "//iam.googleapis.com/projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>"
   ```
 
-The agent job adds a `service_account_impersonation_url` for the service
-account to the credential file it writes for the sandbox. `repos status`
-reports drift when the variable is missing or different, or when the agent
-job still requests `aud: "fullsend"`. A later `repos install` repairs both.
-On an already-installed project, install applies the new audience by
-rewriting `.gitlab/ci/fullsend-agent.yml` as scaffold content drift, which
-needs `gitlab.fullsend_ref` set (a release build of the CLI otherwise uses
-its own release). Without either, install skips that check and says so,
-and the job keeps `aud: "fullsend"`; set `gitlab.fullsend_ref` and re-run
-`repos install`.
+Install checks the values without calling GCP, and fails before any write
+when:
+
+- `inference.wif_provider` is not set: these keys cannot be combined with
+  the derived per-project `gitlab-oidc` provider;
+- the service account is not a full `.iam.gserviceaccount.com` email;
+- the audience is not a single line of printable ASCII, or contains `$`
+  (GitLab would expand it as a CI/CD variable);
+- the `run-agent-job.sh` the project will run does not read
+  `FULLSEND_GCP_SERVICE_ACCOUNT`, for example because `gitlab.fullsend_ref`
+  pins an older release. Move the pin to a release with impersonation
+  support.
+
+**Already installed?** Install applies the new audience as a scaffold
+content change, in a new merge request. That needs `gitlab.fullsend_ref`
+set, or a release build of the CLI, which uses its own release. Without
+either, install says it skipped the content check and the job keeps
+`aud: "fullsend"`: set `gitlab.fullsend_ref` and run `repos install` again.
+`repos status` reports drift while the variable or the audience does not
+match the configuration.
 
 #### 4. Check an agent job
 
@@ -1509,35 +1533,39 @@ AI logged:
   ✓ Agent exited with code 0 (56.0s)
 ```
 
-The job log does not show the token exchange itself. When the provider's
+The job log does not show the token exchange. When the provider's
 principal has no role in your project, a successful model call means the
-impersonation worked; without it the job fails with
-`aiplatform.endpoints.predict` denied (see the table below).
-If Data Access audit logs are enabled for the IAM Service Account
-Credentials API, the service account's project also shows
-`GenerateAccessToken` calls from the provider's principal.
+impersonation worked; without it, the job fails with
+`aiplatform.endpoints.predict` denied.
 
 #### Troubleshooting
 
 | Error in the agent job log | Cause | Fix |
 |----------------------------|-------|-----|
-| `invalid_target` ("The target service indicated by the "audience" parameters is invalid. This might either be because the pool or provider is disabled or deleted or because it doesn't exist.") | `FULLSEND_GCP_WIF_PROVIDER` does not name an active provider: a wrong project number, pool ID or provider ID, or a disabled or deleted provider | Compare `inference.wif_provider` with the administrator's provider resource name, then re-run `repos install` |
-| `invalid_grant` ("The audience in ID Token [fullsend] does not match the expected audience.") | The agent job's token audience is not one the provider accepts | Set `inference.wif_audience` to an allowed audience (or the provider's full resource name when it has none) and re-run `repos install`. Check that the committed `.gitlab/ci/fullsend-agent.yml` shows it |
+| `invalid_target` ("The target service indicated by the "audience" parameters is invalid. This might either be because the pool or provider is disabled or deleted or because it doesn't exist.") | `inference.wif_provider` does not name an active provider: a wrong project number, pool ID or provider ID, or a disabled or deleted provider | Compare `inference.wif_provider` with the administrator's value, then run `repos install` again |
+| `invalid_grant` ("The audience in ID Token [fullsend] does not match the expected audience.") | The token audience is not one the provider accepts. `[fullsend]` means the new audience is not on the default branch yet | Merge the install merge request, or set `inference.wif_audience` to an audience the provider accepts and run `repos install` again |
 | `unauthorized_client` ("The given credential is rejected by the attribute condition.") | The provider's condition does not admit this GitLab project or ref | Ask the provider's administrator to admit the project |
-| `invalid_grant` ("Error connecting to the given credential's issuer") | Google cannot reach the GitLab instance's keys | See [Private OIDC issuers](#private-oidc-issuers-uploaded-jwks); the provider's administrator applies it |
-| `Permission 'iam.serviceAccounts.getAccessToken' denied on resource (or it may not exist)` | The provider's principal cannot impersonate the service account: the `roles/iam.workloadIdentityUser` binding is missing or names a different principal, or `inference.service_account` names another account | Re-check step 2 with the exact principal from the administrator and the exact email in `inference.service_account` |
-| `Permission 'aiplatform.endpoints.predict' denied` | The service account lacks `roles/aiplatform.user` in the Vertex AI project, or `inference.project` names another project. Without `inference.service_account`, the job uses the provider's principal directly, which has no role in your project | Grant the role (step 2), correct `inference.project`, or set `inference.service_account` |
+| `invalid_grant` ("Error connecting to the given credential's issuer") | Google cannot reach the GitLab instance's keys | The provider's administrator applies [Private OIDC issuers](#private-oidc-issuers-uploaded-jwks) |
+| `Permission 'iam.serviceAccounts.getAccessToken' denied on resource (or it may not exist)` | The principal cannot impersonate the service account: the binding from step 2 is missing or names another principal, or `inference.service_account` names another account | Repeat step 2 with the administrator's exact principal and the exact email in `inference.service_account` |
+| `Permission 'aiplatform.endpoints.predict' denied` | The service account lacks `roles/aiplatform.user` in `inference.project`, or `inference.service_account` is not set, so the job used the provider's principal, which has no role in your project | Grant the role (step 2), correct `inference.project`, or set `inference.service_account` |
 
-To return to direct federation, remove both keys
-(`fullsend repos set --unset gitlab.config.inference.service_account` and
-the same for `wif_audience`) and re-run `repos install`. Install restores
-`aud: "fullsend"` and deletes `FULLSEND_GCP_SERVICE_ACCOUNT` once the
-scaffold change is on the default branch. Until then install prints
-`Keeping obsolete variable FULLSEND_GCP_SERVICE_ACCOUNT until the scaffold change is merged`,
-and `repos status` shows `FULLSEND_GCP_SERVICE_ACCOUNT differs`
-(`repos status --json` gives the reason: `obsolete variable
-(inference.service_account is not declared)`). `repos uninstall` removes it along with the other
-`FULLSEND_GCP_*` values.
+#### Going back to direct federation
+
+Remove both keys and install again:
+
+```bash
+fullsend repos set --unset gitlab.config.inference.service_account
+fullsend repos set --unset gitlab.config.inference.wif_audience
+fullsend repos install "$PROJECT_PATH"
+```
+
+Install opens a merge request that restores `aud: "fullsend"` and prints
+`Keeping obsolete variable FULLSEND_GCP_SERVICE_ACCOUNT until the scaffold change is merged`.
+Until you merge it, `repos status` shows `FULLSEND_GCP_SERVICE_ACCOUNT differs`
+(`--json` gives the reason: `obsolete variable (inference.service_account is not declared)`).
+After the merge, the next `repos install` prints
+`Deleted obsolete variable FULLSEND_GCP_SERVICE_ACCOUNT`. `repos uninstall`
+also removes the variable with the other `FULLSEND_GCP_*` values.
 
 ### Private OIDC issuers (uploaded JWKS)
 
