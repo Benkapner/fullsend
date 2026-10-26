@@ -1403,7 +1403,10 @@ administrator's values exactly; they are not derived from your project.
 #### 2. Let the provider's principal use your service account
 
 Choose the service account the agent job runs as, in a GCP project where
-Vertex AI is enabled (see [Getting Inference](getting-inference.md)). Grant
+Vertex AI is enabled (see [Getting Inference](getting-inference.md)). It must
+be a user-managed service account with an
+`<name>@<gcp-project>.iam.gserviceaccount.com` address; the Compute Engine
+and App Engine default service accounts are not accepted. Grant
 the principal from step 1 `roles/iam.workloadIdentityUser` on that service
 account. This binding is on the service account, not the project, so you
 need permission to manage the service account only:
@@ -1420,10 +1423,15 @@ gcloud iam service-accounts add-iam-policy-binding "$SERVICE_ACCOUNT" \
 > **Trust trade-off:** the principal you bind decides who can act as the
 > service account. A principal set bound by GitLab project ID trusts every
 > pipeline in that project that can request a token with the provider's
-> audience, not only Fullsend's agent jobs. Bind the narrowest principal the
-> provider offers. Prefer one per project over one per group or instance,
-> and treat everyone who can run pipelines in the project as able to use
-> the service account.
+> audience, not only Fullsend's agent jobs. The agent sandbox itself
+> receives the federated GitLab ID token minted for that audience (at
+> `/sandbox/workspace/.gcp-oidc-token`) and can exchange it, so everything
+> granted to the provider's principal for this GitLab project is reachable
+> from the agent, not only the impersonated service account. Ask the
+> provider's administrator which bindings exist for that principal. Bind the
+> narrowest principal the provider offers. Prefer one per project over one
+> per group or instance, and treat everyone who can run pipelines in the
+> project as able to use the service account.
 
 The service account also needs `roles/aiplatform.user` in the GCP project
 that serves Vertex AI. If it does not have it yet, ask that project's
@@ -1480,6 +1488,12 @@ The agent job adds a `service_account_impersonation_url` for the service
 account to the credential file it writes for the sandbox. `repos status`
 reports drift when the variable is missing or different, or when the agent
 job still requests `aud: "fullsend"`. A later `repos install` repairs both.
+On an already-installed project, install applies the new audience by
+rewriting `.gitlab/ci/fullsend-agent.yml` as scaffold content drift, which
+needs `gitlab.fullsend_ref` set (a release build of the CLI otherwise uses
+its own release). Without either, install skips that check and says so,
+and the job keeps `aud: "fullsend"`; set `gitlab.fullsend_ref` and re-run
+`repos install`.
 
 #### 4. Check an agent job
 
@@ -1494,7 +1508,7 @@ Credentials API, the service account's project also shows
 
 | Error in the agent job log | Cause | Fix |
 |----------------------------|-------|-----|
-| `invalid_target` ("The target service indicated by the "audience" parameters is invalid") | `FULLSEND_GCP_WIF_PROVIDER` does not name an active provider: a typo, a project ID where the project number belongs, or a disabled or deleted provider | Compare `inference.wif_provider` with the administrator's provider resource name, then re-run `repos install` |
+| `invalid_target` ("The target service indicated by the "audience" parameters is invalid") | `FULLSEND_GCP_WIF_PROVIDER` does not name an active provider: a wrong project number, pool ID or provider ID, or a disabled or deleted provider | Compare `inference.wif_provider` with the administrator's provider resource name, then re-run `repos install` |
 | `invalid_grant` ("The audience in ID Token [...] does not match the expected audience") | The agent job's token audience is not one the provider accepts | Set `inference.wif_audience` to an allowed audience (or the provider's full resource name when it has none) and re-run `repos install`. Check that the committed `.gitlab/ci/fullsend-agent.yml` shows it |
 | `invalid_grant` ("The given credential is rejected by the attribute condition") | The provider's condition does not admit this GitLab project or ref | Ask the provider's administrator to admit the project |
 | `invalid_grant` ("Error connecting to the given credential's issuer") | Google cannot reach the GitLab instance's keys | See [Private OIDC issuers](#private-oidc-issuers-uploaded-jwks); the provider's administrator applies it |
