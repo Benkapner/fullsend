@@ -119,9 +119,9 @@ jobs:
     runs-on: ${{ inputs.runner_image }}
     permissions:
       contents: read
+      id-token: write
       issues: read
       pull-requests: read
-      id-token: write
     outputs:
       stage: ${{ steps.agent-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
@@ -1854,8 +1854,8 @@ jobs:
     permissions:
       actions: write
       contents: read
-      pull-requests: read
       id-token: write
+      pull-requests: read
     outputs:
       matrix: ${{ steps.dispatch.outputs.matrix }}
     steps:
