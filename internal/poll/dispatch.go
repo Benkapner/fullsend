@@ -19,8 +19,8 @@ import (
 )
 
 // fullsendPipelineIncludePath is the committed GitLab pipeline wrapper
-// dispatch() reads to decide which create-pipeline transport a target
-// repository supports. Keep in sync with fullsendPipelineInclude in
+// dispatch() reads to confirm a target repository declares the typed
+// pipeline-input contract. Keep in sync with fullsendPipelineInclude in
 // internal/repos/gitlabci.go — internal/poll cannot import internal/repos
 // (internal/repos already imports internal/poll), so this is a separate
 // copy, like dispatchInputNames below and gitlabDispatchInputNames there.
@@ -100,41 +100,29 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 		log.Printf("WARNING: FULLSEND_DISPATCH_SECRET not set — dispatch variables are unsigned; configure a protected, masked CI/CD variable to enable HMAC verification")
 	}
 
-	// Select the create-pipeline transport from the target repository's
-	// own committed contract, not from this binary's feature set: the
-	// CLI installer this poll job's wrapper script builds fetches and
-	// rebuilds a non-pinned ref (default upstream main) on every run, so
-	// an upgraded poller binary can execute against a repository whose
-	// root/wrapper has not migrated off the variable-based contract.
-	// Submitting typed pipeline inputs there would not reach the agent
-	// job instead of dispatching through the contract it actually
-	// declares (#7850).
+	// Dispatch travels only through typed pipeline inputs, never
+	// user-defined pipeline variables. Confirm the target repository's
+	// committed contract at the dispatch ref declares them first: the
+	// former variable-based dispatch path has been removed, so a
+	// repository still on that contract (or with an incomplete one) is
+	// refused rather than sent inputs its pipeline would not declare.
 	typed, err := p.usesTypedDispatch(ctx, owner, repo)
 	if err != nil {
 		return fmt.Errorf("checking GitLab dispatch transport for %s/%s: %w", stage, rk, err)
 	}
+	if !typed {
+		return fmt.Errorf("dispatch for %s/%s requires the typed pipeline-input contract in %s at ref %q; the legacy pipeline-variable dispatch path is no longer supported, so upgrade the repository's fullsend installation", stage, rk, fullsendPipelineIncludePath, p.opts.PipelineRef)
+	}
 
+	inputs, inputsErr := dispatchInputs(variables)
+	if inputsErr != nil {
+		return fmt.Errorf("build dispatch inputs for %s/%s: %w", stage, rk, inputsErr)
+	}
 	var webURL string
-	switch {
-	case p.opts.ChildDispatchJobToken != "" && !typed:
-		// The child-pipeline route carries dispatch fields only as typed
-		// inputs. A repository still on the variable-based contract cannot
-		// receive them, and the activation that selects this route requires
-		// pipeline variable overrides to be disabled, so falling back to
-		// variables would not reach the agent either.
-		return fmt.Errorf("child-pipeline dispatch for %s/%s requires the typed pipeline-input contract in %s", stage, rk, fullsendPipelineIncludePath)
-	case typed:
-		inputs, inputsErr := dispatchInputs(variables)
-		if inputsErr != nil {
-			return fmt.Errorf("build dispatch inputs for %s/%s: %w", stage, rk, inputsErr)
-		}
-		if p.opts.ChildDispatchJobToken != "" {
-			_, webURL, err = p.client.CreateChildPipelineWithInputs(ctx, owner, repo, p.opts.PipelineRef, p.opts.ChildDispatchJobToken, inputs)
-		} else {
-			_, webURL, err = p.client.CreatePipelineWithInputs(ctx, owner, repo, p.opts.PipelineRef, inputs)
-		}
-	default:
-		_, webURL, err = p.client.CreatePipeline(ctx, owner, repo, p.opts.PipelineRef, variables)
+	if p.opts.ChildDispatchJobToken != "" {
+		_, webURL, err = p.client.CreateChildPipelineWithInputs(ctx, owner, repo, p.opts.PipelineRef, p.opts.ChildDispatchJobToken, inputs)
+	} else {
+		_, webURL, err = p.client.CreatePipelineWithInputs(ctx, owner, repo, p.opts.PipelineRef, inputs)
 	}
 	if err != nil {
 		return fmt.Errorf("create pipeline for %s/%s: %w", stage, rk, err)
@@ -161,8 +149,7 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 
 // usesTypedDispatch reports whether the target repository's committed
 // .gitlab/ci/fullsend-pipeline.yml wrapper declares the full pipeline-input
-// dispatch contract. A missing wrapper (not found) is treated as the
-// legacy, variable-based contract, matching the pre-#7850 transport. It
+// dispatch contract. A missing wrapper (not found) does not declare it. It
 // reads the wrapper at p.opts.PipelineRef — the same ref dispatch() creates
 // the pipeline against — rather than the default branch, so detection and
 // pipeline creation agree on which contract the target ref declares.

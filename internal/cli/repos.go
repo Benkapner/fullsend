@@ -1070,7 +1070,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					continue
 				}
 
-				schedErr := setupGitLabPipelineSchedules(ctx, fc.Client, printer, r.Owner, r.Repo, targetRepo.DefaultBranch, r.GitLabTypedDispatch)
+				schedErr := setupGitLabPipelineSchedules(ctx, fc.Client, printer, r.Owner, r.Repo, targetRepo.DefaultBranch)
 				if schedErr != nil {
 					printer.StepWarn(fmt.Sprintf("[%s] Pipeline schedule setup failed: %v", repoFullName, schedErr))
 					r.Error = schedErr

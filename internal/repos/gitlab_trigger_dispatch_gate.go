@@ -724,9 +724,9 @@ func gitlabDispatchVariableOverrideProblem(ctx context.Context, client forge.Cli
 }
 
 // gitlabScheduleMigrationProblems reports managed pipeline schedules that
-// still select behavior through pipeline variables. It only reads; the
-// migration itself is ensureGitLabVariableFreeSchedules. A failed read is a
-// problem, because migration cannot then be established.
+// still select behavior through pipeline variables. It only reads, like
+// requireGitLabVariableFreeSchedules. A failed read is a problem, because
+// variable-free schedules cannot then be established.
 func gitlabScheduleMigrationProblems(ctx context.Context, client forge.Client, owner, repo string) []string {
 	if gitlabScheduledPollModeUsesPipelineVariables() {
 		return []string{fmt.Sprintf("managed scheduled polling still selects its poll mode with the %s pipeline variable; migrate scheduled polling off pipeline variables first", forge.VarPollMode)}

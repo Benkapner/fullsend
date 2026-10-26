@@ -983,9 +983,9 @@ or inherited global execution configuration (`after_script`, `services`,
 managed polling schedules move to the trigger-only account, so a user job
 restricted to schedules would otherwise run as that account with its
 `CI_JOB_TOKEN`. `repos install` rechecks it whenever
-the trigger account converges to ready. That includes the legacy (non-typed)
-path, where the schedules still set `FULLSEND_POLL_MODE` and the gate defers,
-and the path that prepares the trigger account after the Poller protected-ref
+the trigger account converges to ready. That includes a repository whose
+managed schedules still set a leftover `FULLSEND_POLL_MODE`, where the gate
+defers, and the path that prepares the trigger account after the Poller protected-ref
 grant is refused. A deferral is informational and leaves polling in place. No
 dispatch path uses the token yet.
 
@@ -1130,8 +1130,9 @@ lives in `internal/repos/gitlab_trigger_schedules.go`:
   #8508 in this PR, with no follow-up work deferred.
 - **Drift.** An account-owned managed schedule on another ref, with another
   cron or timezone, or with pipeline variables is replaced the same way, and
-  duplicates are deleted. One that carries pipeline variables would fail the variable
-  migration preflight that convergence runs, so install hands it back to the
+  duplicates are deleted. One that carries pipeline variables would fail typed
+  activation during convergence, which requires variable-free managed
+  schedules, so install hands it back to the
   installer after the repository selection and configuration preflights succeed,
   before convergence. That repair
   inspects every ownership-verified generation, current and retired, even when
@@ -1458,14 +1459,16 @@ to no automatic setting changes. However, typed dispatch activation fails
 closed before delivering runnable templates unless the project already has
 verified `no_one_allowed`, even when enforcement is requested. Unset, weaker,
 or unsupported settings cannot succeed as a planned update or report-only
-installation. Prepare legacy upgrades in a maintenance window before delivery;
+installation. Legacy variable-based installations are no longer supported;
 see [Typed-input dispatch migration](../guides/getting-started/configuring-gitlab.md#typed-input-dispatch-migration).
 Managed schedules use no pipeline variables; job rules derive poll mode
-from `CI_PIPELINE_SCHEDULE_DESCRIPTION`. Activation removes the obsolete
-`FULLSEND_POLL_MODE` schedule override only after the wrapper and compatible
-agent/poll templates are confirmed on the default branch, even on already-restricted projects,
-and fails if other user-owned schedule variables remain. The typed restriction
-does not apply to pinned legacy variable wrappers. GitLab vendor mode and
+from `CI_PIPELINE_SCHEDULE_DESCRIPTION`. Activation waits until the wrapper and compatible
+agent/poll templates are confirmed on the default branch, and only reads
+managed schedules: it fails while any of them still sets a pipeline variable,
+including an obsolete `FULLSEND_POLL_MODE` override, which must be removed
+manually. Install and converge refuse a legacy variable-based wrapper, such
+as one from a `fullsend_ref` pinned before v0.46.0, and the poller never
+falls back to pipeline-variable dispatch. GitLab vendor mode and
 version pins without matching upstream templates are rejected before writes.
 Agent input bridges explicitly disable expansion, and poll-job links are
 logged only after creator/HMAC authentication.

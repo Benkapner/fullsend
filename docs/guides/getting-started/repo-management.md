@@ -571,7 +571,7 @@ Install runs in two phases:
    typed dispatch activation fails closed without `no_one_allowed`;
    runnable typed templates require that setting to be verified before
    delivery, even when enforcement is requested; legacy variable-based
-   wrappers are exempt), scaffold content drift, managed `.fullsend/config.yaml`
+   wrappers are refused), scaffold content drift, managed `.fullsend/config.yaml`
    drift, scaffold ref drift, and declared configuration-preset drift against
    `.fullsend/config.base.yaml`. When a GitHub repo resolves `vendor: false`,
    stale assets from an earlier vendored install are reported as
@@ -765,8 +765,7 @@ default branch is protected, and `no_one_allowed` is verified —
 GitLab pipeline-variable override-role
 inspection — typed dispatch activation fails closed without
 `no_one_allowed` before runnable template delivery, even when enforcement
-is requested; legacy upgrades need maintenance-window preparation and legacy variable-based wrappers are
-exempt), scaffold ref drift,
+is requested; legacy variable-based wrappers are refused), scaffold ref drift,
 scaffold content drift, declared configuration-preset drift, managed
 `.fullsend/config.yaml` drift, and stale vendored assets left by an earlier
 vendored install (`vendored-assets`, removed when a GitHub repo resolves
@@ -796,7 +795,7 @@ reported as drift and reactivated only when `--reactivate-schedules` is
 passed; GitLab pipeline-variable override-role inspection — typed
 dispatch activation fails closed without `no_one_allowed`;
 runnable typed templates require the setting to be verified before delivery,
-even when enforcement is requested; legacy variable-based wrappers are exempt), scaffold content drift (including structural rewrites of
+even when enforcement is requested; legacy variable-based wrappers are refused), scaffold content drift (including structural rewrites of
 `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref),
 declared configuration-preset drift, managed `.fullsend/config.yaml` drift,
 stale vendored assets (`vendored-assets` drift when a GitHub repo resolves
