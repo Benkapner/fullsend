@@ -353,36 +353,24 @@ var gatewayDefaultFalseKeys = map[string]bool{
 	"allow_uninspected_credentials":   true,
 }
 
-// profileScalarObjectForms lists the top-level profile list fields whose
-// entries OpenShell accepts either as a scalar or as a single-key object
-// wrapping that scalar, and exports as the scalar (OpenShell 0.1.2). The
-// value is the object's key: `binaries: [{path: "**/curl"}]` is the
-// transitional input form of `binaries: ["**/curl"]` (see #8754).
-// normalizeProfileScalarForms rewrites an entry to its scalar only when it
-// is an object holding exactly that key with a string value, so any other
-// object shape still fails the comparison. Add a field here when OpenShell
-// documents another accepted alternative input form.
-var profileScalarObjectForms = map[string]string{
-	"binaries": "path",
-}
-
-// normalizeProfileScalarForms rewrites, in place, the entries of the list
-// fields in profileScalarObjectForms from their accepted object form to the
-// scalar form OpenShell exports.
-func normalizeProfileScalarForms(doc map[string]any) {
-	for field, key := range profileScalarObjectForms {
-		list, ok := doc[field].([]any)
-		if !ok {
+// normalizeLocalBinaries rewrites, in place, the entries of the top-level
+// `binaries` list in the local profile from the object form
+// `{path: <string>}` to the scalar the gateway exports (OpenShell 0.1.2; see
+// #8754). An entry is rewritten only when it is an object holding exactly the
+// key `path` with a string value, so any other object shape still fails the
+// comparison. The gateway export is canonical and is never normalized.
+func normalizeLocalBinaries(doc map[string]any) {
+	list, ok := doc["binaries"].([]any)
+	if !ok {
+		return
+	}
+	for i, entry := range list {
+		obj, ok := entry.(map[string]any)
+		if !ok || len(obj) != 1 {
 			continue
 		}
-		for i, entry := range list {
-			obj, ok := entry.(map[string]any)
-			if !ok || len(obj) != 1 {
-				continue
-			}
-			if s, ok := obj[key].(string); ok {
-				list[i] = s
-			}
+		if path, ok := obj["path"].(string); ok {
+			list[i] = path
 		}
 	}
 }
@@ -408,9 +396,8 @@ func normalizeProfileScalarForms(doc map[string]any) {
 // a non-zero default; a new non-zero default OpenShell adds fails closed
 // rather than hiding a stale value.
 //
-// Before comparing, list entries written in an accepted alternative input
-// form (profileScalarObjectForms, e.g. `binaries: [{path: X}]`) are rewritten
-// in both documents to the scalar form the export uses.
+// Before comparing, local `binaries` entries written as `{path: X}` are
+// rewritten to the scalar form the export uses (normalizeLocalBinaries).
 //
 // Unparseable input is an error, not a mismatch.
 func profileContentEqual(local, exported []byte) (bool, error) {
@@ -428,9 +415,8 @@ func profileContentEqual(local, exported []byte) (bool, error) {
 	delete(localDoc, "resource_version")
 	delete(exportedDoc, "resource_version")
 
-	// Accepted alternative input forms compare as the form the export writes.
-	normalizeProfileScalarForms(localDoc)
-	normalizeProfileScalarForms(exportedDoc)
+	// The local binaries input form compares as the scalar the export writes.
+	normalizeLocalBinaries(localDoc)
 
 	// Top-level fields the export fills in with a non-zero default when the
 	// local file omits them. Only the exact default value is tolerated.
