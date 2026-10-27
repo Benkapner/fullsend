@@ -31,20 +31,28 @@
 # pipeline variables (same outrankable class as CI_PROJECT_ID, ADR
 # 0125). See run-poll-job.sh and run-agent-job.sh for that reuse.
 #
-# Trust model (ADR 0125):
+# Trust model (ADR 0131, superseding ADR 0125's trigger-variable control):
 #   The GitLab-side pipeline-variable restriction
-#   (ci_pipeline_variables_minimum_override_role=owner, with the
-#   poller/dispatcher on an Owner-role PAT and the webhook trigger
-#   token minted under a sub-Owner identity) is the REQUIRED control
-#   that stops a trigger-token holder from outranking CI_JOB_TOKEN,
-#   CI_API_V4_URL, and dispatch secrets. This repo's install/converge
-#   path (internal/repos/gitlab_pipeline_var_restriction.go) reads and
-#   can converge that setting, but active enforcement defaults to
-#   report-only (an opt-in environment variable switches it to enforced)
-#   until the poller/dispatcher identity is separately raised to Owner —
-#   see that file and docs/contributing/gitlab-role-credentials.md for
-#   the open credential-cost decision tracked in #7769. This helper is
-#   defense-in-depth: it
+#   (ci_pipeline_variables_minimum_override_role=no_one_allowed) is the
+#   REQUIRED control that stops a pipeline caller, including a
+#   trigger-token holder, from outranking CI_JOB_TOKEN, CI_API_V4_URL,
+#   and dispatch secrets with pipeline variables. Dispatch data travels
+#   as typed pipeline inputs, which that setting does not govern, so
+#   the Poller stays a Developer-role identity and no runtime
+#   credential (including the webhook trigger token's owner) is above
+#   Developer. Install/converge
+#   (internal/repos/gitlab_pipeline_var_restriction.go) verifies
+#   no_one_allowed before delivering runnable typed jobs and fails
+#   closed otherwise; automatic changes to the setting stay behind an
+#   opt-in environment variable (see that file). See
+#   docs/contributing/gitlab-role-credentials.md ("How a job selects
+#   its credential") and the ADR 0125 security-gate status table in
+#   docs/normative/normalized-event/v1/README.md.
+#   Historical: ADR 0125 first proposed an `owner` threshold with an
+#   Owner-role poller/dispatcher PAT and a sub-Owner trigger identity;
+#   ADR 0131 replaced that design (#7769).
+#
+#   This helper is defense-in-depth: it
 #   takes project, pipeline, and ref from GET /api/v4/job (the job
 #   that owns the supplied token) rather than from the overridable
 #   CI_PROJECT_ID / CI_PIPELINE_ID / CI_COMMIT_REF_PROTECTED env
@@ -55,11 +63,11 @@
 #   GET /api/v4/job still needs a bootstrap URL (CI_API_V4_URL).
 #   That URL is in the same overridable class; the restriction is
 #   what makes the bootstrap trustworthy. An invalid CI_JOB_TOKEN
-#   override fails closed here (the lookup 401s/404s). A valid
-#   foreign job token would mis-resolve the pin to that foreign
-#   job — residual, closed by the restriction rather than by this
-#   script. Live verification of the valid-foreign-token case is
-#   tracked as follow-up once a second job token can be minted.
+#   override is expected to fail closed here (the lookup 401s/404s).
+#   A valid foreign job token would mis-resolve the pin to that
+#   foreign job — residual, closed by the restriction rather than by
+#   this script. Neither override case has been live-tested on a
+#   target GitLab version yet (see the security-gate status table).
 #
 # Transport: gate curls ignore trigger-influenced proxy settings
 # (--noproxy '*', proxy env stripped), disable curlrc (-q, CURLRC/
