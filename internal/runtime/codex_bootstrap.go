@@ -177,8 +177,9 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	var roles []codexRole
 	defaultSubagentModel := ""
 	if delegating {
+		discovered, skipped := codexRoles(input.SkillDirs(), agentName)
 		roles, defaultSubagentModel, err = resolveCodexChildModels(
-			codexRoles(input.SkillDirs(), agentName), input.AgentSubagents(), os.Getenv(codexSubagentModelEnv), catalog)
+			discovered, skipped, input.AgentSubagents(), os.Getenv(codexSubagentModelEnv), catalog)
 		if err != nil {
 			return err
 		}

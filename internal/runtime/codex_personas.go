@@ -82,10 +82,11 @@ func codexListedModel(catalog codexCatalog, key, model string) error {
 // and resolves the run-level default (FULLSEND_CODEX_SUBAGENT_MODEL, then
 // subagents.default, then codexDefaultSubagentModel), which Bootstrap sets as
 // agents.default_subagent_model. A nil entry is a tombstone and reads as
-// absent; a key naming neither default nor a persona is an error, as on pi;
-// every configured value is validated whichever position wins, and every
+// absent; a key naming neither default nor a persona is an error, as on pi,
+// carrying codexRoles's reason when the key names a skipped persona; every
+// configured value is validated whichever position wins, and every
 // resolved model must be in catalog (ADR 0126). The returned slice is a copy.
-func resolveCodexChildModels(roles []codexRole, subagents map[string]*string, envValue string, catalog codexCatalog) ([]codexRole, string, error) {
+func resolveCodexChildModels(roles []codexRole, skipped map[string]string, subagents map[string]*string, envValue string, catalog codexCatalog) ([]codexRole, string, error) {
 	persona := make(map[string]bool, len(roles))
 	for _, role := range roles {
 		if !slices.Contains(config.ReservedSubagentKeys(), role.Name) {
@@ -104,6 +105,9 @@ func resolveCodexChildModels(roles []codexRole, subagents map[string]*string, en
 		if slices.Contains(config.ReservedSubagentKeys(), key) {
 			return nil, "", fmt.Errorf("subagents.%s: %q is a built-in role, not a persona; it runs on the run-level child model; registered personas: %s",
 				key, key, discovered)
+		}
+		if reason, ok := skipped[key]; ok {
+			return nil, "", fmt.Errorf("subagents.%s: persona %q was not registered: %s", key, key, reason)
 		}
 		return nil, "", fmt.Errorf("subagents.%s: no persona %q is registered; registered personas: %s", key, key, discovered)
 	}
@@ -198,13 +202,17 @@ const (
 // discoverPersonas registered, plus the two built-ins, sorted by name. A
 // persona that cannot become a role is skipped with a warning and never
 // fails Bootstrap: a stray sub-agents/*.md must not stop a run that never
-// dispatches it, the rule discoverPersonas already applies.
-func codexRoles(skillDirs []string, agentName string) []codexRole {
+// dispatches it, the rule discoverPersonas already applies. The second
+// value maps each skipped name to its reason, so a subagents key naming one
+// fails with that reason, as on pi (resolveCodexChildModels).
+func codexRoles(skillDirs []string, agentName string) ([]codexRole, map[string]string) {
 	// discoverPersonas never returns a non-nil error; the value exists for
 	// the pi call site's shape.
 	personas, skipped, _ := discoverPersonas(skillDirs, agentName)
+	reasons := make(map[string]string, len(skipped))
 	for _, sk := range skipped {
 		fmt.Fprintf(os.Stderr, "Warning: persona %q skipped: %s\n", sk.Path, sk.Reason)
+		reasons[sk.Name] = sk.Path + ": " + sk.Reason
 	}
 	roles := []codexRole{
 		{Name: "default", Description: codexDefaultRoleDescription, Instructions: codexChildNote + codexDefaultRoleInstructions},
@@ -222,6 +230,7 @@ func codexRoles(skillDirs []string, agentName string) []codexRole {
 		}
 		if reason != "" {
 			fmt.Fprintf(os.Stderr, "Warning: persona %q skipped: %s\n", p.Name, reason)
+			reasons[p.Name] = reason
 			continue
 		}
 		if keys := codexDroppedFrontmatterKeys(p.Frontmatter); len(keys) > 0 {
@@ -232,7 +241,7 @@ func codexRoles(skillDirs []string, agentName string) []codexRole {
 		roles = append(roles, codexRole{Name: p.Name, Description: p.Description, Instructions: codexChildNote + p.Body + "\n"})
 	}
 	slices.SortFunc(roles, func(a, b codexRole) int { return strings.Compare(a.Name, b.Name) })
-	return roles
+	return roles, reasons
 }
 
 // codexDroppedPersonaKeys are the Claude-specific frontmatter keys a role

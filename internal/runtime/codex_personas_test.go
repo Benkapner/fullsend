@@ -133,7 +133,7 @@ func TestCodexRoles_BuiltinsAlwaysPresent(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			roles := codexRoles(dirs, "retro")
+			roles, _ := codexRoles(dirs, "retro")
 			assert.Equal(t, []string{"default", "explore"}, codexRoleNames(roles))
 			for _, r := range roles {
 				assert.NotEmpty(t, r.Description, "%s: the parent sees the description in the spawn tool's role list", r.Name)
@@ -150,7 +150,7 @@ func TestCodexRoles_SkillPersonasSorted(t *testing.T) {
 	writePersonaFile(t, skill, "style", "---\nname: style\ndescription: Style review.\n---\nReview for style.\n")
 	writePersonaFile(t, skill, "correctness", codexTestPersona)
 
-	roles := codexRoles([]string{skill}, "review")
+	roles, _ := codexRoles([]string{skill}, "review")
 	assert.Equal(t, []string{"correctness", "default", "explore", "style"}, codexRoleNames(roles),
 		"ascending by name, built-ins included; the spawn digest env lists roles in this order")
 	assert.Equal(t, codexRole{
@@ -169,9 +169,12 @@ func TestCodexRoles_DiscoverySkipIsAWarning(t *testing.T) {
 	writePersonaFile(t, skill, "Bad", "---\nname: Bad\ndescription: Bad shape.\n---\nbody\n")
 
 	var roles []codexRole
-	out := captureStderr(t, func() { roles = codexRoles([]string{skill}, "review") })
+	var skipped map[string]string
+	out := captureStderr(t, func() { roles, skipped = codexRoles([]string{skill}, "review") })
 
 	assert.Equal(t, []string{"default", "explore"}, codexRoleNames(roles))
+	assert.Equal(t, filepath.Join(skill, "sub-agents", "default.md")+": name is reserved", skipped["default"],
+		"a discovery skip is recorded with its file, for the subagents key error")
 	assert.Contains(t, out, fmt.Sprintf("Warning: persona %q skipped: name is reserved", filepath.Join(skill, "sub-agents", "default.md")))
 	assert.Contains(t, out, fmt.Sprintf("Warning: persona %q skipped: name must be lowercase alphanumeric", filepath.Join(skill, "sub-agents", "Bad.md")))
 }
@@ -208,10 +211,13 @@ func TestCodexRoles_SkipsInvalidPersonas(t *testing.T) {
 			writePersonaFile(t, skill, tt.file, tt.content)
 
 			var roles []codexRole
-			out := captureStderr(t, func() { roles = codexRoles([]string{skill}, "review") })
+			var skipped map[string]string
+			out := captureStderr(t, func() { roles, skipped = codexRoles([]string{skill}, "review") })
 
 			assert.Equal(t, []string{"default", "explore"}, codexRoleNames(roles))
 			assert.Contains(t, out, tt.wantWarn)
+			require.Contains(t, skipped, tt.file)
+			assert.Contains(t, out, fmt.Sprintf("persona %q skipped: %s\n", tt.file, skipped[tt.file]), "the recorded reason is the warned one")
 		})
 	}
 }
@@ -225,7 +231,7 @@ func TestCodexRoles_DuplicateAcrossSkillsKeepsTheFirst(t *testing.T) {
 	writePersonaFile(t, second, "correctness", "---\nname: correctness\ndescription: Other.\n---\nOther body.\n")
 
 	var roles []codexRole
-	out := captureStderr(t, func() { roles = codexRoles([]string{first, second}, "review") })
+	out := captureStderr(t, func() { roles, _ = codexRoles([]string{first, second}, "review") })
 
 	assert.Equal(t, []string{"correctness", "default", "explore"}, codexRoleNames(roles))
 	assert.Equal(t, codexChildNote+"# Correctness\n\nYou are a senior software engineer reviewing for correctness.\n", roles[0].Instructions)
@@ -243,7 +249,7 @@ func TestCodexRoles_ReportsDroppedFrontmatter(t *testing.T) {
 	writePersonaFile(t, skill, "clean", "---\nname: clean\ndescription: d\n---\nbody\n")
 
 	var roles []codexRole
-	out := captureStderr(t, func() { roles = codexRoles([]string{skill}, "review") })
+	out := captureStderr(t, func() { roles, _ = codexRoles([]string{skill}, "review") })
 
 	assert.Contains(t, out, `Codex persona "all-five": frontmatter model, tools, permissionMode, background, maxTurns dropped`)
 	assert.Contains(t, out, `Codex persona "two": frontmatter model, maxTurns dropped`, "fixed order, not file order")
@@ -322,7 +328,8 @@ func TestCodexRole_TOMLParsesWithTheThreeKeys(t *testing.T) {
 	skill := t.TempDir()
 	writePersonaFile(t, skill, "correctness", codexTestPersona)
 
-	for _, role := range codexRoles([]string{skill}, "review") {
+	roles, _ := codexRoles([]string{skill}, "review")
+	for _, role := range roles {
 		doc := codexDecodeTOML(t, role.toml())
 		assert.Len(t, doc, 3, "%s: name, description, developer_instructions and nothing else", role.Name)
 		assert.Equal(t, role.Name, doc["name"])
@@ -511,7 +518,7 @@ func TestResolveCodexChildModels_Precedence(t *testing.T) {
 				cfg["correctness"] = nil
 			}
 
-			got, gotDefault, err := resolveCodexChildModels(roles, cfg, tt.env, codexTestCatalog())
+			got, gotDefault, err := resolveCodexChildModels(roles, nil, cfg, tt.env, codexTestCatalog())
 			require.NoError(t, err)
 			require.Len(t, got, 3)
 			assert.Equal(t, tt.wantModel, got[0].Model, "correctness")
@@ -534,11 +541,14 @@ func TestResolveCodexChildModels_RejectsUnknownKeys(t *testing.T) {
 	t.Parallel()
 
 	roles := []codexRole{{Name: "correctness"}, {Name: "default"}, {Name: "explore"}}
+	worker := map[string]string{"worker": "name is reserved on codex (enabled, explorer, worker)"}
 	tests := []struct {
 		name    string
 		roles   []codexRole
+		skipped map[string]string
 		cfg     map[string]*string
 		wantErr []string
+		notErr  string
 	}{
 		{name: "explore is reserved", roles: roles, cfg: map[string]*string{"explore": strp("openai/gpt-5.6-sol")},
 			wantErr: []string{"subagents.explore", "built-in role", "correctness"}},
@@ -548,11 +558,26 @@ func TestResolveCodexChildModels_RejectsUnknownKeys(t *testing.T) {
 			wantErr: []string{"subagents.correctness", "none"}},
 		{name: "a tombstoned unknown key is skipped", roles: roles, cfg: map[string]*string{"correctnes": nil}},
 		{name: "default is not a persona key error", roles: nil, cfg: map[string]*string{"default": strp("openai/gpt-5.6-sol")}},
+		{name: "a skipped persona's key carries the reason", roles: roles, skipped: worker,
+			cfg:     map[string]*string{"worker": strp("openai/gpt-5.6-sol")},
+			wantErr: []string{`subagents.worker: persona "worker" was not registered: name is reserved on codex (enabled, explorer, worker)`},
+			notErr:  "registered personas"},
+		{name: "a skipped persona is named only when the key matches it", roles: roles, skipped: worker,
+			cfg:     map[string]*string{"correctnes": strp("openai/gpt-5.6-sol")},
+			wantErr: []string{`no persona "correctnes" is registered`}, notErr: "worker"},
+		{name: "explore stays a built-in role over a skipped explore.md", roles: roles,
+			skipped: map[string]string{"explore": "/s/sub-agents/explore.md: name is reserved"},
+			cfg:     map[string]*string{"explore": strp("openai/gpt-5.6-sol")},
+			wantErr: []string{"subagents.explore", "built-in role"}, notErr: "was not registered"},
+		{name: "a tombstoned skipped key is skipped", roles: roles, skipped: worker, cfg: map[string]*string{"worker": nil}},
+		{name: "a duplicate skipped in a later skill does not hide the registered persona", roles: roles,
+			skipped: map[string]string{"correctness": `/b/sub-agents/correctness.md: name already declared by skill "a"`},
+			cfg:     map[string]*string{"correctness": strp("openai/gpt-5.6-sol")}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, _, err := resolveCodexChildModels(tt.roles, tt.cfg, "", codexTestCatalog())
+			_, _, err := resolveCodexChildModels(tt.roles, tt.skipped, tt.cfg, "", codexTestCatalog())
 			if len(tt.wantErr) == 0 {
 				assert.NoError(t, err)
 				return
@@ -560,6 +585,9 @@ func TestResolveCodexChildModels_RejectsUnknownKeys(t *testing.T) {
 			require.Error(t, err)
 			for _, w := range tt.wantErr {
 				assert.Contains(t, err.Error(), w)
+			}
+			if tt.notErr != "" {
+				assert.NotContains(t, err.Error(), tt.notErr)
 			}
 		})
 	}
@@ -588,7 +616,7 @@ func TestResolveCodexChildModels_NonOpenAIValueNamesTheKey(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, _, err := resolveCodexChildModels(roles, tt.cfg, tt.env, codexTestCatalog())
+			_, _, err := resolveCodexChildModels(roles, nil, tt.cfg, tt.env, codexTestCatalog())
 			require.Error(t, err)
 			for _, w := range tt.wantErr {
 				assert.Contains(t, err.Error(), w)
@@ -627,7 +655,7 @@ func TestResolveCodexChildModels_CatalogMembership(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, _, err := resolveCodexChildModels(roles, tt.subagents, tt.env, tt.catalog)
+			_, _, err := resolveCodexChildModels(roles, nil, tt.subagents, tt.env, tt.catalog)
 			if tt.wantErr == "" {
 				require.NoError(t, err)
 				return

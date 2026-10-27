@@ -88,7 +88,7 @@ func TestCodexGolden(t *testing.T) {
 		{"config-delegating.toml", func(t *testing.T) string {
 			review, err := parsePiAgent([]byte(codexTestDelegatingAgentDef))
 			require.NoError(t, err)
-			roles, defaultModel, err := resolveCodexChildModels(codexGoldenRoles(t), nil, "", codexTestCatalog())
+			roles, defaultModel, err := resolveCodexChildModels(codexGoldenRoles(t), nil, nil, "", codexTestCatalog())
 			require.NoError(t, err)
 			data, err := renderCodexConfig(sandbox.SandboxCodexConfig, repo,
 				codexDeveloperInstructions("review", review, roles), "", roles, defaultModel)
@@ -122,7 +122,7 @@ func TestCodexGolden(t *testing.T) {
 		{"roles/default.toml", func(t *testing.T) string { return string(codexGoldenRoles(t)[1].toml()) }},
 		{"roles/explore.toml", func(t *testing.T) string { return string(codexGoldenRoles(t)[2].toml()) }},
 		{"roles/correctness-model.toml", func(t *testing.T) string {
-			resolved, _, err := resolveCodexChildModels(codexGoldenRoles(t),
+			resolved, _, err := resolveCodexChildModels(codexGoldenRoles(t), nil,
 				map[string]*string{"correctness": strp("openai/gpt-5.6-sol")}, "", codexTestCatalog())
 			require.NoError(t, err)
 			require.Equal(t, "correctness", resolved[0].Name, "codexRoles sorts by name")
@@ -161,7 +161,8 @@ func codexGoldenRoles(t *testing.T) []codexRole {
 	t.Helper()
 	skill := t.TempDir()
 	writePersonaFile(t, skill, "correctness", codexTestPersona)
-	return codexRoles([]string{skill}, "review")
+	roles, _ := codexRoles([]string{skill}, "review")
+	return roles
 }
 
 // codexGoldenDelegatingDigests is testRunnerHeldDigests plus the role

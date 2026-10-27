@@ -927,7 +927,7 @@ func TestCodexRuntimeBootstrap_WritesRoleFilesForADelegatingAgent(t *testing.T) 
 
 	held, ok := lookupRunnerHeldDigests("sb")
 	require.True(t, ok)
-	want := codexRoles([]string{skill}, "review")
+	want, _ := codexRoles([]string{skill}, "review")
 	require.Len(t, held.RoleFiles, len(want))
 	var names []string
 	for name := range held.RoleFiles {
@@ -1087,8 +1087,9 @@ func TestCodexBootstrap_PlantedRoleFileDeniesSpawn(t *testing.T) {
 }
 
 // codexDelegatingBootstrap runs Bootstrap for the delegating review agent
-// with one correctness persona, harness security on and the given subagents
-// map. It returns the runtime, the fake's argv log and Bootstrap's error.
+// with one correctness persona (and a worker persona codex skips), harness
+// security on and the given subagents map. It returns the runtime, the
+// fake's argv log and Bootstrap's error.
 func codexDelegatingBootstrap(t *testing.T, storeDir string, subagents map[string]*string) (CodexRuntime, string, error) {
 	t.Helper()
 	logPath := filepath.Join(t.TempDir(), "openshell.log")
@@ -1097,6 +1098,7 @@ func codexDelegatingBootstrap(t *testing.T, storeDir string, subagents map[strin
 	t.Cleanup(func() { forgetRunnerHeldDigests("sb") })
 	skill := t.TempDir()
 	writePersonaFile(t, skill, "correctness", codexTestPersona)
+	writePersonaFile(t, skill, "worker", "---\nname: worker\ndescription: d\n---\nbody\n")
 
 	input := codexDelegatingHooksInput(t, skill)
 	input.agentSubagents = subagents
@@ -1105,10 +1107,10 @@ func codexDelegatingBootstrap(t *testing.T, storeDir string, subagents map[strin
 }
 
 // TestCodexRuntimeBootstrap_RejectsNonOpenAISubagentModel pins the wiring:
-// the subagents map, the catalog and the runner variable reach the resolver,
-// and a bad value fails Bootstrap naming the key before config.toml is
-// written. The breaking case is a pi-shaped review entry (xai and
-// google-vertex values) run with runtime codex.
+// the subagents map, the skipped personas, the catalog and the runner
+// variable reach the resolver, and a bad value fails Bootstrap naming the
+// key before config.toml is written. The breaking case is a pi-shaped
+// review entry (xai and google-vertex values) run with runtime codex.
 func TestCodexRuntimeBootstrap_RejectsNonOpenAISubagentModel(t *testing.T) {
 	for name, tc := range map[string]struct {
 		env       string
@@ -1122,6 +1124,9 @@ func TestCodexRuntimeBootstrap_RejectsNonOpenAISubagentModel(t *testing.T) {
 			subagents: map[string]*string{"correctness": strp("openai/gpt-5.6-nova")},
 			want:      []string{`subagents.correctness: model "gpt-5.6-nova" is not in the bundled catalog`}},
 		"the runner variable": {env: "opus", want: []string{codexSubagentModelEnv, `"opus"`, "unset"}},
+		"a persona codex skipped": {
+			subagents: map[string]*string{"worker": strp("openai/gpt-5.6-sol")},
+			want:      []string{`subagents.worker: persona "worker" was not registered: name is reserved on codex`}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(codexSubagentModelEnv, tc.env)
