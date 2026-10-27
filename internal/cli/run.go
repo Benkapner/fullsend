@@ -116,6 +116,13 @@ var prepareGitHubWIF = vertexauth.PrepareGitHubWIF
 // without waiting out the real duration.
 var preflightCheckTimeout = 30 * time.Second
 
+// preflightWaitDelay bounds how long a preflight command's teardown may run
+// after preflightCheckTimeout fires (#8861). Killing sh -c does not kill
+// non-exec children (e.g. "sleep 300; true"), which keep the output pipe
+// open; cmd.WaitDelay force-closes the pipe so CombinedOutput returns. A var
+// so tests can shrink it.
+var preflightWaitDelay = 5 * time.Second
+
 // remintForPostScriptTimeout bounds the post-script token remint (#7231).
 // It runs on a context derived from context.WithoutCancel so a parent-ctx
 // cancellation near the run's own budget (e.g. a CI job-level timeout)
