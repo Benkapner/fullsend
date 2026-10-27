@@ -541,9 +541,9 @@ func TestResolveCodexChildModels_RejectsUnknownKeys(t *testing.T) {
 		wantErr []string
 	}{
 		{name: "explore is reserved", roles: roles, cfg: map[string]*string{"explore": strp("openai/gpt-5.6-sol")},
-			wantErr: []string{"subagents.explore", "correctness"}},
+			wantErr: []string{"subagents.explore", "built-in role", "correctness"}},
 		{name: "a typo", roles: roles, cfg: map[string]*string{"correctnes": strp("openai/gpt-5.6-sol")},
-			wantErr: []string{"subagents.correctnes", `"correctnes"`, "correctness"}},
+			wantErr: []string{"subagents.correctnes", `no persona "correctnes" is registered`, "correctness"}},
 		{name: "no persona at all", roles: nil, cfg: map[string]*string{"correctness": strp("openai/gpt-5.6-sol")},
 			wantErr: []string{"subagents.correctness", "none"}},
 		{name: "a tombstoned unknown key is skipped", roles: roles, cfg: map[string]*string{"correctnes": nil}},

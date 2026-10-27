@@ -101,8 +101,11 @@ func resolveCodexChildModels(roles []codexRole, subagents map[string]*string, en
 		if len(persona) > 0 {
 			discovered = strings.Join(slices.Sorted(maps.Keys(persona)), ", ")
 		}
-		return nil, "", fmt.Errorf("subagents.%s: %q is not a registered codex role (a discovered persona that was skipped is reported above); registered personas: %s",
-			key, key, discovered)
+		if slices.Contains(config.ReservedSubagentKeys(), key) {
+			return nil, "", fmt.Errorf("subagents.%s: %q is a built-in role, not a persona; it runs on the run-level child model; registered personas: %s",
+				key, key, discovered)
+		}
+		return nil, "", fmt.Errorf("subagents.%s: no persona %q is registered; registered personas: %s", key, key, discovered)
 	}
 
 	out := slices.Clone(roles)
