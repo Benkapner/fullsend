@@ -849,7 +849,7 @@ or gateway routing issues).
 
 1. **Start with a restrictive policy.** Create or modify a policy YAML that
    blocks the endpoint you want to test. See
-   [Building custom agents — Sandbox policy](building-custom-agents.md#step-3-define-the-sandbox-policy)
+   [Bring Your Own Agent — Sandbox policy](bring-your-own-agent.md#sandbox-policy)
    for the policy format.
 
 2. **Run the agent locally with `--keep-sandbox`:**
