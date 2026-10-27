@@ -416,7 +416,7 @@ allowed_remote_resources:
 	assert.Contains(t, out, "deprecated")
 }
 
-func TestLintCommand_PreflightCheckPathLikeWarns(t *testing.T) {
+func TestLintCommand_PreflightCheckPathLikeFails(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `version: "1"
 agents:
@@ -425,9 +425,11 @@ agents:
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
-	// The harness loads and validates cleanly — the path-like
-	// preflight_check is an advisory warning, not a load error, and a
-	// path is not provably broken (it may resolve on the host).
+	// The harness still loads and validates cleanly — the path-like
+	// preflight_check is an error-level lint diagnostic (ADR 0128
+	// Decision 2), not a load error — so the plain, non-strict lint run
+	// fails on the diagnostic itself: a bare path can never resolve in a
+	// fresh consumer checkout.
 	writeLintAgentFixture(t, dir, "my-agent")
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "scripts"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "scripts", "validate.sh"), []byte("#!/bin/sh\n"), 0o644))
@@ -440,20 +442,12 @@ validation_loop:
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(harnessYAML), 0o644))
 
-	t.Run("warning without strict", func(t *testing.T) {
-		cmd := newLintCmd()
-		out, err := executeCmd(cmd, []string{"--fullsend-dir", dir})
-		require.NoError(t, err)
-		assert.Contains(t, out, "warning: validation_loop.preflight_check")
-		assert.Contains(t, out, "sh -c")
-	})
-
-	t.Run("fails with strict", func(t *testing.T) {
-		cmd := newLintCmd()
-		_, err := executeCmd(cmd, []string{"--fullsend-dir", dir, "--strict"})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "lint found 1 warning-level diagnostic(s) (--strict)")
-	})
+	cmd := newLintCmd()
+	out, err := executeCmd(cmd, []string{"--fullsend-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, out, "error: validation_loop.preflight_check")
+	assert.Contains(t, out, "sh -c")
+	assert.Contains(t, err.Error(), "lint found 1 error-level diagnostic(s)")
 }
 
 func TestLintCommand_MissingPolicyFails(t *testing.T) {

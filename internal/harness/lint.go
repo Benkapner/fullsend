@@ -31,9 +31,12 @@ func (s DiagnosticSeverity) String() string {
 // "."/"/" then path characters, ending in a script extension — with no
 // spaces, quotes, or shell operators. preflight_check is passed verbatim
 // to `sh -c` on the host and, unlike pre_script/post_script, is never
-// resolved through the fetch/cache pipeline (#7600). A path-shaped value
-// usually means that confusion, but it is not provably broken — a host
-// or CWD-relative path can execute — so the diagnostic is advisory.
+// resolved through the fetch/cache pipeline (#7600). A bare path-shaped
+// value can therefore never resolve in a fresh consumer checkout —
+// referenced files are not delivered (Harness Resource Distribution
+// Contract) — so it is a certain runtime failure, not a style
+// preference. The interpreter form (`sh path.sh`) does not match and
+// remains the intentional escape hatch.
 var preflightPathLike = regexp.MustCompile(`^[./]?[\w./-]+\.(sh|py|rb|js)$`)
 
 // issueURLRef matches an actual GITHUB_ISSUE_URL reference in a value:
@@ -126,22 +129,37 @@ func (h *Harness) Lint() []Diagnostic {
 		}
 	}
 
-	// A path-shaped preflight_check usually means the author expected
-	// pre_script-style fetch/resolution (#7600). It is not provably
-	// broken — the path may resolve on the host — so warn, don't fail.
 	if h.ValidationLoop != nil {
-		if pc := strings.TrimSpace(h.ValidationLoop.PreflightCheck); pc != "" && preflightPathLike.MatchString(pc) {
-			diags = append(diags, Diagnostic{
-				Severity: SeverityWarning,
-				Field:    "validation_loop.preflight_check",
-				Message:  fmt.Sprintf("value %q looks like a script path; preflight_check runs verbatim as `sh -c` on the host and is never fetched or resolved like pre_script/post_script — if a fetched harness script was intended, use pre_script; otherwise inline the command (e.g. python3 -c 'import jsonschema')", pc),
-			})
+		if d := lintPreflightCheckCommand("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck); d != nil {
+			diags = append(diags, *d)
 		}
 	}
 
 	diags = append(diags, h.lintDeprecatedIssueURL()...)
 
 	return diags
+}
+
+// lintPreflightCheckCommand returns an error-level diagnostic when value, a
+// preflight_check command, looks like a bare script path — usually meaning
+// the author expected pre_script-style fetch/resolution (#7600). A bare
+// path can never resolve in a fresh consumer checkout because referenced
+// files are not delivered (Harness Resource Distribution Contract), so the
+// mistake is a certain runtime failure, not a style preference (ADR 0128
+// Decision 2). The interpreter form (`sh path.sh`) does not match and
+// remains the intentional escape hatch. The field label is interpolated
+// into the message so sibling preflight_check fields can reuse the guard
+// (#8722). Returns nil for clean values.
+func lintPreflightCheckCommand(field, value string) *Diagnostic {
+	pc := strings.TrimSpace(value)
+	if pc == "" || !preflightPathLike.MatchString(pc) {
+		return nil
+	}
+	return &Diagnostic{
+		Severity: SeverityError,
+		Field:    field,
+		Message:  fmt.Sprintf("value %q looks like a script path; %s runs verbatim as `sh -c` on the host and is never fetched or resolved like pre_script/post_script — if a fetched harness script was intended, use pre_script; otherwise inline the command (e.g. python3 -c 'import jsonschema')", pc, field),
+	}
 }
 
 // lintDeprecatedIssueURL reports env entries and host_files sources that

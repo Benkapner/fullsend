@@ -175,7 +175,7 @@ func TestLint_PreflightCheckLooksLikeScriptPath(t *testing.T) {
 
 	diags := h.Lint()
 	require.Len(t, diags, 1)
-	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.Equal(t, SeverityError, diags[0].Severity)
 	assert.Equal(t, "validation_loop.preflight_check", diags[0].Field)
 	assert.Contains(t, diags[0].Message, "sh -c")
 	assert.Contains(t, diags[0].Message, "pre_script")
@@ -206,6 +206,7 @@ func TestLint_PreflightCheckPathLikeMatching(t *testing.T) {
 		{name: "absolute script", cmd: "/usr/local/bin/preflight.rb", want: true},
 		{name: "bare basename", cmd: "tool.js", want: true},
 		{name: "command with args", cmd: "bash scripts/foo.sh", want: false},
+		{name: "interpreter invocation", cmd: "sh scripts/a.sh", want: false},
 		{name: "python inline", cmd: `python3 -c "import jsonschema"`, want: false},
 		{name: "shell pipeline", cmd: "command -v jq >/dev/null", want: false},
 		{name: "quoted path", cmd: "'scripts/foo.sh'", want: false},
@@ -226,9 +227,10 @@ func TestLint_PreflightCheckPathLikeMatching(t *testing.T) {
 			if tc.want {
 				require.Len(t, diags, 1)
 				assert.Equal(t, "validation_loop.preflight_check", diags[0].Field)
-				// Advisory even for paths that could execute on the host
-				// (e.g. /usr/local/bin/preflight.rb): never an error.
-				assert.Equal(t, SeverityWarning, diags[0].Severity)
+				// Error even for paths that could execute on the host
+				// (e.g. /usr/local/bin/preflight.rb): a host-specific
+				// absolute path is undeclared host state (ADR 0128 Decision 2).
+				assert.Equal(t, SeverityError, diags[0].Severity)
 			} else {
 				assert.Empty(t, diags)
 			}
