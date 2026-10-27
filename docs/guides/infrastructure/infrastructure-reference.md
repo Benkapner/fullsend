@@ -373,10 +373,9 @@ Ordinary unflagged `repos install` provisions role credentials; it does not remo
 **Poll-state branches:** `repos install` (on both fresh installs and
 re-run/convergence of already-enrolled repos) creates
 `fullsend-poll-state-slash` and `fullsend-poll-state-events` (unprotected)
-with an initial HMAC-signed `state.json`. Legacy CI/CD-variable values
-are folded in when present (`*Fast` → slash, `*Full` + `LabelState` →
-events); otherwise each branch is an empty signed baseline. Existing
-branch documents are not overwritten. `repos uninstall` deletes both
+with an initial HMAC-signed `state.json`. Each missing branch is seeded
+with an empty signed baseline; existing branch documents are left
+untouched and not overwritten. `repos uninstall` deletes both
 branches via `DeleteRef` (a missing branch is ignored).
 
 Each poll cycle performs a single save of that mode's `state.json`
@@ -405,12 +404,12 @@ than one hour, the first discovery starts at the cutoff rather than one hour
 back.
 
 **Retired poll-state CI/CD variables (#7343 phase 3b / #7380):** the
-following seven variables are no longer seeded at install. `repos
-converge` migrates any still-present values into the poll-state
-branches (`*Fast` → slash, `*Full` + `LabelState` → events) and then
-deletes the variables. The orphan detector treats them as known-retired,
-so already-installed repos do not emit spurious orphan-variable warnings
-during the transition. The two poll-state branches are managed git refs
+following seven variables are no longer seeded or migrated. `repos
+install` and `repos converge` neither read nor delete them; poll-state
+branches are seeded with an empty signed baseline. The orphan detector
+treats them as known-retired, so leftovers on older installations do not
+emit spurious orphan-variable warnings, and `repos uninstall` deletes
+them. The two poll-state branches are managed git refs
 and are never reported as orphan files. The poller no longer reads or
 writes any of these variables via `GetCIVariable`/`UpdateCIVariable`.
 Poll state (watermarks, label sync state, dispatched/failed-key dedup)
@@ -431,6 +430,7 @@ access instead of Maintainer. See ADR 0067.
 - `FULLSEND_GCP_PROJECT_ID` — GCP project ID for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)
+- `FULLSEND_GCP_SERVICE_ACCOUNT` — service account the agent job impersonates when `inference.service_account` is declared (GitLab `vertex-wif` only); install removes it as obsolete when the key is not declared, and uninstall removes it
 - `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for projects whose `inference.auth` is `openai-api-key` (masked CI/CD variable written by `repos install --openai-api-key`; the job maps it to `OPENAI_API_KEY`, and an unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used)
 - `FULLSEND_INFERENCE_GATEWAY_API_KEY` — inference gateway API key for projects whose `inference.gateway.auth` is `api-key` (masked CI/CD variable set by the project admin; the job passes it to the runner under its own name)
 

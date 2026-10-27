@@ -47,6 +47,12 @@ const (
 	VarReviewClientID = "FULLSEND_REVIEW_CLIENT_ID"
 	VarAppSet         = "FULLSEND_APP_SET"
 
+	// VarGCPServiceAccount is the GitLab CI/CD variable naming the
+	// service account the agent job impersonates for Vertex inference
+	// (config.inference.service_account). Written only when configured;
+	// unset keeps direct federated identity.
+	VarGCPServiceAccount = "FULLSEND_GCP_SERVICE_ACCOUNT"
+
 	// User-managed OpenAI Workload Identity identifier variables.
 	VarOpenAIAudience           = "FULLSEND_OPENAI_AUDIENCE"
 	VarOpenAIIdentityProviderID = "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID"
@@ -54,7 +60,8 @@ const (
 
 	// Retired GitLab poller state variables. Superseded by HMAC-signed
 	// state.json on fullsend-poll-state-slash / fullsend-poll-state-events.
-	// Install no longer seeds them; converge migrate-then-deletes them.
+	// Install and converge neither seed nor migrate them; uninstall
+	// deletes any leftovers.
 	VarLastPollAtFast     = "FULLSEND_LAST_POLL_AT_FAST"
 	VarLastPollAtFull     = "FULLSEND_LAST_POLL_AT_FULL"
 	VarLabelState         = "FULLSEND_LABEL_STATE"

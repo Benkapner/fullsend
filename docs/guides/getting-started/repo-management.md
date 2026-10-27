@@ -302,7 +302,9 @@ preset's own roles take effect.
 A preset can also declare infrastructure values. Its `mint_url` and
 `inference.region` / `inference.project` / `inference.wif_provider`
 feed `FULLSEND_MINT_URL`, `FULLSEND_GCP_REGION`, and the GCP secrets
-unless the managed configuration overrides them; see
+unless the managed configuration overrides them. For GitLab `vertex-wif`
+repositories it can also supply `inference.wif_audience` and
+`inference.service_account`; see
 [Effective infrastructure values](../../cli/repos.md#effective-infrastructure-values).
 
 ### Managed configuration

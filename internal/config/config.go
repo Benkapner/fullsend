@@ -187,6 +187,15 @@ type PerRepoInferenceConfig struct {
 	Project     string `yaml:"project,omitempty"`
 	Region      string `yaml:"region,omitempty"`
 	WIFProvider string `yaml:"wif_provider,omitempty"`
+	// WIFAudience is the audience GitLab puts in the agent job's ID token
+	// when the WIF provider is an existing one that accepts a different
+	// audience than "fullsend". GitLab vertex-wif only; install time only.
+	WIFAudience string `yaml:"wif_audience,omitempty"`
+	// ServiceAccount is the email of a Google service account the GitLab
+	// agent job impersonates after the federated token exchange, for
+	// installs that cannot grant the federated principal project IAM roles.
+	// GitLab vertex-wif only; install time only.
+	ServiceAccount string `yaml:"service_account,omitempty"`
 	// OpenAI holds the OpenAI Workload Identity Federation identifiers
 	// (ADR 0092). They are not secrets: the mapping they name only
 	// trusts a GitHub OIDC token whose claims match, and the run prints
