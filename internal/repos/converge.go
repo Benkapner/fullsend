@@ -1442,11 +1442,12 @@ func convergeRepo(ctx context.Context,
 		cr.Error = err
 		return cr
 	}
-	// With no ref at all nothing refreshes an established installation's
-	// scaffold, so its live agent job script must already read the
+	// With no ref at all only an unstamped install or a missing script is
+	// refreshed from the embedded templates, so any other established
+	// installation's live agent job script must already read the
 	// variable. A fresh install renders the embedded templates.
 	if workflowPresent(d.components) {
-		if err := checkEstablishedServiceAccountSupport(ctx, resolved, cfg.UpstreamRef); err != nil {
+		if err := checkEstablishedServiceAccountSupport(ctx, resolved, cfg.UpstreamRef, d.components); err != nil {
 			cr.Error = err
 			return cr
 		}

@@ -183,14 +183,23 @@ func checkPinnedServiceAccountSupport(ctx context.Context, resolved ResolvedConf
 }
 
 // checkEstablishedServiceAccountSupport covers an established GitLab
-// installation for which no convergence will refresh scaffold content
-// (neither a manifest ref nor a build-time upstream ref): the agent job
-// script on the default branch is all there is, so a legacy one that never
-// reads FULLSEND_GCP_SERVICE_ACCOUNT must be rejected before the variable
-// is written rather than left on direct federation. The read is read-only.
-func checkEstablishedServiceAccountSupport(ctx context.Context, resolved ResolvedConfig, upstreamRef string) error {
+// installation with neither a manifest ref nor a build-time upstream ref.
+// Convergence still refreshes the agent job script from the embedded
+// templates, which read FULLSEND_GCP_SERVICE_ACCOUNT, in two cases, so
+// neither is rejected: an unstamped install (unstampedWorkflow, the
+// predicate convergeContentDriftFiles is given) and a script the probe
+// reports missing (the scaffold: component convergeScaffoldFiles repairs).
+// Otherwise the live script on the default branch is all there is, so a
+// legacy one that never reads the variable must be rejected before the
+// variable is written rather than left on direct federation. components
+// is the probed component list. The read is read-only.
+func checkEstablishedServiceAccountSupport(ctx context.Context, resolved ResolvedConfig, upstreamRef string, components []ComponentStatus) error {
 	if resolved.Forge != ForgeGitLab || resolved.DeclaredServiceAccount == "" ||
 		resolved.FullsendRef != "" || upstreamRef != "" {
+		return nil
+	}
+	if unstampedWorkflow(resolved.Forge, components) ||
+		componentMissing(components, "scaffold:"+gitlabAgentJobScriptPath) {
 		return nil
 	}
 	repo := resolved.Owner + "/" + resolved.Repo
@@ -204,6 +213,17 @@ func checkEstablishedServiceAccountSupport(ctx context.Context, resolved Resolve
 	return fmt.Errorf("%s: inference.service_account is not supported by the installed GitLab scaffold: its %s does not read %s and no scaffold ref is configured to refresh it; "+
 		"set gitlab.fullsend_ref (or run a release build) so the scaffold can be upgraded (existing variables were left unchanged)",
 		repo, gitlabAgentJobScriptPath, forge.VarGCPServiceAccount)
+}
+
+// componentMissing reports whether the probe listed the named component and
+// found it absent.
+func componentMissing(components []ComponentStatus, name string) bool {
+	for _, c := range components {
+		if c.Name == name {
+			return !c.Present
+		}
+	}
+	return false
 }
 
 // applyGitLabExistingWIFTemplates applies the existing-provider options to a

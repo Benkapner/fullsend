@@ -743,19 +743,142 @@ func TestCheckEstablishedServiceAccountSupport(t *testing.T) {
 		Owner: "group", Repo: "project", Forge: ForgeGitLab,
 		DeclaredServiceAccount: testServiceAccount, ForgeConfig: ForgeConfig{Client: fc},
 	}
-	require.ErrorContains(t, checkEstablishedServiceAccountSupport(ctx, rc, ""), "does not read",
-		"a missing script is not current")
-	require.NoError(t, checkEstablishedServiceAccountSupport(ctx, rc, "v9.9.9"),
+	stamped := []ComponentStatus{
+		{Name: "workflow", Present: true, Actual: "v2.5.0", Match: true},
+		{Name: "scaffold:" + gitlabAgentJobScriptPath, Present: true, Match: true},
+	}
+	fc.FileContents["group/project/"+gitlabAgentJobScriptPath] = []byte(legacyAgentJobScript)
+	require.ErrorContains(t, checkEstablishedServiceAccountSupport(ctx, rc, "", stamped), "does not read",
+		"nothing refreshes a stamped install's legacy script")
+	require.NoError(t, checkEstablishedServiceAccountSupport(ctx, rc, "v9.9.9", stamped),
 		"a build-time ref refreshes the scaffold")
 	pinned := rc
 	pinned.FullsendRef = "v9.9.9"
-	require.NoError(t, checkEstablishedServiceAccountSupport(ctx, pinned, ""),
+	require.NoError(t, checkEstablishedServiceAccountSupport(ctx, pinned, "", stamped),
 		"a pin is checked by checkPinnedServiceAccountSupport")
 	none := rc
 	none.DeclaredServiceAccount = ""
-	require.NoError(t, checkEstablishedServiceAccountSupport(ctx, none, ""))
+	require.NoError(t, checkEstablishedServiceAccountSupport(ctx, none, "", stamped))
+
+	unstamped := []ComponentStatus{stamped[0], stamped[1]}
+	unstamped[0].Actual = ""
+	require.NoError(t, checkEstablishedServiceAccountSupport(ctx, rc, "", unstamped),
+		"content drift re-renders an unstamped install from the embedded templates")
+	missing := []ComponentStatus{stamped[0], {Name: "scaffold:" + gitlabAgentJobScriptPath}}
+	require.NoError(t, checkEstablishedServiceAccountSupport(ctx, rc, "", missing),
+		"missing-component repair restores the script from the embedded templates")
 
 	fc.Errors["GetFileContent"] = assert.AnError
-	require.ErrorContains(t, checkEstablishedServiceAccountSupport(ctx, rc, ""),
+	require.ErrorContains(t, checkEstablishedServiceAccountSupport(ctx, rc, "", stamped),
 		"to verify inference.service_account support")
+}
+
+// unstampedInstalledGitLabExistingWIF is an unpinned GitLab install whose
+// wrapper carries no ref marker (written by a build without a release ref)
+// and whose agent job script predates service-account impersonation.
+func unstampedInstalledGitLabExistingWIF(t *testing.T) (*forge.FakeClient, *Manifest) {
+	t.Helper()
+	fc := newFakeClientForBatch("group/project")
+	populateGitLabInstalled(fc, "group", "project")
+	populateGitLabScaffoldContent(t, fc, "group", "project", "")
+	populateGitLabTypedRoot(t, fc, "group", "project", fc.FileContents["group/project/"+fullsendPipelineInclude])
+	fc.FileContents["group/project/"+gitlabAgentJobScriptPath] = []byte(legacyAgentJobScript)
+	fc.Secrets["group/project/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["group/project/"+forge.SecretGCPWIFProvider] = true
+	m := gitlabExistingWIFManifest(t, "inference:\n  project: example-project\n  wif_provider: "+testExistingWIF+
+		"\n  service_account: "+testServiceAccount+"\n")
+	m.GitLab.Repos[0].Name = "group/project"
+	m.GitLab.FullsendRef = ""
+	return fc, m
+}
+
+// committedFile returns the content spy committed for path, if any.
+func committedFile(spy *spyScaffoldCommit, path string) ([]byte, bool) {
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	for _, f := range spy.files {
+		if f.Path == path {
+			return f.Content, true
+		}
+	}
+	return nil, false
+}
+
+func TestConverge_GitLabServiceAccountUnpinnedRefreshedScript(t *testing.T) {
+	t.Run("unstamped legacy install is re-rendered", func(t *testing.T) {
+		fc, m := unstampedInstalledGitLabExistingWIF(t)
+		require.Empty(t, unstampedProbeRef(t, fc), "the wrapper carries no ref marker")
+		spy := &spyScaffoldCommit{}
+		result, err := Converge(context.Background(), ConvergeConfig{Manifest: m, MaxConcurrency: 4, Direct: true},
+			newTestClientFactory(fc), spy.fn(), noopProgress)
+		require.NoError(t, err)
+		require.Empty(t, result.Failed(), "results: %+v", result.Results)
+		script, ok := committedFile(spy, gitlabAgentJobScriptPath)
+		require.True(t, ok, "content drift refreshes run-agent-job.sh")
+		assert.Contains(t, string(script), forge.VarGCPServiceAccount)
+		assert.Equal(t, testServiceAccount, fc.VariableValues["group/project/"+forge.VarGCPServiceAccount])
+	})
+
+	t.Run("missing script is restored", func(t *testing.T) {
+		fc, m := unpinnedInstalledGitLabExistingWIF(t)
+		delete(fc.FileContents, "group/project/"+gitlabAgentJobScriptPath)
+		spy := &spyScaffoldCommit{}
+		result, err := Converge(context.Background(), ConvergeConfig{Manifest: m, MaxConcurrency: 4, Direct: true},
+			newTestClientFactory(fc), spy.fn(), noopProgress)
+		require.NoError(t, err)
+		require.Empty(t, result.Failed(), "results: %+v", result.Results)
+		script, ok := committedFile(spy, gitlabAgentJobScriptPath)
+		require.True(t, ok, "missing-component repair restores run-agent-job.sh")
+		assert.Contains(t, string(script), forge.VarGCPServiceAccount)
+		assert.Equal(t, testServiceAccount, fc.VariableValues["group/project/"+forge.VarGCPServiceAccount])
+	})
+
+	t.Run("fresh install renders the embedded script", func(t *testing.T) {
+		fc := newFakeClientForBatch("group/project")
+		m := gitlabExistingWIFManifest(t, "inference:\n  project: example-project\n  wif_provider: "+testExistingWIF+
+			"\n  service_account: "+testServiceAccount+"\n")
+		m.GitLab.FullsendRef = ""
+		result, err := Converge(context.Background(), ConvergeConfig{Manifest: m, MaxConcurrency: 4, Direct: true},
+			newTestClientFactory(fc), (&fakeScaffoldCommit{}).fn(), noopProgress)
+		require.NoError(t, err)
+		require.Empty(t, result.Failed(), "results: %+v", result.Results)
+	})
+}
+
+// unstampedProbeRef returns the probed workflow ref of group/project.
+func unstampedProbeRef(t *testing.T, fc *forge.FakeClient) string {
+	t.Helper()
+	components, err := ProbeComponents(context.Background(), fc, "group", "project", ForgeGitLab, GitLabForgeConfig(), nil)
+	require.NoError(t, err)
+	for _, c := range components {
+		if c.Name == "workflow" {
+			require.True(t, c.Present)
+			return c.Actual
+		}
+	}
+	t.Fatal("no workflow component")
+	return ""
+}
+
+func TestStatus_GitLabServiceAccountUnpinnedRefreshedScript(t *testing.T) {
+	t.Run("unstamped legacy install", func(t *testing.T) {
+		fc, m := unstampedInstalledGitLabExistingWIF(t)
+		status, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+		require.NoError(t, err)
+		require.Len(t, status.Repos, 1)
+		assert.NotContains(t, status.Repos[0].Error, "inference.service_account")
+		assert.Contains(t, driftFields(status.Repos[0].Drifts), gitlabAgentJobScriptPath,
+			"the legacy script is reported as content drift")
+	})
+
+	t.Run("missing script", func(t *testing.T) {
+		fc, m := unpinnedInstalledGitLabExistingWIF(t)
+		delete(fc.FileContents, "group/project/"+gitlabAgentJobScriptPath)
+		status, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+		require.NoError(t, err)
+		require.Len(t, status.Repos, 1)
+		assert.NotContains(t, status.Repos[0].Error, "inference.service_account")
+		assert.Contains(t, driftFields(status.Repos[0].Drifts), gitlabAgentJobScriptPath,
+			"the missing script is reported as drift")
+	})
 }

@@ -418,10 +418,10 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		})
 	}
 
-	// Report the configuration error install would fail on: no ref will
+	// Report the configuration error install would fail on: nothing will
 	// refresh a live agent job script that ignores the service account.
 	if workflowPresent && presetLoaded {
-		if err := checkEstablishedServiceAccountSupport(ctx, cfg, dcfg.UpstreamRef); err != nil {
+		if err := checkEstablishedServiceAccountSupport(ctx, cfg, dcfg.UpstreamRef, components); err != nil {
 			status.Error = err.Error()
 			return status
 		}
