@@ -191,13 +191,14 @@ runner compares the spawns in the run's event stream with the admissions the hoo
 [Troubleshooting](#troubleshooting)). Every child's rollout is saved and redacted like the
 parent's, and its tokens are in `metrics.json` (see [At a glance](#at-a-glance)).
 
-Delegation needs a parent model Codex resolves to collaboration V1: its entry in the pinned CLI's
-bundled catalog selects V1, or carries no version and Codex's `multi_agent` feature, on by default,
-supplies V1 (on the current pin `gpt-5.6-luna`, `gpt-5.5` and a hidden catalog entry). Bootstrap reads
-that catalog; for any
-other parent, a V2 model such as `gpt-5.6-sol` or a model the catalog does not list included, it
-keeps Codex's multi-agent tools off, prints one line saying why (`sub-agents: parent model
-"gpt-5.6-sol" selects collaboration "v2"; native sub-agents need a parent Codex resolves to
+Delegation needs a parent model Codex resolves to collaboration V1: its entry in
+the pinned CLI's bundled catalog selects V1, or carries no version and Codex's
+`multi_agent` feature, on by default, supplies V1 (on the current pin
+`gpt-5.6-luna`, `gpt-5.5` and a hidden catalog entry). Bootstrap reads that
+catalog; for any other parent, a V2 model such as `gpt-5.6-sol` or a model the
+catalog does not list included, it keeps Codex's multi-agent tools off, prints
+one line saying why (`sub-agents: parent model "gpt-5.6-sol" selects
+collaboration "v2"; native sub-agents need a parent Codex resolves to
 collaboration V1, running in one context`), and the agent runs in one context.
 
 ## At a glance
