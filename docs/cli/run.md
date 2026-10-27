@@ -481,11 +481,11 @@ them into the sandbox. Matching is case-insensitive. It warns twice:
 current lock entry is not composed; run `fullsend lock --update` to check its
 keys. `lock` composes without event context, so a key added by an overlay
 guarded on `event` is reported only by `fullsend run`. The reserved names are
-listed in the `env.sandbox` note in [Customizing
-agents](../guides/user/customizing-agents.md#reserved-envsandbox-names);
-where blocked proxy and certificate settings go instead is in [Migrating proxy
-and certificate
-settings](../guides/user/customizing-agents.md#migrating-proxy-and-certificate-settings).
+listed in [Harness Field Reference § Reserved `env.sandbox`
+names](../reference/harness-reference.md#reserved-envsandbox-names); where
+blocked proxy and certificate settings go instead is in [Migrating proxy and
+certificate
+settings](../reference/harness-reference.md#migrating-proxy-and-certificate-settings).
 
 ## Runner secrets
 
