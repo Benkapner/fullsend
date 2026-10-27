@@ -450,6 +450,44 @@ validation_loop:
 	assert.Contains(t, err.Error(), "lint found 1 error-level diagnostic(s)")
 }
 
+func TestLintCommand_StrictFailsOnWarningLevelDiagnostics(t *testing.T) {
+	dir := t.TempDir()
+	cfg := `version: "1"
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	writeLintAgentFixture(t, dir, "my-agent")
+	// allowed_remote_resources without allow_runtime_fetch yields exactly one
+	// warning-level diagnostic and no error-level ones, so this fixture
+	// exercises the --strict gate the preflight error-level rewrite no longer
+	// covers.
+	harnessYAML := `role: triage
+agent: agents/my-agent.md
+policy: policies/base.yaml
+allowed_remote_resources:
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(harnessYAML), 0o644))
+
+	t.Run("warning without strict", func(t *testing.T) {
+		cmd := newLintCmd()
+		out, err := executeCmd(cmd, []string{"--fullsend-dir", dir})
+		require.NoError(t, err)
+		assert.Contains(t, out, "warning: allowed_remote_resources")
+		assert.Contains(t, out, "deprecated")
+	})
+
+	t.Run("fails with strict", func(t *testing.T) {
+		cmd := newLintCmd()
+		_, err := executeCmd(cmd, []string{"--fullsend-dir", dir, "--strict"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lint found 1 warning-level diagnostic(s) (--strict)")
+	})
+}
+
 func TestLintCommand_MissingPolicyFails(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `version: "1"
