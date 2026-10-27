@@ -230,8 +230,9 @@ repo baseline and overrides)
   newer-version harnesses ([ADR 0127](ADRs/0127-harness-schema-versioning-and-field-types.md)).
 - `preflight_check` is a literal host command, not a script resource: it runs
   via `sh -c` without setting a working directory and is not resource-resolved;
-  `Harness.Lint()` will flag path-like values (planned, not yet implemented;
-  non-fatal when it lands)
+  `Harness.Lint()` flags path-like values at error severity, so `fullsend
+  lint` fails on them; `fullsend lock` and `fullsend run` print the diagnostic
+  and continue
   ([ADR 0128](ADRs/0128-preflight-check-literal-command.md)). The nested
   `validation_loop.preflight_check` runs in a minimal allowlisted environment —
   host `PATH`, `HOME`, and `TMPDIR`, runner-forced `FULLSEND_DIR` and

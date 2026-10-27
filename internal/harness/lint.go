@@ -31,11 +31,11 @@ func (s DiagnosticSeverity) String() string {
 // "."/"/" then path characters, ending in a script extension — with no
 // spaces, quotes, or shell operators. preflight_check is passed verbatim
 // to `sh -c` on the host and, unlike pre_script/post_script, is never
-// resolved through the fetch/cache pipeline (#7600). A bare path-shaped
-// value can therefore never resolve in a fresh consumer checkout —
-// referenced files are not delivered (Harness Resource Distribution
-// Contract) — so it is a certain runtime failure, not a style
-// preference. The interpreter form (`sh path.sh`) does not match and
+// resolved through the fetch/cache pipeline (#7600). Referenced files are
+// not delivered (Harness Resource Distribution Contract), so a bare
+// path-shaped value cannot resolve in a fresh consumer checkout: the
+// mistake is relying on undeclared host state, not a style preference.
+// The interpreter form (`sh path.sh`) does not match and
 // remains the intentional escape hatch.
 var preflightPathLike = regexp.MustCompile(`^[./]?[\w./-]+\.(sh|py|rb|js)$`)
 
@@ -142,11 +142,11 @@ func (h *Harness) Lint() []Diagnostic {
 
 // lintPreflightCheckCommand returns an error-level diagnostic when value, a
 // preflight_check command, looks like a bare script path — usually meaning
-// the author expected pre_script-style fetch/resolution (#7600). A bare
-// path can never resolve in a fresh consumer checkout because referenced
+// the author expected pre_script-style fetch/resolution (#7600). Referenced
 // files are not delivered (Harness Resource Distribution Contract), so the
-// mistake is a certain runtime failure, not a style preference (ADR 0128
-// Decision 2). The interpreter form (`sh path.sh`) does not match and
+// value cannot resolve in a fresh consumer checkout: the mistake is relying
+// on undeclared host state, not a style preference (ADR 0128 Decision 2).
+// The interpreter form (`sh path.sh`) does not match and
 // remains the intentional escape hatch. The field label is interpolated
 // into the message so sibling preflight_check fields can reuse the guard
 // (#8722). Returns nil for clean values.
