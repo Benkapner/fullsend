@@ -37,6 +37,25 @@ variable or repository variable, check the repository-variable table in
 `docs/guides/getting-started/operations.md` and the documentation for the
 feature that consumes it.
 
+## Planning artifacts from agent sessions
+
+Do not commit spec, plan, task, or research files that a local agent session
+generates. This includes `specs/` directories and other output in the style of
+spec-kit or OpenSpec, such as `spec.md`, `plan.md`, `tasks.md`, and
+`research.md`. Remove them from your branch before you open a pull request.
+Reviewers should ask for their removal when they appear in a PR.
+
+These files describe how one session approached a change. They are not
+maintained after the change lands, so they go stale and mislead later readers.
+The same policy removed `docs/plans/` and `docs/superpowers/` from the
+repository in [PR #5972](https://github.com/fullsend-ai/fullsend/pull/5972),
+and both paths are listed in `.gitignore`.
+
+Record the durable outcome in the right place instead:
+
+- Design decisions belong in an ADR (see [ADR conventions](adrs.md)).
+- Implementation detail belongs in code, code comments, and tests.
+
 ## ADR annotations
 
 When a CLI change makes an ADR's decision obsolete, write a **new ADR** that supersedes the old one rather than editing the original decision text. Minor annotations (status updates, "see also" links) are welcome — see [ADR conventions](adrs.md) for the full rules.
