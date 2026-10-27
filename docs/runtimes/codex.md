@@ -399,8 +399,8 @@ agents:
 
 **`code` and `fix` delegate too.** They declare no `tools:`, so on a V1 parent with harness security
 on they get the `default` and `explore` roles, children with the parent's shell and `apply_patch`,
-the spawn guard and the dispatch note, as `review` does. Neither has been run with native children
-yet.
+the spawn guard and the dispatch note, as `review` does. Both have run end to end that way on
+`gpt-5.6-luna` and chose not to spawn, so neither has run a native child yet.
 
 ## Troubleshooting
 
