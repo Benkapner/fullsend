@@ -7391,8 +7391,8 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 // fetched entry recorded under a SHA-pinned agents-repo URL for relPath. The
 // returned dependency carries that original URL, so companion files resolve
 // through the URL index exactly as they did online. The newest cached
-// revision may be behind the agents ref; the resolved short SHA is printed
-// so a stale revision is visible. All errors are non-fatal.
+// revision need not match the ref this build pins online; the resolved short
+// SHA is printed so the revision is visible. All errors are non-fatal.
 func cachedPinnedAgentsRepoFile(relPath string, composeOpts harness.ComposeOpts, printer *ui.Printer, noun string) (string, harness.Dependency, bool) {
 	var none harness.Dependency
 	allowlist := composeOpts.OrgAllowlist
