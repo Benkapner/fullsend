@@ -589,7 +589,9 @@ the poller/dedup backstop narrows but does not fully close.
 listed it as a fast-path ship gate. The shipped builder narrows it with the
 30-minute event-time window and the dedup keys it shares with the poller,
 but it remains open: within the window, a token holder can still re-fire a
-matching event.
+matching event. Whether to accept this residual or require more work is a
+pending maintainer decision; see
+[ADR 0125 security-gate status](#adr-0125-security-gate-status).
 
 **Residual actor-attribution risk.** Distinct from replay, the snapshot
 checks bind the *action* to current state but do **not** establish that the
@@ -692,12 +694,25 @@ pushed). The gap is tracked in
 The patch accepts an optional HTTPS port and sends API calls
 to `CI_SERVER_URL`. The CE runs therefore verify the Fullsend install,
 webhook, polling, rotation, and cleanup paths on CE with that patch. They do
-not verify stock agents on a custom-port CE instance. The port fix has since
-merged in
-[fullsend-ai/agents#1733](https://github.com/fullsend-ai/agents/pull/1733),
-but no CE issue-to-agent run with stock agents has passed: the latest rerun
-was stopped by the sandbox SSRF guard, as described above. Stock agents on a
-custom-port CE instance therefore remain unverified.
+not verify stock agents on a custom-port CE instance. The port fix merged in
+[fullsend-ai/agents#1733](https://github.com/fullsend-ai/agents/pull/1733)
+on 2026-10-21, and stock agents were retested on CE the same day. The
+[stock-agents CE rerun](https://github.com/fullsend-ai/fullsend/issues/8245#issuecomment-6328485466)
+on `main` at `7ac5c8b62` passed install, `repos status`, issue-open webhook
+dispatch, natural scheduled-poll dispatch, trigger-account rotation, and
+uninstall, and each dispatch launched stock triage. The triage agents could
+not reach the custom-host CE instance, because the sandbox policy did not
+attach the generated GitLab endpoint
+([#8683](https://github.com/fullsend-ai/fullsend/issues/8683), fixed by
+[PR #8687](https://github.com/fullsend-ai/fullsend/pull/8687)). On
+2026-10-23, one retry
+[timed out on an OpenShell DNS mapping expiry](https://github.com/fullsend-ai/fullsend/issues/8245#issuecomment-6374098471)
+and another was
+[blocked by the sandbox SSRF guard](https://github.com/fullsend-ai/fullsend/issues/8245#issuecomment-6374578361),
+as was the 2026-10-24 rerun described above. No stock-agents CE
+issue-to-agent run has passed, so stock agents on a custom-port CE instance
+remain unverified. Another retest is not required for #8245, because CE is
+non-gating (see Validation scope below).
 
 **Validation scope.** CE-specific end-to-end validation is non-gating for
 [#8245](https://github.com/fullsend-ai/fullsend/issues/8245). That issue
@@ -710,3 +725,25 @@ network rule that preserves the SSRF guard.
 Demonstrated dispatch does not relax any MUST in this section. The
 fail-closed provenance, identity-pin, and actor-binding requirements above
 still apply. Snapshot-consistent replay remains a residual risk.
+
+#### ADR 0125 security-gate status
+
+[ADR 0125](../../../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)
+named security gates for the webhook fast path. The fast path has shipped.
+This table is the current status of each gate, checked against the code at
+`a7f851df9848` and the
+[#8245](https://github.com/fullsend-ai/fullsend/issues/8245) record. A gate
+is **closed** only with the evidence cited. An **open** gate stays open until
+it has evidence or a maintainer records a decision to accept or defer it.
+Deleting a gate's text does not close it. Pending maintainer decisions are
+tracked in [#8835](https://github.com/fullsend-ai/fullsend/issues/8835).
+
+| Gate | Status | Evidence or remaining work |
+|------|--------|----------------------------|
+| Trigger-variable control (Owner-role PAT or `no_one_allowed`) | Closed: superseded | [ADR 0131](../../../ADRs/0131-gitlab-dispatch-pipeline-inputs-no-owner-role.md) adopted typed pipeline inputs with `no_one_allowed` and a Developer-role Poller. No Owner-role credential is used. ADR 0125's Caveats finding that `no_one_allowed` is unusable applied only to variable-based dispatch. |
+| Native `TRIGGER_PAYLOAD` under the required restriction | Closed | GitLab supplies `TRIGGER_PAYLOAD` as a file-type variable, and `no_one_allowed` does not strip it. In the [2026-10-20 run](https://github.com/fullsend-ai/fullsend/issues/8245#issuecomment-6301468961) on GitLab.com Free and self-managed EE (`a87815b6c`), and in the CE runs, webhook dispatcher pipelines read the payload and dispatched agents. At those commits, install provisions the trigger and webhook only after it reads back `no_one_allowed` ([`gitlabTriggerSafetyCheck`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/repos/gitlab_webhook.go#L747)). The dispatcher fails closed when `TRIGGER_PAYLOAD` is unset or unreadable ([`run-dispatcher-job.sh`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/run-dispatcher-job.sh#L66-L80)). |
+| `CI_JOB_TOKEN` running-job identity pin | Open: gated on the restriction | All three job scripts source [`pin-ci-job-identity.sh`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/pin-ci-job-identity.sh). Under `no_one_allowed`, GitLab rejects caller-supplied pipeline variables: the [#7769](https://github.com/fullsend-ai/fullsend/issues/7769) spike on self-managed EE 19.2.7 recorded HTTP 400 for a `CI_JOB_TOKEN` override on `POST /pipeline` and for a variable on a trigger-token `POST /trigger/pipeline`. The pin's own behavior for an invalid override (expected to fail closed) and for a valid foreign job token (would mis-resolve) has not been tested on a target GitLab version. Until it is, the "sole project-identity source" claim holds only while the restriction is in place, and the pin is defense in depth. |
+| API base-URL trust | Open: maintainer decision pending | The identity pin bootstraps `GET /api/v4/job` from `CI_API_V4_URL`, rejects any value that is not an https API root or that contains globbing or userinfo characters, and passes that root on as `FULLSEND_PINNED_GITLAB_URL`. `CI_API_V4_URL` is in the overridable class. Its trust rests on `no_one_allowed`, which install verifies before it provisions the webhook, and on the [inherited CI/CD variable trust](../../../guides/getting-started/configuring-gitlab.md#inherited-cicd-variable-trust) assumption. The current deployment meets that restriction-based model. It does not provide the restriction-independent pin that ADR 0125 required before shipping. A maintainer must decide whether to accept the restriction-based model or require an independent pin. |
+| Snapshot-consistent replay | Open: maintainer decision pending | The builder rejects re-fetched event-time evidence older than 30 minutes ([`webhookMaxEventAge`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook.go#L56)) and shares occurrence-aware dispatch keys with the poller ([ADR 0132](../../../ADRs/0132-occurrence-aware-shared-poller-state.md)). The [residual replay risk](#gitlab-webhook-transition-provenance-gitlab-webhook) above remains. Delivery is also at-least-once: a webhook and a poll cycle that both read state before either persists can each dispatch the same event ([`webhook_dispatch.go`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook_dispatch.go#L74-L84)). A maintainer must decide whether to accept these residuals or require more work. |
+| Actor-to-transition attribution | Closed for the rows the builder accepts | [`bindActor`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook.go#L607) requires the payload-named actor to equal the actor the re-fetch records for the transition: the note author; the MR author, merger, or closer; the issue author or closer; or the user on the latest matching resource label event. Both `reopen` rows have no event-time actor evidence and are rejected. MR label changes and other MR updates are rejected as well. Note edits and bare issue updates are ignored without dispatch. Any row added later MUST bind its actor the same way or fail closed. |
+| Live validation ([#8245](https://github.com/fullsend-ai/fullsend/issues/8245)) | Closed for GitLab.com Free and self-managed EE | See [Validation status](#gitlab-webhook-validation-status). Self-managed CE is non-gating, and stock agents on custom-port CE remain unverified. |

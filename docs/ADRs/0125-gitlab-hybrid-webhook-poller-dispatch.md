@@ -56,6 +56,19 @@ Accepted
 > shipped adapter meets the other ship gates in Consequences, and the residual
 > risks that remain, are recorded in the
 > [normative event specification](../normative/normalized-event/v1/README.md#gitlab-adapter-notes).
+>
+> **Update (#8835):** the current status of each security gate this ADR
+> names is recorded, with evidence, in the normative specification's
+> [ADR 0125 security-gate status](../normative/normalized-event/v1/README.md#adr-0125-security-gate-status).
+> In summary, ADR 0131 superseded the Owner-role direction. Native
+> `TRIGGER_PAYLOAD` is verified under `no_one_allowed`, and actor-to-transition
+> binding is met for every webhook row the builder accepts. The
+> `CI_JOB_TOKEN` identity pin stays gated on the restriction, because its
+> override cases have not been tested. API base-URL trust and
+> snapshot-consistent replay remain open, pending a maintainer decision to
+> accept them or require more work. The #7850 note's statement that the
+> Caveats ship gates are unaffected no longer holds. The Caveats and
+> Consequences text below is the original record, not the current status.
 
 Supersedes the GitLab **dispatch topology** in
 [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md) (native-CI two-path,
@@ -492,6 +505,12 @@ caller-supplied variables. Therefore:
 
 ### Caveats
 
+> **Note (#8835):** the Owner-role PAT direction and the finding that
+> `no_one_allowed` is unusable below were superseded by
+> [ADR 0131](0131-gitlab-dispatch-pipeline-inputs-no-owner-role.md). For the
+> current status of the `CI_JOB_TOKEN` and `TRIGGER_PAYLOAD` gates, see
+> [ADR 0125 security-gate status](../normative/normalized-event/v1/README.md#adr-0125-security-gate-status).
+
 The `CI_JOB_TOKEN` identity pin above is the intended control, but it carries
 assumptions this ADR does not treat as settled:
 
@@ -537,6 +556,10 @@ assumptions this ADR does not treat as settled:
   the test matrix are tracked in the follow-on hardening issue.
 
 ## Consequences
+
+> **Note (#8835):** for the current status of the four ship gates listed
+> below, see
+> [ADR 0125 security-gate status](../normative/normalized-event/v1/README.md#adr-0125-security-gate-status).
 
 - GitLab moves toward GitHub-like event latency while keeping
   polling as the complement ([ADR 0063](0063-polling-based-work-discovery.md)).
