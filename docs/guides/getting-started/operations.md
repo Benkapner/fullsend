@@ -242,7 +242,7 @@ gcloud services enable \
 
 ## Status notifications
 
-See [Status Notifications](../user/customizing-agents.md#status-notifications) for configuring start/completion comments and reactions.
+See [`status_notifications`](../../reference/config-reference.md#status_notifications) for configuring start/completion comments and reactions.
 
 The composite action accepts seven optional inputs for status notifications and review reconciliation:
 
