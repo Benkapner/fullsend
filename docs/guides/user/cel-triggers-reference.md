@@ -630,8 +630,8 @@ error at run time, which counts as no match (`cel=skip`); see the
 
 This GitHub Actions workflow runs `fullsend lint` on every pull request that
 changes `.fullsend/config.yaml` or `.fullsend/config.base.yaml`. It installs
-the CLI with the same action and `agent: __install_only__` input as
-[Building custom agents](building-custom-agents.md):
+the CLI with the `fullsend-ai/fullsend` action and its
+`agent: __install_only__` input:
 
 ```yaml
 name: Lint fullsend config
