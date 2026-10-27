@@ -69,6 +69,24 @@ Accepted
 > accept them or require more work. The #7850 note's statement that the
 > Caveats ship gates are unaffected no longer holds. The Caveats and
 > Consequences text below is the original record, not the current status.
+>
+> **Update (#8874):** maintainers have decided the two gates the #8835 note
+> left pending. The
+> [API base-URL decision](https://github.com/fullsend-ai/fullsend/issues/8871#issuecomment-6453141351)
+> accepts the restriction-based API-root model without an independent host
+> pin. Its trust boundary is explicit: project Maintainers, group Owners, and
+> GitLab instance administrators are trusted to control project, group, and
+> instance CI/CD variables. The
+> [replay decision](https://github.com/fullsend-ai/fullsend/issues/8835#issuecomment-6452638835)
+> accepts bounded at-least-once replay. A duplicate dispatch can still occur
+> when concurrent webhook and poller runs both read state before either
+> saves it, or on retry after state persistence fails. The `CI_JOB_TOKEN`
+> identity pin stays open and gated: its invalid and valid-foreign override
+> cases are still untested on a target GitLab version. The "base-URL pin
+> remains the open residual risk" sentence and the ship gates below are the
+> original record; the
+> [security-gate status](../normative/normalized-event/v1/README.md#adr-0125-security-gate-status)
+> table has the current status.
 
 Supersedes the GitLab **dispatch topology** in
 [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md) (native-CI two-path,
