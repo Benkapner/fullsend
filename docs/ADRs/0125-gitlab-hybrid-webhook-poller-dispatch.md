@@ -82,8 +82,14 @@ Accepted
 > when concurrent webhook and poller runs both read state before either
 > saves it, on retry after state persistence fails, or when a partial stage
 > fan-out redispatches a stage that succeeded after another stage failed.
-> The `CI_JOB_TOKEN` identity pin stays open and gated: its invalid and
-> valid-foreign override cases are still untested on a target GitLab version.
+> The `CI_JOB_TOKEN` identity pin stays gated on the enforced
+> `no_one_allowed` restriction. The
+> [maintainer decision](https://github.com/fullsend-ai/fullsend/issues/8871#issuecomment-6453959180)
+> makes the untested invalid and valid-foreign override cases non-blocking.
+> The identity claim stays conditional on that restriction and on the accepted
+> trust that project Maintainers, group Owners, and GitLab instance
+> administrators do not add or change a `CI_JOB_TOKEN` settings-variable
+> override in unreadable or later-mutated scopes.
 > The "base-URL pin remains the open residual risk" sentence and the ship
 > gates below are the original record; the
 > [security-gate status](../normative/normalized-event/v1/README.md#adr-0125-security-gate-status)
