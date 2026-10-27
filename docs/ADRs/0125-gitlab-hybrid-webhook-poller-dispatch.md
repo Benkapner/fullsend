@@ -80,11 +80,12 @@ Accepted
 > [replay decision](https://github.com/fullsend-ai/fullsend/issues/8835#issuecomment-6452638835)
 > accepts bounded at-least-once replay. A duplicate dispatch can still occur
 > when concurrent webhook and poller runs both read state before either
-> saves it, or on retry after state persistence fails. The `CI_JOB_TOKEN`
-> identity pin stays open and gated: its invalid and valid-foreign override
-> cases are still untested on a target GitLab version. The "base-URL pin
-> remains the open residual risk" sentence and the ship gates below are the
-> original record; the
+> saves it, on retry after state persistence fails, or when a partial stage
+> fan-out redispatches a stage that succeeded after another stage failed.
+> The `CI_JOB_TOKEN` identity pin stays open and gated: its invalid and
+> valid-foreign override cases are still untested on a target GitLab version.
+> The "base-URL pin remains the open residual risk" sentence and the ship
+> gates below are the original record; the
 > [security-gate status](../normative/normalized-event/v1/README.md#adr-0125-security-gate-status)
 > table has the current status.
 
