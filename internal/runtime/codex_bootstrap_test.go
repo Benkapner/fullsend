@@ -976,9 +976,10 @@ func TestCodexRuntimeBootstrap_NoRoleFilesWhenTheGateFails(t *testing.T) {
 		"security off, delegating agent": {bootstrapInput{
 			sandboxName: "sb", agentPath: writeAgentFile(t, codexTestDelegatingAgentDef), agentName: "review", skillDirs: []string{skill},
 		}, false, false, ""},
-		"security on, definition model selects V2":               {delegating(v2Def, ""), true, false, `parent model "gpt-5.6-sol" selects collaboration "v2"`},
-		"security on, definition model not in the catalog":       {delegating(unlistedDef, ""), true, false, `parent model "gpt-5.6-nova" is not in the bundled catalog of the pinned codex`},
-		"security on, run-level V2 model beats a V1 definition":  {delegating(codexTestDelegatingAgentDef, "openai/gpt-5.6-sol"), true, false, `parent model "gpt-5.6-sol" selects collaboration "v2"`},
+		"security on, definition model selects V2":               {delegating(v2Def, ""), true, false, `parent model "gpt-5.6-sol" selects collaboration "v2"; native sub-agents need a parent Codex resolves to collaboration V1`},
+		"security on, definition model not in the catalog":       {delegating(unlistedDef, ""), true, false, `parent model "gpt-5.6-nova" is not in the bundled catalog of the pinned codex; native sub-agents need a parent Codex resolves to collaboration V1`},
+		"security on, run-level V2 model beats a V1 definition":  {delegating(codexTestDelegatingAgentDef, "openai/gpt-5.6-sol"), true, false, `parent model "gpt-5.6-sol" selects collaboration "v2"; native sub-agents need a parent Codex resolves to collaboration V1`},
+		"security on, run-level gateway route to a V1 id":        {delegating(codexTestDelegatingAgentDef, "gateway/gpt-5.6-luna"), true, false, `parent model "gateway/gpt-5.6-luna" takes the inference gateway route, where native sub-agents are not supported`},
 		"security on, definition model has no version (gpt-5.5)": {delegating(noVersionDef, ""), true, true, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -994,7 +995,7 @@ func TestCodexRuntimeBootstrap_NoRoleFilesWhenTheGateFails(t *testing.T) {
 			wantLines := 0
 			if tc.reason != "" {
 				wantLines = 1
-				assert.Contains(t, out, "sub-agents: "+tc.reason+"; native sub-agents need a parent Codex resolves to collaboration V1")
+				assert.Contains(t, out, "sub-agents: "+tc.reason+", running in one context\n")
 			}
 			assert.Equal(t, wantLines, strings.Count(out, "sub-agents: "), "one stderr line exactly when part two of the gate declines")
 

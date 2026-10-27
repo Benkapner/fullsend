@@ -158,9 +158,9 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	// on. Part two needs the pinned CLI's catalog: codex must resolve the
 	// model Run will launch to collaboration V1, the only version whose spawn
 	// tool the guard admits (its entry selects V1, or carries no version and
-	// codex's multi_agent feature, on by default, supplies V1). A V2 or
-	// unlisted parent keeps the multi-agent tools off and runs in one context,
-	// as every agent does today.
+	// codex's multi_agent feature, on by default, supplies V1). A V2,
+	// unlisted or gateway/ parent keeps the multi-agent tools off and runs in
+	// one context, as every agent does today.
 	_, securityOn := input.(SandboxHooksBootstrap)
 	var catalog codexCatalog
 	delegating := false
@@ -170,7 +170,7 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		}
 		var reason string
 		if delegating, reason = codexParentResolvesV1(catalog, input.ParentModel(), def.Model); !delegating {
-			fmt.Fprintf(os.Stderr, "sub-agents: %s; native sub-agents need a parent Codex resolves to collaboration V1, running in one context\n", reason)
+			fmt.Fprintf(os.Stderr, "sub-agents: %s, running in one context\n", reason)
 		}
 	}
 	// Resolved before config.toml is written: a bad subagents value fails here.

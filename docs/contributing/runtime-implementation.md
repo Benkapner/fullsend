@@ -1356,11 +1356,12 @@ notification under backpressure and says so on stderr: the launch sets `RUST_LOG
 `.env` (codex's default filter with `codex_exec` and `codex_app_server::in_process` at warn; codex's
 commands inherit it), the runner scans that stderr on the host (the sandbox log under `--debug`)
 and warns on the line, and on exec's warning that its `thread/read` backfill of the turn's items
-failed. The check cannot catch a forged admission (the log is agent-writable), a surplus admission
-covering a later spawn (counts, not ids), a resume (a `wait` item in the stream), or a spawn both
-of whose notifications codex dropped, or whose dropped completed item the backfill did not bring
-back (it runs only for a completed turn on a non-ephemeral thread, and only when `thread/read`
-succeeds).
+failed. The backfill at turn completion re-emits only items exec saw start, so a spawn both of whose
+notifications codex dropped never reaches the count: a delegating run therefore fails on any drop,
+on that backfill warning, or under `--debug` on a log read that did not finish; a run without roles
+warns. The check cannot catch a forged admission (the log is agent-writable), a surplus admission
+covering a later spawn (counts, not ids), a resume (a `wait` item in the stream), or, under
+`--debug`, a drop whose line the agent removed from `codex-debug.log` (it sits in the workspace).
 
 **PATH is pinned across `.env` for the same reason the interpreter is.** The hook scripts resolve
 their tools by name — `tirith_check.py` runs a bare `tirith` — so a `.env` that prepends a directory

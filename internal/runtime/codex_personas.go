@@ -51,9 +51,10 @@ const codexDefaultSubagentModel = "gpt-5.6-luna"
 const codexSubagentModelEnv = "FULLSEND_CODEX_SUBAGENT_MODEL"
 
 // codexChildModel validates one configured child model and returns the bare
-// OpenAI id: translateCodexModel's rules, less a gateway/ spec (the route is
-// the run's own model's) and `inherit`, which codex does not resolve for a
-// child. key names the entry so the error says what to fix.
+// OpenAI id: translateCodexModel's rules, less a gateway/ spec (a delegating
+// run is on the direct route: codexParentResolvesV1 declines a gateway/
+// parent) and `inherit`, which codex does not resolve for a child. key names
+// the entry so the error says what to fix.
 func codexChildModel(key, value string) (string, error) {
 	fix := "unset it so subagents.default or " + codexDefaultSubagentModel + " applies"
 	if name, ok := strings.CutPrefix(key, "subagents."); ok {
@@ -315,22 +316,25 @@ func parseCodexCatalog(data []byte) (codexCatalog, error) {
 // a V2 or unlisted parent, the reason is returned for one stderr line and
 // Bootstrap keeps codex's multi-agent tools off: the agent runs in one
 // context, as every agent does today. A parent that does not translate is
-// reported by Run with the same error; the gate only declines here. The
-// route is Run's concern too: the catalog is asked about the id whichever
-// provider serves it, so a gateway/ parent is accepted here and declined
-// by the catalog.
+// reported by Run with the same error; the gate only declines here. A
+// gateway/ parent is declined whatever its id: children would inherit the
+// gateway provider with bare OpenAI ids it may not serve, and native
+// children have not run on that route.
 func codexParentResolvesV1(catalog codexCatalog, parentModel, agentModel string) (bool, string) {
+	const needV1 = "; native sub-agents need a parent Codex resolves to collaboration V1"
 	model, err := translateCodexModel(EffectiveModel(parentModel, agentModel), true)
 	if err != nil {
-		return false, err.Error()
+		return false, err.Error() + needV1
 	}
 	id := model.ID
 	switch {
+	case model.Gateway:
+		return false, fmt.Sprintf("parent model %q takes the inference gateway route, where native sub-agents are not supported", "gateway/"+id)
 	case !catalog.has(id):
-		return false, fmt.Sprintf("parent model %q is not in the bundled catalog of the pinned codex", id)
+		return false, fmt.Sprintf("parent model %q is not in the bundled catalog of the pinned codex", id) + needV1
 	case catalog.resolvesV1(id):
 		return true, ""
 	default:
-		return false, fmt.Sprintf("parent model %q selects collaboration %q", id, catalog[id])
+		return false, fmt.Sprintf("parent model %q selects collaboration %q", id, catalog[id]) + needV1
 	}
 }

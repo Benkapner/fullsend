@@ -130,6 +130,9 @@ own log.
 **Check the effort level against the model.** Effort is passed to the gateway as is, and some models
 refuse some levels with an upstream 400. Check the levels your model accepts before you set `effort`.
 
+**No native sub-agents.** A `gateway/` parent keeps Codex's multi-agent tools off and runs in one
+context, whatever its id (see [Sub-agents](#sub-agents)).
+
 ### Child models
 
 A native child (see [Sub-agents](#sub-agents)) runs on the first of these that is set:
@@ -142,8 +145,9 @@ A native child (see [Sub-agents](#sub-agents)) runs on the first of these that i
 Positions 2 to 4 set Codex's `agents.default_subagent_model`, which every child without its own
 entry takes — the personas without an entry and the unnamed children of `retro` alike. A
 persona's frontmatter `model:` is never applied on codex. Only OpenAI ids are accepted
-(`openai/<id>` or the bare id): a Claude alias, another provider's prefix, a `gateway/` spec (the
-route is selected by the run's own model) or `inherit` fails Bootstrap and names the key:
+(`openai/<id>` or the bare id): a Claude alias, another provider's prefix, a `gateway/` spec (a
+delegating run is always on the direct route; see [Sub-agents](#sub-agents)) or `inherit` fails
+Bootstrap and names the key:
 
 ```
 subagents.correctness: "xai-vertex/xai/grok-4.6" is not an OpenAI model id (openai/<id> or the bare
@@ -160,8 +164,10 @@ does not serve still fails that child at its first request: it ends `errored`, n
 substituted, and the parent treats that role as failed. The floor is `gpt-5.6-luna`, the cheap tier
 of the current family, whose catalog entry selects collaboration V1 on the pinned CLI (see
 [Sub-agents](#sub-agents)). The runner reads `FULLSEND_CODEX_SUBAGENT_MODEL` from its own
-environment: a fleet workflow sets it in the job environment (plain or `<ROLE>_`-prefixed); unlike
-`FULLSEND_CODEX_MODEL` it is not read from repository variables. A child's reasoning effort follows
+environment: you set it for a local `fullsend run`, and on GitLab a project or group CI/CD variable
+reaches it, since the job runs `fullsend run` in its own environment. The GitHub fleet workflows do
+not pass it, and unlike `FULLSEND_CODEX_MODEL` it is not read from repository variables, so on that
+path set `subagents.default` instead. A child's reasoning effort follows
 the run-level default model's standard effort. Bootstrap prints what it resolved:
 
 ```
@@ -173,7 +179,7 @@ subagents: correctness → gpt-5.6-sol (from subagents.correctness)
 
 An agent whose `tools:` frontmatter includes `Agent` (or its alias `Task`), or declares no `tools:`
 at all, runs its sub-agents as native Codex children when harness security is enabled and Codex
-resolves its parent model to collaboration V1 (see the end of this section). Bootstrap registers
+resolves its parent model to collaboration V1 on the direct route (see the end of this section). Bootstrap registers
 one role per persona it discovers under the uploaded skills' `sub-agents/*.md`, plus a generic
 `default` role for a task that names no persona and an instruction-only `explore` role for a
 skill's `Explore` pass (nothing enforces read-only on a child). The roster is not a fixed list:
@@ -200,6 +206,11 @@ catalog does not list included, it keeps Codex's multi-agent tools off, prints
 one line saying why (`sub-agents: parent model "gpt-5.6-sol" selects
 collaboration "v2"; native sub-agents need a parent Codex resolves to
 collaboration V1, running in one context`), and the agent runs in one context.
+A `gateway/` parent runs in one context the same way, whatever its id
+(`sub-agents: parent model "gateway/gpt-5.6-luna" takes the inference gateway
+route, where native sub-agents are not supported, running in one context`):
+children would inherit the gateway provider with bare OpenAI ids it may not
+serve, and native children have not been run on that route.
 
 ## At a glance
 
@@ -208,9 +219,9 @@ collaboration V1, running in one context`), and the agent runs in one context.
 | Credentials | A runner-exchanged OpenAI WIF token in CI, or your `OPENAI_API_KEY` on the runner locally — never in the sandbox. Codex reads a placeholder from a runner-owned token file and re-reads it when the credential is refreshed ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). A `gateway/` model uses the inference gateway's credential the same way ([Models through an inference gateway](#models-through-an-inference-gateway-experimental)) |
 | Unattended | Approvals off; codex's own sandbox off, because OpenShell is the boundary. A missing credential exits before the agent starts |
 | Artifacts | `output.jsonl` (the `codex exec --json` stream), `transcripts/<agent>-<rollout>.jsonl` for the root thread and `transcripts/<agent>-sub<seq>-<role>.jsonl` for each native child (`generic` for the `default` role, which codex records as no role when the spawn names no `agent_type`; `explore` keeps its name), `metrics.json` with `runtime: codex` (and `per_model_usage` for a delegating agent), plus `codex-debug.log` with `--debug`. Only uncompressed rollouts are extracted — codex compresses older sessions, so a `.jsonl.zst` is never the run's own transcript. The agent's final message is in the stream; `--output-last-message` also drops it in the runner-owned config directory inside the sandbox, which is a convenience when inspecting a kept sandbox rather than a downloaded artifact |
-| Sub-agents | Native Codex children for an agent whose tools include `Agent`, on a parent model Codex resolves to collaboration V1, under a runner-owned policy: registered roles only, fresh context, depth one, four open; see [Sub-agents](#sub-agents) |
-| Extra knobs | `FULLSEND_CODEX_MODEL` (the runner-side model default for codex runs; see [Models](#models)), `FULLSEND_CODEX_SUBAGENT_MODEL` (the run-level child model; see [Child models](#child-models)) |
-| Not supported | `plugins:`, fallback chains, non-OpenAI providers (other than through a Responses-capable inference gateway), Chat Completions or Messages on a gateway, delegation from a parent model on collaboration V2 (see [Sub-agents](#sub-agents)) |
+| Sub-agents | Native Codex children for an agent whose tools include `Agent`, on a parent model Codex resolves to collaboration V1 on the direct route, under a runner-owned policy: registered roles only, fresh context, depth one, four open; see [Sub-agents](#sub-agents) |
+| Extra knobs | `FULLSEND_CODEX_MODEL` (the runner-side model default for codex runs; see [Models](#models)), `FULLSEND_CODEX_SUBAGENT_MODEL` (the run-level child model; the GitHub fleet workflows do not pass it; see [Child models](#child-models)) |
+| Not supported | `plugins:`, fallback chains, non-OpenAI providers (other than through a Responses-capable inference gateway), Chat Completions or Messages on a gateway, delegation from a parent model on collaboration V2 or from a `gateway/` parent (see [Sub-agents](#sub-agents)) |
 
 Cost is recorded as **zero** in `metrics.json` on codex: the
 `codex exec --json` stream carries no cost field, so the value stays `0`.
@@ -386,6 +397,11 @@ agents:
     runtime: claude
 ```
 
+**`code` and `fix` delegate too.** They declare no `tools:`, so on a V1 parent with harness security
+on they get the `default` and `explore` roles, children with the parent's shell and `apply_patch`,
+the spawn guard and the dispatch note, as `review` does. Neither has been run with native children
+yet.
+
 ## Troubleshooting
 
 **``codex preflight: `codex --version` exited 127``, or
@@ -461,7 +477,8 @@ as the same user as those files, so "did the agent write there?" is the question
 **A spawn failed the admission check.** After an iteration whose `exec --json` stream reported a
 completed `spawn_agent`, the runner compares the run's completed spawns with the spawn guard's
 `codex_spawn_guard_admit` lines in `/sandbox/workspace/.security/findings.jsonl`, and the run fails
-whatever codex's exit code. Each message says why:
+whatever codex's exit code. The overlong-item and dropped-notification messages below come before
+that comparison, whether or not the stream shows a spawn. Each message says why:
 
 ```
 codex_spawn_without_admission: 3 completed spawn(s) in this run's stream(s) but 2 recorded admission(s)
@@ -486,14 +503,24 @@ reading the spawn admissions: ...
 ```
 The findings log could not be read (the command failed or timed out), so the check could not be
 made.
+```
+codex_spawn_without_admission: codex dropped a stream notification, or its backfill of the turn's items failed or could not be checked, so a lost spawn_agent item cannot be ruled out
+```
+A delegating agent's run in which codex dropped an item notification under backpressure, its
+re-read of the turn's items failed (`thread/read failed while backfilling turn items` on stderr),
+or, under `--debug`, the runner could not read codex's log to find out. The re-read brings back only
+items codex saw start, so a spawn that lost both its notifications stays out of the stream's count,
+and an unadmitted spawn could balance it; the run fails rather than pass the check on a short
+count. Re-run.
 
 **`codex dropped N stream notification(s) under backpressure; the progress log is incomplete`.**
-A warning: codex's in-process channel filled and it dropped an item notification, which it says on
+A warning, and for a delegating agent the run then fails: codex's in-process channel filled and it dropped an item notification, which it says on
 stderr; the runner reads codex's stderr for that line on every run (under `--debug` the sandbox log
 instead). A dropped completed item comes back when the turn completes, if exec's read of the turn's
 items succeeds; when that read fails codex says so too, and the warning adds `and its backfill of
-the turn's items failed`. A spawn that lost both its notifications, or whose backfill failed, is
-not counted, and the count cannot tell those from a harmless drop. The launch sets `RUST_LOG`
+the turn's items failed`. A spawn that lost both its notifications does not come back, so a
+delegating agent's run fails on any drop (above); an agent without roles only gets the warning. The
+launch sets `RUST_LOG`
 itself, codex's default filter with `codex_exec` and `codex_app_server::in_process` at warn (`info`
 under `--debug`), replacing any value from the environment or `.env`.
 

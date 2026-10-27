@@ -380,7 +380,8 @@ func TestCodexCatalog(t *testing.T) {
 // Run will use (the run-level model, else the definition's) must translate to
 // an OpenAI id codex resolves to V1: its entry selects V1 or carries no
 // version (codex's multi_agent feature, on by default, supplies V1). A V2 or
-// unlisted parent keeps the multi-agent tools off and says why in one line.
+// unlisted parent keeps the multi-agent tools off and says why in one line,
+// and so does a gateway/ parent whatever its id.
 func TestCodexParentResolvesV1(t *testing.T) {
 	t.Parallel()
 	catalog := codexCatalog{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-5.5": "", "gpt-x": "v3"}
@@ -397,7 +398,10 @@ func TestCodexParentResolvesV1(t *testing.T) {
 		{"no multi-agent version (multi_agent supplies V1)", "", "gpt-5.5", true, ""},
 		{"unknown collaboration version", "", "openai/gpt-x", false, `parent model "gpt-x" selects collaboration "v3"`},
 		{"not in the catalog", "", "openai/gpt-5.6-nova", false, `parent model "gpt-5.6-nova" is not in the bundled catalog`},
-		{"gateway route, the id is asked of the catalog", "", "gateway/vendor/org/model", false, `parent model "vendor/org/model" is not in the bundled catalog`},
+		{"gateway route declines a listed V1 id", "", "gateway/gpt-5.6-luna", false, `parent model "gateway/gpt-5.6-luna" takes the inference gateway route`},
+		{"gateway route declines before the catalog", "", "gateway/vendor/org/model", false, `parent model "gateway/vendor/org/model" takes the inference gateway route`},
+		{"run-level OpenAI model beats a gateway definition", "openai/gpt-5.6-luna", "gateway/vendor/org/model", true, ""},
+		{"run-level gateway route beats a V1 definition", "gateway/vendor/org/model", "openai/gpt-5.6-luna", false, `parent model "gateway/vendor/org/model" takes the inference gateway route`},
 		{"claude alias does not translate", "", "opus", false, "codex takes OpenAI model ids or gateway/<model> only"},
 		{"no model at all", "", "", false, "no model was named"},
 	}

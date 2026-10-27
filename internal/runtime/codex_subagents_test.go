@@ -367,7 +367,8 @@ func TestParseCodexStream_FailedCollabItem(t *testing.T) {
 // admissions read; FULLSEND_TEST_CODEX_EXIT sets the launch's exit status (killed:
 // SIGKILL, as the budget's context kill ends it); FULLSEND_TEST_CODEX_DROP=1
 // prints codex's dropped-notification warning on stderr before the stream,
-// FULLSEND_TEST_CODEX_BACKFILL_FAIL=1 exec's failed-backfill warning.
+// FULLSEND_TEST_CODEX_BACKFILL_FAIL=1 exec's failed-backfill warning;
+// FULLSEND_TEST_DEBUG_LOG_READ_FAIL=1 makes the debug-log read exit 1.
 func fakeOpenshellCodexChildren(t *testing.T, logPath, storeDir, streamFixture, sessionsDir string) {
 	t.Helper()
 	binDir := t.TempDir()
@@ -389,6 +390,7 @@ if [ "$2" = "exec" ]; then
       if [ "${FULLSEND_TEST_ADMISSIONS_READ_FAIL:-}" = after ]; then exit 124; fi
       exit $rc ;;
     *` + codexDebugLogFile + `*)
+      if [ "${FULLSEND_TEST_DEBUG_LOG_READ_FAIL:-}" = 1 ]; then echo "fake openshell: refusing the log read" >&2; exit 1; fi
       sh -c "$(printf '%s' "$last" | sed 's#` + sandbox.SandboxWorkspace + "/" + codexDebugLogFile + `#` + filepath.Join(filepath.Dir(sessionsDir), codexDebugLogFile) + `#g')"; exit $? ;;
   esac
   exit 0
@@ -1171,19 +1173,43 @@ func TestCodexStderrDrops_CountsAcrossChunks(t *testing.T) {
 	assert.Equal(t, 1, last.Dropped, "the last line is scanned once the stream has ended")
 }
 
-// A dropped stream notification can hide a completed spawn. Nothing can
-// spawn until the multi-agent tools are switched on, so the run warns and
-// the cross-check runs on what the stream did carry.
-func TestCodexRun_DroppedNotificationWarns(t *testing.T) {
+// A dropped stream notification can hide a spawn exec's backfill does not
+// bring back (one that lost both notifications): a run without roles warns
+// and the cross-check runs on what the stream carried; a delegating run
+// fails before it.
+func TestCodexRun_DroppedNotificationFailsADelegatingRun(t *testing.T) {
 	t.Setenv("FULLSEND_TEST_CODEX_DROP", "1")
-	_, exit, out, log := runCodexWithChildren(t, "collab_spawn.ndjson", true, 3)
+	_, exit, out, log := runCodexWithChildren(t, "collab_spawn.ndjson", false, 3)
 	assert.Equal(t, 0, exit)
 	assert.Contains(t, out, "! codex dropped 1 stream notification(s) under backpressure; the progress log is incomplete")
 	assert.Equal(t, 1, strings.Count(log, codexSpawnAdmitFinding))
 
+	_, _, out, log, err := tryCodexRunWithChildren(t, "collab_spawn.ndjson", true, 3)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), codexSpawnWithoutAdmission+": codex dropped a stream notification")
+	assert.Contains(t, out, "! codex dropped 1 stream notification(s) under backpressure", "the warning still says what codex reported")
+	assert.Zero(t, strings.Count(log, codexSpawnAdmitFinding), "the cross-check is not run on a count it cannot trust")
+}
+
+// A failed backfill leaves a dropped spawn item lost, so the stream's count
+// can be short and an unadmitted spawn balance it: a delegating run fails,
+// with or without a drop line, and a run with no roles only warns.
+func TestCodexRun_FailedBackfillFailsADelegatingRun(t *testing.T) {
+	t.Setenv("FULLSEND_TEST_CODEX_DROP", "1")
 	t.Setenv("FULLSEND_TEST_CODEX_BACKFILL_FAIL", "1")
-	_, _, out, _ = runCodexWithChildren(t, "collab_spawn.ndjson", true, 3)
+	_, exit, out, _ := runCodexWithChildren(t, "collab_spawn.ndjson", false, 3)
+	assert.Equal(t, 0, exit)
 	assert.Contains(t, out, "! codex dropped 1 stream notification(s) under backpressure, and its backfill of the turn's items failed, so a dropped completed item stayed lost; the progress log is incomplete")
+
+	_, _, out, _, err := tryCodexRunWithChildren(t, "collab_spawn.ndjson", true, 3)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), codexSpawnWithoutAdmission+": codex dropped a stream notification, or its backfill of the turn's items failed or could not be checked")
+	assert.Contains(t, out, "and its backfill of the turn's items failed", "the warning still says what codex reported")
+
+	t.Setenv("FULLSEND_TEST_CODEX_DROP", "")
+	_, _, _, _, err = tryCodexRunWithChildren(t, "collab_spawn.ndjson", true, 3)
+	require.Error(t, err, "a failed backfill alone fails it too")
+	assert.Contains(t, err.Error(), codexSpawnWithoutAdmission)
 }
 
 // Under --debug codex's stderr goes to the sandbox log, which is read back.
@@ -1205,4 +1231,32 @@ func TestCodexRun_DroppedNotificationInTheDebugLog(t *testing.T) {
 	assert.Equal(t, 0, exit)
 	assert.Contains(t, out.String(), "! codex dropped 1 stream notification(s) under backpressure, and its backfill of the turn's items failed")
 	assert.Contains(t, readFileString(t, logPath), "grep -a -c -F", "the counts came from the sandbox log")
+}
+
+// Under --debug a log read that did not finish is no zero count: a run with
+// no roles warns, and a delegating run fails, since a failed backfill cannot
+// be ruled out.
+func TestCodexRun_UnreadDebugLogFailsADelegatingRun(t *testing.T) {
+	t.Setenv("FULLSEND_TEST_DEBUG_LOG_READ_FAIL", "1")
+	storeDir := t.TempDir()
+	r := CodexRuntime{}
+	seedCodexManifest(t, storeDir, r, nil)
+	sessions := writeCodexChildRollouts(t)
+	fakeOpenshellCodexChildren(t, filepath.Join(t.TempDir(), "openshell.log"), storeDir, filepath.Join("testdata", "codex", "basic_run.ndjson"), sessions)
+	params := codexChildrenRunParams
+	params.Debug = "1"
+
+	var out bytes.Buffer
+	exit, err := r.Run(context.Background(), params, ui.New(&out), time.Now(), &RunMetrics{})
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+	assert.Contains(t, out.String(), "! Could not read codex's log for dropped stream notifications: exited 1: fake openshell: refusing the log read")
+
+	d, ok := lookupRunnerHeldDigests("sb")
+	require.True(t, ok)
+	d.RoleFiles = map[string]string{"default": "d0d0", "explore": "e0e0"}
+	recordRunnerHeldDigests("sb", d)
+	_, err = r.Run(context.Background(), params, ui.New(&out), time.Now(), &RunMetrics{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), codexSpawnWithoutAdmission+": codex dropped a stream notification, or its backfill of the turn's items failed or could not be checked")
 }

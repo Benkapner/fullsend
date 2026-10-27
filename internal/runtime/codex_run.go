@@ -657,10 +657,12 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	}
 	childIDs.flush()
 	stderr.flush()
+	dropsUnread := false
 	if params.Debug != "" {
 		// Under --debug codex's stderr went to the sandbox log instead.
 		dropped, backfillFailed, derr := codexCountDroppedInLog(params.SandboxName)
 		if derr != nil {
+			dropsUnread = true
 			printer.StepWarn("Could not read codex's log for dropped stream notifications: " + redactSummary(sanitizeOutput(derr.Error())))
 		}
 		stderr.Dropped += dropped
@@ -701,16 +703,22 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	// Checked whatever the exit code: with a validation loop an iteration's
 	// non-zero exit does not fail the run; an error from Run does, and a
 	// failed read or an unread spawn item is one too, unlike the usage read
-	// above. A dropped stream notification can hide a completed spawn, but
-	// the count cannot tell one from a harmless drop (exec re-reads the
-	// turn's persisted items from the thread at turn/completed), so it stays
-	// a warning.
+	// above. A dropped stream notification can hide a completed spawn: exec's
+	// backfill at turn completion re-emits only items it saw start, so a
+	// spawn that lost both notifications, or whose backfill failed, stays out
+	// of the stream's count, and an unadmitted spawn could balance it. A
+	// delegating run therefore fails on any drop, a failed backfill, or a
+	// debug log the runner could not read; a run without roles has the
+	// multi-agent tools off and only warns.
 	if stderr.Dropped > 0 {
 		msg := fmt.Sprintf("codex dropped %d stream notification(s) under backpressure", stderr.Dropped)
 		if stderr.BackfillFailed > 0 {
 			msg += ", and its backfill of the turn's items failed, so a dropped completed item stayed lost"
 		}
 		printer.StepWarn(msg + "; the progress log is incomplete")
+	}
+	if digests.delegating() && (stderr.Dropped > 0 || stderr.BackfillFailed > 0 || dropsUnread) {
+		return exitCode, fmt.Errorf("%s: codex dropped a stream notification, or its backfill of the turn's items failed or could not be checked, so a lost spawn_agent item cannot be ruled out", codexSpawnWithoutAdmission)
 	}
 	if childIDs.UnreadSpawn {
 		return exitCode, fmt.Errorf("%s: a spawn_agent item longer than %d bytes could not be read", codexSpawnWithoutAdmission, streamBufSize)

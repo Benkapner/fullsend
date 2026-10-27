@@ -243,14 +243,18 @@ func (c *codexStderrDrops) flush() {
 // codexCountDroppedInLog counts codexDroppedNotification and
 // codexBackfillFailed in the sandbox debug log, where codex's stderr goes
 // under --debug instead of the host. A log that is missing or has no such
-// line counts zero.
+// line counts zero; a command that did not finish (the script itself always
+// exits 0) is an error, not a zero count.
 func codexCountDroppedInLog(sandboxName string) (dropped, backfillFailed int, err error) {
 	log := shellQuote(sandbox.SandboxWorkspace + "/" + codexDebugLogFile)
 	cmd := fmt.Sprintf(`command -p grep -a -c -F -e %s -- %s 2>/dev/null; command -p grep -a -c -F -e %s -- %s 2>/dev/null; true`,
 		shellQuote(codexDroppedNotification), log, shellQuote(codexBackfillFailed), log)
-	stdout, _, _, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
 	if err != nil {
 		return 0, 0, err
+	}
+	if exitCode != 0 {
+		return 0, 0, fmt.Errorf("exited %d: %s", exitCode, redactSummary(strings.TrimSpace(sanitizeOutput(stderr))))
 	}
 	counts := strings.Fields(stdout)
 	if len(counts) > 0 {
@@ -404,16 +408,14 @@ func (r CodexRuntime) foldCodexChildUsage(sandboxName string, childIDs []string,
 // would have passed, never pass one that would have failed. The stream side
 // is not that strict: codex can drop an item notification under
 // backpressure, and the completed count is then too low; it says so on its
-// stderr, which Run scans (codexStderrDrops) and warns on. A completed item
-// codex saw start comes back when the turn completes, if exec's read of the
-// turn's items succeeds; exec warns when it does not, and Run counts that
-// line too. A spawn that lost both notifications, or whose dropped
-// completed item that read did not bring back, is not counted, and the
-// count cannot tell it from a harmless drop. A resume
-// that got through appears in the stream
-// as a wait item, so it is not caught either, nor is an overlong spawn line
-// whose first bytes do not show its type and tool. Counts are compared, not
-// ids: a stream item carries no tool_use_id.
+// stderr, which Run scans (codexStderrDrops). exec's backfill at turn
+// completion re-emits only items it saw start, and exec warns when that
+// read fails, so a count after any drop or failed backfill cannot be
+// trusted: a delegating run fails on either, and a run without roles warns.
+// A resume that got through appears in the stream as a wait item, so it is
+// not caught, nor is an overlong spawn line whose first bytes do not show
+// its type and tool. Counts are compared, not ids: a stream item carries no
+// tool_use_id.
 
 // codexSpawnAdmitFinding is the adapter's SPAWN_ADMIT_FINDING.
 const codexSpawnAdmitFinding = "codex_spawn_guard_admit"
