@@ -305,6 +305,11 @@ func validateManifestManaged(m *Manifest) error {
 		if err := validateManagedBlock(p.name+".config", p.cfg.Config); err != nil {
 			return err
 		}
+		if p.name == ForgeGitHub {
+			if err := rejectGitLabOnlyInferenceKeys(p.name+".config", p.cfg.Config); err != nil {
+				return err
+			}
+		}
 		for i, entry := range p.cfg.Repos {
 			field := fmt.Sprintf("%s.repos[%d].config", p.name, i)
 			if entry.Name != "" {
@@ -312,6 +317,11 @@ func validateManifestManaged(m *Manifest) error {
 			}
 			if err := validateManagedBlock(field, entry.Config); err != nil {
 				return err
+			}
+			if p.name == ForgeGitHub {
+				if err := rejectGitLabOnlyInferenceKeys(field, entry.Config); err != nil {
+					return err
+				}
 			}
 			if err := rejectAllowlistBelowReset([]allowlistLayer{
 				{"defaults.config", m.Defaults.Config},
@@ -402,7 +412,8 @@ func validateManagedBlock(field string, o config.ManagedConfig) error {
 
 // validateManagedMintAndWIF runs the same mint_url HTTPS/userinfo gate
 // used for RepoEntry.MintURL and the CLI's validateMintURLHTTPS, plus the
-// WIF provider resource-name pattern check, on a managed-configuration
+// WIF provider resource-name pattern check and the inference.wif_audience
+// and inference.service_account format checks, on a managed-configuration
 // layer or the merged result. The same check is correct whether r is an
 // isolated layer or the merged configuration; an unset value resolves
 // through the parent chain to the code default (always a valid HTTPS mint
@@ -419,7 +430,7 @@ func validateManagedMintAndWIF(r config.PerRepoConfigReader) error {
 	if wif := r.ConfigInferenceWIFProvider(); wif != "" && !WIFProviderPattern.MatchString(wif) {
 		return fmt.Errorf("inference.wif_provider %q does not match the required resource name pattern", wif)
 	}
-	return nil
+	return validateExistingWIFOptionFormats(r.ConfigInferenceWIFAudience(), r.ConfigInferenceServiceAccount())
 }
 
 // validateDeclaredMintURL applies the mint_url HTTPS/userinfo gate to a

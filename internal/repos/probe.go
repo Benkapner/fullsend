@@ -200,11 +200,12 @@ func ProbeComponentsForAuth(ctx context.Context, client forge.Client, owner, rep
 		// Only report drift when the variable is present — these
 		// are optional, so absence is not a problem (the repo may
 		// have been installed without the corresponding flag).
-		// FULLSEND_GCP_REGION is the exception: a non-empty expected
-		// value means the effective configuration declares
-		// inference.region, so a missing variable is drift that
+		// FULLSEND_GCP_REGION and FULLSEND_GCP_SERVICE_ACCOUNT are the
+		// exceptions: a non-empty expected value means the effective
+		// configuration declares inference.region or
+		// inference.service_account, so a missing variable is drift that
 		// convergence repairs and status reports.
-		if !exists && varName == forge.VarGCPRegion {
+		if !exists && (varName == forge.VarGCPRegion || varName == forge.VarGCPServiceAccount) {
 			results = append(results, ComponentStatus{
 				Name:     "var:" + varName,
 				Present:  false,

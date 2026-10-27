@@ -45,6 +45,16 @@ type InstallConfig struct {
 	InferenceProject string
 	InferenceRegion  string
 
+	// InferenceWIFAudience is the GitLab agent job's FULLSEND_ID_TOKEN
+	// audience (config.inference.wif_audience). Empty keeps the shipped
+	// aud "fullsend". GitLab only; validated by applyEffectiveInfrastructure.
+	InferenceWIFAudience string
+
+	// InferenceServiceAccount is the service account email the GitLab
+	// agent job impersonates (config.inference.service_account), written
+	// as FULLSEND_GCP_SERVICE_ACCOUNT. Empty writes no variable. GitLab only.
+	InferenceServiceAccount string
+
 	// InferenceAuth is the repository's effective inference.auth
 	// (InferenceAuthVertexWIF, InferenceAuthOpenAIAPIKey or
 	// InferenceAuthOpenAIWIF). It selects
@@ -292,6 +302,9 @@ func Install(ctx context.Context, cfg InstallConfig,
 	if cfg.InferenceRegion != "" && !IsValidGCPRegion(cfg.InferenceRegion) {
 		return result, fmt.Errorf("invalid GCP region %q", cfg.InferenceRegion)
 	}
+	if err := validateExistingWIFOptionFormats(cfg.InferenceWIFAudience, cfg.InferenceServiceAccount); err != nil {
+		return result, err
+	}
 
 	// Validate WIF provider when Vertex inference secrets will be written.
 	if !cfg.ReuseSecrets && cfg.InferenceAuth != InferenceAuthOpenAIAPIKey && cfg.InferenceProject != "" {
@@ -483,6 +496,10 @@ func driftInstallConfig(resolved ResolvedConfig, dcfg DriftConfig) InstallConfig
 		ReviewAppClientID: dcfg.ReviewAppClientID,
 		AgentRunnerTags:   dcfg.AgentRunnerTags,
 		ControlRunnerTags: dcfg.ControlRunnerTags,
+		// The configured token audience is rendered into the GitLab agent
+		// template, so content drift compares against the rendered file.
+		InferenceWIFAudience:    resolved.DeclaredWIFAudience,
+		InferenceServiceAccount: resolved.DeclaredServiceAccount,
 	}
 }
 
@@ -638,6 +655,15 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 			Mode:    f.Mode,
 		})
 	}
+	if cfg.Forge == ForgeGitLab {
+		// Applied after collection so embedded and pinned (prebuilt)
+		// templates both carry the configured audience and are checked
+		// for service-account support.
+		files, err = applyGitLabExistingWIFTemplates(files, cfg.InferenceWIFAudience, cfg.InferenceServiceAccount)
+		if err != nil {
+			return nil, fmt.Errorf("applying GitLab existing WIF provider options: %w", err)
+		}
+	}
 	if !cfg.ManagedConfigAdoptionRequired {
 		files = append(files, forge.TreeFile{
 			Path:    ".fullsend/config.yaml",
@@ -692,6 +718,9 @@ func managedVarsForForge(cfg InstallConfig, mintURL string) ([]ManagedVar, error
 		var vars []ManagedVar
 		if cfg.InferenceRegion != "" {
 			vars = append(vars, ManagedVar{Name: forge.VarGCPRegion, Value: cfg.InferenceRegion})
+		}
+		if cfg.InferenceServiceAccount != "" {
+			vars = append(vars, ManagedVar{Name: forge.VarGCPServiceAccount, Value: cfg.InferenceServiceAccount})
 		}
 		return vars, nil
 	default:
@@ -880,16 +909,35 @@ func obsoleteInferenceSecrets(auth string) []string {
 	}
 }
 
+// obsoleteVariable is a Fullsend-managed inference variable the
+// repository's configuration does not use, with the reason reported for it.
+type obsoleteVariable struct {
+	name   string
+	reason string
+}
+
 // obsoleteInferenceVariables returns the Fullsend-managed inference
-// variables that belong to a method auth did not select. Only Vertex uses
-// FULLSEND_GCP_REGION, so it is obsolete on openai-api-key repositories.
-// Like the obsolete secrets, convergence removes it only after the
-// selected method is established.
-func obsoleteInferenceVariables(auth string) []string {
-	if auth == InferenceAuthOpenAIAPIKey {
-		return []string{forge.VarGCPRegion}
+// variables the repository's effective configuration does not use. Only
+// Vertex uses FULLSEND_GCP_REGION, so it is obsolete on openai-api-key
+// repositories. FULLSEND_GCP_SERVICE_ACCOUNT is obsolete on GitLab whenever
+// inference.service_account does not apply (see applyExistingWIFOptions):
+// a leftover variable would keep the agent job impersonating. Like the
+// obsolete secrets, convergence removes them only after the selected method
+// is established.
+func obsoleteInferenceVariables(cfg ResolvedConfig) []obsoleteVariable {
+	authReason := "inference.auth is " + cfg.InferenceAuth
+	var vars []obsoleteVariable
+	if cfg.InferenceAuth == InferenceAuthOpenAIAPIKey {
+		vars = append(vars, obsoleteVariable{name: forge.VarGCPRegion, reason: authReason})
 	}
-	return nil
+	if cfg.Forge == ForgeGitLab && cfg.DeclaredServiceAccount == "" {
+		reason := "inference.service_account is not declared"
+		if cfg.InferenceAuth != InferenceAuthVertexWIF {
+			reason = authReason
+		}
+		vars = append(vars, obsoleteVariable{name: forge.VarGCPServiceAccount, reason: reason})
+	}
+	return vars
 }
 
 // inferenceRegionForAuth returns region when auth uses Vertex and ""

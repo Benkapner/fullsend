@@ -430,6 +430,7 @@ access instead of Maintainer. See ADR 0067.
 - `FULLSEND_GCP_PROJECT_ID` — GCP project ID for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)
+- `FULLSEND_GCP_SERVICE_ACCOUNT` — service account the agent job impersonates when `inference.service_account` is declared (GitLab `vertex-wif` only); install removes it as obsolete when the key is not declared, and uninstall removes it
 - `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for projects whose `inference.auth` is `openai-api-key` (masked CI/CD variable written by `repos install --openai-api-key`; the job maps it to `OPENAI_API_KEY`, and an unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used)
 - `FULLSEND_INFERENCE_GATEWAY_API_KEY` — inference gateway API key for projects whose `inference.gateway.auth` is `api-key` (masked CI/CD variable set by the project admin; the job passes it to the runner under its own name)
 

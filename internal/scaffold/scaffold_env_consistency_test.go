@@ -25,6 +25,7 @@ func canonicalForgeEnvVars() map[string]struct{} {
 	names := []string{
 		forge.VarMintURL,
 		forge.VarGCPRegion,
+		forge.VarGCPServiceAccount,
 		forge.VarReviewClientID,
 		forge.VarLastPollAtFast,
 		forge.VarLastPollAtFull,
