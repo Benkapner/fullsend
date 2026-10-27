@@ -36,9 +36,11 @@ Each enabled `agents:` entry is resolved and composed through the same machinery
   fetched from the allowlisted hosts with caching.
 - Override-only entries (settings only, `source:` unset) resolve their harness from the
   [agents repository](https://github.com/fullsend-ai/agents), exactly as run does —
-  linting a built-in agent lints the fetched upstream harness. These cannot resolve
-  under `--offline`: the fallback needs one request to pin the revision
-  ([#8743](https://github.com/fullsend-ai/fullsend/issues/8743)).
+  linting a built-in agent lints the fetched upstream harness. Under `--offline` these
+  use the agents revision most recently cached by an online run in the same `.fullsend`
+  directory. Run that online run with the same forge (`--forge` or CI auto-detection)
+  as the offline run; otherwise the forge-specific files are not cached and the
+  offline run fails.
 - Harnesses are composed with `base:` chains, CEL-guarded overlays, and the forge
   section for the effective platform, so diagnostics see the harness as it would
   execute. Without a platform (`--forge` omitted, none in config, no CI env), the forge
