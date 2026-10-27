@@ -741,8 +741,6 @@ yourself, give the `review` entry in `.fullsend/config.yaml` a `trigger`: a
 runs in the same `Review` job; the trigger only decides whether that job
 starts.
 
-### Example: review only on `/fs-review`
-
 To stop the automatic review on every pull request but keep `/fs-review`, add
 this entry to `.fullsend/config.yaml` on your default branch:
 
@@ -757,84 +755,15 @@ agents:
       && event.actor.kind == "human"
 ```
 
-`has(event.entity.linked_change_proposal)` keeps the trigger to comments on
-pull requests. The `Route` job evaluates the review trigger for the events
-the fullsend workflow receives: a pull request opened, pushed to
-(`synchronize`), marked ready for review, labeled or unlabeled, and a `/fs-*`
-comment on a pull request from a user who is not a bot. It does so only when
-the default rules chose review or no stage, and not for a closed pull request
-or a `/fs-retro`, `/fs-triage` or `/fs-prioritize` comment (see
-[Which trigger decides](#which-trigger-decides)), so a broad trigger can start
-reviews the default rules would not. It
-never starts a review from a bot's comment.
-
-The trigger is read from your default branch, so a pull request cannot change
-its own routing. After the change merges, open a pull request: no review
-starts. Comment `/fs-review` on it: one review starts.
-
-### What opts a repository in
-
-Only a `trigger` on the `review` entry in `config.yaml` moves review routing
-to CEL:
-
-| Your configuration | Who decides |
-|---|---|
-| No `review` entry, or one with only `runtime`, `model`, `effort` or `subagents` | The dispatch workflow, as before |
-| `trigger` on the `review` entry | The trigger |
-| A `review` entry with `source:` whose harness sets or inherits `trigger:` | The dispatch workflow, as before |
-
-A harness `trigger:` field never changes when a built-in agent runs, whether
-your own harness writes it or inherits it through `base:`. To route review by
-a trigger you keep in a harness, copy the expression into the `review` entry's
-`trigger` in `config.yaml`. The kill switch and `enabled: false` on the review
-entry keep working as before. The `Route`
-job evaluates the trigger with the fullsend CLI built at the dispatch
-workflow's commit; if your workflow call pins `fullsend_version`, the `Review`
-job runs that version instead.
-
-### Known differences from the default rules
-
-A trigger is checked by the same permission gate as other CEL-dispatched
-agents: the review harness's `role: review` needs at least triage access, so
-triage-role users can start a review as before. Some cases still differ from
-the dispatch workflow's built-in rules:
-
-| Case | Default rules | Trigger |
-|---|---|---|
-| Pull request opened or pushed by a bot without a registered fullsend role | Reviewed | Not reviewed |
-| Pull request pushed by the fix agent | Reviewed | Not reviewed until [#8329](https://github.com/fullsend-ai/fullsend/issues/8329) ships, so the review → fix → re-review loop stops |
-| Who is checked when a pull request is opened, pushed to or marked ready | The pull request author | The user who sent the event |
-| A maintainer's push to an outside contributor's fork pull request | Not reviewed | Reviewed |
-
-> [!WARNING]
-> Opt in only after
-> [#8329](https://github.com/fullsend-ai/fullsend/issues/8329) ships, or
-> accept that pushes from the fix agent no longer start a re-review. Until
-> then the trigger path does not look up a bot's role.
-
-### Checking the decision
-
-When a trigger is set, the `Route` job's "Finalize stage" step logs the
-decision for each pull request and pull request comment. To catch an invalid
-trigger before it merges, see
-[Checking a trigger before you merge](#checking-a-trigger-before-you-merge).
-
-```text
-CEL route (review): bash=review cel=skip reason=trigger did not match harness=agents@3c3081741e3c
-```
-
-The job summary shows `review_route=cel` when the trigger decided, or
-`review_route=bash` when the dispatch workflow did: the kill switch is on or
-the review entry is disabled.
-
-| Log text | Meaning | Action |
-|---|---|---|
-| `cel=skip reason=trigger did not match` | The trigger left this event out | Expected for events your trigger excludes; otherwise fix the trigger |
-| `cel=skip reason=actor not authorized` | The actor failed the dispatch permission check | See [Known differences from the default rules](#known-differences-from-the-default-rules) for bots |
-| `cel=skip reason=harness unavailable; actor below write` | The review harness could not be fetched or loaded, so only write access passes | Check the route step's warning for the harness error |
-| `cel=skip reason=trigger evaluation failed: …` | The trigger compiles but failed on this event, for example it reads a field the event lacks without `has()`; this counts as no match | Guard optional fields with `has()` |
-| `CEL route failed; keeping the bash stage` | A CEL route step failed or the configuration is invalid, so the dispatch workflow decided | Open the failed "… CEL route" step for the error, for example an invalid `trigger` or another invalid `agents:` entry |
-| `invalid agent config: agents[N] (review): invalid trigger` in any agent job | The `trigger` in `config.yaml` does not compile; every agent run validates the whole `agents:` list, so all agents fail, not only review | Fix the expression in `.fullsend/config.yaml`; see [Checking a trigger before you merge](#checking-a-trigger-before-you-merge) |
+Opting in changes more than when review runs: until
+[#8329](https://github.com/fullsend-ai/fullsend/issues/8329) ships, pushes
+from the fix agent no longer start a re-review. An invalid trigger makes every
+agent run in the repository fail. Before you opt in, read
+[Choosing when review runs](cel-triggers-reference.md#choosing-when-review-runs)
+in the CEL Triggers Reference. It covers what opts a repository in, the
+differences from the default rules, how to read the decision in the `Route`
+job, and how to
+[check a trigger before you merge](cel-triggers-reference.md#checking-a-trigger-before-you-merge).
 
 ## Choosing when retro runs
 
@@ -842,15 +771,7 @@ By default, the dispatch workflow starts the retro agent when a pull request
 is closed, merged or not, and on a `/fs-retro` comment on an issue or a pull
 request. To decide it yourself, give the `retro` entry in
 `.fullsend/config.yaml` a `trigger`. The retro still runs in the same `Retro`
-job; the trigger only decides whether that job starts. What opts a repository
-in, and how to check the decision, work as for review: see
-[What opts a repository in](#what-opts-a-repository-in) and
-[Checking the decision](#checking-the-decision), with `retro` in place of
-`review` (`CEL route (retro): ...`, `retro_route=cel`). To check a retro
-trigger before you merge, see
-[Checking a trigger before you merge](#checking-a-trigger-before-you-merge).
-
-### Example: retro only on `/fs-retro`
+job; the trigger only decides whether that job starts.
 
 To stop the retro on every closed pull request but keep `/fs-retro`, add this
 entry to `.fullsend/config.yaml` on your default branch:
@@ -865,52 +786,18 @@ agents:
       && event.actor.kind == "human"
 ```
 
-After the change merges, close a pull request: no retro starts. Comment
-`/fs-retro` on it: one retro starts.
-
-The `Route` job asks the trigger only about closed pull requests and
-`/fs-retro` comments; every other event keeps the dispatch workflow's rules,
-and a bot's `/fs-retro` comment never starts a retro.
-
-### Who can start a retro
-
-A trigger decides which events start a retro, not who may start one:
-
-- **Closing a pull request:** anyone who closes or merges it, including its
-  read-only author and bots without a registered fullsend role, as with the
-  dispatch workflow. Only the retro agent gets this exception (the
-  [lifecycle-close exception](../../normative/authorization/v1/README.md#lifecycle-close-pull_request_targetclosed)).
-- **`/fs-retro`:** users with write access or above.
+For which events the trigger is asked about and who can start a retro, see
+[Choosing when retro runs](cel-triggers-reference.md#choosing-when-retro-runs)
+in the CEL Triggers Reference.
 
 ## Choosing when triage and prioritize run
 
-The triage and prioritize agents opt in the same way as review: give the
-`triage` or `prioritize` entry in `.fullsend/config.yaml` a `trigger`, and
-that trigger, not the dispatch workflow's built-in rules, decides whether the
-`Triage` or `Prioritize` job starts. The rules in
-[What opts a repository in](#what-opts-a-repository-in) apply to both, with
-`triage` or `prioritize` in place of `review`. Each agent opts in on its own: a
-`triage` trigger does not change when prioritize runs. To check either trigger
-before you merge, see
-[Checking a trigger before you merge](#checking-a-trigger-before-you-merge).
-
-A trigger only sees the events that reach the `Route` job. The workflow that
-`fullsend` installs in your repository forwards issues opened, edited and
-labeled, and comments that start with `/fs-` from people, not bots. So a
-prioritize trigger only decides `/fs-prioritize`, and on a pull request only
-`/fs-triage` asks the triage trigger.
-
-By default the dispatch workflow starts:
-
-- **Triage** when an issue is opened or edited, when the `ready-for-triage`
-  label is added to an issue, and on a `/fs-triage` comment on an issue or a
-  pull request.
-- **Prioritize** on a `/fs-prioritize` comment on an issue or a pull request.
-  The scheduled scoring run (a scheduler workflow that dispatches
-  `prioritize.yml`) does not go through this routing, so a trigger does not
-  change it.
-
-### Example: triage only on `/fs-triage`
+By default, the dispatch workflow starts triage when an issue is opened or
+edited, when the `ready-for-triage` label is added to an issue, and on a
+`/fs-triage` comment. It starts prioritize on a `/fs-prioritize` comment. To
+decide it yourself, give the `triage` or `prioritize` entry in
+`.fullsend/config.yaml` a `trigger`. Each agent opts in on its own: a `triage`
+trigger does not change when prioritize runs.
 
 To stop triaging every new or edited issue but keep `/fs-triage`, add this
 entry to `.fullsend/config.yaml` on your default branch:
@@ -926,240 +813,12 @@ agents:
       && event.actor.kind == "human"
 ```
 
-After the change merges, open an issue: no triage starts. Comment
-`/fs-triage` on it: one triage starts. The `Route` job summary shows
-`triage_route=cel`.
-
-Leave out the `ready-for-triage` label at your own cost: when the triage
-agent splits an issue, it labels each new sub-issue `ready-for-triage` so that
-the sub-issue is triaged. Keep a label arm like this one if you rely on
-splits:
-
-```text
-(event.entity.kind == "work_item"
-  && event.transition.kind == "label_changed"
-  && event.transition.label.name == "ready-for-triage"
-  && event.transition.label.action == "added")
-```
-
-### Which trigger decides
-
-The `Route` job asks one agent's trigger per event:
-
-| Event | Agent asked |
-|---|---|
-| An issue opened, edited or labeled | `triage` |
-| A pull request closed, merged or not | `retro` |
-| A pull request opened, pushed to, marked ready or labeled | `review` |
-| A `/fs-` comment that the built-in rules route to `review`, `retro`, `triage` or `prioritize` | That agent |
-| Any other `/fs-retro`, `/fs-triage` or `/fs-prioritize` comment | `retro`, `triage` or `prioritize` |
-| Any other `/fs-` comment on a pull request | `review` |
-| Any other `/fs-` comment on an issue | `triage` |
-
-An event the built-in rules route to another stage, such as `/fs-code` or the
-`ready-to-code` label, is never handed to a trigger.
-
-### Copying the built-in triage rules into a trigger
-
-To start from the built-in rules and then change them, write them as a
-trigger. Keep the `event.actor.kind == "human"` guard on opened and edited:
-it stops the triage agent's own sub-issues and edits from being triaged
-twice once bots are recognized
-([#8329](https://github.com/fullsend-ai/fullsend/issues/8329)).
-
-```yaml
-agents:
-  - name: triage
-    trigger: >-
-      (event.entity.kind == "work_item"
-        && event.transition.kind in ["opened", "edited"]
-        && event.actor.kind == "human")
-      || (event.entity.kind == "work_item"
-        && event.transition.kind == "label_changed"
-        && event.transition.label.name == "ready-for-triage"
-        && event.transition.label.action == "added")
-      || (event.entity.kind in ["work_item", "change_proposal"]
-        && event.transition.kind == "comment_added"
-        && has(event.transition.comment.command)
-        && event.transition.comment.command == "/fs-triage"
-        && event.actor.kind == "human")
-```
-
-It differs from the built-in rules in one case:
-
-| Case | Built-in rules | This trigger |
-|---|---|---|
-| An issue opened or edited by a bot, for example a sub-issue the triage agent creates | Triaged when the bot holds a collaborator role | Not triaged; the sub-issue is triaged through its `ready-for-triage` label |
-
-### Checking a trigger before you merge
-
-A `trigger` on the `review`, `retro`, `triage` or `prioritize` entry that does
-not compile, or does not return a boolean, still merges. After the merge,
-every agent run in the repository fails with `invalid agent config:
-agents[N] (<name>): invalid trigger`. To catch this before you merge, run
-[`fullsend lint`](../../cli/lint.md) from the repository root:
-
-```bash
-fullsend lint
-```
-
-If the configuration directory is not `.fullsend` in the current directory,
-pass its path:
-
-```bash
-fullsend lint --fullsend-dir <path>
-```
-
-`fullsend lint` loads `.fullsend/config.yaml`, layered over
-`.fullsend/config.base.yaml` if you have one, with the same validation agent
-runs use. It exits 1 when it finds an error.
-
-`fullsend lint` caches the agents it fetches in `.fullsend/.fullsend-cache/`.
-Add `.fullsend/.fullsend-cache/` to your `.gitignore`, or delete the directory
-before you commit.
-
-#### A valid trigger
-
-This `.fullsend/config.yaml` holds only the `review` entry from
-[Example: review only on `/fs-review`](#example-review-only-on-fs-review):
-
-```yaml
-version: "1"
-agents:
-  - name: review
-    trigger: >-
-      event.transition.kind == "comment_added"
-      && has(event.entity.linked_change_proposal)
-      && has(event.transition.comment.command)
-      && event.transition.comment.command == "/fs-review"
-      && event.actor.kind == "human"
-```
-
-```text
-$ fullsend lint
-  • Fetching agent review from fullsend-ai/agents@5144c1d561a0
-  ✓ agent review resolved from fullsend-ai/agents@main
-  ! review: warning: env.sandbox: env.sandbox coexists with host_files entry /home/user/repo/.fullsend/.fullsend-cache/resources/sha256/e2874d7d47a7a710f89ea6dcb99ae3b8c720ac06fccb7499dfddbe14f12b5ecb/content.env (dest: /sandbox/workspace/.env.d/gcp-vertex.env); env.sandbox values take precedence on key collision
-  ! review: warning: forge: forge is deprecated; use overlays with CEL when expressions instead (see ADR 0088)
-$ echo $?
-0
-```
-
-There is no `error:` line, so the trigger is valid. The entry has no `source:`,
-so `fullsend lint` fetches the `review` agent from the agents repository and
-lints it too. The two `warning:` lines come from that agent, not from your
-`config.yaml` (see [Reading the output](#reading-the-output)).
-
-#### A syntax error
-
-This `review` trigger ends with a stray `&&`:
-
-```yaml
-version: "1"
-agents:
-  - name: review
-    trigger: >-
-      event.transition.kind == "comment_added"
-      && has(event.entity.linked_change_proposal)
-      && has(event.transition.comment.command)
-      && event.transition.comment.command == "/fs-review"
-      && event.actor.kind == "human" &&
-```
-
-```text
-$ fullsend lint
-  ✗ config: error: config.yaml: agents[0] (review): invalid trigger: ERROR: <input>:1:212: Syntax error: mismatched input '<EOF>' expecting {'[', '{', '(', '.', '-', '!', 'true', 'false', 'null', NUM_FLOAT, NUM_INT, NUM_UINT, STRING, BYTES, IDENTIFIER}
- | event.transition.kind == "comment_added" && has(event.entity.linked_change_proposal) && has(event.transition.comment.command) && event.transition.comment.command == "/fs-review" && event.actor.kind == "human" &&
- | ...................................................................................................................................................................................................................^
-Error: lint found 1 error-level diagnostic(s)
-$ echo $?
-1
-```
-
-`agents[0] (review)` names the entry. `<input>:1:212` is line 1, column 212
-of the trigger as YAML reads it: the `>-` block joins the trigger into one
-line. The caret marks where parsing failed, here the end of the expression.
-
-#### A trigger that does not return a boolean
-
-This `review` trigger is a string, not a condition:
-
-```yaml
-version: "1"
-agents:
-  - name: review
-    trigger: '"opened"'
-```
-
-```text
-$ fullsend lint
-  ✗ config: error: config.yaml: agents[0] (review): invalid trigger: trigger expression must evaluate to bool, got string
-Error: lint found 1 error-level diagnostic(s)
-$ echo $?
-1
-```
-
-#### Reading the output
-
-| Output | Meaning | Action |
-|---|---|---|
-| `invalid trigger: ERROR: <input>:L:N: Syntax error: …` | The trigger does not compile; the caret marks line `L`, column `N` of the trigger as YAML reads it | Fix the expression at the caret in `.fullsend/config.yaml` |
-| `invalid trigger: trigger expression must evaluate to bool, got string` | The trigger compiles but returns a string, not `true` or `false` | Write a condition, for example `event.transition.kind == "opened"` |
-| `! Git token not available; private repo fetches may fail` | No `GH_TOKEN`, `GITHUB_TOKEN` or `gh` login was found | Nothing to fix for the public agents repository; set `GH_TOKEN` to remove the line |
-| A `warning:` line prefixed with an agent name, for example `review: warning: forge: forge is deprecated` | The warning comes from the upstream harness that an entry without `source:` resolves from the agents repository | Nothing to fix in this repository; warnings do not fail the run unless you pass `--strict` |
-
-`fullsend lint` does not evaluate triggers against events. A trigger that
-compiles but reads a field the event lacks without `has()` evaluates to an
-error at run time, which counts as no match (`cel=skip`); see the
-`Guard optional fields with has()` row in
-[Checking the decision](#checking-the-decision).
-
-#### Running the check in CI
-
-This GitHub Actions workflow runs `fullsend lint` on every pull request that
-changes `.fullsend/config.yaml` or `.fullsend/config.base.yaml`. It installs
-the CLI with the same action and `agent: __install_only__` input as
-[Building custom agents](building-custom-agents.md):
-
-```yaml
-name: Lint fullsend config
-
-on:
-  pull_request:
-    paths: ['.fullsend/config.yaml', '.fullsend/config.base.yaml']
-
-permissions:
-  contents: read
-
-jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install fullsend CLI
-        uses: fullsend-ai/fullsend@vX.Y.Z
-        with:
-          agent: __install_only__
-          version: vX.Y.Z
-
-      - name: Lint fullsend config
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: fullsend lint --fullsend-dir .fullsend
-```
-
-`fullsend lint` first ships in the release after v0.50.0. Replace both
-`vX.Y.Z` values with that release or a later one. The `version` input picks the CLI release
-the step installs, and it defaults to `latest`. If the repository vendors the
-CLI at `.fullsend/bin/fullsend`, the step uses that binary instead, so it
-must also be that release or later.
-
-An entry without `source:` makes `fullsend lint` fetch the agent from the
-agents repository, so the job needs network access; `GH_TOKEN` authenticates
-that request, and `--offline` cannot
-resolve that entry
-([#8743](https://github.com/fullsend-ai/fullsend/issues/8743)).
+This trigger leaves out the `ready-for-triage` label, which the triage agent
+adds to each sub-issue it creates when it splits an issue. For a label arm
+that keeps splits triaged, which trigger decides each event, and the built-in
+triage rules written as a trigger, see
+[Choosing when triage and prioritize run](cel-triggers-reference.md#choosing-when-triage-and-prioritize-run)
+in the CEL Triggers Reference.
 
 ## Agent dispatch authorization
 
@@ -1196,6 +855,7 @@ OWNERS files, see the
 - [Customizing Agents](customizing-overview.md) — overview of all customization approaches
 - [Harness Field Reference](../../reference/harness-reference.md) — complete harness YAML field reference, merge rules, and resource referencing
 - [Bring Your Own Agent](bring-your-own-agent.md) — building and registering custom agents from scratch
+- [CEL Triggers Reference](cel-triggers-reference.md) — writing triggers, routing the built-in review, retro, triage and prioritize agents, and checking a trigger before you merge
 - [Configuring with AGENTS.md](customizing-with-agents-md.md) — repo-level instructions for all agents
 - [Configuring with Skills](customizing-with-skills.md) — extending agents with skills
 - [Default, derived, and custom agents](default-vs-custom.md) — when does configuration cross into derived or custom agent territory?
