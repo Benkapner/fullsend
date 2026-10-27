@@ -25,7 +25,7 @@ Common configuration goals:
 | Extend the sandbox with packages | Build a custom image and set `image:` |
 | Add executables to the sandbox | Use `host_files` to copy scripts to `/sandbox/workspace/bin` |
 | Disable a built-in agent | Set `enabled: false` in `config.yaml` |
-| Control status comments | Configure `status_notifications` in `config.yaml` |
+| Control status comments | Configure [`status_notifications`](../../reference/config-reference.md#status_notifications) in `config.yaml` |
 | Teach agents your conventions | Use [AGENTS.md](customizing-with-agents-md.md) (no harness change needed) |
 | Give an agent domain knowledge | Use [skills](customizing-with-skills.md) (no harness change needed) |
 | Limit sandbox token privilege | Set `privilege_levels.runtime: read` so write tokens stay on pre/post scripts |
@@ -609,93 +609,19 @@ Reference the skill in your harness's `skills:` list. The skill is available to 
 ## Agent roles
 
 On the hosted mint, agents run as one of a **fixed** set of built-in roles.
-Each role is a GitHub App identity with a fixed permission ceiling. An agent's
-name is separate from its role — the `code` and `fix` agents both run as the
-`coder` role. To pick a role for a custom agent, or to use your own identity or
-a custom role, see [Custom Agent Identity](custom-agent-identity.md).
-
-| Role | GitHub App | Purpose |
-|------|------------|---------|
-| `fullsend` | `{org}-fullsend[bot]` | Dispatch/control |
-| `triage` | `{org}-triage[bot]` | Issue triage |
-| `coder` | `{org}-coder[bot]` | Code generation |
-| `review` | `{org}-review[bot]` | PR review |
-| `fix` | (reuses coder app) | Fix failures |
-| `retro` | `{org}-retro[bot]` | Retrospectives |
-| `prioritize` | `{org}-prioritize[bot]` | Backlog priority |
-
-**Naming conventions:**
-- App naming: `{org}-{role}`
-- Bot naming: `{org}-{role}[bot]`
-- PEM storage: GCP Secret Manager or filesystem (standalone)
-- Secret name: `fullsend-{role}-app-pem`
-
-> **Note:** The "fix" role reuses the "coder" app and PEM — no separate GitHub App or secret is created for it.
->
-> **Note:** The default deployment uses a shared vendor App (`fullsend-ai-review[bot]`). Code that gates on a review bot's identity must match the org-specific and shared vendor forms, plus `${FULLSEND_APP_SET}-review[bot]` when a custom app set is configured — see [Bot Identities](../../contributing/bot-identities.md) for details.
-
-> **Note:** Mint-only dogfood roles such as `scribe` can be registered with
-> `fullsend mint add-role` (and used via remote harness registration) but are
-> **not** valid values for the `.fullsend` `roles:` field until scaffold /
-> workflow wiring lands. Adding them under `roles:` fails config validation
-> rather than silently no-oping.
+An agent's name is separate from its role — the `code` and `fix` agents both
+run as the `coder` role. For the built-in roles and their GitHub Apps, and to
+use your own identity or a custom role, see
+[Custom Agent Identity](custom-agent-identity.md#built-in-roles). For each
+role's permissions, see [`fullsend agent` — Roles](../../cli/agent.md#roles).
 
 ## Status notifications
 
-Agent workflows post status comments on issues and PRs when they start and complete. Control this with `status_notifications` in `.fullsend/config.yaml`:
-
-```yaml
-status_notifications:
-  comment:
-    start: enabled
-    completion: enabled
-```
-
-When `status_notifications` is omitted entirely, both start and completion comments default to enabled.
-
-### Completion modes
-
-| Value | Behavior |
-|-------|----------|
-| `enabled` | Always post a completion comment (default) |
-| `on_failure` | Post when the agent fails, is cancelled, or is skipped by a pre-script; the start comment is automatically suppressed to avoid notification noise |
-| `disabled` | Never post a completion comment; silently remove the start comment |
-
-`on_failure` is useful when you want to reduce notification noise — successful runs leave no trace, but failures still surface. When `completion` is set to `on_failure`, the start comment is automatically suppressed regardless of the `start` setting, because posting and then deleting a start comment would still trigger a GitHub notification pointing to a deleted comment.
-
-In `enabled` mode (the default), a hard crash or cancellation that happens before the agent could post anything at all is also surfaced after the fact: a post-job cleanup step synthesizes an "Interrupted" comment so the run doesn't silently vanish.
-
-### Reactions
-
-As an alternative (or supplement) to comments, agents can signal status with emoji reactions. Reactions don't generate a GitHub notification, so they're a lower-noise way to show that an agent is working on something and how it turned out.
-
-```yaml
-status_notifications:
-  reaction:
-    start: enabled       # "enabled" | "disabled" (default)
-    completion: enabled  # "enabled" | "on_failure" | "disabled" (default)
-```
-
-Unlike comments, reactions default to `disabled` — they're an opt-in addition, not a default-on behavior. When `start` is enabled, a 👀 reaction is added when the agent begins.
-
-At completion, the start reaction (if any) is removed, and — depending on `completion` — replaced with an outcome reaction:
-
-| Value | Behavior |
-|-------|----------|
-| `enabled` | Always add a completion reaction: 👍 on success, 😕 on failure/cancelled/skipped |
-| `on_failure` | Add a 😕 reaction only on failure/cancelled/skipped; leave no reaction on success |
-| `disabled` | Never add a completion reaction (default) |
-
-👎 is deliberately avoided for failures — it overloads GitHub's native up/down-vote convention, so a routine agent failure could be misread as the bot disliking the issue.
-
-Because reactions carry no notification cost, `on_failure` here simply means "leave no reaction on success," with no start-suppression workaround needed.
-
-**Where the reaction lands:** for runs triggered by an issue or PR event, the reaction is added to the issue/PR itself. For runs triggered by a slash command comment (e.g. `/fs-fix`), the reaction is added to the triggering comment instead, so it's clear which command the reaction is responding to.
-
-**Known limitations:**
-
-- Reactions are currently GitHub-only. Enabling `reaction.*` on a GitLab-backed repo is silently a no-op today ([#5998](https://github.com/fullsend-ai/fullsend/issues/5998)).
-- If a run is hard-killed before it can post its completion reaction, the start reaction (👀) can be left behind indefinitely — unlike status comments, there's no out-of-process reconciler for orphaned reactions yet.
+Agent workflows post status comments, and optionally emoji reactions, on
+issues and PRs when they start and complete. Control this with
+`status_notifications` in `.fullsend/config.yaml`; see
+[`status_notifications` in the Config Reference](../../reference/config-reference.md#status_notifications)
+for the fields, completion modes, and reaction behavior.
 
 ## Disabling agents
 
