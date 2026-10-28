@@ -141,6 +141,9 @@ func runPreflightCheck(ctx context.Context, printer *ui.Printer, source, rawCmd 
 	defer preflightCancel()
 	cmd := exec.CommandContext(preflightCtx, "sh", "-c", expanded)
 	cmd.Env = buildPreflightEnv(runnerEnv, fullsendDir)
+	// Without WaitDelay, a grandchild that inherits the output pipe keeps
+	// CombinedOutput blocked past the deadline even after sh is killed.
+	cmd.WaitDelay = preflightWaitDelay
 	out, execErr := cmd.CombinedOutput()
 	if execErr != nil {
 		printer.StepFail("Preflight dependency check failed")

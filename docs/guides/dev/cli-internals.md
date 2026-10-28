@@ -194,7 +194,7 @@ fullsend
 │   ├── --registry <path>                    #   Agents measurement manifest YAML (or --agent)
 │   ├── --agent <name>                       #   Agent name for manifest resolution (managed-job form)
 │   ├── --fullsend-dir <path>                #   .fullsend dir (local manifest override + fetch cache)
-│   ├── --offline                            #   Reject network fetches (local manifest only)
+│   ├── --offline                            #   Reject network fetches (local or cached manifest)
 │   └── --out-dir <path>                     #   Output dir (default: telemetry directory)
 ├── resolve-mr-source                        # Resolve a GitLab MR's source branch, SHA, and project path
 │   ├── --project <path>                     #   GitLab project path (default: $CI_PROJECT_PATH)

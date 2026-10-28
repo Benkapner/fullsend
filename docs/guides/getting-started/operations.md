@@ -40,7 +40,7 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | Full WIF provider resource name for OIDC authentication | `projects/123456789/locations/global/...` |
 | `FULLSEND_OPENAI_API_KEY` | Repo secret | OpenAI API key for repos whose `inference.auth` is `openai-api-key`, written by `repos install --openai-api-key` (exported as `OPENAI_API_KEY`; unused when the WIF trio is set) | `sk-...` |
 | `FULLSEND_INFERENCE_GATEWAY_API_KEY` | Repo secret | Inference gateway API key for repos whose `inference.gateway.auth` is `api-key` (ADR 0138); set by the repository admin (`fullsend github set`), not by setup. A long-lived secret: prefer `auth: oidc` | — |
-| `FULLSEND_GITHUB_RUNNER_SECRETS` | Repo or org secret (optional) | JSON object of name → value for host-side scripts, read through each harness's `env.runner` ([ADR 0136](../../ADRs/0136-runner-secrets-through-one-stored-secret.md)). Set with `gh secret set`, not `fullsend github set`; see [Pass secrets to host-side scripts](../user/building-custom-agents.md#pass-secrets-to-host-side-scripts-github) | `{"JIRA_API_TOKEN":"..."}` |
+| `FULLSEND_GITHUB_RUNNER_SECRETS` | Repo or org secret (optional) | JSON object of name → value for host-side scripts, read through each harness's `env.runner` ([ADR 0136](../../ADRs/0136-runner-secrets-through-one-stored-secret.md)). Set with `gh secret set`, not `fullsend github set`; see [Pass secrets to host-side scripts](../user/bring-your-own-agent.md#pass-secrets-to-host-side-scripts-github) | `{"JIRA_API_TOKEN":"..."}` |
 
 Repositories selecting `inference.auth: openai-wif` need no inference secrets unless
 Vertex sub-agents require GCP credentials. See [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)
@@ -242,7 +242,7 @@ gcloud services enable \
 
 ## Status notifications
 
-See [Status Notifications](../user/customizing-agents.md#status-notifications) for configuring start/completion comments and reactions.
+See [`status_notifications`](../../reference/config-reference.md#status_notifications) for configuring start/completion comments and reactions.
 
 The composite action accepts seven optional inputs for status notifications and review reconciliation:
 
@@ -309,7 +309,13 @@ Local `fullsend poll` / `fullsend run --forge gitlab` against a private-CA insta
 
 ### Sandbox hosts
 
-OpenShell sandboxes do **not** inherit `CI_SERVER_TLS_CA_FILE`. That path is job-local and must not be treated as available inside the sandbox or on a remote gateway host. Agent-controlled TLS environment overrides (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`) stay blocked; see [Migrating proxy and certificate settings](../user/customizing-agents.md#migrating-proxy-and-certificate-settings) for where those settings go instead.
+OpenShell sandboxes do **not** inherit `CI_SERVER_TLS_CA_FILE`. That path is
+job-local and must not be treated as available inside the sandbox or on a
+remote gateway host. Agent-controlled TLS environment overrides
+(`SSL_CERT_FILE`, `SSL_CERT_DIR`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`) stay
+blocked; see [Migrating proxy and certificate
+settings](../../reference/harness-reference.md#migrating-proxy-and-certificate-settings)
+for where those settings go instead.
 
 The OpenShell supervisor reads a fixed list of system CA paths in the sandbox container to build upstream trust (GitLab, registries, inference) and the bundle handed to sandboxed processes. Administrators provision that trust on the **sandbox host**, independently of the job container:
 

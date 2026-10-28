@@ -295,3 +295,27 @@ func TestRunPreflightCheck_TimeoutRedactsCommand(t *testing.T) {
 	assert.NotContains(t, err.Error(), "sentinel-secret-value-77", "the command text must be redacted on timeout")
 	assert.Contains(t, err.Error(), "[REDACTED:SENTINEL_SECRET]")
 }
+
+// TestRunPreflightCheck_TimeoutBoundedWithNonExecChild covers #8861: a
+// non-exec shell child (sleep is forked, not exec'd, because a command
+// follows it) inherits the output pipe and keeps it open after the shell is
+// killed on deadline. Without cmd.WaitDelay, CombinedOutput would block until
+// the grandchild exits (~300s) instead of returning near the timeout.
+func TestRunPreflightCheck_TimeoutBoundedWithNonExecChild(t *testing.T) {
+	oldTimeout := preflightCheckTimeout
+	oldWaitDelay := preflightWaitDelay
+	preflightCheckTimeout = 50 * time.Millisecond
+	preflightWaitDelay = 100 * time.Millisecond
+	t.Cleanup(func() {
+		preflightCheckTimeout = oldTimeout
+		preflightWaitDelay = oldWaitDelay
+	})
+
+	printer := ui.New(io.Discard)
+	start := time.Now()
+	err := runPreflightCheck(context.Background(), printer, "preflight_check", "sleep 300; true", nil, "/fs/dir")
+	elapsed := time.Since(start)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check timed out")
+	assert.Less(t, elapsed, 10*time.Second, "teardown must be bounded by timeout + WaitDelay, not by the grandchild's lifetime")
+}

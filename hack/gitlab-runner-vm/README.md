@@ -316,6 +316,17 @@ whoever built the image, so the executor only accepts an image whose digest
 Fullsend itself published (step 3 below). The VM keeps no list of supported
 releases, so a newly published release needs no VM update.
 
+**Which image a project runs.** The Fullsend GitLab scaffold renders the
+runner image tag from the project's `gitlab.fullsend_ref`. A release pin
+`vX.Y.Z` (the default) runs `fullsend-runner:X.Y.Z`, so the job's OpenShell
+version changes only when the project upgrades `gitlab.fullsend_ref` and
+re-runs `fullsend repos install`, which re-renders the tag. An unset ref with
+a locally built CLI runs `latest` (moves with releases). A `main` or commit SHA
+pin runs `dev`, which follows `main` and is not supported for production. See
+[Runner image version](../../docs/guides/getting-started/configuring-gitlab.md#runner-image-version).
+`RUNNER_IMAGE` (see [Environment variables](#environment-variables)) only
+pre-pulls a warm cache; it does not choose the job image.
+
 **How the version is selected.** `prepare.sh` pulls the job image, then
 `ensure_job_openshell_gateway`:
 

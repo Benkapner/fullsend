@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 func TestReplaceShimRef(t *testing.T) {
@@ -402,6 +403,29 @@ func TestCollectGitLabUpgradeTemplates_IncludesPipelineWrapper(t *testing.T) {
 		if !strings.Contains(body, "# fullsend-ref: v0.1.0") {
 			t.Error("upgrade pipeline wrapper must carry the target version marker")
 		}
+	}
+}
+
+// Upgrading fullsend_ref re-renders the runner image tag in the same set of
+// upgrade templates, so a ref upgrade moves the image with the CLI (#8865).
+func TestCollectGitLabUpgradeTemplates_RendersRunnerImageForTarget(t *testing.T) {
+	files, err := collectGitLabUpgradeTemplates(nil, nil, "deadbeef1234567890abcdef1234567890abcdef", "v0.51.0")
+	if err != nil {
+		t.Fatalf("collectGitLabUpgradeTemplates: %v", err)
+	}
+	want := "name: " + scaffold.RunnerImageRepository + ":0.51.0\n"
+	seen := 0
+	for _, f := range files {
+		switch f.Path {
+		case fullsendAgentTemplatePath, fullsendPollTemplatePath, fullsendDispatcherTemplatePath:
+			seen++
+			if !strings.Contains(string(f.Content), want) {
+				t.Errorf("%s: want runner image %q", f.Path, want)
+			}
+		}
+	}
+	if seen != 3 {
+		t.Errorf("expected agent, poll, and dispatcher templates, saw %d", seen)
 	}
 }
 
