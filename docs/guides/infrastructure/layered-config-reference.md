@@ -508,7 +508,7 @@ The `status_notifications` field uses the same replace-if-set semantics as
 The `authorization` field is a list of authorization providers that
 supplement the default collaborator-API permission check. Native GitHub
 collaborator-API auth always runs implicitly; the list names additional
-backends. Currently one provider is supported:
+backends. Two providers are supported, `owners_file` and `jira`:
 
 - `owners_file` — the dispatch routing logic checks the repo-root
   `OWNERS` file (and `OWNERS_ALIASES` if present) before falling back
@@ -519,6 +519,14 @@ backends. Currently one provider is supported:
   an `OWNERS_ALIASES` key matches only that alias's members. A login
   equal to any alias key never matches, and nested aliases are not
   expanded.
+- `jira` — decides which Jira users may trigger agents through the
+  `jira-poll` input driver, from `write` and `triage` lists of Jira groups
+  and account IDs and a `labels` rule (`jira_editors`, the default,
+  `allowlist`, or `project_roles`) for label-added events. It applies only
+  to Jira events. Like `owners_file` it is overlay-only: it is never
+  inherited from `config.base.yaml`, so there is no base fallback. See the
+  [`authorization` field](../../reference/config-reference.md#authorization)
+  for the keys and their effects.
 
 Both the bash routing path (built-in stages) and the Go harness-dispatch
 path (custom agents) consult OWNERS. The Go path keys the threshold on the

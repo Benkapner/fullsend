@@ -341,11 +341,12 @@ func (l *JiraActorList) IsEmpty() bool {
 	return l == nil || (len(l.Groups) == 0 && len(l.Accounts) == 0)
 }
 
-// HasJiraLists reports whether the jira provider lists at least one group
-// or account. When it does, the lists are authoritative for Jira actors
-// and the Jira project role roster is not consulted for them.
+// HasJiraLists reports whether the jira provider sets a write: or triage:
+// list, even an empty one. When it does, the lists are authoritative for
+// Jira actors (an actor they do not name is denied) and the Jira project
+// role roster is not consulted for them.
 func (p *AuthorizationProvider) HasJiraLists() bool {
-	return p != nil && (!p.Write.IsEmpty() || !p.Triage.IsEmpty())
+	return p != nil && (p.Write != nil || p.Triage != nil)
 }
 
 // EffectiveJiraLabels returns the jira provider's labels: rule, defaulting
@@ -1060,6 +1061,44 @@ func (c *perRepoConfig) Validate() error {
 	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, true)
 }
 
+// ValidateAuthorization checks the authorization: providers: known provider
+// names, no duplicates, and the jira-only fields only on the jira provider.
+// Validate runs it, and runtime config loaders (the jira-poll driver and
+// harness dispatch) run it through ValidateRuntimeAuthorization, because
+// they load config without calling Validate and a mistyped provider would
+// otherwise be ignored while the permissive Jira defaults apply.
+func (c *perRepoConfig) ValidateAuthorization() error {
+	validAuthProviders := ValidAuthorizationProviders()
+	seenProviders := make(map[string]bool, len(c.Authorization))
+	for i, p := range c.Authorization {
+		if !slices.Contains(validAuthProviders, p.Provider) {
+			return fmt.Errorf("authorization[%d]: invalid provider %q: must be one of %s", i, p.Provider, strings.Join(validAuthProviders, ", "))
+		}
+		if seenProviders[p.Provider] {
+			return fmt.Errorf("authorization[%d]: duplicate provider %q", i, p.Provider)
+		}
+		seenProviders[p.Provider] = true
+		if p.Provider == AuthProviderJira {
+			if err := validateJiraProvider(p); err != nil {
+				return fmt.Errorf("authorization[%d]: %w", i, err)
+			}
+		} else if p.Write != nil || p.Triage != nil || p.Labels != "" {
+			return fmt.Errorf("authorization[%d]: write, triage and labels are only valid for provider %q", i, AuthProviderJira)
+		}
+	}
+	return nil
+}
+
+// ValidateRuntimeAuthorization runs the authorization provider checks on a
+// config loaded with LoadConfig. Readers that do not carry authorization
+// providers pass trivially.
+func ValidateRuntimeAuthorization(r ConfigReader) error {
+	if v, ok := r.(interface{ ValidateAuthorization() error }); ok {
+		return v.ValidateAuthorization()
+	}
+	return nil
+}
+
 // validateLocalFields checks the fields that do not need a resolved
 // parent chain: version, roles, create_issues, runtime,
 // status_notifications, inference provider, authorization providers,
@@ -1112,23 +1151,8 @@ func (c *perRepoConfig) validateLocalFields() error {
 			return err
 		}
 	}
-	validAuthProviders := ValidAuthorizationProviders()
-	seenProviders := make(map[string]bool, len(c.Authorization))
-	for i, p := range c.Authorization {
-		if !slices.Contains(validAuthProviders, p.Provider) {
-			return fmt.Errorf("authorization[%d]: invalid provider %q: must be one of %s", i, p.Provider, strings.Join(validAuthProviders, ", "))
-		}
-		if seenProviders[p.Provider] {
-			return fmt.Errorf("authorization[%d]: duplicate provider %q", i, p.Provider)
-		}
-		seenProviders[p.Provider] = true
-		if p.Provider == AuthProviderJira {
-			if err := validateJiraProvider(p); err != nil {
-				return fmt.Errorf("authorization[%d]: %w", i, err)
-			}
-		} else if p.Write != nil || p.Triage != nil || p.Labels != "" {
-			return fmt.Errorf("authorization[%d]: write, triage and labels are only valid for provider %q", i, AuthProviderJira)
-		}
+	if err := c.ValidateAuthorization(); err != nil {
+		return err
 	}
 	// Validate the merged view, as ValidateAgentEntries does above: a bad
 	// key in config.base.yaml must not slip through because the overlay

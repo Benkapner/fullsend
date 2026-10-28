@@ -234,6 +234,28 @@ func TestRunAuth_AccountListsMakeNoJiraCalls(t *testing.T) {
 	}
 }
 
+func TestRunAuth_EmptyConfiguredListsDenyEveryone(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleErr = errAdminOnly
+	mc.searchResult = []jira.Issue{authTestIssue("PROJ-1", now)}
+	mc.comments["PROJ-1"] = []jira.Comment{
+		authTestComment("1", "dev", "/fs-code", now.Add(-10*time.Minute)),
+	}
+
+	// The lists were configured but every entry has been removed: nobody is
+	// named, so nobody is authorized, and the project role roster (which a
+	// project Developer would pass) is not consulted.
+	p := authTestPoller(mc, newGateMatcher(harnessdispatch.AuthOptions{}), Authorization{ListsConfigured: true})
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	assertAgents(t, p, "dev")
+	if mc.roleActorsCalls != 0 {
+		t.Errorf("GetProjectRoleActors called %d times, want 0", mc.roleActorsCalls)
+	}
+}
+
 func TestRunAuth_ListGroupsCachedPerCycle(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	mc := newMockClient()

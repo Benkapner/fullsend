@@ -396,9 +396,11 @@ authorization:
   the Developers role. Set `labels: allowlist` to check label authors
   against the lists below, or `labels: project_roles` to keep the
   project-role rule described below.
-- **Slash commands and other activity, with lists.** When `write` or
-  `triage` names at least one group or account, the lists decide, and Jira
-  project roles are not read. An actor listed under `write` (by account ID,
+- **Slash commands and other activity, with lists.** When the `jira` entry
+  sets a `write` or `triage` list, the lists decide, and Jira project roles
+  are not read. A list left empty (for example after removing its last
+  entry) still counts as set, so everyone is denied; remove the `write` and
+  `triage` keys entirely to go back to project roles. An actor listed under `write` (by account ID,
   or through a listed group) can run every agent. An actor listed only under
   `triage` can run `/fs-triage`, `/fs-review`, and custom agents whose harness
   sets `role: triage` or `role: review`. Everyone else is denied. This also

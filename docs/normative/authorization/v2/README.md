@@ -69,10 +69,14 @@ admin > maintain > write > triage > read > none > external
 | | Developer | `write` |
 | | Reporter | `triage` |
 | | Guest | `read` |
-| **Jira** | Administrators | `admin` |
+| **Jira** (project roles) | Administrators | `admin` |
 | | Developers | `write` |
 | | _(other named role)_ | `read` |
 | | _(no project membership)_ | `external` |
+| **Jira** (`jira` provider lists) | listed under `write` | `write` |
+| | listed only under `triage` | `triage` |
+| | _(not listed)_ | `none` |
+| **Jira** _(role not resolved)_ | — | `none` |
 
 On GitHub the mapping source is the collaborator permission API
 (`GET /repos/{owner}/{repo}/collaborators/{username}/permission`), which
@@ -111,7 +115,15 @@ key never matches, and nested aliases are not expanded. The files are read from 
 from the default branch otherwise, so a PR cannot add its author. See the
 [`authorization` field](../../../reference/config-reference.md#authorization).
 
-On Jira the mapping source is the project's role membership roster for the
+On Jira the mapping source for each event is chosen by the `jira` provider
+under `authorization` in `.fullsend/config.yaml`
+([ADR 0152](../../../ADRs/0152-authorize-jira-poll-actors-without-project-administration.md)),
+exactly as specified in [v1](../v1/README.md#forge-native-permission-mapping):
+the provider's `write` and `triage` lists (authoritative once either list is
+set), the project role roster, or no resolved role (`none`), per event type
+and the provider's `labels` rule. The rest of this paragraph describes the
+project role roster, the source used for slash commands when no list is set.
+The roster is the project's role membership for the
 configured `--jira-project`, resolved once per poll cycle for event-backed
 dispatch. Entity-source CEL may reuse a completed
 provider-verified actor verdict across poll cycles and bound `run` checks only
@@ -1006,7 +1018,7 @@ a human rejected by either admission gate. A source event may select the field
 only through the validated trusted facts above; it cannot supply policy text.
 
 A repository can add permission sources through the `authorization`
-field (today only `owners_file`). These sources may raise the verified
+field (today `owners_file` for GitHub and `jira` for Jira events). These sources may raise the verified
 effective role used by the platform and visible to CEL; they do not change
 either minimum or bypass the gate. The current bash
 `has_repo_permission` helper and Go event and per-harness gates retain their

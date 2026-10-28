@@ -1,6 +1,7 @@
 package harnessdispatch
 
 import (
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
@@ -89,6 +90,21 @@ type AuthOptions struct {
 	// selects labels: allowlist or labels: project_roles; the poller then
 	// resolves the label author's actor.role from that source.
 	JiraLabelsRequireRole bool
+}
+
+// AuthOptionsFor derives the dispatch gate policy from the loaded config's
+// jira authorization provider: Jira label-added events keep the Edit Issues
+// exception under labels: jira_editors (the default, also when no jira
+// provider is listed) and take the role threshold under allowlist or
+// project_roles.
+func AuthOptionsFor(cfg config.ConfigReader) AuthOptions {
+	pr, ok := cfg.(config.PerRepoConfigReader)
+	if !ok {
+		return AuthOptions{}
+	}
+	return AuthOptions{
+		JiraLabelsRequireRole: pr.JiraAuthorization().EffectiveJiraLabels() != config.JiraLabelsEditors,
+	}
 }
 
 // isLabelAdded reports whether event is a label_changed transition that

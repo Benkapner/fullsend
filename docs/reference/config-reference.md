@@ -321,12 +321,13 @@ GitLab authorization
 | `triage.groups`, `triage.accounts` | Jira groups and account IDs granted the Fullsend `triage` role |
 | `labels` | How a label-added event is authorized: `jira_editors` (default), `allowlist`, or `project_roles` |
 
-- **Slash commands and other non-label events:** when `write` or `triage`
-  names at least one group or account, the lists decide. An actor listed
+- **Slash commands and other non-label events:** when the entry sets a
+  `write` or `triage` list (an empty list counts as set, so it denies
+  everyone), the lists decide. An actor listed
   under `write` gets `write`. An actor listed only under `triage` gets
   `triage`, which covers `/fs-triage`, `/fs-review`, and custom agents whose
   harness sets `role: triage` or `role: review`. Anyone else is denied. The
-  Jira project roles are not consulted. When the lists are empty, slash
+  Jira project roles are not consulted. When neither list is set, slash
   commands use the Jira project role lookup instead. That lookup needs
   Administer Projects. Other non-label events, such as an issue being opened
   or edited, are then not authorized for any agent.
@@ -347,7 +348,8 @@ for the permissions each setting needs.
 
 Default: absent (`owners_file` off; Jira as described above). The field is
 not inherited from `config.base.yaml`: each repo opts in in its own
-`config.yaml`. Unknown or duplicate providers fail config validation, and
+`config.yaml`. Unknown or duplicate providers fail config validation, and also fail
+`jira-poll` and harness dispatch at load time, and
 `write`, `triage`, and `labels` are valid only on the `jira` provider. See
 [OWNERS file authorization](../guides/user/owners-file-authorization.md)
 for an `owners_file` setup walkthrough.

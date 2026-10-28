@@ -67,8 +67,10 @@ repository opts into it:
    lists Jira groups and account IDs for the Fullsend `write` and `triage`
    roles. It also sets `labels:` to `jira_editors` (the default), `allowlist`,
    or `project_roles`. It applies only to events with `source.system: jira`.
-   When the lists name at least one group or account, they are authoritative
-   for slash commands and every other non-label event. An actor in `write`
+   When the provider sets a `write` or `triage` list (even an empty one),
+   the lists are authoritative for slash commands and every other non-label
+   event, so emptying them denies everyone rather than re-enabling the
+   project role fallback. An actor in `write`
    is `write`, an actor only in `triage` is `triage`, and anyone else is
    `none` (denied). Groups are resolved with `GET /rest/api/3/user/groups`,
    which needs only Browse users and groups, and are cached per actor per

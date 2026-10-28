@@ -778,9 +778,10 @@ authorization:
 	require.NotNil(t, m.jiraAuth)
 	assert.True(t, m.authOptions().JiraLabelsRequireRole)
 	assert.Equal(t, jirapoll.Authorization{
-		Write:  jirapoll.ActorList{Groups: []string{"devs"}},
-		Triage: jirapoll.ActorList{Accounts: []string{"acct"}},
-		Labels: config.JiraLabelsAllowlist,
+		Write:           jirapoll.ActorList{Groups: []string{"devs"}},
+		Triage:          jirapoll.ActorList{Accounts: []string{"acct"}},
+		ListsConfigured: true,
+		Labels:          config.JiraLabelsAllowlist,
 	}, jiraPollAuthorization(m.jiraAuth))
 
 	// Kill switch keeps the provider so the poller's role resolution is
@@ -805,6 +806,47 @@ authorization:
 	_, err = newCELMatcher(context.Background(), dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid labels")
+}
+
+func TestNewCELMatcher_RejectsInvalidAuthorization(t *testing.T) {
+	tests := map[string]struct {
+		yaml    string
+		wantErr string
+	}{
+		"misspelled provider": {
+			yaml:    "version: \"1\"\nauthorization:\n  - provider: jria\n    labels: allowlist\n",
+			wantErr: "invalid provider",
+		},
+		"duplicate jira provider": {
+			yaml:    "version: \"1\"\nauthorization:\n  - provider: jira\n  - provider: jira\n    labels: allowlist\n",
+			wantErr: "duplicate provider",
+		},
+		"jira-only field on another provider": {
+			yaml:    "version: \"1\"\nauthorization:\n  - provider: owners_file\n    labels: allowlist\n",
+			wantErr: "only valid for provider",
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tt.yaml), 0o644))
+			_, err := newCELMatcher(context.Background(), dir)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestJiraPollAuthorization_EmptyListsStayConfigured(t *testing.T) {
+	// A write: or triage: key keeps the lists authoritative even with no
+	// entries; omitting both leaves them unconfigured.
+	got := jiraPollAuthorization(&config.AuthorizationProvider{
+		Provider: config.AuthProviderJira,
+		Write:    &config.JiraActorList{},
+	})
+	assert.True(t, got.ListsConfigured)
+	assert.True(t, got.HasLists())
+	assert.False(t, jiraPollAuthorization(&config.AuthorizationProvider{Provider: config.AuthProviderJira}).HasLists())
 }
 
 func TestJiraPollAuthorization_NilProvider(t *testing.T) {

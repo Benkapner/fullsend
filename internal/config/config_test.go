@@ -270,6 +270,30 @@ func TestParsePerRepoConfig_JiraAuthorizationRejectsInvalid(t *testing.T) {
 	}
 }
 
+func TestValidateRuntimeAuthorization(t *testing.T) {
+	// LoadConfig does not call Validate, so ParsePerRepoConfig accepts a
+	// mistyped provider; the runtime check must reject it.
+	bad, err := ParsePerRepoConfig([]byte("authorization:\n  - provider: jria\n    labels: allowlist\n"))
+	require.NoError(t, err)
+	err = ValidateRuntimeAuthorization(bad)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid provider")
+
+	dup, err := ParsePerRepoConfig([]byte("authorization:\n  - provider: jira\n  - provider: jira\n    labels: allowlist\n"))
+	require.NoError(t, err)
+	require.Error(t, ValidateRuntimeAuthorization(dup))
+
+	ok, err := ParsePerRepoConfig([]byte("authorization:\n  - provider: jira\n    labels: allowlist\n"))
+	require.NoError(t, err)
+	assert.NoError(t, ValidateRuntimeAuthorization(ok))
+}
+
+func TestHasJiraLists_EmptyConfiguredListIsAuthoritative(t *testing.T) {
+	cfg, err := ParsePerRepoConfig([]byte("authorization:\n  - provider: jira\n    write:\n      accounts: []\n"))
+	require.NoError(t, err)
+	assert.True(t, cfg.JiraAuthorization().HasJiraLists())
+}
+
 func TestPerRepoConfigValidate_JiraAuthorization(t *testing.T) {
 	valid := &perRepoConfig{
 		Version: "1",

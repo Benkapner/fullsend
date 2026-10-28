@@ -125,8 +125,8 @@ The provider applies only to events with `source.system: jira`:
   comes from the provider's lists, and under `project_roles` from the
   project role roster.
 - **Every other event**, slash commands included, takes its role from the
-  provider's `write` and `triage` lists when they name at least one group or
-  account. The lists are then authoritative: the project role roster is not
+  provider's `write` and `triage` lists when the provider sets either list
+  (an empty list counts as set). The lists are then authoritative: the project role roster is not
   consulted. An actor named under `write` (by account ID, or by membership in
   a listed Jira group) is `write`. An actor named only under `triage` is
   `triage`. Anyone else is `none`. Group membership comes from

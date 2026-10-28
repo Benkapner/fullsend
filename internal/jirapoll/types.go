@@ -78,16 +78,23 @@ type ActorList struct {
 type Authorization struct {
 	Write  ActorList
 	Triage ActorList
+	// ListsConfigured records that the jira provider set a write: or
+	// triage: list, even an empty one. It keeps the lists authoritative
+	// (deny everyone not named) after the last entry is removed, instead of
+	// silently re-enabling the project role fallback.
+	ListsConfigured bool
 	// Labels is LabelsJiraEditors (also the meaning of ""),
 	// LabelsAllowlist, or LabelsProjectRoles.
 	Labels string
 }
 
-// HasLists reports whether the write or triage list names at least one
-// group or account. When it does, the lists are authoritative for every
-// event that does not use the label rule.
+// HasLists reports whether the jira lists are authoritative: the provider
+// configured a write or triage list (ListsConfigured), or a list names at
+// least one group or account. When it does, the lists decide every event
+// that does not use the label rule, and an actor they do not name is denied.
 func (a Authorization) HasLists() bool {
-	return len(a.Write.Groups)+len(a.Write.Accounts)+len(a.Triage.Groups)+len(a.Triage.Accounts) > 0
+	return a.ListsConfigured ||
+		len(a.Write.Groups)+len(a.Write.Accounts)+len(a.Triage.Groups)+len(a.Triage.Accounts) > 0
 }
 
 // labelMode returns Labels with the empty value resolved to

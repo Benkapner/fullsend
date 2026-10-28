@@ -439,6 +439,9 @@ func newCELMatcher(ctx context.Context, fullsendDir string) (*celMatcher, error)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
+	if err := config.ValidateRuntimeAuthorization(cfg); err != nil {
+		return nil, fmt.Errorf("invalid authorization config: %w", err)
+	}
 	var jiraAuth *config.AuthorizationProvider
 	if pr, ok := cfg.(config.PerRepoConfigReader); ok {
 		jiraAuth = pr.JiraAuthorization()
@@ -479,9 +482,10 @@ func jiraPollAuthorization(p *config.AuthorizationProvider) jirapoll.Authorizati
 		return jirapoll.ActorList{Groups: l.Groups, Accounts: l.Accounts}
 	}
 	return jirapoll.Authorization{
-		Write:  list(p.Write),
-		Triage: list(p.Triage),
-		Labels: p.EffectiveJiraLabels(),
+		Write:           list(p.Write),
+		Triage:          list(p.Triage),
+		ListsConfigured: p.Write != nil || p.Triage != nil,
+		Labels:          p.EffectiveJiraLabels(),
 	}
 }
 

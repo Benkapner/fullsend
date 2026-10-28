@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
@@ -462,4 +463,16 @@ func TestIsLifecycleCloseAuthorized(t *testing.T) {
 			assert.False(t, IsLifecycleCloseAuthorized(ev, "retro"), name)
 		}
 	})
+}
+
+func TestAuthOptionsFor(t *testing.T) {
+	parse := func(yamlText string) config.ConfigReader {
+		cfg, err := config.ParsePerRepoConfig([]byte(yamlText))
+		assert.NoError(t, err)
+		return cfg
+	}
+	assert.False(t, AuthOptionsFor(parse("version: \"1\"\n")).JiraLabelsRequireRole)
+	assert.False(t, AuthOptionsFor(parse("authorization:\n  - provider: jira\n")).JiraLabelsRequireRole)
+	assert.True(t, AuthOptionsFor(parse("authorization:\n  - provider: jira\n    labels: allowlist\n")).JiraLabelsRequireRole)
+	assert.True(t, AuthOptionsFor(parse("authorization:\n  - provider: jira\n    labels: project_roles\n")).JiraLabelsRequireRole)
 }
