@@ -1167,6 +1167,27 @@ func TestResolveTargetRef(t *testing.T) {
 		if rr.manifestRef != "" {
 			t.Errorf("manifestRef = %q, want empty (not an explicit pin)", rr.manifestRef)
 		}
+		if rr.tag != "" {
+			t.Errorf("tag = %q, want empty (a SHA pin carries no release tag)", rr.tag)
+		}
+	})
+
+	t.Run("SHA pin renders the same runner image under every CLI", func(t *testing.T) {
+		// The same manifest SHA must resolve to the same runner image
+		// whether the running CLI is the release that owns the SHA or a
+		// different one that treats it as an explicit pin.
+		const sha = "abc123def456789012345678901234567890abcd"
+		matching := resolveTargetRef(context.Background(), sha, sha, "v1.0.0", nil)
+		other := resolveTargetRef(context.Background(), sha, "other456", "v2.0.0", nil)
+		got := scaffold.ResolveRunnerImageTag(matching.ref, matching.tag)
+		// The remote renderer resolves from (resolved SHA, manifest ref).
+		want := scaffold.ResolveRunnerImageTag(other.ref, other.manifestRef)
+		if got != want {
+			t.Errorf("matching CLI runner image tag = %q, other CLI = %q; want identical", got, want)
+		}
+		if got != scaffold.RunnerImageDevTag {
+			t.Errorf("SHA pin runner image tag = %q, want %q", got, scaffold.RunnerImageDevTag)
+		}
 	})
 
 	t.Run("semver ref SHA-pinned via resolver", func(t *testing.T) {

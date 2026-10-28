@@ -255,6 +255,7 @@ func TestBuildScaffoldFiles_GitLabAgentAudience(t *testing.T) {
 	shipped, err := scaffold.GitLabPerRepoFile(fullsendAgentTemplatePath)
 	require.NoError(t, err)
 	wantDefault := strings.ReplaceAll(string(shipped), "__AGENT_RUNNER_TAGS__", scaffold.FormatRunnerTags(nil))
+	wantDefault = scaffold.RenderRunnerImageTag(wantDefault, scaffold.ResolveRunnerImageTag("", ""))
 	assert.Equal(t, wantDefault, gitlabAgentTemplate(t, defaultFiles), "an unset audience keeps the shipped template byte for byte")
 
 	cfg.InferenceWIFAudience = testExistingAudience
