@@ -491,10 +491,11 @@ iteration whose stream shows a spawn, the runner counts that iteration's spawns 
 each child once by its thread id: the `spawn_agent` items in the `exec --json` stream, completed or
 failed (each passed the guard; a spawn the guard blocks emits none, and one codex refused before a
 thread existed names no child), and the rollouts under `$CODEX_HOME/sessions` whose parent is the
-run's thread or one of its children (a file whose first line is not a `session_meta` record counts
-too). It compares the run's total with the spawn guard's `codex_spawn_guard_admit`
-lines in `/sandbox/workspace/.security/findings.jsonl`, and the run fails whatever codex's exit
-code. Each message says why:
+run's thread or one of its children (a file whose first line is empty or not a `session_meta`
+record counts too, under the thread id in its name, `rollout-<time>-<thread id>.jsonl`, the run's
+own excepted). It compares the run's total with the spawn guard's `codex_spawn_guard_admit` lines
+in `/sandbox/workspace/.security/findings.jsonl`, and the run fails whatever codex's exit code.
+Each message says why:
 
 ```
 codex_spawn_without_admission: 4 spawn(s) in this run (the stream's spawn items and the child rollouts on disk, each child counted once) but 3 recorded admission(s)
@@ -528,11 +529,12 @@ The findings log could not be read (the command failed or timed out), so the che
 made.
 
 The check cannot catch a forged admission (the findings log is agent-writable), a resume (it shows
-as a wait item), a spawn hidden from both sides (its stream items lost and its rollout deleted or
-its `session_meta` edited), a child that never started a turn (codex writes the rollout at the
-child's first recorded item), or an admission no spawn used covering a later unadmitted spawn:
-admissions are compared by count, not id, and codex can reject an admitted call before it emits an
-item (a spawn with no message, for one), or another hook can block it after the guard admitted it.
+as a wait item), a spawn hidden from both sides (its stream items lost and its rollout, or an
+ancestor's, deleted, renamed or its `session_meta` edited), a child that never started a turn
+(codex writes the rollout at the child's first recorded item), or an admission no spawn used
+covering a later unadmitted spawn: admissions are compared by count, not id, and codex can reject
+an admitted call before it emits an item (a spawn with no message, for one), or another hook can
+block it after the guard admitted it.
 
 **`codex dropped N stream notification(s) under backpressure; the progress log is incomplete`.**
 A warning: codex's in-process channel filled and it dropped a notification, of any thread, children

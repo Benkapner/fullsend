@@ -438,12 +438,12 @@ func (r CodexRuntime) foldCodexChildUsage(sandboxName string, childIDs []string,
 // says so on stderr, which Run scans (codexStderrDrops) and warns on: a lost
 // spawn item lowers the stream's count but not the rollouts'. A resume that
 // got through appears in the stream as a wait item, so it is not caught, nor
-// is a spawn hidden from both sides (its stream items lost and its rollout
-// deleted or edited), nor an overlong spawn line whose first bytes do not
-// show its type and tool. Admissions are compared by count, not id (a stream
-// item carries no tool_use_id), so an admission no spawn used (codex rejected
-// the call before it emitted an item, or another PreToolUse hook blocked it)
-// can cover a later unadmitted spawn.
+// is a spawn hidden from both sides (its stream items lost and its rollout,
+// or an ancestor's, deleted, renamed or edited), nor an overlong spawn line
+// whose first bytes do not show its type and tool. Admissions are compared
+// by count, not id (a stream item carries no tool_use_id), so an admission
+// no spawn used (codex rejected the call before it emitted an item, or
+// another PreToolUse hook blocked it) can cover a later unadmitted spawn.
 
 // codexSpawnAdmitFinding is the adapter's SPAWN_ADMIT_FINDING.
 const codexSpawnAdmitFinding = "codex_spawn_guard_admit"
@@ -460,13 +460,17 @@ const codexChildRolloutsMarker = "fullsend-rollout-heads"
 
 // codexChildRolloutsReadCommand prints, for each *.jsonl under the sessions
 // directory (recursively: codex files rollouts under YYYY/MM/DD), one line:
-// 1 or 0 for a first line that is or is not a session_meta record, then the
-// first `"id":"..."` and `"parent_thread_id":"..."` on that line, or none.
-// A child that started a turn writes rollout-<ts>-<thread id>.jsonl whose
-// first line is its session_meta, carrying parent_thread_id; a root carries
-// none (codex rust-v0.159.3). A key quoted inside a string is escaped there,
-// so it cannot match. A missing directory prints nothing; a find that fails
-// exits 3; head -c bounds each line read and the output.
+// 1 or 0 for a first line that is or is not a session_meta record, the first
+// `"id":"..."` and `"parent_thread_id":"..."` on that line, or none, and the
+// thread id in the file's name, or none. Codex names a rollout
+// rollout-<ts>-<thread id>.jsonl (with _<rollout id> after a revert), creates
+// it, and then writes its session_meta as the first line, carrying
+// parent_thread_id for a child; a root carries none (codex rust-v0.159.3). So
+// a child's file can be empty while that line waits, or start for good with
+// a fragment a failed write left (codex then writes session_meta on the next
+// line). A key quoted inside a string is escaped there, so it cannot match.
+// A missing directory prints nothing; a find that fails exits 3; head -c
+// bounds each line read and the output.
 func codexChildRolloutsReadCommand(sessionsDir string) string {
 	return fmt.Sprintf(`: %s; d=%s; [ -d "$d" ] || exit 0; files=$(command -p find "$d" -type f -name '*.jsonl') || exit 3; `+
 		`printf '%%s\n' "$files" | while IFS= read -r f; do [ -n "$f" ] || continue; `+
@@ -474,19 +478,22 @@ func codexChildRolloutsReadCommand(sessionsDir string) string {
 		`case $l in *'"type":"session_meta"'*) m=1 ;; *) m=0 ;; esac; `+
 		`i=$(printf '%%s' "$l" | command -p grep -o -e '"id":"[0-9a-f-]*"' | command -p head -n 1); `+
 		`p=$(printf '%%s' "$l" | command -p grep -o -e '"parent_thread_id":"[0-9a-f-]*"' | command -p head -n 1); `+
-		`printf '%%s %%s %%s\n' "$m" "${i:-none}" "${p:-none}"; done | command -p head -c %d`,
+		`b=${f##*/}; case $b in rollout-*.jsonl) u=${b#rollout-???????????????????-}; u=${u%%.jsonl}; u=${u%%%%_*} ;; *) u= ;; esac; `+
+		`case $u in ''|*[!0-9a-f-]*) u=none ;; esac; `+
+		`printf '%%s %%s %%s %%s\n' "$m" "${i:-none}" "${p:-none}" "$u"; done | command -p head -c %d`,
 		codexChildRolloutsMarker, shellQuote(sessionsDir), codexChildUsageMaxBytes, codexChildUsageMaxBytes)
 }
 
-// codexRolloutHead is what the read printed for one rollout file.
+// codexRolloutHead is what the read printed for one rollout file: the first
+// line's session_meta marker, id and parent, and the thread id in its name.
 type codexRolloutHead struct {
-	Meta       bool
-	ID, Parent string
+	Meta               bool
+	ID, Parent, NameID string
 }
 
-// parseCodexRolloutHeads decodes the read's output. A line that is not three
-// fields (a cut, a planted file name) counts as a head that is not a
-// session_meta record.
+// parseCodexRolloutHeads decodes the read's output. A line that is not four
+// fields is a head with nothing usable, counted with no id; a name that
+// carries no thread id has none.
 func parseCodexRolloutHeads(data []byte) []codexRolloutHead {
 	value := func(field, key string) string {
 		v, ok := strings.CutPrefix(field, `"`+key+`":"`)
@@ -501,25 +508,37 @@ func parseCodexRolloutHeads(data []byte) []codexRolloutHead {
 		if len(fields) == 0 {
 			continue
 		}
-		if len(fields) != 3 {
+		if len(fields) != 4 {
 			heads = append(heads, codexRolloutHead{})
 			continue
 		}
-		heads = append(heads, codexRolloutHead{Meta: fields[0] == "1", ID: value(fields[1], "id"), Parent: value(fields[2], "parent_thread_id")})
+		head := codexRolloutHead{Meta: fields[0] == "1", ID: value(fields[1], "id"), Parent: value(fields[2], "parent_thread_id")}
+		if codexChildUsageThreadID.MatchString(fields[3]) {
+			head.NameID = fields[3]
+		}
+		heads = append(heads, head)
 	}
 	return heads
 }
 
-// countCodexChildRollouts counts the iteration's children on disk: a file
-// whose parent is the primary thread, or a child already counted (a
-// grandchild that got past the guard), and a file whose first line is not a
-// session_meta record. A root (no parent) and a file of another parent are
-// not counted: a previous iteration's files left by a failed clear, or a
-// root the agent's own codex exec wrote under the exported CODEX_HOME. The
-// ids returned are the counted children's, for the usage fold. With a
-// primary id that is not a thread id, any file that could be a child is an
-// error rather than a count of zero.
-func countCodexChildRollouts(heads []codexRolloutHead, primary string) (int, []string, error) {
+// countCodexChildRollouts counts the iteration's children on disk, each
+// thread once: a file whose session_meta parent is the primary thread or a
+// child already counted (a grandchild that got past the guard), and a file
+// whose first line is not a session_meta record (empty, cut, unreadable, or
+// a fragment a failed write left). A head without a usable id takes the
+// thread id in its file name, so it dedupes against the stream's receivers;
+// a first line that is not a session_meta record under the primary's own
+// name is the primary's file, not a child, and a head with no id at all
+// counts on its own. Such a file's name says which thread it is, not whose
+// child, so it is a parent in the walk only when the stream's receivers
+// name it. A root (no parent) and a file of another parent are not counted:
+// a previous iteration's files left by a failed clear, or a root the agent's
+// own codex exec wrote under the exported CODEX_HOME, unless its first line
+// is empty or cut. The ids returned are the counted children's, for the
+// usage fold and the union with the stream. With a primary id that is not a
+// thread id, any file that could be a child is an error rather than a count
+// of zero.
+func countCodexChildRollouts(heads []codexRolloutHead, primary string, receivers []string) (int, []string, error) {
 	if !codexChildUsageThreadID.MatchString(primary) {
 		for _, h := range heads {
 			if !h.Meta || h.Parent != "" {
@@ -529,14 +548,29 @@ func countCodexChildRollouts(heads []codexRolloutHead, primary string) (int, []s
 		return 0, nil, nil
 	}
 	parents := map[string]bool{primary: true}
+	seen := map[string]bool{primary: true}
 	counted := make([]bool, len(heads))
-	n := 0
+	idless := 0
 	var ids []string
-	for i, h := range heads {
-		if !h.Meta {
-			counted[i] = true
-			n++
+	add := func(id string, parent bool) {
+		switch {
+		case id == "":
+			idless++
+			return
+		case !seen[id]:
+			seen[id] = true
+			ids = append(ids, id)
 		}
+		if parent {
+			parents[id] = true
+		}
+	}
+	for i, h := range heads {
+		if h.Meta {
+			continue
+		}
+		counted[i] = true
+		add(h.NameID, slices.Contains(receivers, h.NameID))
 	}
 	for changed := true; changed; {
 		changed = false
@@ -545,19 +579,23 @@ func countCodexChildRollouts(heads []codexRolloutHead, primary string) (int, []s
 				continue
 			}
 			counted[i], changed = true, true
-			n++
-			if codexChildUsageThreadID.MatchString(h.ID) && !parents[h.ID] {
-				parents[h.ID] = true
-				ids = append(ids, h.ID)
+			id := h.ID
+			if !codexChildUsageThreadID.MatchString(id) {
+				id = h.NameID
 			}
+			if id == primary {
+				id = ""
+			}
+			add(id, true)
 		}
 	}
-	return n, ids, nil
+	return len(ids) + idless, ids, nil
 }
 
-// readCodexChildRollouts runs the read and counts. Unlike the usage read, a
-// read that fails, times out or is cut is an error: this is a policy check.
-func (r CodexRuntime) readCodexChildRollouts(sandboxName, primary string) (int, []string, error) {
+// readCodexChildRollouts runs the read and counts, given the iteration's
+// stream receivers. Unlike the usage read, a read that fails, times out or
+// is cut is an error: this is a policy check.
+func (r CodexRuntime) readCodexChildRollouts(sandboxName, primary string, receivers []string) (int, []string, error) {
 	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, codexChildRolloutsReadCommand(r.codexSessionsDir()), 10*time.Second)
 	if err != nil {
 		return 0, nil, err
@@ -568,7 +606,7 @@ func (r CodexRuntime) readCodexChildRollouts(sandboxName, primary string) (int, 
 	if len(stdout) >= codexChildUsageMaxBytes {
 		return 0, nil, fmt.Errorf("the read was cut at %d bytes", codexChildUsageMaxBytes)
 	}
-	return countCodexChildRollouts(parseCodexRolloutHeads([]byte(stdout)), primary)
+	return countCodexChildRollouts(parseCodexRolloutHeads([]byte(stdout)), primary, receivers)
 }
 
 // codexSpawnAdmissionsReadCommand prints the findings log's lines that name

@@ -1354,26 +1354,28 @@ the handler and emits none, `core/src/tools/registry.rs`; a spawn refused at the
 at `reserve_spawn_slot` after the guard admitted it and names no child), counted by their receiver
 ids plus the items that name none; and the rollouts under the sessions directory whose
 `session_meta` parent is the primary thread or a counted child, plus any file whose first line is
-not a `session_meta` record. A child writes its rollout at its first recorded item, so a
-spawn the stream lost is still counted; a previous iteration's files and a root the agent's own
-`codex exec` writes under `CODEX_HOME` are not. The run fails (`codex_spawn_without_admission`) on
-a shortfall, a spawn not sent by the primary thread, a spawn item too long to read, an unknown
-primary thread id with a child-shaped rollout present, or a failed read of either side. The count
-spans the run's iterations, so `ClearIterationArtifacts` must leave `.security/` in place (it
-clears `output/`, the sessions directory and the debug log, nothing else under the workspace). The
-usage fold reads the union of the stream's children and the children on disk. Codex can drop a
-stream notification under backpressure, of any thread, and says so on stderr: the launch sets
-`RUST_LOG` outright after `.env` (codex's default filter with `codex_exec` and
-`codex_app_server::in_process` at warn; codex's commands inherit it), and the runner scans that
-stderr on the host (the sandbox log under `--debug`) and warns on the line and on exec's warning
-that its `thread/read` backfill of the turn's items failed. Drops stay warnings, as #8712 settled:
-most drops hide no spawn. The check cannot catch a forged admission (the log is
-agent-writable), a resume (a `wait` item in the stream), a spawn hidden from both sides (stream
-items lost and the rollout deleted or its `session_meta` edited), a child that never recorded an
-item, or a surplus admission covering a later spawn (counts, not ids): codex can reject an admitted
-call before it emits an item (`parse_collab_input` on a spawn with no message, or
-`prepare_agent_spawn_config` after `item.started`), and another PreToolUse hook running beside the
-guard can block a call the guard admitted.
+empty or not a `session_meta` record, under the thread id in its name, the run's own excepted; such
+a file is a parent only when the stream names it. A child writes its rollout at its first recorded
+item, so a spawn the stream lost is still counted; a previous iteration's files and a root the
+agent's own `codex exec` writes under `CODEX_HOME` are not, unless their first line is empty or
+cut. The run fails (`codex_spawn_without_admission`) on a shortfall, a spawn not sent by the
+primary thread, a spawn item too long to read, an unknown primary thread id with a child-shaped
+rollout present, or a failed read of either side. The count spans the run's iterations, so
+`ClearIterationArtifacts` must leave `.security/` in place (it clears `output/`, the sessions
+directory and the debug log, nothing else under the workspace). The usage fold reads the union of
+the stream's children and the children on disk. Codex can drop a stream notification under
+backpressure, of any thread, and says so on stderr: the launch sets `RUST_LOG` outright after
+`.env` (codex's default filter with `codex_exec` and `codex_app_server::in_process` at warn;
+codex's commands inherit it), and the runner scans that stderr on the host (the sandbox log under
+`--debug`) and warns on the line and on exec's warning that its `thread/read` backfill of the
+turn's items failed. Drops stay warnings, as #8712 settled: most drops hide no spawn. The check
+cannot catch a forged admission (the log is agent-writable), a resume (a `wait` item in the
+stream), a spawn hidden from both sides (stream items lost and the rollout, or an ancestor's,
+deleted, renamed or its `session_meta` edited), a child that never recorded an item, or a surplus
+admission covering a later spawn (counts, not ids): codex can reject an admitted call before it
+emits an item (`parse_collab_input` on a spawn with no message, or `prepare_agent_spawn_config`
+after `item.started`), and another PreToolUse hook running beside the guard can block a call the
+guard admitted.
 
 **PATH is pinned across `.env` for the same reason the interpreter is.** The hook scripts resolve
 their tools by name — `tirith_check.py` runs a bare `tirith` — so a `.env` that prepends a directory

@@ -689,7 +689,7 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	diskChildren, diskIDs := 0, []string(nil)
 	var rolloutsErr error
 	if checkSpawns {
-		diskChildren, diskIDs, rolloutsErr = r.readCodexChildRollouts(params.SandboxName, primaryThreadID)
+		diskChildren, diskIDs, rolloutsErr = r.readCodexChildRollouts(params.SandboxName, primaryThreadID, childIDs.Receivers)
 	}
 	foldIDs := slices.Compact(slices.Sorted(slices.Values(slices.Concat(childIDs.IDs, diskIDs))))
 

@@ -73,10 +73,15 @@ base. The disk side of the cross-check rests on four more: a PreToolUse block re
 tool handler runs, so a blocked spawn creates no thread and emits no item
 (`codex-rs/core/src/tools/registry.rs`); a spawn refused at the thread limit fails at
 `reserve_spawn_slot` before any thread exists (`codex-rs/core/src/agent/control/spawn.rs`); a
-child's rollout is `sessions/YYYY/MM/DD/rollout-<ts>-<thread id>.jsonl`, created at its first
-recorded item, with a first line that is its `session_meta` carrying `parent_thread_id`
-(`codex-rs/rollout/src/rollout_file_name.rs`); and in an exec run with approvals off and memories
-off by default only the root and its spawned children write rollouts there.
+child's rollout is `sessions/YYYY/MM/DD/rollout-<ts>-<thread id>.jsonl` (`_<rollout id>` appended
+after a `thread/revert`; `codex-rs/rollout/src/rollout_file_name.rs`), created at its first
+recorded item before its first line is written; that line, a `session_meta` carrying
+`parent_thread_id`, waits on git info, and a failed write leaves the file empty until a retry or
+with a cut first line for good (codex ends the fragment and writes `session_meta` on the next
+line), so the name is the identity of a file without a usable first line
+(`codex-rs/rollout/src/recorder.rs`: `write_pending_once`, `write_session_meta`,
+`ensure_rollout_is_newline_terminated`); and in an exec run with approvals off and memories off by
+default only the root and its spawned children write rollouts there.
 
 Top-level `ThreadEvent` — serde `tag = "type"`, the variant payload flattened
 next to it:
