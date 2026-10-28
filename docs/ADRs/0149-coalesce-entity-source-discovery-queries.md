@@ -23,7 +23,7 @@ queries must be combined, and matching a source is required both to find a
 candidate and to let a harness act on it.
 [ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md) still governs
 poll and bound-run lifecycles. This ADR adds a local source check before each
-sandbox cycle for a source-backed harness.
+sandbox cycle for an entity-driven harness.
 
 ## Context
 
@@ -59,8 +59,8 @@ can combine without missing matches and check locally.
 For each discovery cycle and source scope, `fullsend poll` MUST run one
 combined logical search for candidates matching any enabled harness
 entity-source query in that scope. A scope includes the provider, tenant,
-repository or project, entity kind, and effective credential scope. Keep the
-trusted scope guard separate from the harness queries; neither a query nor
+repository or project, entity kind, and effective credential scope. This keeps
+the trusted scope guard separate from the harness queries; neither a query nor
 their combination may widen it. Before routing each result, `poll` MUST verify
 its canonical scope. Pagination and coverage partitions may split the work
 within this one search, but `poll` MUST NOT run a separate full search for each
@@ -81,7 +81,7 @@ query matches for CEL evaluation. If it cannot tell whether a query matches,
 never counts as a non-match. Discovery and routing need not fetch every entity
 field or history needed for the final CEL check.
 
-Before each sandbox cycle for a source-backed harness, bound `run` reads the
+Before each sandbox cycle for an entity-driven harness, bound `run` reads the
 current entity facts and checks both source membership and harness CEL locally.
 This also applies to cycles started by an event or wakeup. The checks may run
 in either order, but both MUST be true before a sandbox starts. A verified
@@ -90,17 +90,21 @@ authorization check; it cannot skip the source query. A stale search result
 does not prove current membership. If membership is unknown, do not start a
 sandbox; keep a retry or rediscovery path.
 
-Before a query uses actor-originated facts, those facts MUST pass the
-harness-stage authorization required for action-indicating facts before CEL.
-A provider filter MUST NOT exclude an entity that could match after
-unauthorized facts are removed locally, including when the query negates a
-condition. This ADR keeps the rules in
-[ADR 0098](0098-entity-first-harness-evaluation.md) and the
-[Authorization Contract v1](../normative/authorization/v1/README.md): before
-CEL runs, the system still collects the full set of action-indicating facts,
-checks every actor's current permission, and keeps the required audit. A query
-check that does not run CEL may stop when it proves there is no match, but it
-cannot use unverified actor facts to prove that.
+Before a query uses actor-originated facts, it MUST apply the actor-admission
+rules for entity-source CEL in
+[ADR 0147](0147-evaluate-entity-cel-over-selectively-acquired-data.md) and
+[Authorization Contract v2](../normative/authorization/v2/README.md). This
+includes the platform floor and harness minimum for decision-relevant facts,
+current source-revision attribution, and eligible verified role evidence under
+[ADR 0148](0148-reuse-verified-actor-roles-for-entity-cel.md). A provider
+filter MUST NOT exclude an entity that could match after facts excluded from
+that harness's authorized view are removed locally, including when the query
+negates a condition. Discovery may acquire only the facts needed to establish
+source membership, with enough coverage to decide a match; unresolved data
+cannot prove a non-match. ADR 0147 and Authorization Contract v2 govern
+selective acquisition, coverage, decision evidence, and unresolved-candidate
+retry. A query check that does not run CEL may stop when it proves there is no
+match, but it cannot use unverified actor facts to prove that.
 
 The combined search must not miss candidates because of pagination, provider
 result caps, delayed indexing, or concurrent changes. Reaching the last page
@@ -115,7 +119,7 @@ change.
 Entity-source discovery cannot be enabled until there is a versioned normative
 query protocol. It must define source declarations, allowed operators, routing
 facts, provider mappings and limits, pagination, coverage evidence, and
-conformance cases. Source-backed execution cannot be enabled until a new major
+conformance cases. Entity-driven execution cannot be enabled until a new major
 authorization contract under
 [ADR 0015](0015-normative-specifications-directory.md) defines the
 source-query admission gate and actor evidence. This ADR leaves query syntax
@@ -138,5 +142,5 @@ entity source are unaffected.
   checked locally. Harness CEL remains a separate condition.
 - Partial scans and uncertain results stay visible and retryable; they cannot
   silently drop candidates or start a sandbox.
-- For source-backed harnesses, event-backed runs also reject entities that no
+- For entity-driven harnesses, event-backed runs also reject entities that no
   longer match the source query and still check the event actor's authorization.
