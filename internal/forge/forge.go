@@ -47,6 +47,12 @@ const (
 	VarReviewClientID = "FULLSEND_REVIEW_CLIENT_ID"
 	VarAppSet         = "FULLSEND_APP_SET"
 
+	// VarGCPServiceAccount is the GitLab CI/CD variable naming the
+	// service account the agent job impersonates for Vertex inference
+	// (config.inference.service_account). Written only when configured;
+	// unset keeps direct federated identity.
+	VarGCPServiceAccount = "FULLSEND_GCP_SERVICE_ACCOUNT"
+
 	// User-managed OpenAI Workload Identity identifier variables.
 	VarOpenAIAudience           = "FULLSEND_OPENAI_AUDIENCE"
 	VarOpenAIIdentityProviderID = "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID"
@@ -54,7 +60,8 @@ const (
 
 	// Retired GitLab poller state variables. Superseded by HMAC-signed
 	// state.json on fullsend-poll-state-slash / fullsend-poll-state-events.
-	// Install no longer seeds them; converge migrate-then-deletes them.
+	// Install and converge neither seed nor migrate them; uninstall
+	// deletes any leftovers.
 	VarLastPollAtFast     = "FULLSEND_LAST_POLL_AT_FAST"
 	VarLastPollAtFull     = "FULLSEND_LAST_POLL_AT_FULL"
 	VarLabelState         = "FULLSEND_LABEL_STATE"
@@ -147,6 +154,13 @@ const (
 	// GitLabDispatchRouteAPI is the VarGitLabDispatchRoute value that keeps
 	// the Poller-credential pipelines API dispatch route.
 	GitLabDispatchRouteAPI = "api"
+	// VarGitLabAnalystUserID is the job-local numeric GitLab user ID of the
+	// registered Analyst identity, which the GitLab poll and dispatcher job
+	// scripts resolve with the Analyst credential before blanking it and
+	// export for `fullsend poll` (#8807). It is never a CI/CD variable.
+	// Unset means unknown: no changes-requested marker reaches the fix
+	// stage.
+	VarGitLabAnalystUserID = "FULLSEND_GITLAB_ANALYST_USER_ID"
 
 	// VarGitLabRoleRegistry is the administrator-controlled GitLab role
 	// registry (JSON policy and credential *references*, never raw
@@ -564,6 +578,13 @@ type Issue struct {
 	Body   string
 	URL    string
 	Labels []string
+	// State is "open" or "closed". It is only populated by GetIssue;
+	// other issue reads leave it empty.
+	State string
+	// StateReason is GitHub's state_reason: "completed", "not_planned"
+	// or "duplicate" for a closed issue, "reopened" or empty otherwise.
+	// GitLab does not report one. Only populated by GetIssue.
+	StateReason string
 }
 
 // IssueComment represents a comment on an issue.
@@ -1306,9 +1327,6 @@ type Client interface {
 	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
 	// GetPipelineSchedule includes variables omitted by GitLab's list endpoint.
 	GetPipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) (*PipelineSchedule, error)
-	// DeletePipelineScheduleVariable deletes one schedule-level variable from
-	// an existing pipeline schedule. GitHub returns ErrNotSupported.
-	DeletePipelineScheduleVariable(ctx context.Context, owner, repo string, scheduleID int64, key string) error
 	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
 	// UpdatePipelineSchedule sets whether an existing pipeline schedule is
 	// active. Used to reactivate required GitLab schedules that exist but

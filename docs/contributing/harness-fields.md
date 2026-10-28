@@ -42,34 +42,34 @@ These fields can appear at the harness top level (as defaults) and inside
 
 ### Fields that stay at top level only
 
-These fields are platform-neutral and cannot be overridden per-forge or
-per-overlay:
+These fields cannot be overridden per-forge or per-overlay. A key for one of
+them under `forge:` or `overlays:` is ignored, not an error:
 
 | Field              | Rationale                                          |
 |--------------------|----------------------------------------------------|
-| `agent`            | Agent definitions are forge-agnostic               |
-| `model`            | Model selection is independent of forge             |
-| `image`            | Container images are platform-neutral              |
+| `agent`            | Agent definition                                   |
+| `model`            | Model selection                                    |
+| `image`            | Container image                                    |
 | `api_servers`      | REST proxies abstract forge details                |
-| `plugins`          | Plugin directories are forge-agnostic; each entry is a local path or a pinned URL and keeps its own `env`/`pi` options (ADR-0038, ADR-0094). **Top level only** — not a `ForgeConfig` field, so it is not settable under `forge:` or `overlays:` (a `plugins:` key there is ignored, not an error) |
-| `agent_input`      | Agent prompt input is forge-agnostic               |
-| `timeout_minutes`  | Timeouts are operational, not forge-specific        |
-| `sandbox_timeout_seconds` | Sandbox-level timeout, not forge-specific   |
-| `security`         | Security scanning is forge-agnostic                |
+| `plugins`          | Plugin directories; each entry is a local path or a pinned URL and keeps its own `env`/`pi` options (ADR-0038, ADR-0094) |
+| `agent_input`      | Agent prompt input                                 |
+| `timeout_minutes`  | Run timeout                                        |
+| `sandbox_timeout_seconds` | Sandbox-level timeout                       |
+| `security`         | Security scanning                                  |
 | `allowed_remote_resources` | URL allowlist for resource fetching (ADR 0038) |
 | `description`      | Documentation, no runtime effect                   |
-| `role`             | Agent identity is forge-agnostic                   |
+| `role`             | Agent identity                                     |
 | `slug`             | Kept top-level; per-forge slug differences handled via `base` composition |
-| `base`             | Composition is a structural concern, not forge-specific |
+| `base`             | Composition is a structural concern                |
 | `doc`              | Documentation path, no runtime effect              |
-| `effort`           | Effort level is operational, not forge-specific     |
-| `readonly_repo`    | Repo access mode is forge-agnostic                 |
-| `allow_runtime_fetch` | Runtime fetch opt-in is forge-agnostic          |
-| `max_runtime_fetches` | Fetch cap is operational, not forge-specific     |
-| `trigger`          | CEL trigger expression is evaluated against normalized events, not forge-specific (ADR-0061) |
-| `privilege_levels` | Mint privilege per run-stage is forge-agnostic (ADR-0073). **Top level only** — not a `ForgeConfig` field |
-| `schema_version`   | Schema contract version, forge-agnostic (ADR-0127); absent = version `1`. **Planned, not yet implemented** |
-| `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Planned, not yet implemented** |
+| `effort`           | Effort level                                       |
+| `readonly_repo`    | Repo access mode                                   |
+| `allow_runtime_fetch` | Runtime fetch opt-in                            |
+| `max_runtime_fetches` | Fetch cap                                       |
+| `trigger`          | CEL trigger expression, evaluated against normalized events (ADR-0061) |
+| `privilege_levels` | Mint privilege per run-stage (ADR-0073)            |
+| `schema_version`   | Schema contract version (ADR-0127); absent = version `1`. **Planned, not yet implemented** |
+| `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Planned, not yet implemented** ([#8722](https://github.com/fullsend-ai/fullsend/issues/8722)) |
 
 ## Semantic types (ADR 0127)
 
@@ -84,7 +84,7 @@ references are scalar values, not shell commands.
 
 | Semantic type | Meaning | Fields |
 |---|---|---|
-| inline command | Executed via `sh -c` on the host, not resource-resolved | `validation_loop.preflight_check`; top-level `preflight_check` (planned) |
+| inline command | Executed via `sh -c` on the host against the allowlisted preflight environment (credential-safe), not resource-resolved | `validation_loop.preflight_check`; top-level `preflight_check` (planned) |
 | runtime local path | Path to a file or directory in the local configuration, not a command | `pre_script`, `post_script`, `validation_loop.script`, `validation_loop.schema`, `agent_input` (directory), `host_files[].src` (host path, optional `${VAR}` expansion), `api_servers[].script` (path resolved, server startup planned) |
 | resource reference | Local path or pinned URL resolved/fetched as applicable | `agent`, `base`, `policy`, `skills[].source`, `plugins[].path`, `openshell.profiles[]`; `providers[]` has additional identifier semantics below |
 | skill override | Key is a path within the skill; value is a local file, pinned URL, or `null` to remove the file | `skills[].overrides[<path>]` |

@@ -1239,11 +1239,12 @@ func (f *FakeClient) CreateCrossRepoChangeProposal(_ context.Context, baseOwner,
 
 	f.proposalCounter++
 	cp := ChangeProposal{
-		URL:    fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", baseOwner, baseRepo, f.proposalCounter),
-		Title:  title,
-		Number: f.proposalCounter,
-		Head:   headOwner + ":" + headBranch,
-		Base:   baseBranch,
+		URL:      fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", baseOwner, baseRepo, f.proposalCounter),
+		Title:    title,
+		Number:   f.proposalCounter,
+		Head:     headOwner + ":" + headBranch,
+		HeadRepo: headOwner + "/" + headRepo,
+		Base:     baseBranch,
 	}
 	f.CreatedProposals = append(f.CreatedProposals, cp)
 	return &cp, nil
@@ -2760,7 +2761,7 @@ func (f *FakeClient) CreatePipelineScheduleWithActive(_ context.Context, owner, 
 		Cron:         cron,
 		CronTimezone: "UTC",
 		Active:       active,
-		Variables:    maps.Clone(variables), // DeletePipelineScheduleVariable edits the stored map in place
+		Variables:    maps.Clone(variables), // stored copy, independent of the caller's map
 	}
 	rec := s
 	rec.Variables = maps.Clone(variables) // separate copy so the log keeps what the caller sent
@@ -2813,21 +2814,6 @@ func (f *FakeClient) GetPipelineSchedule(_ context.Context, owner, repo string, 
 		}
 	}
 	return nil, ErrNotFound
-}
-
-func (f *FakeClient) DeletePipelineScheduleVariable(_ context.Context, owner, repo string, scheduleID int64, key string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if err := f.err("DeletePipelineScheduleVariable"); err != nil {
-		return err
-	}
-	for _, schedule := range f.PipelineSchedules[owner+"/"+repo] {
-		if schedule.ID == scheduleID {
-			delete(schedule.Variables, key)
-			return nil
-		}
-	}
-	return ErrNotFound
 }
 
 func (f *FakeClient) UpdatePipelineSchedule(_ context.Context, owner, repo string, scheduleID int64, active bool) error {

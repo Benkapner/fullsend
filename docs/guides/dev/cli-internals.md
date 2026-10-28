@@ -107,6 +107,11 @@ fullsend
 │   │   └── --effort <level>                 #   Effort level for this agent
 │   ├── update       <name> [sha]             # Re-pin URL agent or local harness base
 │   └── remove       <name>                   # Unregister agent from config
+├── lint                                      # Lint config.yaml and harness definitions
+│   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
+│   ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
+│   ├── --strict                             #   Exit non-zero on warning-level diagnostics
+│   └── --offline                            #   Reject network fetches
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml
 │   ├── --all                                #   Lock all harnesses in the harness directory
 │   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
@@ -189,7 +194,7 @@ fullsend
 │   ├── --registry <path>                    #   Agents measurement manifest YAML (or --agent)
 │   ├── --agent <name>                       #   Agent name for manifest resolution (managed-job form)
 │   ├── --fullsend-dir <path>                #   .fullsend dir (local manifest override + fetch cache)
-│   ├── --offline                            #   Reject network fetches (local manifest only)
+│   ├── --offline                            #   Reject network fetches (local or cached manifest)
 │   └── --out-dir <path>                     #   Output dir (default: telemetry directory)
 ├── resolve-mr-source                        # Resolve a GitLab MR's source branch, SHA, and project path
 │   ├── --project <path>                     #   GitLab project path (default: $CI_PROJECT_PATH)

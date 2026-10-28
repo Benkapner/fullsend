@@ -1708,7 +1708,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 			if !p.modeOnly {
 				createdSHA, err := c.createBlobForFile(ctx, owner, repo, f)
 				if err != nil {
-					return false, fmt.Errorf("create blob for %s: %w", f.Path, err)
+					return false, fmt.Errorf("create blob for %s: %w", f.Path, wrapForbidden(err))
 				}
 				blobSHAValue = createdSHA
 			}
@@ -1732,7 +1732,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isStaleTreeSHAError(apiErr) {
 			return false, fmt.Errorf("create tree: %w: %w", forge.ErrNonFastForward, err)
 		}
-		return false, fmt.Errorf("create tree: %w", err)
+		return false, fmt.Errorf("create tree: %w", wrapForbidden(err))
 	}
 	var newTree struct {
 		SHA string `json:"sha"`
@@ -1754,7 +1754,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isStaleTreeSHAError(apiErr) {
 			return false, fmt.Errorf("create commit: %w: %w", forge.ErrNonFastForward, err)
 		}
-		return false, fmt.Errorf("create commit: %w", err)
+		return false, fmt.Errorf("create commit: %w", wrapForbidden(err))
 	}
 	var newCommit struct {
 		SHA string `json:"sha"`
@@ -1784,7 +1784,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 				return false, fmt.Errorf("update ref: %w: %w", forge.ErrNonFastForward, err)
 			}
 		}
-		return false, fmt.Errorf("update ref: %w", err)
+		return false, fmt.Errorf("update ref: %w", wrapForbidden(err))
 	}
 	refUpdateResp.Body.Close()
 
@@ -2372,12 +2372,26 @@ func (c *LiveClient) CompareCommits(ctx context.Context, owner, repo, base, head
 	return cmp.Status, nil
 }
 
+// wrapForbidden marks a 403 APIError that is not a rate-limit response as
+// forge.ErrForbidden while keeping the underlying APIError in the chain. Other
+// errors are returned unchanged. CreateBranch, CreateBranchFromSHA,
+// CreateChangeProposal and the Git Data steps of commitFilesTo (blob, tree,
+// commit and ref update) use it so a throttled 403 is not reported as a
+// missing permission.
+func wrapForbidden(err error) error {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden && !IsRateLimitError(err) {
+		return fmt.Errorf("%w: %w", forge.ErrForbidden, err)
+	}
+	return err
+}
+
 // CreateBranch creates a new branch from the repository's default branch.
 func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName string) error {
 	// Step 1: Get the default branch name.
 	repoResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
 	if err != nil {
-		return fmt.Errorf("get repo for default branch: %w", err)
+		return fmt.Errorf("get repo for default branch: %w", wrapForbidden(err))
 	}
 	var repoInfo struct {
 		DefaultBranch string `json:"default_branch"`
@@ -2389,7 +2403,7 @@ func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName s
 	// Step 2: Get the SHA of the default branch.
 	refResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, repoInfo.DefaultBranch))
 	if err != nil {
-		return fmt.Errorf("get ref for default branch: %w", err)
+		return fmt.Errorf("get ref for default branch: %w", wrapForbidden(err))
 	}
 	var ref struct {
 		Object struct {
@@ -2407,11 +2421,7 @@ func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName s
 	}
 	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/refs", owner, repo), payload)
 	if err != nil {
-		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {
-			return fmt.Errorf("%w: %w", forge.ErrForbidden, err)
-		}
-		return fmt.Errorf("create branch %s: %w", branchName, err)
+		return fmt.Errorf("create branch %s: %w", branchName, wrapForbidden(err))
 	}
 	resp.Body.Close()
 	return nil
@@ -2428,11 +2438,7 @@ func (c *LiveClient) CreateBranchFromSHA(ctx context.Context, owner, repo, branc
 	}
 	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/refs", owner, repo), payload)
 	if err != nil {
-		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {
-			return fmt.Errorf("%w: %w", forge.ErrForbidden, err)
-		}
-		return fmt.Errorf("create branch %s from SHA: %w", branchName, err)
+		return fmt.Errorf("create branch %s from SHA: %w", branchName, wrapForbidden(err))
 	}
 	resp.Body.Close()
 	return nil
@@ -2445,15 +2451,24 @@ func (c *LiveClient) DeleteBranch(ctx context.Context, owner, repo, branchName s
 }
 
 // DeleteRef deletes a git ref (e.g., "heads/my-branch", "tags/v1.0").
-// Returns forge.ErrNotFound (wrapped) if the ref does not exist.
+// Returns forge.ErrNotFound (wrapped) if the ref does not exist. GitHub
+// reports a missing ref on delete as 422 "Reference does not exist" rather
+// than 404, so that response is mapped to forge.ErrNotFound here; the
+// generic APIError.Unwrap 422 handling is deliberately left unchanged.
 func (c *LiveClient) DeleteRef(ctx context.Context, owner, repo, refPath string) error {
 	if err := c.delete_(ctx, fmt.Sprintf("/repos/%s/%s/git/refs/%s", owner, repo, refPath)); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity &&
+			strings.Contains(lowerAPIErrorText(apiErr), "reference does not exist") {
+			return fmt.Errorf("delete ref %s in %s/%s: %w: %w", refPath, owner, repo, forge.ErrNotFound, err)
+		}
 		return fmt.Errorf("delete ref %s in %s/%s: %w", refPath, owner, repo, err)
 	}
 	return nil
 }
 
 // CreateChangeProposal creates a pull request.
+// Returns forge.ErrForbidden (wrapped) on insufficient permissions.
 func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*forge.ChangeProposal, error) {
 	payload := map[string]string{
 		"title": title,
@@ -2464,7 +2479,7 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 
 	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/pulls", owner, repo), payload)
 	if err != nil {
-		return nil, fmt.Errorf("create pull request: %w", err)
+		return nil, fmt.Errorf("create pull request: %w", wrapForbidden(err))
 	}
 
 	var pr struct {
@@ -2564,7 +2579,18 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 		return nil, fmt.Errorf("decode cross-repo pull request response: %w", err)
 	}
 	if len(gqlResult.Errors) > 0 {
-		return nil, fmt.Errorf("create cross-repo pull request: graphql: %s", gqlResult.Errors[0].Message)
+		msg := gqlResult.Errors[0].Message
+		// Map the same conditions the REST path surfaces as sentinel
+		// errors so callers can treat an existing PR or an empty diff
+		// identically regardless of which creation path was used.
+		lower := strings.ToLower(msg)
+		switch {
+		case strings.Contains(lower, "already exists"):
+			return nil, fmt.Errorf("create cross-repo pull request: graphql: %s: %w", msg, forge.ErrAlreadyExists)
+		case strings.Contains(lower, "no commits between"):
+			return nil, fmt.Errorf("create cross-repo pull request: graphql: %s: %w", msg, forge.ErrNoChanges)
+		}
+		return nil, fmt.Errorf("create cross-repo pull request: graphql: %s", msg)
 	}
 
 	pr := gqlResult.Data.CreatePullRequest.PullRequest
@@ -3334,16 +3360,20 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 		Labels  []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
+		State       string `json:"state"`
+		StateReason string `json:"state_reason"`
 	}
 	if err := decodeJSON(resp, &result); err != nil {
 		return nil, fmt.Errorf("decode issue #%d: %w", number, err)
 	}
 	return &forge.Issue{
-		Number: result.Number,
-		Title:  result.Title,
-		Body:   result.Body,
-		URL:    result.HTMLURL,
-		Labels: labelNames(result.Labels),
+		Number:      result.Number,
+		Title:       result.Title,
+		Body:        result.Body,
+		URL:         result.HTMLURL,
+		Labels:      labelNames(result.Labels),
+		State:       result.State,
+		StateReason: result.StateReason,
 	}, nil
 }
 
@@ -4943,11 +4973,6 @@ func (c *LiveClient) CreatePipelineWithInputs(_ context.Context, _, _, _ string,
 // GetPipelineSchedule is not supported on GitHub.
 func (c *LiveClient) GetPipelineSchedule(_ context.Context, _, _ string, _ int64) (*forge.PipelineSchedule, error) {
 	return nil, forge.ErrNotSupported
-}
-
-// DeletePipelineScheduleVariable is not supported on GitHub.
-func (c *LiveClient) DeletePipelineScheduleVariable(_ context.Context, _, _ string, _ int64, _ string) error {
-	return forge.ErrNotSupported
 }
 
 // CreatePipelineSchedule is not supported on GitHub.
