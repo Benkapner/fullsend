@@ -566,6 +566,14 @@ func gitlabJobChainProblem(ctx context.Context, client forge.Client, owner, repo
 		"__AGENT_RUNNER_TAGS__", scaffold.FormatRunnerTags(gitlabAgentRunnerTags(manifest)),
 		"__CONTROL_RUNNER_TAGS__", scaffold.FormatRunnerTags(gitlabControlRunnerTags(manifest)),
 	).Replace(string(shipped)))
+	// The installer also renders the runner image tag from fullsend_ref
+	// (#8865). The tag only selects which Fullsend-published runner image
+	// runs the job; accept a committed tag of a form the installer renders
+	// by rendering it into the shipped job. Any other image still
+	// mismatches.
+	if tag, ok := gitlabCommittedRunnerImageTag(committed, job.jobName); ok {
+		shipped = []byte(scaffold.RenderRunnerImageTag(string(shipped), tag))
+	}
 	if job.templatePath == fullsendAgentTemplatePath {
 		// The installer also renders config.inference.wif_audience into the
 		// agent job's id_tokens audience. The audience only selects which
@@ -609,6 +617,35 @@ func gitlabCommittedAgentAudience(committed []byte, jobName string) (string, boo
 		return "", false
 	}
 	return aud, true
+}
+
+// gitlabCommittedRunnerImageTag returns the tag of the committed job's
+// image when it is a literal scaffold.RunnerImageRepository reference with
+// a tag the installer renders (scaffold.IsRunnerImageTag). ok is false for
+// any other image or one that cannot be read as a literal scalar.
+func gitlabCommittedRunnerImageTag(committed []byte, jobName string) (string, bool) {
+	job, ok := gitlabJobNode(committed, jobName)
+	if !ok {
+		return "", false
+	}
+	node, found := effectiveMappingValue(job, "image")
+	if !found || node == nil {
+		return "", false
+	}
+	if image := resolveAlias(node); image != nil && image.Kind == yaml.MappingNode {
+		if node, found = effectiveMappingValue(image, "name"); !found || node == nil {
+			return "", false
+		}
+	}
+	name, ok := isLiteralScalarValue(node)
+	if !ok {
+		return "", false
+	}
+	tag, found := strings.CutPrefix(name, scaffold.RunnerImageRepository+":")
+	if !found || !scaffold.IsRunnerImageTag(tag) {
+		return "", false
+	}
+	return tag, true
 }
 
 // gitlabJobRunsShippedScript reports whether the named job in the committed

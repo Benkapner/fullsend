@@ -1683,7 +1683,8 @@ uploaded JWKS does not.
 
 ## Runner Configuration
 
-Agent jobs run on GitLab CI using the `fullsend-runner` image and the
+Agent jobs run on GitLab CI using the `fullsend-runner` image (see
+[Runner image version](#runner-image-version)) and the
 tags embedded in the scaffold. Empty tags (`[]`) match untagged runners;
 tagged jobs only match runners that carry those tags.
 
@@ -1766,6 +1767,38 @@ your own runner VMs on OpenShift Virtualization or GCE instead of joining
 a hub, see the
 [GitLab Runner VM](https://github.com/fullsend-ai/fullsend/blob/main/hack/gitlab-runner-vm/README.md)
 README.
+
+### Runner image version
+
+The poll, webhook dispatcher, and agent jobs
+(`.gitlab/ci/fullsend-poll.yml`, `.gitlab/ci/fullsend-dispatcher.yml`,
+`.gitlab/ci/fullsend-agent.yml`) run
+`ghcr.io/fullsend-ai/fullsend-runner` at a tag rendered from
+`gitlab.fullsend_ref`, the same ref that selects the CLI the jobs install:
+
+| `gitlab.fullsend_ref` | Runner image tag |
+|---|---|
+| A release, `vX.Y.Z` (the default: install writes the CLI's release here) | `X.Y.Z`, the image published for that release |
+| Unset, with a locally built CLI | `latest`, which moves only when a release is published (the jobs also install the latest release CLI) |
+| A branch such as `main`, or an untagged commit SHA | `dev`, which is rebuilt from `main` |
+
+A release-pinned project therefore keeps its OpenShell, `gh`, gitleaks,
+pre-commit, Go, and gcloud versions until you change `gitlab.fullsend_ref`;
+runner image changes merged to `main` do not reach it. When you upgrade
+`gitlab.fullsend_ref` and re-run `fullsend repos install`, the same converge
+run re-renders the image tag in all three templates. `fullsend repos status`
+reports a template whose image tag does not match `gitlab.fullsend_ref` as
+content drift, and `repos install` repairs it. Templates fetched for a pin
+that predates this rendering hardcode `fullsend-runner:dev`. Install replaces
+that with the pinned release's image too.
+
+Tracking `main` (the `dev` image) is an opt-in for Fullsend maintainers and
+early testers, selected by pinning `gitlab.fullsend_ref` to `main` or a
+commit SHA. It is **not supported for production**: every runner image change
+merged to `main`, including an OpenShell bump, reaches the project as soon as
+it is published, before any release has been tested with it. A commit SHA
+cannot select an image of its own, because the runner image is built only for
+`main` commits that change it.
 
 ### Assigning runners
 
