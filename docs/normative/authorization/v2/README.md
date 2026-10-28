@@ -13,7 +13,7 @@ effective `human_min_role` to prompting events, actor-originated facts needed
 for actionable CEL results, and Fullsend-controlled model-bound records.
 Harness CEL may impose further
 conditions but cannot replace these admission gates.
-[ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md) establishes the
+[ADR 0151](../../../ADRs/0151-harness-human-role-minimums.md) establishes the
 floor and harness minimum while preserving separate bot grants and fresh
 model-bound checkpoints.
 This version also adopts selective entity acquisition and decision-focused
@@ -546,7 +546,7 @@ and revised for selective acquisition and audit by
 [ADR 0147](../../../ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md),
 with bounded cross-check actor-verdict reuse under
 [ADR 0148](../../../ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md).
-[ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md) supplies the
+[ADR 0151](../../../ADRs/0151-harness-human-role-minimums.md) supplies the
 platform floor and per-harness human minimum.
 It applies to an entity-source harness's CEL predicate whether a verified
 prompting event is present or `event == null`; legacy event-only dispatch is
@@ -729,7 +729,10 @@ Within-check memoization under
 avoids repeated lookups while the verdict remains eligible under an absolute
 five-minute hard cap. Cross-check reuse is disabled until a versioned platform
 policy defines and enforces an explicit maximum age no greater than five
-minutes. The platform MAY choose a shorter age; repository or harness settings
+minutes. Five minutes is an arbitrary initial cap, not a measured optimum.
+Once entity polling is in production, revisit the cap against observed
+authorization-freshness needs and SCM API rate-limit pressure. The platform MAY
+choose a shorter age; repository or harness settings
 MUST NOT widen the hard cap or the effective platform bound. Only a completed
 verdict may enter the cache. Its absolute expiry is measured from the
 authoritative lookup's start at the earlier of the hard cap and any shorter
@@ -821,7 +824,7 @@ for dispatch and CEL evaluation throughout.
 [ADR 0133](../../../ADRs/0133-actor-attributed-data-security-boundary.md)
 defines the separate model-bound admission and filtering gate, as revised for
 the per-harness human minimum by
-[ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md): only filtered
+[ADR 0151](../../../ADRs/0151-harness-human-role-minimums.md): only filtered
 content whose source record and actor pass the fresh gate below may be exposed
 to the model under bounded harness scope. Any resulting agent run uses the
 harness's configured identity and permissions.
@@ -1018,7 +1021,7 @@ supersedes v1's future full-history entity-evaluation and audit requirements;
 [ADR 0148](../../../ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)
 adds bounded cross-check reuse of provider-verified actor-role verdicts for
 entity-source CEL only.
-[ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md) sets the
+[ADR 0151](../../../ADRs/0151-harness-human-role-minimums.md) sets the
 immutable `triage` platform floor and the selected harness's effective
 `human_min_role` for human event, entity-fact, and model-record admission. The
 resolved harness `role` supplies the default map above; an explicit top-level

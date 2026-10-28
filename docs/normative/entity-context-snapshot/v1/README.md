@@ -6,7 +6,7 @@ under the actor-attributed data boundary in [ADR 0133](../../../ADRs/0133-actor-
 It is the contract between forge adapters, `fullsend run`, harness scripts, and
 agent runtimes.
 
-> **Version note:** [ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md)
+> **Version note:** [ADR 0151](../../../ADRs/0151-harness-human-role-minimums.md)
 > keeps an immutable `triage` floor and uses the selected harness's effective
 > `human_min_role` for target Fullsend-controlled model admission. This v1
 > bundle retains its observation/mutation-derived `triage` or `write` threshold;

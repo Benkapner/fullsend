@@ -19,7 +19,7 @@ Date: 2026-10-07
 
 Accepted
 
-[ADR 0151](0151-common-actor-admission-floor.md) replaces the
+[ADR 0151](0151-harness-human-role-minimums.md) replaces the
 observation/mutation-derived human threshold for Fullsend-controlled
 model-bound records with the selected harness's effective `human_min_role`,
 enforced above an immutable `triage` floor. Current-revision actor checks,

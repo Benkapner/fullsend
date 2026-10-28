@@ -21,7 +21,7 @@ Date: 2026-10-01
 
 Accepted
 
-[ADR 0151](0151-common-actor-admission-floor.md) treats `human_min_role` as a
+[ADR 0151](0151-harness-human-role-minimums.md) treats `human_min_role` as a
 guarded overlay field. Its ordered overlay outcome and effective value must be
 resolved from verified pre-admission facts and pinned before the harness's
 actor gate; the deprecated `forge:` block cannot set it. The other overlay

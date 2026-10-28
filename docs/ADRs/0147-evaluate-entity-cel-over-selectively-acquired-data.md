@@ -20,45 +20,23 @@ Date: 2026-10-22
 Accepted
 
 Partially supersedes [ADR 0098](0098-entity-first-harness-evaluation.md)'s
-pre-CEL enumeration and actor-permission resolution for every
-action-indicating element, and its complete audit roster. The trusted-origin
-gate and authorization of decision-relevant action facts remain. Also
-partially supersedes [ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md)'s
-complete-entity due checks and full-history audit roster. Its process
-lifecycle and model-bound staging rules remain. This ADR does not change
-actor-role freshness; [ADR 0148](0148-reuse-verified-actor-roles-for-entity-cel.md)
-addresses that separately.
-[ADR 0151](0151-common-actor-admission-floor.md) separately sets the platform
-human actor floor and each harness's human minimum for CEL and model admission.
+pre-CEL enumeration, per-element permission refresh, and full audit roster. It
+also replaces [ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md)'s
+full-entity due checks and full-history audit roster. Their trusted-origin,
+process-lifecycle, and model-bound staging rules remain. Actor-role reuse is
+defined by [ADR 0148](0148-reuse-verified-actor-roles-for-entity-cel.md), and
+actor admission by [ADR 0151](0151-harness-human-role-minimums.md).
 
 ## Context
 
 [ADR 0098](0098-entity-first-harness-evaluation.md) and
-[ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md) require a complete
-entity and current actor checks across all action-indicating history before an
-entity-source harness evaluates CEL. The corresponding
-[Authorization Contract v1](../normative/authorization/v1/README.md) also
-requires an audit roster of every retained element and actor. A state-only or
-short-circuiting predicate can often be decided without those unrelated API
-reads or audit entries. A progressive check may inspect multiple pages;
-repeating a role lookup for the same actor on each iteration compounds provider
-load. The [observability problem](../problems/operational-observability.md#structured-traces)
-already favors references to durable inputs over duplicating source data.
-For Git-forge work, [ADR 0141](0141-deterministic-filtered-entity-context-staging.md)
-separately assembles selected model inputs before the sandbox starts.
-[ADR 0063](0063-polling-based-work-discovery.md)'s `lastCheck` rule advances
-after scheduling a reconstructed-event run; a new entity-source candidate
-handoff needs its own retry or rediscovery guarantee.
-
-Entity routing remains a target design: at
-[`a2be1678`](https://github.com/fullsend-ai/fullsend/blob/a2be1678c5dbd9361a77f04de5ec260320e4fb9f/internal/harness/trigger.go#L12-L16),
-the trigger CEL environment still declares only `event`.
-
-> **Planned:** Entity-source CEL is not implemented and remains disabled until
-> the [normalized-entity contract tracked by issue #8420](https://github.com/fullsend-ai/fullsend/issues/8420),
-> selective evaluator, and authorization gates are implemented. Legacy
-> non-CEL, non-entity workflows continue under their existing authorization
-> contract.
+[ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md) require complete
+entity history before entity-source CEL evaluation. That can cause unrelated
+provider reads for state-only or short-circuiting predicates. Progressive
+evaluation can also repeat role lookups for the same actor. Entity-source CEL
+remains disabled pending the [normalized-entity contract tracked by issue
+#8420](https://github.com/fullsend-ai/fullsend/issues/8420), which must define
+partial-data and coverage semantics. Existing event-only routes are unchanged.
 
 ## Options
 
@@ -74,84 +52,27 @@ proof that a result cannot change when more data is fetched.
 
 ## Decision
 
-Adopt selective, progressive acquisition for entity-source CEL evaluation.
-The platform retains a closed classification of action-indicating categories,
-but fetches only fields and history that could affect the evaluated harness's
-predicate. It derives a conservative acquisition plan from the compiled CEL
-expression and may push sound filters into provider queries. Projections of
-classified action-indicating elements inherit their source records' actor
-dependencies. Provider aggregates affected by unauthorized records cannot
-enter the authorized CEL view unchanged.
-Whether a state field needs an actor check depends on how CEL uses it. An
-ordinary human-driven change that can make the check actionable requires its
-actor's verified effective role to meet the platform floor and the evaluated
-harness's `human_min_role`. An exact verified label transition may instead use
-the narrow grant described below. CEL may narrow selection further.
-When `updated_at` advances on each forge update, elapsed
-time can make a staleness check on that raw field actionable without checking
-every historical updater; any update can defer it. A query plan must not hide a
-potentially authorized match.
+1. Keep the platform's action-indicating categories closed. Acquire only fields
+   and history that could affect the compiled predicate, using a conservative
+   plan and only sound provider filters.
+2. Return `true` or `false` only when fetched facts and proven coverage establish
+   that result for every complete entity consistent with the evidence. Otherwise
+   return `UNKNOWN` and fetch more relevant data or leave the candidate
+   unresolved. Missing, unavailable, inconsistent, or exhausted evidence is
+   never treated as false or empty.
+3. Fetch, authorize, and audit only decision-relevant facts. Unrelated history is
+   neither fetched nor listed, and provider aggregates affected by excluded
+   records cannot enter the authorized view unchanged.
+4. Record bounded decision evidence—query scopes, coverage, and witness
+   provenance—as specified in [Authorization Contract v2](../normative/authorization/v2/README.md).
 
-The evaluator retains fetched entity data and verified actor roles while it
-progressively enriches one check. An in-memory or trusted shared cache may
-reuse entity data across checks only when its revision and coverage are
-validated as current; an accepted event or wake invalidates affected entity
-facts. Within one check, an iteration may reuse a verified role for an actor
-it has already resolved while that verdict remains eligible under
-[ADR 0148](0148-reuse-verified-actor-roles-for-entity-cel.md)'s age bound; an
-expired verdict must be refreshed before it contributes to a definitive
-decision. Each iteration applies the platform floor and the evaluated harness's
-effective `human_min_role` to ordinary human actor-originated facts that could
-make the predicate actionable. Exact verified label transitions and registered
-bots follow their separate admission paths below; verified effective roles,
-when present, remain available to CEL.
-Raw state used only for the conservative deferral described above is not actor
-authority. ADR 0148 separately permits reuse across checks.
-
-Partial entity data must distinguish not-yet-loaded data from absent or empty
-data. A CEL result is definitive `true` or `false` only when every complete
-entity consistent with acquired facts, proven source coverage, and the
-applicable actor-authorization results yields that result.
-Otherwise the platform records `UNKNOWN` and either fetches more relevant data
-for re-evaluation or passes an unresolved candidate from `poll` to a bound
-`run` for further reading. Exhausted budgets or unavailable, inconsistent, or
-unverifiable evidence end as inconclusive, never as empty or false. `poll` may
-stop on definitive false, subject to [ADR 0148](0148-reuse-verified-actor-roles-for-entity-cel.md)'s
-cache-dependent recheck rule. Its definitive true selects a candidate for bound
-`run`, which must recheck current evidence before launching a sandbox. A
-handoff is provisional: scheduling or delivering the run does not resolve the
-candidate. For any incomplete `poll` check or provisional handoff, discovery
-retains a durable retry path or proves its source query will rediscover the
-candidate after checkpoint advancement. A failed or inconclusive `run` leaves
-the candidate retryable. A definitive false closes the current handoff only
-after any cache-dependent recheck is scheduled under ADR 0148; completed
-actionable work or safe deferral under ADR 0144 also closes it. `run` launches
-a sandbox only after its own definitive true. Absence, negation, counts, and
-universal conditions may still require complete coverage of relevant scopes.
-
-Before a classified action-indicating entity fact can influence CEL, Fullsend
-verifies its source-revision actor and applies the actor and fact gates defined
-by [ADR 0151](0151-common-actor-admission-floor.md) and
-[Authorization Contract v2](../normative/authorization/v2/README.md).
-Independent history needs its own actor gate. Verified effective roles, when
-present, remain available to CEL for further harness conditions.
-
-Unauthorized records are excluded. Unrelated history need not be fetched,
-authorized, or listed in the audit. Each check records its verified initiator,
-entity, repository, effective policy, harness revision and `human_min_role`,
-decision time, dependency and query scopes, and bounded evidence of source
-coverage and actor-check outcomes. Identifiable witnesses for a positive
-decision retain actor provenance; collection-wide decisions may bind counts,
-digests, and source references to the checked
-coverage and authorization source instead of listing every record and actor.
-Event-actor and model-bound gates remain separate; ADR 0151 applies the same
-effective harness minimum to their ordinary human actors.
-
-The breaking change to enumeration and audit guarantees is specified by
-[Authorization Contract v2](../normative/authorization/v2/README.md), as
-required by [ADR 0015](0015-normative-specifications-directory.md).
-Entity-source CEL remains disabled until a versioned normalized-entity
-contract defines partial data, coverage, and concurrency semantics.
+[ADR 0151](0151-harness-human-role-minimums.md) defines actor admission and
+human-minimum rules. [ADR 0148](0148-reuse-verified-actor-roles-for-entity-cel.md)
+defines verified-role reuse. [ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md)
+continues to define the bound-run lifecycle. Authorization Contract v2
+specifies the evaluation, audit, and incomplete-candidate retry rules under
+[ADR 0015](0015-normative-specifications-directory.md); it does not change
+legacy non-CEL, non-entity workflows.
 
 ## Forge scope
 

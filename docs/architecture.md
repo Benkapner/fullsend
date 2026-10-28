@@ -309,7 +309,7 @@ flowchart TB
   `human_min_role` is a guarded field whose overlay must resolve from verified
   pre-admission facts before the harness actor gate, with its selected value
   pinned through the run
-  ([ADR 0151](ADRs/0151-common-actor-admission-floor.md)). Per-task model
+  ([ADR 0151](ADRs/0151-harness-human-role-minimums.md)). Per-task model
   routing is overlays setting `model` and `effort`; when a routed model is not
   served, the runner retries once with the model and effort it would use
   without overlays, and `FULLSEND_FALLBACK_MODELS` applies as each runtime
@@ -474,7 +474,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [Authorization Contract v1](normative/authorization/v1/) for current dispatch;
   [Authorization Contract v2](normative/authorization/v2/) for target CEL;
   [ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md);
-  [ADR 0151](ADRs/0151-common-actor-admission-floor.md)).
+  [ADR 0151](ADRs/0151-harness-human-role-minimums.md)).
 - Data security boundary (target state): each source-system record that
   Fullsend controls is admitted to model input only after its exact current
   revision's actor and current authorization are verified. An ordinary human
@@ -490,7 +490,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   platform-originated checked data or add filtering for model-originated
   retrievals ([ADR 0133](ADRs/0133-actor-attributed-data-security-boundary.md),
   partially superseded by
-  [ADR 0151](ADRs/0151-common-actor-admission-floor.md)).
+  [ADR 0151](ADRs/0151-harness-human-role-minimums.md)).
 - Fullsend-originated entity evaluation (target state): `fullsend poll`
   enumerates candidates, while a bound `fullsend run` may recheck only its
   canonical entity with `event == null`. Both require verified,
@@ -526,7 +526,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md),
   [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md),
   [ADR 0148](ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md),
-  [ADR 0151](ADRs/0151-common-actor-admission-floor.md),
+  [ADR 0151](ADRs/0151-harness-human-role-minimums.md),
   [Authorization Contract v2](normative/authorization/v2/)).
 
 **Open questions:**

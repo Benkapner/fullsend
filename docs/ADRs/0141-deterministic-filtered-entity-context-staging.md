@@ -19,7 +19,7 @@ Date: 2026-09-07
 
 Accepted
 
-[ADR 0151](0151-common-actor-admission-floor.md) partially supersedes the
+[ADR 0151](0151-harness-human-role-minimums.md) partially supersedes the
 human threshold inherited from ADR 0133 for Fullsend-controlled model-bound
 snapshot records in the target contract: admission uses the selected harness's
 effective `human_min_role` above an immutable `triage` floor. Snapshot v1

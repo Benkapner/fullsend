@@ -40,7 +40,7 @@ the preserved GitHub label handoff exception are decided in [ADR 0107](0107-bot-
 Fullsend-originated entity discovery without a prompting event. Event-backed
 dispatch remains subject to this ADR's actor authorization gate.
 
-[ADR 0151](0151-common-actor-admission-floor.md) partially supersedes the human
+[ADR 0151](0151-harness-human-role-minimums.md) partially supersedes the human
 permission threshold for target CEL-routed event admission. The platform keeps
 a non-waivable `triage`-level floor, satisfied by a verified role or the narrow
 verified label-transition grant, and enforces each selected harness's effective

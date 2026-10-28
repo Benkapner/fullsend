@@ -26,7 +26,7 @@ Only the event-only CEL context is superseded by
 predicate but evaluates it against a resolved entity and optional event. The
 remaining decisions in this ADR remain accepted.
 
-[ADR 0151](0151-common-actor-admission-floor.md) partially supersedes the
+[ADR 0151](0151-harness-human-role-minimums.md) partially supersedes the
 authorization-before-harness-enumeration ordering: the ordinary human `triage`
 floor may run before loading harnesses, with a narrow verified label grant for
 its exact transition. Each trusted harness's effective `human_min_role` is
