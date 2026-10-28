@@ -8990,6 +8990,161 @@ func TestRunAgent_CancelledReviewUsesCurrentHeadGuidance(t *testing.T) {
 	assert.NotContains(t, body, "/fs-review")
 }
 
+// TestRunAgent_CancelledReviewMintsFromFileOnlyMintURL guards against a
+// regression where the cancellation finalizer's own mint call (distinct
+// from the start-comment mint set up by setupStatusNotifierGitHub) passed
+// the raw --mint-url flag value straight to newStatusGitHubForgeClient
+// instead of resolving it through the same flag > layered config file >
+// FULLSEND_MINT_URL precedence as everywhere else. With no flag and no env
+// var, that bug minted against "" for the finalizer even though the start
+// comment (and the agent-token mint) correctly used config.yaml's mint_url
+// (#8400).
+func TestRunAgent_CancelledReviewMintsFromFileOnlyMintURL(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "review.md"),
+		[]byte("You are a review agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "review.yaml"),
+		[]byte("agent: agents/review.md\nrole: review\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/review.yaml\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	origNewClient := statusNewForgeClientFn
+	t.Cleanup(func() {
+		statusMintToken = origMint
+		statusNewForgeClientFn = origNewClient
+	})
+	var mintCalls int
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		mintCalls++
+		assert.Equal(t, "https://mint-from-file.example.com", req.MintURL,
+			"call #%d (role=%s, level=%s) must use config.yaml's mint_url, not \"\"", mintCalls, req.Role, req.Level)
+		return &mintclient.MintResult{Token: "ghs_test_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancel()
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = "new-head"
+	statusNewForgeClientFn = func(token string) forge.Client {
+		assert.Equal(t, "ghs_test_token", token)
+		return fc
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("PR_HEAD_SHA", "cancelled-head")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	var buf bytes.Buffer
+	// No --mint-url flag: statusOpts.mintURL is left empty so the only
+	// source of a mint URL is config.yaml's layered mint_url.
+	err := runAgent(ctx, "review", dir, "", t.TempDir(), "", nil, false, "", "github", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{
+		statusRepo:    "org/my-repo",
+		statusNum:     42,
+		trackerSource: "github",
+	}, ui.New(&buf), false, runOverrideFlags{})
+	require.Error(t, err)
+	comments := fc.IssueComments["org/my-repo/42"]
+	require.NotEmpty(t, comments, "output: %s; all comments: %#v", buf.String(), fc.IssueComments)
+	body := comments[len(comments)-1].Body
+	assert.Contains(t, body, "superseded by a newer commit")
+	// At least the start-comment mint and the finalizer mint must both
+	// have happened for this regression to be meaningfully covered.
+	assert.GreaterOrEqual(t, mintCalls, 2, "expected both the start-comment mint and the cancellation-finalizer mint to occur")
+}
+
+// TestRunAgent_CancelledReviewFileMintURLWinsOverEnv guards against the
+// same cancellation-finalizer bug as above, but for the case where a
+// competing FULLSEND_MINT_URL is also set: the finalizer must mint against
+// config.yaml's mint_url (matching the start comment), not silently fall
+// back to the env var (#8400).
+func TestRunAgent_CancelledReviewFileMintURLWinsOverEnv(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "review.md"),
+		[]byte("You are a review agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "review.yaml"),
+		[]byte("agent: agents/review.md\nrole: review\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/review.yaml\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	origNewClient := statusNewForgeClientFn
+	t.Cleanup(func() {
+		statusMintToken = origMint
+		statusNewForgeClientFn = origNewClient
+	})
+	var mintCalls int
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		mintCalls++
+		assert.Equal(t, "https://mint-from-file.example.com", req.MintURL,
+			"call #%d (role=%s, level=%s) must use config.yaml's mint_url, not the competing FULLSEND_MINT_URL", mintCalls, req.Role, req.Level)
+		return &mintclient.MintResult{Token: "ghs_test_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancel()
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = "new-head"
+	statusNewForgeClientFn = func(token string) forge.Client {
+		assert.Equal(t, "ghs_test_token", token)
+		return fc
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("PR_HEAD_SHA", "cancelled-head")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+	// A stale/different value in the environment — simulating a
+	// repository variable set at install time that the file has since
+	// overridden without anyone updating the variable.
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+
+	var buf bytes.Buffer
+	err := runAgent(ctx, "review", dir, "", t.TempDir(), "", nil, false, "", "github", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{
+		statusRepo:    "org/my-repo",
+		statusNum:     42,
+		trackerSource: "github",
+	}, ui.New(&buf), false, runOverrideFlags{})
+	require.Error(t, err)
+	comments := fc.IssueComments["org/my-repo/42"]
+	require.NotEmpty(t, comments, "output: %s; all comments: %#v", buf.String(), fc.IssueComments)
+	body := comments[len(comments)-1].Body
+	assert.Contains(t, body, "superseded by a newer commit")
+	assert.GreaterOrEqual(t, mintCalls, 2, "expected both the start-comment mint and the cancellation-finalizer mint to occur")
+}
+
 type runStatusEventWriter func(string)
 
 func (w runStatusEventWriter) Write(p []byte) (int, error) {

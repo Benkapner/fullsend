@@ -134,7 +134,7 @@ fullsend
 │   ├── --run-url <url>                      #   CI/CD run URL for status comments
 │   ├── --status-repo <owner/repo>           #   Repository for status comments
 │   ├── --status-number <int>                #   Issue/PR number for status comments
-│   └── --mint-url <url>                     #   Mint service URL for on-demand status tokens
+│   └── --mint-url <url>                     #   Mint service URL for agent and status tokens (default: layered mint_url, then $FULLSEND_MINT_URL)
 ├── fetch-skill      <url>                    # Fetch a skill at runtime (in-sandbox)
 ├── scan                                     # Run security scanner on input/output
 │   ├── input                                # Scan event payload for prompt injection

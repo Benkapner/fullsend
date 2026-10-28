@@ -471,7 +471,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sOpts.statusRepo, "status-repo", "", "repository (owner/repo) for status comments")
 	cmd.Flags().IntVar(&sOpts.statusNum, "status-number", 0, "issue/PR number for status comments")
 	cmd.Flags().IntVar(&sOpts.statusComment, "status-comment-id", 0, "ID of the triggering comment, for comment-scoped reactions on slash-command runs (optional)")
-	cmd.Flags().StringVar(&sOpts.mintURL, "mint-url", "", "mint service URL for on-demand status tokens (default: $FULLSEND_MINT_URL)")
+	cmd.Flags().StringVar(&sOpts.mintURL, "mint-url", "", "mint service URL for agent and status tokens (default: layered mint_url from --fullsend-dir, then $FULLSEND_MINT_URL)")
 	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi, codex, opencode, dummy or dummy-playback; also $FULLSEND_RUNTIME)")
 	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi, codex, and opencode — codex takes OpenAI ids and gateway/<model> only; also $FULLSEND_MODEL)")
 	cmd.Flags().StringVar(&oFlags.effort, "effort", "", "override the harness effort level for this run (low, medium, high, xhigh, max; also $FULLSEND_EFFORT)")
@@ -1406,7 +1406,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				defer dCancel()
 				if status == "cancelled" && builtInGitHubReview(agentName, forgePlatform, sOpts.trackerSource) {
 					parts := strings.SplitN(sOpts.statusRepo, "/", 2)
-					client, err := newStatusGitHubForgeClient(dCtx, sOpts.mintURL, h.Role, parts[1])
+					// Resolve through the same flag > layered config file >
+					// env precedence as setupStatusNotifierGitHub, not just
+					// flag > env: otherwise a file-only mint_url mints
+					// against "" here (even though the start comment above
+					// minted correctly), and a file value competing with a
+					// different FULLSEND_MINT_URL would mint against the
+					// env endpoint instead of the file-selected one (#8400).
+					cancelMintURL, _ := resolveMintURL(sOpts.mintURL, orgCfg, os.Getenv)
+					client, err := newStatusGitHubForgeClient(dCtx, cancelMintURL, h.Role, parts[1])
 					if err == nil {
 						// Reuse this freshly minted write client for completion so
 						// cancellation cleanup does not spend time on a second mint.
