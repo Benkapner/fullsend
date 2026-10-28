@@ -506,7 +506,7 @@ their own. Ask first whether the agent wrote to the findings log or under `$CODE
 log over 1 MiB is read cut, and the message then ends with `the admissions read was cut at 1048576
 bytes`.
 ```
-codex_spawn_without_admission: a completed spawn was not sent by the primary thread
+codex_spawn_without_admission: a spawn was not sent by the primary thread
 ```
 A spawn item without a sender, or sent by a thread other than the run's own. Codex 0.159.3 emits
 neither; look for a malformed or planted stream line.

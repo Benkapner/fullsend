@@ -949,24 +949,24 @@ func TestCompareCodexSpawnAdmissions(t *testing.T) {
 	tests := []struct {
 		name                string
 		primary             string
-		senders             []string // this iteration's completed spawns
+		senders             []string // this iteration's spawn items
 		completed, admitted int      // the whole run's
 		want                string   // "" = no error
 	}{
 		{"equal counts", root, []string{root, root, root}, 3, 3, ""},
-		{"more admissions: an admitted spawn codex then refused", root, []string{root, root}, 2, 3, ""},
-		{"one completed spawn more than admissions", root, []string{root, root, root}, 3, 2,
+		{"more admissions: an admitted call codex rejected before its item", root, []string{root, root}, 2, 3, ""},
+		{"one spawn more than admissions", root, []string{root, root, root}, 3, 2,
 			"codex_spawn_without_admission: 3 spawn(s) in this run (the stream's spawn items and the child rollouts on disk, each child counted once) but 2 recorded admission(s)"},
 		{"an earlier iteration's spawns count", root, []string{root}, 4, 3,
 			"codex_spawn_without_admission: 4 spawn(s) in this run (the stream's spawn items and the child rollouts on disk, each child counted once) but 3 recorded admission(s)"},
 		{"a sender that is not the primary thread", root, []string{root, codexChildSameModelID}, 2, 3,
-			"codex_spawn_without_admission: a completed spawn was not sent by the primary thread"},
+			"codex_spawn_without_admission: a spawn was not sent by the primary thread"},
 		{"a spawn item without a sender", root, []string{""}, 1, 3,
-			"codex_spawn_without_admission: a completed spawn was not sent by the primary thread"},
+			"codex_spawn_without_admission: a spawn was not sent by the primary thread"},
 		{"the stream named no primary thread", "", []string{root}, 1, 3,
-			"codex_spawn_without_admission: a completed spawn was not sent by the primary thread"},
+			"codex_spawn_without_admission: a spawn was not sent by the primary thread"},
 		{"no sender and no primary thread", "", []string{""}, 1, 3,
-			"codex_spawn_without_admission: a completed spawn was not sent by the primary thread"},
+			"codex_spawn_without_admission: a spawn was not sent by the primary thread"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1188,9 +1188,8 @@ func TestCodexStderrDrops_CountsAcrossChunks(t *testing.T) {
 	assert.Equal(t, 1, last.Dropped, "the last line is scanned once the stream has ended")
 }
 
-// A dropped stream notification is a warning, for a delegating run too: it
-// can hide a spawn item, not the child's rollout, which the admission check
-// counts as well (#8712: most drops lose nothing the count needs).
+// A dropped stream notification is a warning, for a delegating run too, as
+// settled on #8712: most drops hide no spawn.
 func TestCodexRun_DroppedNotificationWarns(t *testing.T) {
 	t.Setenv("FULLSEND_TEST_CODEX_DROP", "1")
 	for _, delegating := range []bool{false, true} {

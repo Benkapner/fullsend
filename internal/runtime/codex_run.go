@@ -717,8 +717,8 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	// above. Each iteration adds its spawns seen on either side, each counted
 	// once per thread: the stream's spawn items (completed or failed: each
 	// passed the guard) and the children on disk. A dropped stream
-	// notification is a warning: it can hide a spawn item, but not the
-	// child's rollout.
+	// notification is a warning, as settled on #8712: most drops hide no
+	// spawn.
 	if stderr.Dropped > 0 {
 		msg := fmt.Sprintf("codex dropped %d stream notification(s) under backpressure", stderr.Dropped)
 		if stderr.BackfillFailed > 0 {

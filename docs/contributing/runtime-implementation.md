@@ -1366,8 +1366,8 @@ stream notification under backpressure, of any thread, and says so on stderr: th
 `RUST_LOG` outright after `.env` (codex's default filter with `codex_exec` and
 `codex_app_server::in_process` at warn; codex's commands inherit it), and the runner scans that
 stderr on the host (the sandbox log under `--debug`) and warns on the line and on exec's warning
-that its `thread/read` backfill of the turn's items failed. Drops stay warnings (#8712): the
-rollouts do not depend on the stream. The check cannot catch a forged admission (the log is
+that its `thread/read` backfill of the turn's items failed. Drops stay warnings, as #8712 settled:
+most drops hide no spawn. The check cannot catch a forged admission (the log is
 agent-writable), a resume (a `wait` item in the stream), a spawn hidden from both sides (stream
 items lost and the rollout deleted or its `session_meta` edited), a child that never recorded an
 item, or a surplus admission covering a later spawn (counts, not ids): codex can reject an admitted

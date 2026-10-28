@@ -134,10 +134,10 @@ func parseCodexChildUsage(data []byte) []codexChildUsage {
 	return out
 }
 
-// codexChildIDs collects the thread ids of completed spawn_agent items from
-// a tee of the `exec --json` stream: the parser's events carry no thread id.
-// Senders holds each completed spawn's sender_thread_id, in stream order, for
-// the admission cross-check.
+// codexChildIDs collects the thread ids of the spawn_agent items codex
+// finished, completed or failed, from a tee of the `exec --json` stream: the
+// parser's events carry no thread id. Senders holds each one's
+// sender_thread_id, in stream order, for the admission cross-check.
 // A final line without a newline waits for flush, once the stream has ended:
 // codex killed mid-write can leave a completed spawn there.
 type codexChildIDs struct {
@@ -597,16 +597,16 @@ func countCodexSpawnAdmissions(data []byte) int {
 
 // compareCodexSpawnAdmissions returns an error for a spawn without a sender
 // or sent by any thread but the primary one (two unknown ids are not the
-// same thread), and for more completed spawns in the run than admissions.
-// More admissions is not an error: an admitted spawn codex then refused (at
-// the thread limit) completed nothing. No id is in the error: the stream
-// comes out of the sandbox. At the pinned codex the stream carries the
-// primary thread's items only, so the sender rule is defence in depth; a
-// child's spawn is the guard's deny.
+// same thread), and for more spawns in the run than admissions. More
+// admissions is not an error: codex can reject an admitted call before it
+// emits an item, and another hook can block a call the guard admitted. No id
+// is in the error: the stream comes out of the sandbox. At the pinned codex
+// the stream carries the primary thread's items only, so the sender rule is
+// defence in depth; a child's spawn is the guard's deny.
 func compareCodexSpawnAdmissions(primary string, senders []string, completed, admitted int) error {
 	for _, sender := range senders {
 		if sender == "" || sender != primary {
-			return fmt.Errorf("%s: a completed spawn was not sent by the primary thread", codexSpawnWithoutAdmission)
+			return fmt.Errorf("%s: a spawn was not sent by the primary thread", codexSpawnWithoutAdmission)
 		}
 	}
 	if completed > admitted {
@@ -617,7 +617,7 @@ func compareCodexSpawnAdmissions(primary string, senders []string, completed, ad
 }
 
 // checkCodexSpawnAdmissions reads the admissions and compares them with an
-// iteration's completed spawns (senders) and the run's (completed). Unlike
+// iteration's spawn senders and the run's spawn count (completed). Unlike
 // the usage read, a read that fails or times out fails the run: this is a
 // policy check, not a metric.
 func checkCodexSpawnAdmissions(sandboxName, primary string, senders []string, completed int) error {
