@@ -194,8 +194,9 @@ effort, sub-agent models and the trigger.
 - **`subagents`** — Map of persona names to model references. The `default`
   key sets the fallback for personas without an explicit entry. A `~` (null)
   value tombstones an inherited entry. Keys must be lowercase alphanumeric
-  segments joined by hyphens (max 64 chars). On codex the values must be
-  OpenAI ids and a key must name a discovered persona or `default`; see
+  segments joined by hyphens (max 64 chars). On codex, for an agent that
+  delegates, the values must be OpenAI ids and a key must name a registered
+  persona or `default`; see
   [Codex › Child models](../runtimes/codex.md#child-models).
 - **`trigger`** — A [CEL trigger](../guides/user/cel-triggers-reference.md)
   (a boolean over the normalized `event`). It decides routing for the

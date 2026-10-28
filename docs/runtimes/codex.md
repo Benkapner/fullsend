@@ -161,18 +161,28 @@ against the catalog bundled with the pinned Codex CLI (`codex debug models --bun
 in the sandbox) and fails naming the position that supplied an unlisted id: Codex itself checks a
 run-level default only at each spawn and a role-file model not at all. A listed model the provider
 does not serve still fails that child at its first request: it ends `errored`, no other model is
-substituted, and the parent treats that role as failed. The floor is `gpt-5.6-luna`, the cheap tier
-of the current family, whose catalog entry selects collaboration V1 on the pinned CLI (see
-[Sub-agents](#sub-agents)). The runner reads `FULLSEND_CODEX_SUBAGENT_MODEL` from its own
+substituted, and the parent treats that role as failed. The floor is `gpt-5.6-luna`, the cheap
+gpt-5.6 tier #6970 chose; it must be listed in the bundled catalog, and its collaboration version
+does not matter, because a child runs under its parent's. The runner reads `FULLSEND_CODEX_SUBAGENT_MODEL` from its own
 environment: you set it for a local `fullsend run`, and on GitLab a project or group CI/CD variable
 reaches it, since the job runs `fullsend run` in its own environment. The GitHub fleet workflows do
 not pass it, and unlike `FULLSEND_CODEX_MODEL` it is not read from repository variables, so on that
-path set `subagents.default` instead. A child's reasoning effort follows
-the run-level default model's standard effort. Bootstrap prints what it resolved:
+path set `subagents.default` instead.
+
+Every child runs at the run's effort (`effort:`, an `agents:` entry or `--effort`) when one is set:
+Bootstrap writes it as `agents.default_subagent_reasoning_effort`. Codex checks a child's effort
+against its model at every spawn and refuses the spawn when the model lacks it, so Bootstrap checks
+the effort against the run-level child model and every persona model in the bundled catalog and
+fails naming the effort, the model and the position that chose it; at the pin only `max` on
+`gpt-5.5` fails. With no run effort, codex resets every child to the run-level child model's
+catalog default (`medium` for `gpt-5.6-luna`, `low` for `gpt-5.6-sol`), a persona with its own
+model included, and Bootstrap checks that level against the persona models. pi children run at
+`medium` unless `FULLSEND_PI_SUBAGENT_THINKING` says otherwise. Bootstrap prints what it resolved:
 
 ```
 subagents: default → gpt-5.6-luna (from built-in default; children that name no persona and personas without an entry)
 subagents: correctness → gpt-5.6-sol (from subagents.correctness)
+subagents: effort → high (from the run's effort; every child)
 ```
 
 ## Sub-agents
@@ -188,13 +198,15 @@ the runtime note at the end of the agent's instructions names it (`Registered su
 `Agent` out, and any run with harness security disabled, keeps Codex's multi-agent tools off and
 runs in one context, as before.
 
-Each child starts with only the message its parent sends, at most four are open at once, and the
-depth is one. A runner-owned hook admits a spawn only for a registered role with `fork_context:
+A child gets no copy of the parent's conversation (`fork_context: false`): it starts from its
+role's instructions and the message its parent sends. At most four are open at once, and the depth
+is one. A runner-owned hook admits a spawn only for a registered role with `fork_context:
 false` and no model or effort override; it denies resume, Codex's built-in `explorer` and
 `worker`, and any spawn from a child. A denied spawn is final for that role: the parent runs that
-sub-agent definition itself. A spawn the hook did not admit fails the run after the fact: the
-runner compares the spawns in the run's event stream with the admissions the hook recorded (see
-[Troubleshooting](#troubleshooting)). Every child's rollout is saved and redacted like the
+sub-agent definition itself. A spawn the hook did not admit fails the run after the fact, within
+the limits named in [Troubleshooting](#troubleshooting): per iteration the runner counts the
+spawns seen in the event stream or in the children's rollouts on disk, each child once, and
+compares the run's total with the admissions the hook recorded. Every child's rollout is saved and redacted like the
 parent's, and its tokens are in `metrics.json` (see [At a glance](#at-a-glance)).
 
 Delegation needs a parent model Codex resolves to collaboration V1: its entry in
@@ -219,7 +231,7 @@ serve, and native children have not been run on that route.
 | Credentials | A runner-exchanged OpenAI WIF token in CI, or your `OPENAI_API_KEY` on the runner locally — never in the sandbox. Codex reads a placeholder from a runner-owned token file and re-reads it when the credential is refreshed ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). A `gateway/` model uses the inference gateway's credential the same way ([Models through an inference gateway](#models-through-an-inference-gateway-experimental)) |
 | Unattended | Approvals off; codex's own sandbox off, because OpenShell is the boundary. A missing credential exits before the agent starts |
 | Artifacts | `output.jsonl` (the `codex exec --json` stream), `transcripts/<agent>-<rollout>.jsonl` for the root thread and `transcripts/<agent>-sub<seq>-<role>.jsonl` for each native child (`generic` for the `default` role, which codex records as no role when the spawn names no `agent_type`; `explore` keeps its name), `metrics.json` with `runtime: codex` (and `per_model_usage` for a delegating agent), plus `codex-debug.log` with `--debug`. Only uncompressed rollouts are extracted — codex compresses older sessions, so a `.jsonl.zst` is never the run's own transcript. The agent's final message is in the stream; `--output-last-message` also drops it in the runner-owned config directory inside the sandbox, which is a convenience when inspecting a kept sandbox rather than a downloaded artifact |
-| Sub-agents | Native Codex children for an agent whose tools include `Agent`, on a parent model Codex resolves to collaboration V1 on the direct route, under a runner-owned policy: registered roles only, fresh context, depth one, four open; see [Sub-agents](#sub-agents) |
+| Sub-agents | Native Codex children for an agent whose tools include `Agent` (or that declares no `tools:`), with harness security on, on a parent model Codex resolves to collaboration V1 on the direct route, under a runner-owned policy: registered roles only, fresh context, depth one, four open; see [Sub-agents](#sub-agents) |
 | Extra knobs | `FULLSEND_CODEX_MODEL` (the runner-side model default for codex runs; see [Models](#models)), `FULLSEND_CODEX_SUBAGENT_MODEL` (the run-level child model; the GitHub fleet workflows do not pass it; see [Child models](#child-models)) |
 | Not supported | `plugins:`, fallback chains, non-OpenAI providers (other than through a Responses-capable inference gateway), Chat Completions or Messages on a gateway, delegation from a parent model on collaboration V2 or from a `gateway/` parent (see [Sub-agents](#sub-agents)) |
 
@@ -397,7 +409,7 @@ agents:
     runtime: claude
 ```
 
-**`code` and `fix` delegate too.** They declare no `tools:`, so on a V1 parent with harness security
+**`code` and `fix` delegate too.** They declare no `tools:`, so on a V1 parent on the direct route with harness security
 on they get the `default` and `explore` roles, children with the parent's shell and `apply_patch`,
 the spawn guard and the dispatch note, as `review` does. Both have run end to end that way on
 `gpt-5.6-luna` and chose not to spawn, so neither has run a native child yet.
@@ -474,19 +486,24 @@ The first two exit 97 and mean the hook wiring cannot be trusted; the third exit
 credential-and-trust guard. All three are fail-closed by design. Between iterations the agent runs
 as the same user as those files, so "did the agent write there?" is the question to ask first.
 
-**A spawn failed the admission check.** After an iteration whose `exec --json` stream reported a
-completed `spawn_agent`, the runner compares the run's completed spawns with the spawn guard's
-`codex_spawn_guard_admit` lines in `/sandbox/workspace/.security/findings.jsonl`, and the run fails
-whatever codex's exit code. The overlong-item and dropped-notification messages below come before
-that comparison, whether or not the stream shows a spawn. Each message says why:
+**A spawn failed the admission check.** After every iteration of a delegating agent, and any
+iteration whose stream shows a spawn, the runner counts that iteration's spawns from two sources,
+each child once by its thread id: the `spawn_agent` items in the `exec --json` stream, completed or
+failed (each passed the guard; a spawn the guard blocks emits none, and one codex refused before a
+thread existed names no child), and the rollouts under `$CODEX_HOME/sessions` whose parent is the
+run's thread or one of its children (a file whose first line is not a `session_meta` record counts
+too). It compares the run's total with the spawn guard's `codex_spawn_guard_admit`
+lines in `/sandbox/workspace/.security/findings.jsonl`, and the run fails whatever codex's exit
+code. Each message says why:
 
 ```
-codex_spawn_without_admission: 3 completed spawn(s) in this run's stream(s) but 2 recorded admission(s)
+codex_spawn_without_admission: 4 spawn(s) in this run (the stream's spawn items and the child rollouts on disk, each child counted once) but 3 recorded admission(s)
 ```
-The guard admitted fewer spawns than completed: a hook handler that timed out or failed let a spawn
-through, or the findings log lost lines. The count spans every iteration of the run, so a retry's
-spawns need admissions of their own. Ask first whether the agent wrote to the findings log; a log
-over 1 MiB is read cut, and the message then ends with `the admissions read was cut at 1048576
+The guard admitted fewer spawns than codex handled or started: a hook handler that timed out or
+failed let a spawn through, the findings log lost lines, or the sessions directory holds a file that
+reads as a child. The count spans every iteration of the run, so a retry's spawns need admissions of
+their own. Ask first whether the agent wrote to the findings log or under `$CODEX_HOME/sessions`; a
+log over 1 MiB is read cut, and the message then ends with `the admissions read was cut at 1048576
 bytes`.
 ```
 codex_spawn_without_admission: a completed spawn was not sent by the primary thread
@@ -499,29 +516,34 @@ codex_spawn_without_admission: a spawn_agent item longer than 1048576 bytes coul
 The parent spawned with a prompt over 1 MiB, so the runner cannot tell whether that spawn
 completed. Shorten the prompt.
 ```
+codex_spawn_without_admission: counting the child rollouts: ...
+```
+The sessions directory could not be read (the command failed, timed out, or listed over 1 MiB), or
+the run's thread id is unknown while a rollout that could be a child exists, so the check could not
+be made.
+```
 reading the spawn admissions: ...
 ```
 The findings log could not be read (the command failed or timed out), so the check could not be
 made.
-```
-codex_spawn_without_admission: codex dropped a stream notification, or its backfill of the turn's items failed or could not be checked, so a lost spawn_agent item cannot be ruled out
-```
-A delegating agent's run in which codex dropped an item notification under backpressure, its
-re-read of the turn's items failed (`thread/read failed while backfilling turn items` on stderr),
-or, under `--debug`, the runner could not read codex's log to find out. The re-read brings back only
-items codex saw start, so a spawn that lost both its notifications stays out of the stream's count,
-and an unadmitted spawn could balance it; the run fails rather than pass the check on a short
-count. Re-run.
+
+The check cannot catch a forged admission (the findings log is agent-writable), a resume (it shows
+as a wait item), a spawn hidden from both sides (its stream items lost and its rollout deleted or
+its `session_meta` edited), a child that never started a turn (codex writes the rollout at the
+child's first recorded item), or an admission no spawn used covering a later unadmitted spawn:
+admissions are compared by count, not id, and codex can reject an admitted call before it emits an
+item (a spawn with no message, for one), or another hook can block it after the guard admitted it.
 
 **`codex dropped N stream notification(s) under backpressure; the progress log is incomplete`.**
-A warning, and for a delegating agent the run then fails: codex's in-process channel filled and it dropped an item notification, which it says on
-stderr; the runner reads codex's stderr for that line on every run (under `--debug` the sandbox log
-instead). A dropped completed item comes back when the turn completes, if exec's read of the turn's
-items succeeds; when that read fails codex says so too, and the warning adds `and its backfill of
-the turn's items failed`. A spawn that lost both its notifications does not come back, so a
-delegating agent's run fails on any drop (above); an agent without roles only gets the warning. The
-launch sets `RUST_LOG`
-itself, codex's default filter with `codex_exec` and `codex_app_server::in_process` at warn (`info`
+A warning: codex's in-process channel filled and it dropped a notification, of any thread, children
+included, and the line does not say which; it says so on stderr, and the runner reads codex's stderr
+for that line on every run (under `--debug` the sandbox log instead, where a log it cannot read is
+its own warning and a missing one counts zero). A dropped completed item comes back when the turn
+completes if exec saw it start and its read of the turn's items succeeds; when that read fails codex
+says so too, and the warning adds `and its backfill of the turn's items failed`. The admission check
+does not rest on the stream alone: a child's rollout counts it even when its spawn item was lost.
+The lines are matched as text, so a tool line that quotes them also counts. The launch sets
+`RUST_LOG` itself, codex's default filter with `codex_exec` and `codex_app_server::in_process` at warn (`info`
 under `--debug`), replacing any value from the environment or `.env`.
 
 **`--debug "..."` fails with `accepts 1 arg(s)`.** `--debug` takes an optional value: write

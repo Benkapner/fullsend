@@ -50,6 +50,20 @@ func TestNewHarnessBootstrap_WithoutSecurity(t *testing.T) {
 	assert.Nil(t, boot.ModelAliases(), "no per-repo overrides means no alias map")
 }
 
+// The run's effort reaches the runtime through BootstrapInput, with the
+// security hooks on or off: codex binds it as every native child's effort.
+func TestNewHarnessBootstrap_CarriesTheEffort(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		h := &harness.Harness{Agent: "agents/test.md", Effort: "high", Security: &harness.SecurityConfig{Enabled: &enabled}}
+		boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "", nil, nil, "", "/sandbox/workspace/repo", false)
+		require.NoError(t, err)
+		assert.Equal(t, "high", boot.Effort())
+	}
+	boot, err := newHarnessBootstrap(&harness.Harness{Agent: "a.md"}, "sb", "code", "", nil, nil, "", "/sandbox/workspace/repo", false)
+	require.NoError(t, err)
+	assert.Empty(t, boot.Effort())
+}
+
 // The per-repo models.aliases map reaches the runtime through
 // BootstrapInput, which is how it lands in pi's sub-agent model table
 // (#7020); a run with overrides must carry them here, not just on

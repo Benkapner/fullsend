@@ -339,11 +339,12 @@ func TestCodexRole_TOMLParsesWithTheThreeKeys(t *testing.T) {
 }
 
 // TestCodexCatalog reads the fixture reduced from the pinned CLI's dump and
-// pins the two questions Bootstrap asks it: is a model listed, and does
-// codex resolve it to collaboration V1. On a CODEX_VERSION bump regenerate
-// it, never edit it (the file name carries the pin):
+// pins the questions Bootstrap asks it: is a model listed, does codex
+// resolve it to collaboration V1, and which efforts a child on it may run
+// at. On a CODEX_VERSION bump regenerate it, never edit it (the file name
+// carries the pin):
 //
-//	codex debug models --bundled | python3 -c 'import json,sys; d=json.load(sys.stdin); json.dump({"models":[{"slug":m["slug"],"multi_agent_version":m.get("multi_agent_version")} for m in d["models"]]}, sys.stdout, indent=2); print()' > testdata/codex/models-bundled-<pin>.json
+//	codex debug models --bundled | python3 -c 'import json,sys; d=json.load(sys.stdin); json.dump({"models":[{"slug":m["slug"],"multi_agent_version":m.get("multi_agent_version"),"default_reasoning_level":m.get("default_reasoning_level"),"supported_reasoning_levels":[{"effort":l["effort"]} for l in m.get("supported_reasoning_levels") or []]} for m in d["models"]]}, sys.stdout, indent=2); print()' > testdata/codex/models-bundled-<pin>.json
 func TestCodexCatalog(t *testing.T) {
 	t.Parallel()
 	containerfile, err := os.ReadFile(filepath.Join("..", "..", "images", "sandbox", "Containerfile"))
@@ -355,8 +356,12 @@ func TestCodexCatalog(t *testing.T) {
 	catalog, err := parseCodexCatalog(data)
 	require.NoError(t, err)
 
-	assert.True(t, catalog.has("gpt-5.6-luna"))
-	assert.True(t, catalog.resolvesV1("gpt-5.6-luna"), "the floor model is the listed V1 model on 0.159.3")
+	assert.True(t, catalog.has(codexDefaultSubagentModel), "the floor must be listed; a child takes its parent's collaboration version, so the floor's own does not matter")
+	assert.True(t, catalog.resolvesV1("gpt-5.6-luna"), "a luna parent delegates on 0.159.3")
+	assert.Equal(t, "medium", catalog["gpt-5.6-luna"].DefaultEffort, "children on the floor run at medium when the run sets no effort")
+	assert.Equal(t, []string{"low", "medium", "high", "xhigh", "max"}, catalog["gpt-5.6-luna"].Efforts)
+	assert.Equal(t, "low", catalog["gpt-5.6-sol"].DefaultEffort)
+	assert.NotContains(t, catalog["gpt-5.5"].Efforts, "max", "the one fullsend effort a listed model lacks at the pin")
 	assert.True(t, catalog.has("gpt-5.6-sol"))
 	assert.False(t, catalog.resolvesV1("gpt-5.6-sol"), "sol selects V2")
 	assert.True(t, catalog.has("gpt-5.5"))
@@ -384,7 +389,7 @@ func TestCodexCatalog(t *testing.T) {
 // and so does a gateway/ parent whatever its id.
 func TestCodexParentResolvesV1(t *testing.T) {
 	t.Parallel()
-	catalog := codexCatalog{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-5.5": "", "gpt-x": "v3"}
+	catalog := codexVersionsCatalog(map[string]string{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-5.5": "", "gpt-x": "v3"})
 	tests := []struct {
 		name        string
 		parentModel string
@@ -522,7 +527,7 @@ func TestResolveCodexChildModels_Precedence(t *testing.T) {
 				cfg["correctness"] = nil
 			}
 
-			got, gotDefault, err := resolveCodexChildModels(roles, nil, cfg, tt.env, codexTestCatalog())
+			got, gotDefault, _, err := resolveCodexChildModels(roles, nil, cfg, tt.env, "", codexTestCatalog())
 			require.NoError(t, err)
 			require.Len(t, got, 3)
 			assert.Equal(t, tt.wantModel, got[0].Model, "correctness")
@@ -581,7 +586,7 @@ func TestResolveCodexChildModels_RejectsUnknownKeys(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, _, err := resolveCodexChildModels(tt.roles, tt.skipped, tt.cfg, "", codexTestCatalog())
+			_, _, _, err := resolveCodexChildModels(tt.roles, tt.skipped, tt.cfg, "", "", codexTestCatalog())
 			if len(tt.wantErr) == 0 {
 				assert.NoError(t, err)
 				return
@@ -620,7 +625,7 @@ func TestResolveCodexChildModels_NonOpenAIValueNamesTheKey(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, _, err := resolveCodexChildModels(roles, nil, tt.cfg, tt.env, codexTestCatalog())
+			_, _, _, err := resolveCodexChildModels(roles, nil, tt.cfg, tt.env, "", codexTestCatalog())
 			require.Error(t, err)
 			for _, w := range tt.wantErr {
 				assert.Contains(t, err.Error(), w)
@@ -629,17 +634,35 @@ func TestResolveCodexChildModels_NonOpenAIValueNamesTheKey(t *testing.T) {
 	}
 }
 
-// codexTestCatalog lists every model the tables above use, with the versions
-// of testdata/codex/models-bundled-0.159.3.json; add any id a new row introduces.
+// codexTestCatalog lists every model the tables above use, with the versions,
+// default efforts and supported efforts of
+// testdata/codex/models-bundled-0.159.3.json; add any id a new row introduces.
 func codexTestCatalog() codexCatalog {
-	return codexCatalog{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-5.6-terra": "v2", "gpt-6-astra": "v2"}
+	upToMax := []string{"low", "medium", "high", "xhigh", "max"}
+	upToUltra := []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+	return codexCatalog{
+		"gpt-5.6-luna":  {Version: "v1", DefaultEffort: "medium", Efforts: upToMax},
+		"gpt-5.6-sol":   {Version: "v2", DefaultEffort: "low", Efforts: upToUltra},
+		"gpt-5.6-terra": {Version: "v2", DefaultEffort: "medium", Efforts: upToUltra},
+		"gpt-6-astra":   {Version: "v2", DefaultEffort: "low", Efforts: upToUltra},
+		"gpt-5.5":       {Version: "", DefaultEffort: "medium", Efforts: []string{"low", "medium", "high", "xhigh"}},
+	}
+}
+
+// codexVersionsCatalog is a catalog with versions only, for the gate's tests.
+func codexVersionsCatalog(versions map[string]string) codexCatalog {
+	c := make(codexCatalog, len(versions))
+	for slug, v := range versions {
+		c[slug] = codexCatalogModel{Version: v}
+	}
+	return c
 }
 
 // Every chain position is checked against the catalog, the floor included;
 // the error names the position that supplied the id.
 func TestResolveCodexChildModels_CatalogMembership(t *testing.T) {
 	t.Parallel()
-	catalog := codexCatalog{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-6-astra": "v2"}
+	catalog := codexVersionsCatalog(map[string]string{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-6-astra": "v2"})
 	sol, nova := "openai/gpt-5.6-sol", "openai/gpt-5.6-nova"
 	roles := []codexRole{{Name: "correctness"}, {Name: "default"}, {Name: "explore"}}
 	tests := []struct {
@@ -653,18 +676,72 @@ func TestResolveCodexChildModels_CatalogMembership(t *testing.T) {
 		{"persona entry unlisted", map[string]*string{"correctness": &nova}, "", catalog, `subagents.correctness: model "gpt-5.6-nova" is not in the bundled catalog of the pinned codex`},
 		{"default unlisted", map[string]*string{"default": &nova}, "", catalog, `subagents.default: model "gpt-5.6-nova" is not in the bundled catalog of the pinned codex`},
 		{"runner variable unlisted", nil, "gpt-5.6-nova", catalog, `FULLSEND_CODEX_SUBAGENT_MODEL: model "gpt-5.6-nova" is not in the bundled catalog of the pinned codex`},
-		{"floor unlisted after a CLI bump", nil, "", codexCatalog{"gpt-5.6-sol": "v2"}, `built-in default: model "gpt-5.6-luna" is not in the bundled catalog of the pinned codex`},
-		{"floor unlisted but overridden", map[string]*string{"default": &sol}, "", codexCatalog{"gpt-5.6-sol": "v2"}, ""},
+		{"floor unlisted after a CLI bump", nil, "", codexVersionsCatalog(map[string]string{"gpt-5.6-sol": "v2"}), `built-in default: model "gpt-5.6-luna" is not in the bundled catalog of the pinned codex`},
+		{"floor unlisted but overridden", map[string]*string{"default": &sol}, "", codexVersionsCatalog(map[string]string{"gpt-5.6-sol": "v2"}), ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, _, err := resolveCodexChildModels(roles, nil, tt.subagents, tt.env, tt.catalog)
+			_, _, _, err := resolveCodexChildModels(roles, nil, tt.subagents, tt.env, "", tt.catalog)
 			if tt.wantErr == "" {
 				require.NoError(t, err)
 				return
 			}
 			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+// TestResolveCodexChildModels_Effort pins the child effort: the run's effort
+// when set, else the run-level child model's catalog default (codex resets a
+// child to it); either is checked against the run-level child model (the
+// run's effort only) and every persona model, as codex checks them at
+// spawn, and the error names the position that chose the model.
+func TestResolveCodexChildModels_Effort(t *testing.T) {
+	t.Parallel()
+	gpt55, luna, sol := "openai/gpt-5.5", "openai/gpt-5.6-luna", "openai/gpt-5.6-sol"
+	roles := []codexRole{{Name: "correctness"}, {Name: "default"}, {Name: "explore"}}
+	ultraDefault := codexTestCatalog()
+	ultraDefault["gpt-x-ultra"] = codexCatalogModel{Version: "v2", DefaultEffort: "ultra", Efforts: []string{"ultra"}}
+	noLevels := codexTestCatalog()
+	noLevels["gpt-5.6-luna"] = codexCatalogModel{Version: "v1", DefaultEffort: "medium"}
+	tests := []struct {
+		name       string
+		subagents  map[string]*string
+		env        string
+		runEffort  string
+		catalog    codexCatalog
+		wantEffort string
+		wantErr    string
+	}{
+		{name: "no run effort: no key", catalog: codexTestCatalog()},
+		{name: "run effort high on luna", runEffort: "high", catalog: codexTestCatalog(), wantEffort: "high"},
+		{name: "run effort trimmed and lower-cased", runEffort: " High ", catalog: codexTestCatalog(), wantEffort: "high"},
+		{name: "max with subagents.default gpt-5.5", subagents: map[string]*string{"default": &gpt55}, runEffort: "max", catalog: codexTestCatalog(),
+			wantErr: `subagents.default: model "gpt-5.5" does not support reasoning effort "max" (the run's effort)`},
+		{name: "max with the runner variable gpt-5.5", env: gpt55, runEffort: "max", catalog: codexTestCatalog(),
+			wantErr: `FULLSEND_CODEX_SUBAGENT_MODEL: model "gpt-5.5" does not support reasoning effort "max"`},
+		{name: "max with a beaten subagents.default gpt-5.5", subagents: map[string]*string{"default": &gpt55}, env: luna, runEffort: "max",
+			catalog: codexTestCatalog(), wantEffort: "max"},
+		{name: "max with a persona on gpt-5.5", subagents: map[string]*string{"correctness": &gpt55}, runEffort: "max", catalog: codexTestCatalog(),
+			wantErr: `subagents.correctness: model "gpt-5.5" does not support reasoning effort "max" (the run's effort)`},
+		{name: "low with a persona on sol", subagents: map[string]*string{"correctness": &sol}, runEffort: "low", catalog: codexTestCatalog(), wantEffort: "low"},
+		{name: "no run effort: a persona model lacks the default model's default", subagents: map[string]*string{"default": strp("openai/gpt-x-ultra"), "correctness": &luna},
+			catalog: ultraDefault, wantErr: `subagents.correctness: model "gpt-5.6-luna" does not support reasoning effort "ultra" (the catalog default of gpt-x-ultra)`},
+		{name: "an entry without supported levels", runEffort: "medium", catalog: noLevels,
+			wantErr: `built-in default: model "gpt-5.6-luna" does not support reasoning effort "medium" (the run's effort), which codex would refuse at every spawn; it supports none`},
+		{name: "a tombstoned subagents.default falls to the floor", subagents: map[string]*string{"default": nil}, runEffort: "high", catalog: codexTestCatalog(), wantEffort: "high"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, effort, err := resolveCodexChildModels(roles, nil, tt.subagents, tt.env, tt.runEffort, tt.catalog)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantEffort, effort)
 		})
 	}
 }

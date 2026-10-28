@@ -75,23 +75,23 @@ func TestCodexGolden(t *testing.T) {
 	}{
 		{"config.toml", func(t *testing.T) string {
 			data, err := renderCodexConfig(sandbox.SandboxCodexConfig, repo,
-				codexDeveloperInstructions("triage", def, nil), "", nil, "")
+				codexDeveloperInstructions("triage", def, nil), "", nil, "", "")
 			require.NoError(t, err)
 			return string(data)
 		}},
 		{"config-gateway.toml", func(t *testing.T) string {
 			data, err := renderCodexConfig(sandbox.SandboxCodexConfig, repo,
-				codexDeveloperInstructions("triage", def, nil), testCodexGatewayBaseURL, nil, "")
+				codexDeveloperInstructions("triage", def, nil), testCodexGatewayBaseURL, nil, "", "")
 			require.NoError(t, err)
 			return string(data)
 		}},
 		{"config-delegating.toml", func(t *testing.T) string {
 			review, err := parsePiAgent([]byte(codexTestDelegatingAgentDef))
 			require.NoError(t, err)
-			roles, defaultModel, err := resolveCodexChildModels(codexGoldenRoles(t), nil, nil, "", codexTestCatalog())
+			roles, defaultModel, _, err := resolveCodexChildModels(codexGoldenRoles(t), nil, nil, "", "", codexTestCatalog())
 			require.NoError(t, err)
 			data, err := renderCodexConfig(sandbox.SandboxCodexConfig, repo,
-				codexDeveloperInstructions("review", review, roles), "", roles, defaultModel)
+				codexDeveloperInstructions("review", review, roles), "", roles, defaultModel, "")
 			require.NoError(t, err)
 			return string(data)
 		}},
@@ -122,8 +122,8 @@ func TestCodexGolden(t *testing.T) {
 		{"roles/default.toml", func(t *testing.T) string { return string(codexGoldenRoles(t)[1].toml()) }},
 		{"roles/explore.toml", func(t *testing.T) string { return string(codexGoldenRoles(t)[2].toml()) }},
 		{"roles/correctness-model.toml", func(t *testing.T) string {
-			resolved, _, err := resolveCodexChildModels(codexGoldenRoles(t), nil,
-				map[string]*string{"correctness": strp("openai/gpt-5.6-sol")}, "", codexTestCatalog())
+			resolved, _, _, err := resolveCodexChildModels(codexGoldenRoles(t), nil,
+				map[string]*string{"correctness": strp("openai/gpt-5.6-sol")}, "", "", codexTestCatalog())
 			require.NoError(t, err)
 			require.Equal(t, "correctness", resolved[0].Name, "codexRoles sorts by name")
 			return string(resolved[0].toml())

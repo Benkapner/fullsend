@@ -18,6 +18,7 @@ type harnessBootstrap struct {
 	modelAliases   map[string]string
 	agentSubagents map[string]*string
 	parentModel    string
+	effort         string
 	repoDir        string
 	// openAIProviderAttached is whether the run-scoped OpenAI provider was
 	// created for this run; see runtime.BootstrapInput.OpenAIProviderAttached.
@@ -37,6 +38,7 @@ func (b *harnessBootstrap) Plugins() []runtime.PluginInput     { return b.plugin
 func (b *harnessBootstrap) ModelAliases() map[string]string    { return b.modelAliases }
 func (b *harnessBootstrap) AgentSubagents() map[string]*string { return b.agentSubagents }
 func (b *harnessBootstrap) ParentModel() string                { return b.parentModel }
+func (b *harnessBootstrap) Effort() string                     { return b.effort }
 func (b *harnessBootstrap) RepoDir() string                    { return b.repoDir }
 func (b *harnessBootstrap) OpenAIProviderAttached() bool       { return b.openAIProviderAttached }
 
@@ -93,6 +95,7 @@ func newHarnessBootstrap(h *harness.Harness, sandboxName, agentName, forgeEgress
 		modelAliases:           modelAliases,
 		agentSubagents:         agentSubagents,
 		parentModel:            parentModel,
+		effort:                 h.Effort,
 		repoDir:                repoDir,
 		openAIProviderAttached: openAIProviderAttached,
 	}

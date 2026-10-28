@@ -160,7 +160,7 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	// tool the guard admits (its entry selects V1, or carries no version and
 	// codex's multi_agent feature, on by default, supplies V1). A V2,
 	// unlisted or gateway/ parent keeps the multi-agent tools off and runs in
-	// one context, as every agent does today.
+	// one context, as an agent that does not delegate does.
 	_, securityOn := input.(SandboxHooksBootstrap)
 	var catalog codexCatalog
 	delegating := false
@@ -175,11 +175,11 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	}
 	// Resolved before config.toml is written: a bad subagents value fails here.
 	var roles []codexRole
-	defaultSubagentModel := ""
+	defaultSubagentModel, childEffort := "", ""
 	if delegating {
 		discovered, skipped := codexRoles(input.SkillDirs(), agentName)
-		roles, defaultSubagentModel, err = resolveCodexChildModels(
-			discovered, skipped, input.AgentSubagents(), os.Getenv(codexSubagentModelEnv), catalog)
+		roles, defaultSubagentModel, childEffort, err = resolveCodexChildModels(
+			discovered, skipped, input.AgentSubagents(), os.Getenv(codexSubagentModelEnv), input.Effort(), catalog)
 		if err != nil {
 			return err
 		}
@@ -188,7 +188,7 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	// inference.gateway block for this sandbox (PrepareGatewayRun).
 	gatewayBaseURL := codexGatewayRunFor(sandboxName)
 	configTOML, err := renderCodexConfig(cfg, repoInput.RepoDir(),
-		codexDeveloperInstructions(agentName, def, roles), gatewayBaseURL, roles, defaultSubagentModel)
+		codexDeveloperInstructions(agentName, def, roles), gatewayBaseURL, roles, defaultSubagentModel, childEffort)
 	if err != nil {
 		return err
 	}

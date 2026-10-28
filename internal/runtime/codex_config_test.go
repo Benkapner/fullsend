@@ -65,7 +65,7 @@ func TestRenderCodexConfig_ParsesAsTOML(t *testing.T) {
 
 	// A directory name can carry quotes, backslashes and a newline too.
 	nastyRepo := sandbox.SandboxWorkspace + "/re\"po\\\\x]\ntrust_level = \"trusted\""
-	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, nastyRepo, nasty, "", nil, "")
+	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, nastyRepo, nasty, "", nil, "", "")
 	require.NoError(t, err)
 
 	path := filepath.Join(t.TempDir(), "config.toml")
@@ -113,7 +113,7 @@ print(json.dumps({
 }
 
 func TestRenderCodexConfig_PinsProviderAndHygieneKeys(t *testing.T) {
-	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", nil, "")
+	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", nil, "", "")
 	require.NoError(t, err)
 	rendered := string(data)
 
@@ -168,7 +168,7 @@ func TestRenderCodexConfig_PinsProviderAndHygieneKeys(t *testing.T) {
 // codex reads; the gateway provider is the default.
 func TestRenderCodexConfig_GatewayProvider(t *testing.T) {
 	python := pythonWithTomllib(t)
-	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", testCodexGatewayBaseURL, nil, "")
+	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", testCodexGatewayBaseURL, nil, "", "")
 	require.NoError(t, err)
 	rendered := string(data)
 	assert.NotContains(t, rendered, "env_key", "the gateway credential comes from the auth script, never the environment")
@@ -214,12 +214,12 @@ print(json.dumps({"default": cfg["model_provider"], "providers": cfg["model_prov
 // refuses the openai-only config in its place and vice versa: rendering a
 // second provider does not loosen it.
 func TestCodexConfigGuard_GatewayConfig(t *testing.T) {
-	plain, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", nil, "")
+	plain, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", nil, "", "")
 	require.NoError(t, err)
-	withGateway, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", testCodexGatewayBaseURL, nil, "")
+	withGateway, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", testCodexGatewayBaseURL, nil, "", "")
 	require.NoError(t, err)
 	assert.NotEqual(t, codexAssetSHA256(plain), codexAssetSHA256(withGateway))
-	other, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "https://evil.example.com/v1", nil, "")
+	other, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "https://evil.example.com/v1", nil, "", "")
 	require.NoError(t, err)
 	assert.NotEqual(t, codexAssetSHA256(withGateway), codexAssetSHA256(other), "the gateway base_url is covered by the digest")
 }
@@ -435,7 +435,7 @@ func writeFileForTest(path string, data []byte) error {
 }
 
 func TestRenderCodexConfig_RequiresRepoDir(t *testing.T) {
-	_, err := renderCodexConfig(sandbox.SandboxCodexConfig, "", "body", "", nil, "")
+	_, err := renderCodexConfig(sandbox.SandboxCodexConfig, "", "body", "", nil, "", "")
 	require.Error(t, err, "an empty path would leave the project's trust unset")
 }
 
@@ -489,6 +489,19 @@ func codexTestDelegatingRoles() []codexRole {
 	}
 }
 
+// The run's effort is bound for every child right after the run-level child
+// model; with no effort the key is absent, so the bytes are unchanged.
+func TestCodexAgentsBlock_ChildEffort(t *testing.T) {
+	t.Parallel()
+	with := codexAgentsBlock(sandbox.SandboxCodexConfig, codexTestDelegatingRoles(), "gpt-5.6-luna", "high")
+	assert.Contains(t, with, "default_subagent_model = \"gpt-5.6-luna\"\ndefault_subagent_reasoning_effort = \"high\"\n")
+	without := codexAgentsBlock(sandbox.SandboxCodexConfig, codexTestDelegatingRoles(), "gpt-5.6-luna", "")
+	assert.NotContains(t, without, "reasoning_effort")
+	assert.Equal(t, strings.Replace(with, "default_subagent_reasoning_effort = \"high\"\n", "", 1), without)
+	assert.Equal(t, "[agents]\nenabled = false", codexAgentsBlock(sandbox.SandboxCodexConfig, nil, "", "high"),
+		"an agent that does not delegate gets no child settings")
+}
+
 // TestRenderCodexConfig_DelegatingAgentsBlock pins the [agents] block of a
 // delegating agent: enabled = true, the two limits ADR 0126 fixes, the
 // run-level child model, one [agents."<name>"] table per role with its
@@ -496,7 +509,7 @@ func codexTestDelegatingRoles() []codexRole {
 // the untrusted project pin stays.
 func TestRenderCodexConfig_DelegatingAgentsBlock(t *testing.T) {
 	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "",
-		codexTestDelegatingRoles(), "gpt-5.6-luna")
+		codexTestDelegatingRoles(), "gpt-5.6-luna", "")
 	require.NoError(t, err)
 	rendered := string(data)
 
@@ -528,9 +541,9 @@ func TestRenderCodexConfig_DelegatingAgentsBlock(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(rendered, "\ncommand "))
 
 	// No roles: the same bytes as before, whatever the default model argument.
-	none, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", nil, "")
+	none, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", nil, "", "")
 	require.NoError(t, err)
-	empty, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", []codexRole{}, "gpt-5.6-luna")
+	empty, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", []codexRole{}, "gpt-5.6-luna", "")
 	require.NoError(t, err)
 	assert.Equal(t, none, empty)
 	assert.Contains(t, string(none), "[features]\nplugins = false\nmulti_agent_v2 = false\n\n[agents]\nenabled = false\n\n[projects.")
@@ -543,7 +556,7 @@ func TestRenderCodexConfig_DelegatingParsesAsTOML(t *testing.T) {
 	python := pythonWithTomllib(t)
 	roles := codexTestDelegatingRoles()
 	roles[0].Description = `Checks "edge" cases \ and [agents."evil"] config_file = "x"`
-	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", roles, "gpt-6-astra")
+	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", roles, "gpt-6-astra", "")
 	require.NoError(t, err)
 
 	path := filepath.Join(t.TempDir(), "config.toml")

@@ -1289,6 +1289,60 @@ func TestCodexRuntimeBootstrap_DelegatingAgentRunsNativeChildren(t *testing.T) {
 	assert.Contains(t, readFileString(t, logPath), r.codexHooksPath(), "hooks.json is still written: the guard is installed")
 }
 
+// The run's effort reaches config.toml as every child's effort, and an
+// effort a child model lacks fails Bootstrap before config.toml is written;
+// an agent that does not delegate gets neither, whatever its effort.
+func TestCodexRuntimeBootstrap_BindsTheRunEffort(t *testing.T) {
+	t.Setenv(codexSubagentModelEnv, "")
+	skill := t.TempDir()
+	writePersonaFile(t, skill, "correctness", codexTestPersona)
+	run := func(t *testing.T, input codexHooksBootstrapInput) (CodexRuntime, string, string, error) {
+		storeDir := t.TempDir()
+		fakeOpenshellCodex(t, filepath.Join(t.TempDir(), "openshell.log"), storeDir, "codex-cli 0.152.1")
+		forgetRunnerHeldDigests("sb")
+		t.Cleanup(func() { forgetRunnerHeldDigests("sb") })
+		r := CodexRuntime{}
+		var err error
+		out := captureStderr(t, func() { err = r.Bootstrap(input) })
+		return r, storeDir, out, err
+	}
+
+	t.Run("delegating, effort high", func(t *testing.T) {
+		input := codexDelegatingHooksInput(t, skill)
+		input.effort = "high"
+		r, storeDir, out, err := run(t, input)
+		require.NoError(t, err)
+		assert.Contains(t, string(storedUpload(t, storeDir, r.codexConfigPath())), "default_subagent_reasoning_effort = \"high\"\n")
+		assert.Contains(t, out, "subagents: effort → high (from the run's effort; every child)")
+	})
+	t.Run("delegating, no effort", func(t *testing.T) {
+		r, storeDir, out, err := run(t, codexDelegatingHooksInput(t, skill))
+		require.NoError(t, err)
+		assert.NotContains(t, string(storedUpload(t, storeDir, r.codexConfigPath())), "default_subagent_reasoning_effort")
+		assert.Contains(t, out, "subagents: effort → medium (from the catalog default of gpt-5.6-luna; every child)")
+	})
+	t.Run("delegating, effort max with a gpt-5.5 default", func(t *testing.T) {
+		input := codexDelegatingHooksInput(t, skill)
+		input.effort = "max"
+		input.agentSubagents = map[string]*string{"default": strp("openai/gpt-5.5")}
+		r, storeDir, _, err := run(t, input)
+		require.ErrorContains(t, err, `subagents.default: model "gpt-5.5" does not support reasoning effort "max"`)
+		_, statErr := os.Stat(filepath.Join(storeDir, strings.ReplaceAll(r.codexConfigPath(), "/", "_")))
+		assert.True(t, os.IsNotExist(statErr), "config.toml is not written")
+	})
+	t.Run("not delegating, effort max", func(t *testing.T) {
+		input := codexHooksBootstrapInput{
+			bootstrapInput: bootstrapInput{sandboxName: "sb", agentPath: writeAgentFile(t, codexTestAgentDef), agentName: "triage", skillDirs: []string{skill}, effort: "max",
+				agentSubagents: map[string]*string{"default": strp("openai/gpt-5.5")}},
+			hooks: security.SandboxHookConfigFromHarness(&harness.Harness{}),
+		}
+		r, storeDir, out, err := run(t, input)
+		require.NoError(t, err)
+		assert.NotContains(t, string(storedUpload(t, storeDir, r.codexConfigPath())), "default_subagent_reasoning_effort")
+		assert.NotContains(t, out, "subagents:")
+	})
+}
+
 // FULLSEND_CODEX_SUBAGENT_MODEL beats subagents.default for the run-level
 // default; a persona without its own entry still gets no model line.
 func TestCodexRuntimeBootstrap_SubagentModelEnvBeatsTheConfigDefault(t *testing.T) {

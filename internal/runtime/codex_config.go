@@ -222,7 +222,7 @@ type codexConfigData struct {
 // inference.gateway block applies. roles is the roster Bootstrap registers
 // for a delegating agent (empty otherwise) and defaultSubagentModel the
 // run-level child model it resolved with them.
-func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL string, roles []codexRole, defaultSubagentModel string) ([]byte, error) {
+func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL string, roles []codexRole, defaultSubagentModel, childEffort string) ([]byte, error) {
 	if repoDir == "" {
 		return nil, fmt.Errorf("rendering codex %s: the target repository path is required", codexConfigFile)
 	}
@@ -233,7 +233,7 @@ func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL
 		DeveloperInstructions: codexTOMLString(developerInstructions),
 		AuthCommand:           codexTOMLString(configDir + "/" + codexAuthScriptFile),
 		ProjectKey:            codexTOMLKey(repoDir),
-		AgentsBlock:           codexAgentsBlock(configDir, roles, defaultSubagentModel),
+		AgentsBlock:           codexAgentsBlock(configDir, roles, defaultSubagentModel, childEffort),
 		RefreshIntervalMS:     codexAuthRefreshIntervalMS,
 		TimeoutMS:             codexAuthTimeoutMS,
 	}
@@ -258,18 +258,22 @@ const (
 )
 
 // codexAgentsBlock renders the [agents] table: off without roles; with
-// roles, on under the ADR 0126 limits, with the run-level child model and
-// one table per role file Bootstrap writes under <configDir>/agents.
+// roles, on under the ADR 0126 limits, with the run-level child model, the
+// run's effort for every child when the run has one, and one table per
+// role file Bootstrap writes under <configDir>/agents.
 // Strings go through codexTOMLString and table keys through codexTOMLKey;
 // the boolean and the two limits are bare. No trailing newline: the
 // template supplies the blank line that follows.
-func codexAgentsBlock(configDir string, roles []codexRole, defaultSubagentModel string) string {
+func codexAgentsBlock(configDir string, roles []codexRole, defaultSubagentModel, childEffort string) string {
 	if len(roles) == 0 {
 		return "[agents]\nenabled = false"
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "[agents]\nenabled = true\nmax_concurrent_threads_per_session = %d\nmax_depth = %d\ndefault_subagent_model = %s\n",
 		codexMaxOpenChildren, codexMaxChildDepth, codexTOMLString(defaultSubagentModel))
+	if childEffort != "" {
+		fmt.Fprintf(&b, "default_subagent_reasoning_effort = %s\n", codexTOMLString(childEffort))
+	}
 	for _, role := range roles {
 		fmt.Fprintf(&b, "\n[agents.%s]\ndescription = %s\nconfig_file = %s\n",
 			codexTOMLKey(role.Name), codexTOMLString(role.Description),
