@@ -3508,6 +3508,14 @@ func resolveTargetRef(ctx context.Context, fullsendRef, upstreamRef, upstreamTag
 		// committed workflow ref stay consistent regardless of whether
 		// resolved.FullsendRef happens to be populated yet.
 		ref = upstreamRef
+		if fullsendRef != upstreamTag {
+			// The manifest holds a commit SHA, not the release tag that
+			// install writes back. Any other CLI treats that SHA as an
+			// explicit pin with no tag, so drop the tag here too: the
+			// same manifest then renders the same runner image (dev)
+			// under every CLI version.
+			tag = ""
+		}
 	} else if ref != "" {
 		manifestRef = ref
 		// Only SHA-pin semver tags. Branch names are used directly
