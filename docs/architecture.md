@@ -550,12 +550,14 @@ The existing design principle is that [the repo is the coordinator](problems/age
 
 - What field-level normalized-entity contract and provider query plans can
   support entity-first evaluation, prove partial-history coverage, and
-  represent handled state? [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md)
-  decides selective acquisition and its authorization rules; [ADR
-  0149](ADRs/0149-coalesce-entity-source-discovery-queries.md) decides query
-  combination and local routing. The normative discovery protocol, including
-  query syntax, adapter mappings, and discovery coverage evidence, remains
-  open, as do the normalized entity-history and handled-state contracts.
+  represent handled state? See
+  [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md)
+  for selective acquisition and its authorization rules, and
+  [ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)
+  for query combination and local routing. The normative discovery protocol,
+  including query syntax, adapter mappings, and discovery coverage evidence,
+  remains open, as do the normalized entity-history and handled-state
+  contracts.
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner

@@ -88,8 +88,8 @@ Before each sandbox cycle for an entity-driven harness, bound `run` reads the
 current entity facts and checks both source membership and harness CEL locally.
 This also applies to cycles started by an event or wakeup. The checks may run
 in either order, but both MUST be true before a sandbox starts. A verified
-event supplies a candidate and still goes through its separate actor-
-authorization check; it cannot skip the source query. A stale search result
+event supplies a candidate and still goes through its separate
+actor-authorization check; it cannot skip the source query. A stale search result
 does not prove current membership. If membership is unknown, do not start a
 sandbox; keep a retry or rediscovery path.
 
