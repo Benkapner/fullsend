@@ -184,6 +184,120 @@ func TestPerRepoConfigValidate_AuthorizationDuplicateProvider(t *testing.T) {
 	assert.Contains(t, err.Error(), "duplicate provider")
 }
 
+func TestParsePerRepoConfig_JiraAuthorization(t *testing.T) {
+	cfg, err := ParsePerRepoConfig([]byte(`
+authorization:
+  - provider: owners_file
+  - provider: jira
+    write:
+      groups: [example-team-developers]
+      accounts: ["5f7c012e0b2a4c001f3d9876"]
+    triage:
+      groups: [example-team]
+      accounts: []
+    labels: allowlist
+`))
+	require.NoError(t, err)
+	assert.True(t, cfg.IsOwnersFileAuthEnabled())
+	ja := cfg.JiraAuthorization()
+	require.NotNil(t, ja)
+	assert.Equal(t, []string{"example-team-developers"}, ja.Write.Groups)
+	assert.Equal(t, []string{"5f7c012e0b2a4c001f3d9876"}, ja.Write.Accounts)
+	assert.Equal(t, []string{"example-team"}, ja.Triage.Groups)
+	assert.True(t, ja.HasJiraLists())
+	assert.Equal(t, JiraLabelsAllowlist, ja.EffectiveJiraLabels())
+	require.NoError(t, cfg.(PerRepoConfigWriter).Validate())
+
+	// The accessor returns a copy: mutating it does not change the config.
+	ja.Write.Groups[0] = "mutated"
+	assert.Equal(t, []string{"example-team-developers"}, cfg.JiraAuthorization().Write.Groups)
+}
+
+func TestParsePerRepoConfig_JiraAuthorizationDefaults(t *testing.T) {
+	cfg, err := ParsePerRepoConfig([]byte("authorization:\n  - provider: jira\n"))
+	require.NoError(t, err)
+	ja := cfg.JiraAuthorization()
+	require.NotNil(t, ja)
+	assert.False(t, ja.HasJiraLists())
+	assert.Equal(t, JiraLabelsEditors, ja.EffectiveJiraLabels())
+
+	none, err := ParsePerRepoConfig([]byte("authorization:\n  - provider: owners_file\n"))
+	require.NoError(t, err)
+	assert.Nil(t, none.JiraAuthorization())
+	var nilProvider *AuthorizationProvider
+	assert.False(t, nilProvider.HasJiraLists())
+	assert.Equal(t, JiraLabelsEditors, nilProvider.EffectiveJiraLabels())
+}
+
+func TestParsePerRepoConfig_JiraAuthorizationRejectsInvalid(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name:    "unknown labels value",
+			yaml:    "authorization:\n  - provider: jira\n    labels: everyone\n",
+			wantErr: `invalid labels "everyone"`,
+		},
+		{
+			name:    "unknown provider key",
+			yaml:    "authorization:\n  - provider: jira\n    admins:\n      groups: [x]\n",
+			wantErr: `unknown field "admins"`,
+		},
+		{
+			name:    "unknown list key",
+			yaml:    "authorization:\n  - provider: jira\n    write:\n      group: [x]\n",
+			wantErr: `unknown field "group"`,
+		},
+		{
+			name:    "empty group name",
+			yaml:    "authorization:\n  - provider: jira\n    write:\n      groups: [\"\"]\n",
+			wantErr: "empty group name",
+		},
+		{
+			name:    "empty account ID",
+			yaml:    "authorization:\n  - provider: jira\n    triage:\n      accounts: [\" \"]\n",
+			wantErr: "empty account ID",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParsePerRepoConfig([]byte(tt.yaml))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestPerRepoConfigValidate_JiraAuthorization(t *testing.T) {
+	valid := &perRepoConfig{
+		Version: "1",
+		Authorization: []AuthorizationProvider{{
+			Provider: AuthProviderJira,
+			Write:    &JiraActorList{Accounts: []string{"acct"}},
+			Labels:   JiraLabelsProjectRoles,
+		}},
+	}
+	assert.NoError(t, valid.Validate())
+
+	badLabels := &perRepoConfig{
+		Version:       "1",
+		Authorization: []AuthorizationProvider{{Provider: AuthProviderJira, Labels: "anyone"}},
+	}
+	err := badLabels.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authorization[0]: jira provider: invalid labels")
+
+	jiraFieldsOnOwners := &perRepoConfig{
+		Version:       "1",
+		Authorization: []AuthorizationProvider{{Provider: AuthProviderOwnersFile, Labels: JiraLabelsAllowlist}},
+	}
+	err = jiraFieldsOnOwners.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only valid for provider")
+}
+
 func TestParsePerRepoConfig(t *testing.T) {
 	yamlData := `
 version: "1"

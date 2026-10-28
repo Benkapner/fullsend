@@ -68,10 +68,14 @@ admin > maintain > write > triage > read > none > external
 | | Developer | `write` |
 | | Reporter | `triage` |
 | | Guest | `read` |
-| **Jira** | Administrators | `admin` |
+| **Jira** (project roles) | Administrators | `admin` |
 | | Developers | `write` |
 | | _(other named role)_ | `read` |
 | | _(no project membership)_ | `external` |
+| **Jira** (`jira` provider lists) | listed under `write` | `write` |
+| | listed only under `triage` | `triage` |
+| | _(not listed)_ | `none` |
+| **Jira** _(role not resolved)_ | — | `none` |
 
 On GitHub the mapping source is the collaborator permission API
 (`GET /repos/{owner}/{repo}/collaborators/{username}/permission`), which
@@ -109,13 +113,37 @@ key never matches, and nested aliases are not expanded. The files are read from 
 from the default branch otherwise, so a PR cannot add its author. See the
 [`authorization` field](../../../reference/config-reference.md#authorization).
 
-On Jira the mapping source is the project's role membership roster,
-resolved once per poll cycle for the configured `--jira-project`. An
-actor is matched by Jira account ID. Role names are matched
-case-insensitively against the names above; unrecognized role names fall
-through to `read`. Actors with no membership in the configured project —
-or whose issue belongs to a different project — are mapped to `external`
-(fail-closed). See the
+On Jira the mapping source for each event is chosen by the `jira` provider
+under `authorization` in `.fullsend/config.yaml`
+([ADR 0152](../../../ADRs/0152-authorize-jira-poll-actors-without-project-administration.md)).
+The provider applies only to events with `source.system: jira`:
+
+- **Label-added events** follow the provider's `labels` rule. Under
+  `jira_editors`, the default and the rule when no provider is listed, the
+  role is not resolved. The event is authorized by the
+  [label exception](#label-application) instead. Under `allowlist` the role
+  comes from the provider's lists, and under `project_roles` from the
+  project role roster.
+- **Every other event**, slash commands included, takes its role from the
+  provider's `write` and `triage` lists when they name at least one group or
+  account. The lists are then authoritative: the project role roster is not
+  consulted. An actor named under `write` (by account ID, or by membership in
+  a listed Jira group) is `write`. An actor named only under `triage` is
+  `triage`. Anyone else is `none`. Group membership comes from
+  `GET /rest/api/3/user/groups` and is read once per actor per poll cycle.
+- **Without lists**, a slash-command comment takes its role from the
+  project's role roster, resolved once per poll cycle for the configured
+  `--jira-project` and only when such an event is present. An actor is
+  matched by Jira account ID. Role names are matched case-insensitively
+  against the names above, and unrecognized role names fall through to
+  `read`. Actors with no membership in the configured project, or whose
+  issue belongs to a different project, are mapped to `external`
+  (fail-closed). Any other event's role is not resolved.
+
+An event whose role is not resolved carries `actor.role: none`, which no
+threshold admits. Reading the roster (`GET /rest/api/3/project/<KEY>/role`)
+requires Jira's Administer Projects permission; a failed read fails the
+poll cycle without advancing checkpoints. See the
 [Jira integration guide](../../../guides/user/jira-integration.md) for
 details on the name-based matching limitation.
 
@@ -254,6 +282,18 @@ positively classify it using provider-controlled metadata, but `actor.bot_role`
 lookup is not required. The platform gate MUST NOT inspect the label name or
 maintain an agent-role label allowlist; harness/CEL routing owns that mapping
 and may further narrow the dispatch.
+
+**Jira:** A Jira `label_changed` event with `label.action: added` is
+authorized the same way, regardless of `actor.role`, because Jira requires
+the Edit Issues permission to change an issue's labels. This is the `jira`
+provider's default `labels: jira_editors` rule
+([ADR 0152](../../../ADRs/0152-authorize-jira-poll-actors-without-project-administration.md)).
+It is often broader than Jira's Developers role. A repository that sets
+`labels: allowlist` or `labels: project_roles` turns the exception off for
+Jira: those label events then take the ordinary per-harness threshold against
+the role resolved from the lists or the project role roster. The poller's own
+account's events are classified as bot events and dropped before
+authorization.
 
 ### Bot-submitted reviews (GitHub)
 

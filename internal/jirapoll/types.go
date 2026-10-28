@@ -50,6 +50,53 @@ type Options struct {
 	N                       int           // Max issues to process per cycle (default: 5)
 	StaleThreshold          time.Duration // Lock stale threshold (default: 900s)
 	FirstPollBackfillWindow time.Duration // How far back to backfill comments/changelog on an issue's first poll (default: 24h)
+
+	// Authorization holds the jira authorization provider from
+	// config.yaml. The zero value (no provider) resolves slash commands and
+	// other non-label events through the Jira project role roster and
+	// authorizes label-added events by Jira's Edit Issues permission.
+	Authorization Authorization
+}
+
+// Values of Authorization.Labels. They match the config package's
+// JiraLabels* constants, kept separate so jirapoll does not depend on
+// config.
+const (
+	LabelsJiraEditors  = "jira_editors"
+	LabelsAllowlist    = "allowlist"
+	LabelsProjectRoles = "project_roles"
+)
+
+// ActorList is a set of Jira groups (names or IDs) and account IDs.
+type ActorList struct {
+	Groups   []string
+	Accounts []string
+}
+
+// Authorization is the poller's view of the jira authorization provider:
+// the write and triage lists and the label-added event rule.
+type Authorization struct {
+	Write  ActorList
+	Triage ActorList
+	// Labels is LabelsJiraEditors (also the meaning of ""),
+	// LabelsAllowlist, or LabelsProjectRoles.
+	Labels string
+}
+
+// HasLists reports whether the write or triage list names at least one
+// group or account. When it does, the lists are authoritative for every
+// event that does not use the label rule.
+func (a Authorization) HasLists() bool {
+	return len(a.Write.Groups)+len(a.Write.Accounts)+len(a.Triage.Groups)+len(a.Triage.Accounts) > 0
+}
+
+// labelMode returns Labels with the empty value resolved to
+// LabelsJiraEditors.
+func (a Authorization) labelMode() string {
+	if a.Labels == "" {
+		return LabelsJiraEditors
+	}
+	return a.Labels
 }
 
 // JiraEvent is the intermediate event representation, analogous to poll.RoutableEvent.

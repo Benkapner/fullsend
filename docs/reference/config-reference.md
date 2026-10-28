@@ -67,8 +67,16 @@ create_issues:
       - fullsend-ai/agents
 
 # ── Authorization ────────────────────────────────────────────
-authorization:                       # Extra sources of slash-command permission, checked before the collaborator API
-  - provider: owners_file            # Grant access from the repo-root Prow OWNERS file (only provider)
+authorization:                       # Extra sources of permission for triggering agents
+  - provider: owners_file            # GitHub: grant access from the repo-root Prow OWNERS file, checked before the collaborator API
+  - provider: jira                   # Jira (jira-poll): who may trigger agents from Jira events
+    write:                           # Fullsend role write
+      groups: [example-team-developers]  # Jira group names (or group IDs)
+      accounts: ["5f7c012e0b2a4c001f3d9876"]  # Jira account IDs
+    triage:                          # Fullsend role triage
+      groups: [example-team]
+      accounts: []
+    labels: jira_editors             # Label-added events: jira_editors (default), allowlist, project_roles
 
 # ── Status notifications ─────────────────────────────────────
 status_notifications:
@@ -278,9 +286,12 @@ not managed through `fullsend repos`. Preserve any other targets you need.
 
 ### `authorization`
 
-Lists extra sources of permission for triggering agents. The GitHub
-collaborator API always applies; a provider listed here is checked first.
-The only provider is `owners_file`:
+Lists extra sources of permission for triggering agents. There are two
+providers: `owners_file` for GitHub events and `jira` for Jira events.
+
+#### `owners_file`
+
+The GitHub collaborator API always applies; this provider is checked first:
 
 - An `approvers` entry in the repo-root `OWNERS` file gets write-level access
   (every slash command and custom agent). A `reviewers` entry gets
@@ -297,11 +308,49 @@ The only provider is `owners_file`:
 - Only the flat root `approvers`/`reviewers` lists are read. Prow `filters:`
   blocks and per-directory `OWNERS` files are ignored.
 
-Default: absent (collaborator API only). The field is not inherited from
-`config.base.yaml`: each repo opts in in its own `config.yaml`. Unknown or
-duplicate providers fail config validation. See
+#### `jira`
+
+Decides which Jira users may trigger agents through the `jira-poll` input
+driver. It applies only to events from Jira and does not change GitHub or
+GitLab authorization
+([ADR 0152](../ADRs/0152-authorize-jira-poll-actors-without-project-administration.md)).
+
+| Key | Meaning |
+|---|---|
+| `write.groups`, `write.accounts` | Jira groups (by name or group ID) and Jira account IDs granted the Fullsend `write` role |
+| `triage.groups`, `triage.accounts` | Jira groups and account IDs granted the Fullsend `triage` role |
+| `labels` | How a label-added event is authorized: `jira_editors` (default), `allowlist`, or `project_roles` |
+
+- **Slash commands and other non-label events:** when `write` or `triage`
+  names at least one group or account, the lists decide. An actor listed
+  under `write` gets `write`. An actor listed only under `triage` gets
+  `triage`, which covers `/fs-triage`, `/fs-review`, and custom agents whose
+  harness sets `role: triage` or `role: review`. Anyone else is denied. The
+  Jira project roles are not consulted. When the lists are empty, slash
+  commands use the Jira project role lookup instead. That lookup needs
+  Administer Projects. Other non-label events, such as an issue being opened
+  or edited, are then not authorized for any agent.
+- **Label-added events**: `jira_editors` authorizes anyone who could add the
+  label, which needs Jira's Edit Issues permission. `allowlist` checks the
+  label author against the same lists as slash commands. `project_roles`
+  uses the Jira project role lookup.
+- Group entries are resolved with Jira's user-groups API, once per actor per
+  poll cycle. That needs the poller account to hold the Browse users and
+  groups global permission. Account entries need no Jira call.
+
+Without a `jira` entry, slash commands use the project role lookup and
+label-added events use `jira_editors`. Unknown keys in a `jira` entry, an
+unknown `labels` value, and empty group or account entries fail config
+loading. See
+[Jira integration](../guides/user/jira-integration.md#actor-role-resolution)
+for the permissions each setting needs.
+
+Default: absent (`owners_file` off; Jira as described above). The field is
+not inherited from `config.base.yaml`: each repo opts in in its own
+`config.yaml`. Unknown or duplicate providers fail config validation, and
+`write`, `triage`, and `labels` are valid only on the `jira` provider. See
 [OWNERS file authorization](../guides/user/owners-file-authorization.md)
-for a setup walkthrough.
+for an `owners_file` setup walkthrough.
 
 ### `status_notifications`
 

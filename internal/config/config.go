@@ -284,10 +284,171 @@ type CreateIssuesConfig struct {
 	AllowTargets AllowTargets `yaml:"allow_targets"`
 }
 
+// Authorization provider names accepted under authorization:.
+const (
+	// AuthProviderOwnersFile consults the repo-root Prow OWNERS file for
+	// GitHub events.
+	AuthProviderOwnersFile = "owners_file"
+	// AuthProviderJira configures actor authorization for Jira-sourced
+	// events (jira-poll input driver).
+	AuthProviderJira = "jira"
+)
+
+// Values of the jira authorization provider's labels: field, which picks
+// how a Jira label-added event is authorized.
+const (
+	// JiraLabelsEditors authorizes a Jira label-added event by Jira's own
+	// Edit Issues permission: whoever could add the label may trigger.
+	// This is the default when labels: is omitted.
+	JiraLabelsEditors = "jira_editors"
+	// JiraLabelsAllowlist checks the label author against the jira
+	// provider's write and triage lists, like a slash command.
+	JiraLabelsAllowlist = "allowlist"
+	// JiraLabelsProjectRoles resolves the label author's role from the
+	// Jira project role roster (needs the Administer Projects permission).
+	JiraLabelsProjectRoles = "project_roles"
+)
+
+// ValidJiraLabelModes returns the accepted values of the jira
+// authorization provider's labels: field, in documentation order.
+func ValidJiraLabelModes() []string {
+	return []string{JiraLabelsEditors, JiraLabelsAllowlist, JiraLabelsProjectRoles}
+}
+
 // AuthorizationProvider identifies an opt-in authorization backend
 // that supplements the default collaborator-API permission check.
+//
+// Write, Triage, and Labels apply only to the jira provider: they map Jira
+// groups and account IDs to the Fullsend write and triage roles, and pick
+// the rule for Jira label-added events.
 type AuthorizationProvider struct {
-	Provider string `yaml:"provider"`
+	Provider string         `yaml:"provider"`
+	Write    *JiraActorList `yaml:"write,omitempty"`
+	Triage   *JiraActorList `yaml:"triage,omitempty"`
+	Labels   string         `yaml:"labels,omitempty"`
+}
+
+// JiraActorList names the Jira actors granted one Fullsend role by the
+// jira authorization provider. Groups are Jira group names (or group IDs);
+// accounts are Jira account IDs.
+type JiraActorList struct {
+	Groups   []string `yaml:"groups,omitempty"`
+	Accounts []string `yaml:"accounts,omitempty"`
+}
+
+// IsEmpty reports whether l lists no group and no account.
+func (l *JiraActorList) IsEmpty() bool {
+	return l == nil || (len(l.Groups) == 0 && len(l.Accounts) == 0)
+}
+
+// HasJiraLists reports whether the jira provider lists at least one group
+// or account. When it does, the lists are authoritative for Jira actors
+// and the Jira project role roster is not consulted for them.
+func (p *AuthorizationProvider) HasJiraLists() bool {
+	return p != nil && (!p.Write.IsEmpty() || !p.Triage.IsEmpty())
+}
+
+// EffectiveJiraLabels returns the jira provider's labels: rule, defaulting
+// to JiraLabelsEditors when it is unset or p is nil.
+func (p *AuthorizationProvider) EffectiveJiraLabels() string {
+	if p == nil || p.Labels == "" {
+		return JiraLabelsEditors
+	}
+	return p.Labels
+}
+
+// jiraProviderKeys are the keys allowed in a provider: jira entry.
+var jiraProviderKeys = map[string]bool{"provider": true, "write": true, "triage": true, "labels": true}
+
+// jiraActorListKeys are the keys allowed in a jira provider write:/triage:
+// mapping.
+var jiraActorListKeys = map[string]bool{"groups": true, "accounts": true}
+
+// UnmarshalYAML implements yaml.Unmarshaler. Per-repo config is decoded
+// without strict field checking, so a jira provider entry's keys (and its
+// write:/triage: keys) are checked here: a misspelled key would otherwise
+// be dropped silently and change who is authorized. The labels: value and
+// list entries are checked here too, because the jira-poll driver loads
+// config without running Validate.
+func (p *AuthorizationProvider) UnmarshalYAML(value *yaml.Node) error {
+	type plain AuthorizationProvider
+	if value.Kind == yaml.MappingNode && mappingValue(value, "provider") == AuthProviderJira {
+		if err := checkMappingKeys(value, jiraProviderKeys, "authorization: jira provider"); err != nil {
+			return err
+		}
+		for _, key := range []string{"write", "triage"} {
+			if v := mappingNode(value, key); v != nil && v.Kind == yaml.MappingNode {
+				if err := checkMappingKeys(v, jiraActorListKeys, "authorization: jira provider "+key); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if err := value.Decode((*plain)(p)); err != nil {
+		return err
+	}
+	if p.Provider == AuthProviderJira {
+		if err := validateJiraProvider(*p); err != nil {
+			return fmt.Errorf("authorization: %w", err)
+		}
+	}
+	return nil
+}
+
+// mappingNode returns the value node for key in mapping node n, or nil.
+func mappingNode(n *yaml.Node, key string) *yaml.Node {
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			return n.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// mappingValue returns the scalar value for key in mapping node n, or "".
+func mappingValue(n *yaml.Node, key string) string {
+	if v := mappingNode(n, key); v != nil && v.Kind == yaml.ScalarNode {
+		return v.Value
+	}
+	return ""
+}
+
+// checkMappingKeys rejects any key of mapping node n not in allowed.
+func checkMappingKeys(n *yaml.Node, allowed map[string]bool, context string) error {
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k := n.Content[i]
+		if !allowed[k.Value] {
+			return managedFieldError(k, fmt.Sprintf("%s: unknown field %q", context, k.Value))
+		}
+	}
+	return nil
+}
+
+// validateJiraProvider checks a provider: jira entry's labels: value and
+// list entries.
+func validateJiraProvider(p AuthorizationProvider) error {
+	if p.Labels != "" && !slices.Contains(ValidJiraLabelModes(), p.Labels) {
+		return fmt.Errorf("jira provider: invalid labels %q: must be one of %s", p.Labels, strings.Join(ValidJiraLabelModes(), ", "))
+	}
+	for _, l := range []struct {
+		name string
+		list *JiraActorList
+	}{{"write", p.Write}, {"triage", p.Triage}} {
+		if l.list == nil {
+			continue
+		}
+		for _, g := range l.list.Groups {
+			if strings.TrimSpace(g) == "" {
+				return fmt.Errorf("jira provider %s.groups: empty group name", l.name)
+			}
+		}
+		for _, a := range l.list.Accounts {
+			if strings.TrimSpace(a) == "" {
+				return fmt.Errorf("jira provider %s.accounts: empty account ID", l.name)
+			}
+		}
+	}
+	return nil
 }
 
 // ValidConfigAgentName reports whether name is acceptable as an agents:
@@ -416,7 +577,7 @@ func ValidEffort(level string) bool { return slices.Contains(validEffortLevels, 
 
 // ValidAuthorizationProviders returns the set of recognized authorization provider names.
 func ValidAuthorizationProviders() []string {
-	return []string{"owners_file"}
+	return []string{AuthProviderOwnersFile, AuthProviderJira}
 }
 
 // DefaultAgentRoles returns the standard set of agent roles installed
@@ -961,6 +1122,13 @@ func (c *perRepoConfig) validateLocalFields() error {
 			return fmt.Errorf("authorization[%d]: duplicate provider %q", i, p.Provider)
 		}
 		seenProviders[p.Provider] = true
+		if p.Provider == AuthProviderJira {
+			if err := validateJiraProvider(p); err != nil {
+				return fmt.Errorf("authorization[%d]: %w", i, err)
+			}
+		} else if p.Write != nil || p.Triage != nil || p.Labels != "" {
+			return fmt.Errorf("authorization[%d]: write, triage and labels are only valid for provider %q", i, AuthProviderJira)
+		}
 	}
 	// Validate the merged view, as ValidateAgentEntries does above: a bad
 	// key in config.base.yaml must not slip through because the overlay

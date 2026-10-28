@@ -47,8 +47,15 @@ func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 	if aliases := r.ConfigModelAliases(); len(aliases) > 0 {
 		out["models"] = map[string]any{"aliases": aliases}
 	}
+	var authProviders []string
 	if r.IsOwnersFileAuthEnabled() {
-		out["authorization"] = []string{"owners_file"}
+		authProviders = append(authProviders, AuthProviderOwnersFile)
+	}
+	if r.JiraAuthorization() != nil {
+		authProviders = append(authProviders, AuthProviderJira)
+	}
+	if len(authProviders) > 0 {
+		out["authorization"] = authProviders
 	}
 	inference := map[string]any{}
 	for key, val := range map[string]string{

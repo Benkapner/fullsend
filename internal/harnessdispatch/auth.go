@@ -28,7 +28,11 @@ const (
 //
 // Label-added events are authorized without a role threshold because GitHub
 // label application needs triage/write access and bots often lack a
-// collaborator role in that API (mirroring bash label routing). Bot-submitted
+// collaborator role in that API (mirroring bash label routing). Jira
+// label-added events are authorized the same way by default, because Jira
+// requires the Edit Issues permission to change labels (the jira
+// authorization provider's labels: jira_editors rule); AuthOptions can turn
+// that exception off so they take the role threshold instead. Bot-submitted
 // pull_request_review events are also authorized without a role threshold so
 // downstream CEL can filter review state, bot identity, and other review-stage
 // guards.
@@ -46,14 +50,15 @@ const (
 // keeps the role-threshold check.
 //
 // Every remaining event falls through to the per-harness role threshold.
-func authorizeEvent(event *normevent.Event) eventAuth {
+func authorizeEvent(event *normevent.Event, opts AuthOptions) eventAuth {
 	if event == nil {
 		return eventDenied
 	}
-	if event.Source.System == normevent.SystemGitHub &&
-		event.Transition.Kind == normevent.TransitionLabelChanged &&
-		event.Transition.Label != nil &&
-		event.Transition.Label.Action == "added" {
+	if event.Source.System == normevent.SystemGitHub && isLabelAdded(event) {
+		return eventAllowed
+	}
+	if event.Source.System == normevent.SystemJira && isLabelAdded(event) &&
+		!opts.JiraLabelsRequireRole {
 		return eventAllowed
 	}
 	if event.Actor.Kind == normevent.ActorBot && event.Actor.RoleVerified != nil {
@@ -73,6 +78,25 @@ func authorizeEvent(event *normevent.Event) eventAuth {
 		}
 	}
 	return eventNeedsRoleThreshold
+}
+
+// AuthOptions carries the configuration-derived inputs to the dispatch
+// gate. The zero value is the default policy.
+type AuthOptions struct {
+	// JiraLabelsRequireRole turns off the Jira label-added exception, so a
+	// Jira label-added event must satisfy the per-harness role threshold
+	// like any other event. Set it when the jira authorization provider
+	// selects labels: allowlist or labels: project_roles; the poller then
+	// resolves the label author's actor.role from that source.
+	JiraLabelsRequireRole bool
+}
+
+// isLabelAdded reports whether event is a label_changed transition that
+// added a label.
+func isLabelAdded(event *normevent.Event) bool {
+	return event.Transition.Kind == normevent.TransitionLabelChanged &&
+		event.Transition.Label != nil &&
+		event.Transition.Label.Action == "added"
 }
 
 // RequiredActorRole returns the minimum actor.role a harness requires,
@@ -106,7 +130,12 @@ func satisfiesThreshold(role, minimum normevent.ActorRole) bool {
 // harness may be authorized; callers must still filter harnesses with
 // IsHarnessAuthorized or FilterAuthorizedHarnesses.
 func IsEventAuthorized(event *normevent.Event) bool {
-	switch authorizeEvent(event) {
+	return IsEventAuthorizedWith(event, AuthOptions{})
+}
+
+// IsEventAuthorizedWith is IsEventAuthorized under the policy in opts.
+func IsEventAuthorizedWith(event *normevent.Event, opts AuthOptions) bool {
+	switch authorizeEvent(event, opts) {
 	case eventAllowed:
 		return true
 	case eventNeedsRoleThreshold:
@@ -117,12 +146,17 @@ func IsEventAuthorized(event *normevent.Event) bool {
 }
 
 // IsHarnessAuthorized reports whether event may dispatch a harness whose
-// role: field is harnessRole. Event-level exceptions (GitHub label-added,
-// recognized bots, GitHub bot review_submitted) authorize every harness;
-// event-level denials deny every harness; the remaining path requires
-// actor.role to satisfy RequiredActorRole(harnessRole).
+// role: field is harnessRole. Event-level exceptions (GitHub and Jira
+// label-added, recognized bots, GitHub bot review_submitted) authorize every
+// harness; event-level denials deny every harness; the remaining path
+// requires actor.role to satisfy RequiredActorRole(harnessRole).
 func IsHarnessAuthorized(event *normevent.Event, harnessRole string) bool {
-	switch authorizeEvent(event) {
+	return IsHarnessAuthorizedWith(event, harnessRole, AuthOptions{})
+}
+
+// IsHarnessAuthorizedWith is IsHarnessAuthorized under the policy in opts.
+func IsHarnessAuthorizedWith(event *normevent.Event, harnessRole string, opts AuthOptions) bool {
+	switch authorizeEvent(event, opts) {
 	case eventAllowed:
 		return true
 	case eventNeedsRoleThreshold:
@@ -143,13 +177,19 @@ func IsAuthorized(event *normevent.Event) bool {
 // authorized to dispatch, keyed on each harness role: field. Run it before
 // MatchHarnesses so CEL only evaluates authorized harnesses.
 func FilterAuthorizedHarnesses(harnesses []TriggeredHarness, event *normevent.Event) []TriggeredHarness {
+	return FilterAuthorizedHarnessesWith(harnesses, event, AuthOptions{})
+}
+
+// FilterAuthorizedHarnessesWith is FilterAuthorizedHarnesses under the
+// policy in opts.
+func FilterAuthorizedHarnessesWith(harnesses []TriggeredHarness, event *normevent.Event, opts AuthOptions) []TriggeredHarness {
 	var out []TriggeredHarness
 	for _, m := range harnesses {
 		role := ""
 		if m.Harness != nil {
 			role = m.Harness.Role
 		}
-		if IsHarnessAuthorized(event, role) {
+		if IsHarnessAuthorizedWith(event, role, opts) {
 			out = append(out, m)
 		}
 	}

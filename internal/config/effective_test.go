@@ -94,6 +94,26 @@ func TestEffectiveYAML_InheritsInferenceGateway(t *testing.T) {
 	assert.NotContains(t, string(data), "gateway")
 }
 
+func TestEffectiveYAML_ListsJiraAuthorizationProvider(t *testing.T) {
+	overlay, err := ParsePerRepoConfigWriter([]byte("authorization:\n  - provider: jira\n    write:\n      accounts: [acct]\n"))
+	require.NoError(t, err)
+	layered, err := LayerOnBase(overlay, nil)
+	require.NoError(t, err)
+	data, err := EffectiveYAML(layered)
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, yaml.Unmarshal(data, &got))
+	assert.Equal(t, []any{"jira"}, got["authorization"])
+}
+
+func TestCloneAuthorizationSlice_DeepCopiesJiraLists(t *testing.T) {
+	in := []AuthorizationProvider{{Provider: AuthProviderJira, Write: &JiraActorList{Groups: []string{"g"}}}}
+	out := cloneAuthorizationSlice(in)
+	out[0].Write.Groups[0] = "changed"
+	assert.Equal(t, "g", in[0].Write.Groups[0])
+	assert.Nil(t, out[0].Triage)
+}
+
 func TestEffectiveYAML_CodeDefaultsAndNil(t *testing.T) {
 	layered, err := LayerOnBase(NewEmptyPerRepoOverlay(), nil)
 	require.NoError(t, err)

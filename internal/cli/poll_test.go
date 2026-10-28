@@ -18,6 +18,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
+	"github.com/fullsend-ai/fullsend/internal/jirapoll"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
@@ -718,4 +719,95 @@ func TestCELMatcher_PerHarnessRoleThreshold(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func jiraLabelAddedEvent(role normevent.ActorRole) *normevent.Event {
+	return &normevent.Event{
+		Repo:   "acme/platform",
+		Source: normevent.Source{System: normevent.SystemJira, RawType: "changelog", RawAction: "updated"},
+		Entity: normevent.Entity{Kind: normevent.EntityWorkItem, ID: 10042, Key: "PROJ-123"},
+		Transition: normevent.Transition{
+			Kind:  normevent.TransitionLabelChanged,
+			Label: &normevent.LabelChange{Name: "ready-to-code", Action: "added"},
+		},
+		Actor: normevent.Actor{ID: "557058:abc", Kind: normevent.ActorHuman, Role: role},
+	}
+}
+
+func TestCELMatcher_JiraLabelRule(t *testing.T) {
+	trigger := `event.source.system == "jira" && event.transition.kind == "label_changed"`
+	candidates := []harnessdispatch.TriggeredHarness{
+		{Name: "triage", Harness: &harness.Harness{Role: "triage", Trigger: trigger}},
+		{Name: "code", Harness: &harness.Harness{Role: "coder", Trigger: trigger}},
+	}
+	agents := func(m *celMatcher, ev *normevent.Event) []string {
+		records, err := m.Match(t.Context(), ev)
+		require.NoError(t, err)
+		var got []string
+		for _, r := range records {
+			got = append(got, r.Agent)
+		}
+		return got
+	}
+
+	editors := &celMatcher{candidates: candidates}
+	assert.Equal(t, []string{"triage", "code"}, agents(editors, jiraLabelAddedEvent(normevent.RoleNone)),
+		"jira_editors (default): any label author dispatches")
+
+	for _, labels := range []string{config.JiraLabelsAllowlist, config.JiraLabelsProjectRoles} {
+		m := &celMatcher{candidates: candidates, jiraAuth: &config.AuthorizationProvider{Provider: config.AuthProviderJira, Labels: labels}}
+		assert.Empty(t, agents(m, jiraLabelAddedEvent(normevent.RoleNone)), labels)
+		assert.Equal(t, []string{"triage"}, agents(m, jiraLabelAddedEvent(normevent.RoleTriage)), labels)
+	}
+}
+
+func TestNewCELMatcher_LoadsJiraAuthorization(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
+authorization:
+  - provider: jira
+    write:
+      groups: [devs]
+    triage:
+      accounts: [acct]
+    labels: allowlist
+`), 0o644))
+
+	m, err := newCELMatcher(context.Background(), dir)
+	require.NoError(t, err)
+	require.NotNil(t, m.jiraAuth)
+	assert.True(t, m.authOptions().JiraLabelsRequireRole)
+	assert.Equal(t, jirapoll.Authorization{
+		Write:  jirapoll.ActorList{Groups: []string{"devs"}},
+		Triage: jirapoll.ActorList{Accounts: []string{"acct"}},
+		Labels: config.JiraLabelsAllowlist,
+	}, jiraPollAuthorization(m.jiraAuth))
+
+	// Kill switch keeps the provider so the poller's role resolution is
+	// configured consistently.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
+kill_switch: true
+authorization:
+  - provider: jira
+`), 0o644))
+	m, err = newCELMatcher(context.Background(), dir)
+	require.NoError(t, err)
+	require.NotNil(t, m.jiraAuth)
+	assert.False(t, m.authOptions().JiraLabelsRequireRole)
+	assert.Equal(t, jirapoll.Authorization{Labels: config.JiraLabelsEditors}, jiraPollAuthorization(m.jiraAuth))
+
+	// An invalid labels value fails config loading.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
+authorization:
+  - provider: jira
+    labels: anyone
+`), 0o644))
+	_, err = newCELMatcher(context.Background(), dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid labels")
+}
+
+func TestJiraPollAuthorization_NilProvider(t *testing.T) {
+	assert.Equal(t, jirapoll.Authorization{}, jiraPollAuthorization(nil))
+	assert.False(t, (&celMatcher{}).authOptions().JiraLabelsRequireRole)
 }

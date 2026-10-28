@@ -861,9 +861,10 @@ func TestResolveRole_ExternalActor(t *testing.T) {
 
 	// Actor not in membership map should resolve to "external".
 	event := JiraEvent{
-		Type:     "comment_added",
-		IssueID:  "10042",
-		IssueKey: "PROJ-123",
+		Type:        "comment_added",
+		IssueID:     "10042",
+		IssueKey:    "PROJ-123",
+		CommentBody: "/fs-triage",
 		CommentAuthor: jira.User{
 			AccountID:   "unknown-user",
 			AccountType: "atlassian",
@@ -918,9 +919,10 @@ func TestResolveRole_CrossProjectFailsClosed(t *testing.T) {
 	}
 
 	event := JiraEvent{
-		Type:     "comment_added",
-		IssueID:  "10042",
-		IssueKey: "PROJ2-7",
+		Type:        "comment_added",
+		IssueID:     "10042",
+		IssueKey:    "PROJ2-7",
+		CommentBody: "/fs-triage",
 		CommentAuthor: jira.User{
 			AccountID:   "dev-user",
 			AccountType: "atlassian",
@@ -946,9 +948,10 @@ func TestResolveRole_SameProjectSucceeds(t *testing.T) {
 	}
 
 	event := JiraEvent{
-		Type:     "comment_added",
-		IssueID:  "10042",
-		IssueKey: "PROJ1-7",
+		Type:        "comment_added",
+		IssueID:     "10042",
+		IssueKey:    "PROJ1-7",
+		CommentBody: "/fs-triage",
 		CommentAuthor: jira.User{
 			AccountID:   "dev-user",
 			AccountType: "atlassian",
@@ -973,9 +976,10 @@ func TestResolveRole_AdminActor(t *testing.T) {
 	}
 
 	event := JiraEvent{
-		Type:     "comment_added",
-		IssueID:  "10042",
-		IssueKey: "PROJ-123",
+		Type:        "comment_added",
+		IssueID:     "10042",
+		IssueKey:    "PROJ-123",
+		CommentBody: "/fs-triage",
 		CommentAuthor: jira.User{
 			AccountID:   "admin-user",
 			AccountType: "atlassian",
