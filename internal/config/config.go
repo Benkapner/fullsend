@@ -373,12 +373,21 @@ var jiraActorListKeys = map[string]bool{"groups": true, "accounts": true}
 // config without running Validate.
 func (p *AuthorizationProvider) UnmarshalYAML(value *yaml.Node) error {
 	type plain AuthorizationProvider
+	value = resolveAlias(value)
+	if value.Kind == yaml.MappingNode && mappingNode(value, "<<") != nil {
+		// A merge key can supply provider, labels or list keys from another
+		// mapping, bypassing the key checks below.
+		return managedFieldError(value, "authorization: merge keys (<<) are not supported in a provider entry")
+	}
 	if value.Kind == yaml.MappingNode && mappingValue(value, "provider") == AuthProviderJira {
 		if err := checkMappingKeys(value, jiraProviderKeys, "authorization: jira provider"); err != nil {
 			return err
 		}
 		for _, key := range []string{"write", "triage"} {
 			if v := mappingNode(value, key); v != nil && v.Kind == yaml.MappingNode {
+				if mappingNode(v, "<<") != nil {
+					return managedFieldError(v, "authorization: merge keys (<<) are not supported in jira provider "+key)
+				}
 				if err := checkMappingKeys(v, jiraActorListKeys, "authorization: jira provider "+key); err != nil {
 					return err
 				}
@@ -389,6 +398,15 @@ func (p *AuthorizationProvider) UnmarshalYAML(value *yaml.Node) error {
 		return err
 	}
 	if p.Provider == AuthProviderJira {
+		// A write:/triage: key that is present but null (bare "write:" or
+		// "write: null") decodes to a nil pointer. Keep it as an empty list
+		// so the key still counts as configured and denies everyone.
+		if p.Write == nil && yamlKeyIsNull(value, "write") {
+			p.Write = &JiraActorList{}
+		}
+		if p.Triage == nil && yamlKeyIsNull(value, "triage") {
+			p.Triage = &JiraActorList{}
+		}
 		if err := validateJiraProvider(*p); err != nil {
 			return fmt.Errorf("authorization: %w", err)
 		}
@@ -396,11 +414,27 @@ func (p *AuthorizationProvider) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-// mappingNode returns the value node for key in mapping node n, or nil.
+// yamlKeyIsNull reports whether mapping node n has key with an explicit
+// null value (empty or null scalar).
+func yamlKeyIsNull(n *yaml.Node, key string) bool {
+	v := mappingNode(n, key)
+	return v != nil && v.Kind == yaml.ScalarNode && v.Tag == "!!null"
+}
+
+// resolveAlias follows YAML aliases (*anchor) to the node they refer to.
+func resolveAlias(n *yaml.Node) *yaml.Node {
+	for n != nil && n.Kind == yaml.AliasNode {
+		n = n.Alias
+	}
+	return n
+}
+
+// mappingNode returns the value node for key in mapping node n, with any
+// alias resolved, or nil.
 func mappingNode(n *yaml.Node, key string) *yaml.Node {
 	for i := 0; i+1 < len(n.Content); i += 2 {
 		if n.Content[i].Value == key {
-			return n.Content[i+1]
+			return resolveAlias(n.Content[i+1])
 		}
 	}
 	return nil

@@ -849,6 +849,36 @@ func TestJiraPollAuthorization_EmptyListsStayConfigured(t *testing.T) {
 	assert.False(t, jiraPollAuthorization(&config.AuthorizationProvider{Provider: config.AuthProviderJira}).HasLists())
 }
 
+func TestNewCELMatcher_NullListKeysStayConfigured(t *testing.T) {
+	for name, key := range map[string]string{
+		"bare write":   "write:",
+		"null write":   "write: null",
+		"null triage":  "triage: null",
+		"tilde triage": "triage: ~",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			yamlText := "version: \"1\"\nauthorization:\n  - provider: jira\n    " + key + "\n    labels: allowlist\n"
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yamlText), 0o644))
+			m, err := newCELMatcher(context.Background(), dir)
+			require.NoError(t, err)
+			require.NotNil(t, m.jiraAuth)
+			got := jiraPollAuthorization(m.jiraAuth)
+			assert.True(t, got.ListsConfigured)
+			assert.True(t, got.HasLists())
+		})
+	}
+}
+
+func TestNewCELMatcher_RejectsAliasedMisspelledJiraKey(t *testing.T) {
+	dir := t.TempDir()
+	yamlText := "version: \"1\"\njira_provider: &jp jira\nauthorization:\n  - provider: *jp\n    lables: allowlist\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yamlText), 0o644))
+	_, err := newCELMatcher(context.Background(), dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown field "lables"`)
+}
+
 func TestJiraPollAuthorization_NilProvider(t *testing.T) {
 	assert.Equal(t, jirapoll.Authorization{}, jiraPollAuthorization(nil))
 	assert.False(t, (&celMatcher{}).authOptions().JiraLabelsRequireRole)

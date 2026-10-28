@@ -288,6 +288,60 @@ func TestValidateRuntimeAuthorization(t *testing.T) {
 	assert.NoError(t, ValidateRuntimeAuthorization(ok))
 }
 
+func TestParsePerRepoConfig_JiraAuthorizationAliasesAreChecked(t *testing.T) {
+	tests := map[string]struct {
+		yaml    string
+		wantErr string
+	}{
+		"aliased provider with misspelled key": {
+			yaml:    "jira_provider: &jp jira\nauthorization:\n  - provider: *jp\n    lables: allowlist\n",
+			wantErr: `unknown field "lables"`,
+		},
+		"aliased whole entry with misspelled key": {
+			yaml:    "template: &t\n  provider: jira\n  lables: allowlist\nauthorization:\n  - *t\n",
+			wantErr: `unknown field "lables"`,
+		},
+		"aliased list with misspelled key": {
+			yaml:    "devs: &d\n  group: [x]\nauthorization:\n  - provider: jira\n    write: *d\n",
+			wantErr: `unknown field "group"`,
+		},
+		"merge key in entry": {
+			yaml:    "base: &b\n  lables: allowlist\nauthorization:\n  - provider: jira\n    <<: *b\n",
+			wantErr: "merge keys",
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParsePerRepoConfig([]byte(tt.yaml))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+
+	cfg, err := ParsePerRepoConfig([]byte("jira_provider: &jp jira\nauthorization:\n  - provider: *jp\n    labels: allowlist\n"))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.JiraAuthorization())
+	assert.Equal(t, JiraLabelsAllowlist, cfg.JiraAuthorization().EffectiveJiraLabels())
+}
+
+func TestHasJiraLists_NullListKeyIsAuthoritative(t *testing.T) {
+	for name, y := range map[string]string{
+		"bare write":   "authorization:\n  - provider: jira\n    write:\n",
+		"null write":   "authorization:\n  - provider: jira\n    write: null\n",
+		"tilde triage": "authorization:\n  - provider: jira\n    triage: ~\n",
+		"null triage":  "authorization:\n  - provider: jira\n    triage: null\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := ParsePerRepoConfig([]byte(y))
+			require.NoError(t, err)
+			ja := cfg.JiraAuthorization()
+			require.NotNil(t, ja)
+			assert.True(t, ja.HasJiraLists())
+			assert.True(t, ja.Write.IsEmpty() && ja.Triage.IsEmpty())
+		})
+	}
+}
+
 func TestHasJiraLists_EmptyConfiguredListIsAuthoritative(t *testing.T) {
 	cfg, err := ParsePerRepoConfig([]byte("authorization:\n  - provider: jira\n    write:\n      accounts: []\n"))
 	require.NoError(t, err)
