@@ -305,6 +305,26 @@ func TestParsePerRepoConfig_JiraAuthorizationAliasesAreChecked(t *testing.T) {
 			yaml:    "devs: &d\n  group: [x]\nauthorization:\n  - provider: jira\n    write: *d\n",
 			wantErr: `unknown field "group"`,
 		},
+		"aliased key hiding a misspelled field": {
+			yaml:    "key: &labels lables\nauthorization:\n  - provider: jira\n    ? *labels\n    : allowlist\n",
+			wantErr: "mapping keys must be plain scalars",
+		},
+		"aliased provider key": {
+			yaml:    "key: &p provider\nauthorization:\n  - ? *p\n    : jira\n    lables: allowlist\n",
+			wantErr: "mapping keys must be plain scalars",
+		},
+		"aliased null write key": {
+			yaml:    "key: &w write\nauthorization:\n  - provider: jira\n    ? *w\n    :\n",
+			wantErr: "mapping keys must be plain scalars",
+		},
+		"aliased null triage key": {
+			yaml:    "key: &t triage\nauthorization:\n  - provider: jira\n    ? *t\n    : null\n",
+			wantErr: "mapping keys must be plain scalars",
+		},
+		"aliased key inside write list": {
+			yaml:    "key: &g groups\nauthorization:\n  - provider: jira\n    write:\n      ? *g\n      : [x]\n",
+			wantErr: "mapping keys must be plain scalars",
+		},
 		"merge key in entry": {
 			yaml:    "base: &b\n  lables: allowlist\nauthorization:\n  - provider: jira\n    <<: *b\n",
 			wantErr: "merge keys",

@@ -374,6 +374,14 @@ var jiraActorListKeys = map[string]bool{"groups": true, "accounts": true}
 func (p *AuthorizationProvider) UnmarshalYAML(value *yaml.Node) error {
 	type plain AuthorizationProvider
 	value = resolveAlias(value)
+	if value.Kind == yaml.MappingNode {
+		// An aliased mapping key (? *anchor : value) is invisible to the
+		// key-name lookups below, which would let a misspelled field, a hidden
+		// provider or a null write:/triage: key slip past the checks.
+		if err := checkScalarKeys(value, "authorization"); err != nil {
+			return err
+		}
+	}
 	if value.Kind == yaml.MappingNode && mappingNode(value, "<<") != nil {
 		// A merge key can supply provider, labels or list keys from another
 		// mapping, bypassing the key checks below.
@@ -448,8 +456,22 @@ func mappingValue(n *yaml.Node, key string) string {
 	return ""
 }
 
+// checkScalarKeys rejects any key of mapping node n that is not a plain
+// scalar (an alias or a collection used as a key).
+func checkScalarKeys(n *yaml.Node, context string) error {
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if k := n.Content[i]; k.Kind != yaml.ScalarNode {
+			return managedFieldError(k, context+": mapping keys must be plain scalars (aliases are not supported)")
+		}
+	}
+	return nil
+}
+
 // checkMappingKeys rejects any key of mapping node n not in allowed.
 func checkMappingKeys(n *yaml.Node, allowed map[string]bool, context string) error {
+	if err := checkScalarKeys(n, context); err != nil {
+		return err
+	}
 	for i := 0; i+1 < len(n.Content); i += 2 {
 		k := n.Content[i]
 		if !allowed[k.Value] {
