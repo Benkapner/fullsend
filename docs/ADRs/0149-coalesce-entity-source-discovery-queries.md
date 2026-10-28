@@ -62,8 +62,7 @@ entity-source query in that scope. A scope includes the provider, tenant,
 repository or project, entity kind, and effective credential scope. This keeps
 the trusted scope guard separate from the harness queries; neither a query nor
 their combination may widen it. Before routing each result, `poll` MUST verify
-its canonical scope. Pagination and coverage partitions may split the work
-within this one search, but `poll` MUST NOT run a separate full search for each
+its canonical scope. `poll` MUST NOT run a separate full search for each
 harness.
 
 An adapter may accept a query only if its provider search includes every entity
@@ -76,10 +75,14 @@ the adapter cannot support; do not silently omit it or search for it separately.
 
 `poll` removes duplicate results by canonical entity identity and checks each
 relevant harness query locally. It sends each candidate to every harness whose
-query matches for CEL evaluation. If it cannot tell whether a query matches,
-`poll` may fetch more data or pass the candidate to bound `run`; missing data
-never counts as a non-match. Discovery and routing need not fetch every entity
-field or history needed for the final CEL check.
+query matches for CEL evaluation. If provider pagination guarantees that a page
+contains all results the query can return for a given entity, `poll` MAY route
+that entity once it has processed the page while it fetches later pages. This
+does not establish complete coverage for the combined search; the coverage
+rules below still apply. If it cannot tell whether a query matches, `poll` may
+fetch more data or pass the candidate to bound `run`; missing data never counts
+as a non-match. Discovery and routing need not fetch every entity field or
+history needed for the final CEL check.
 
 Before each sandbox cycle for an entity-driven harness, bound `run` reads the
 current entity facts and checks both source membership and harness CEL locally.
