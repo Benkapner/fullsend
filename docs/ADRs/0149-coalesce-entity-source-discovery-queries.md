@@ -1,5 +1,5 @@
 ---
-title: "149. Coalesce entity-source discovery queries and route candidates locally"
+title: "149. Combine entity-source searches and route matches locally"
 status: Accepted
 relates_to:
   - agent-architecture
@@ -9,7 +9,7 @@ topics:
   - dispatch
 ---
 
-# 149. Coalesce entity-source discovery queries and route candidates locally
+# 149. Combine entity-source searches and route matches locally
 
 Date: 2026-10-22
 
@@ -17,21 +17,22 @@ Date: 2026-10-22
 
 Accepted
 
-Partially supersedes [ADR 0098](0098-entity-first-harness-evaluation.md):
-combining compatible entity-source queries becomes required, and source-query
-membership becomes a harness eligibility condition as well as a way to find
-candidates. [ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md)
-continues to govern poll and bound-run lifecycles; this decision adds a local
-source-query check before each source-backed sandbox cycle.
+This ADR partially supersedes
+[ADR 0098](0098-entity-first-harness-evaluation.md): compatible entity-source
+queries must be combined, and matching a source is required both to find a
+candidate and to let a harness act on it.
+[ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md) still governs
+poll and bound-run lifecycles. This ADR adds a local source check before each
+sandbox cycle for a source-backed harness.
 
 ## Context
 
-ADR 0098 lets harnesses declare entity sources but only permits sharing
-compatible provider queries. ADR 0144 relies on recurring repository-scoped
-discovery to recover work after a bound run exits. A separate provider search
-for every harness increases reads and still leaves `poll` to determine which
-harnesses should receive each result. A provider search result also cannot
-prove that an entity remains in a harness's source when `run` starts.
+ADR 0098 lets harnesses declare entity sources, but allows sharing only when
+their provider queries are compatible. ADR 0144 relies on repeated
+repository-wide discovery to recover work after a bound run exits. Searching
+separately for each harness increases provider reads and still leaves `poll` to
+decide which harnesses receive each result. A search result also cannot prove
+that an entity still matches a harness's source when `run` starts.
 
 Entity-source discovery is not yet implemented.
 [#8418](https://github.com/fullsend-ai/fullsend/issues/8418)
@@ -45,93 +46,97 @@ uses event-reconstructing input drivers.
 
 ### Search separately for each harness
 
-This allows arbitrary provider-native queries, but provider search cost grows
-with the number of harnesses and duplicate hits still need routing.
+Each harness can use any query its provider supports. But provider reads grow
+with the number of harnesses, and duplicate results still need routing.
 
 ### Combine admissible queries and route locally
 
-This shares discovery work, but limits sources to queries that an adapter can
-combine without missing candidates and re-evaluate locally.
+One search uses less provider work. But adapters can accept only queries they
+can combine without missing matches and check locally.
 
 ## Decision
 
-For each discovery cycle and source scope, `fullsend poll` MUST issue one
-logical candidate search covering the union of all enabled harness
-entity-source queries in that scope. A scope is the provider, tenant,
-repository or project, entity kind, and effective credential scope. A trusted
-scope guard stays outside the harness-query union; neither a harness query
-nor composition may widen it. `poll` verifies every hit's canonical scope
-before routing. Pagination and coverage partitions may implement one logical
-search, but separate full searches per harness do not.
+For each discovery cycle and source scope, `fullsend poll` MUST run one
+combined logical search for candidates matching any enabled harness
+entity-source query in that scope. A scope includes the provider, tenant,
+repository or project, entity kind, and effective credential scope. Keep the
+trusted scope guard separate from the harness queries; neither a query nor
+their combination may widen it. Before routing each result, `poll` MUST verify
+its canonical scope. Pagination and coverage partitions may split the work
+within this one search, but `poll` MUST NOT run a separate full search for each
+harness.
 
-An entity-source query is admissible only if its adapter can plan a search
-that includes every possible local match and can reproduce query membership
-locally from a defined routing projection and, if needed, follow-up reads.
-A broader search is allowed within the trusted scope and provider bounds.
-Opaque provider-only operators and ranking or top-N membership are unsupported
-when their result cannot be reproduced locally. The adapter rejects an
-unsupported source rather than silently omitting it or searching separately.
+An adapter may accept a query only if its provider search includes every entity
+that might match locally. It must then be able to check whether each result
+belongs to the harness source, using defined routing fields and follow-up reads
+when needed. It may search more broadly if it stays within the trusted scope
+and provider limits. It cannot accept provider-only operators or ranking and
+top-N rules when local checks cannot reproduce their results. Reject a source
+the adapter cannot support; do not silently omit it or search for it separately.
 
-`poll` deduplicates hits by canonical entity identity and evaluates each
-relevant harness query locally. It routes a matching candidate to every
-matching harness for CEL evaluation. If local query membership is unresolved,
-`poll` may fetch more evidence or hand the candidate to bound `run` for
-resolution; missing data never means false. Candidate search and routing need
-not fetch all entity fields or history required for final CEL evaluation.
+`poll` removes duplicate results by canonical entity identity and checks each
+relevant harness query locally. It sends each candidate to every harness whose
+query matches for CEL evaluation. If it cannot tell whether a query matches,
+`poll` may fetch more data or pass the candidate to bound `run`; missing data
+never counts as a non-match. Discovery and routing need not fetch every entity
+field or history needed for the final CEL check.
 
-Before every sandbox cycle for a source-backed harness, including a cycle
-prompted directly by an event or wakeup, bound `run` resolves current entity
-facts and locally checks both source-query membership and harness CEL. It may
-settle either check first, but both MUST be definitively true before starting
-a sandbox. A verified event supplies a candidate and retains its separate
-actor-authorization gate; it cannot bypass the declared source query. A stale
-search hit is not evidence of current membership. Unresolved membership
-cannot launch a sandbox and must retain a retry or rediscovery path.
+Before each sandbox cycle for a source-backed harness, bound `run` reads the
+current entity facts and checks both source membership and harness CEL locally.
+This also applies to cycles started by an event or wakeup. The checks may run
+in either order, but both MUST be true before a sandbox starts. A verified
+event supplies a candidate and still goes through its separate actor-
+authorization check; it cannot skip the source query. A stale search result
+does not prove current membership. If membership is unknown, do not start a
+sandbox; keep a retry or rediscovery path.
 
-Actor-originated facts used by a query receive the same harness-stage
-authorization as action-indicating facts used by CEL. A raw provider filter
-must not omit an entity whose query could match after unauthorized facts are
-removed locally, including for a negated condition. This decision does not
-relax [ADR 0098](0098-entity-first-harness-evaluation.md) or the
+Before a query uses actor-originated facts, those facts MUST pass the
+harness-stage authorization required for action-indicating facts before CEL.
+A provider filter MUST NOT exclude an entity that could match after
+unauthorized facts are removed locally, including when the query negates a
+condition. This ADR keeps the rules in
+[ADR 0098](0098-entity-first-harness-evaluation.md) and the
 [Authorization Contract v1](../normative/authorization/v1/README.md): before
-CEL, the full action-indicating superset is still enumerated, every actor's
-current permission is resolved, and the required audit is retained. A local
-query check that does not evaluate CEL may stop on a proven non-match, but
-cannot derive that result from unverified actor evidence.
+CEL runs, the system still collects the full set of action-indicating facts,
+checks every actor's current permission, and keeps the required audit. A query
+check that does not run CEL may stop when it proves there is no match, but it
+cannot use unverified actor facts to prove that.
 
-The combined search must preserve candidate coverage across pagination,
-provider caps, delayed indexing, and concurrent changes. Finishing the pages
-alone does not prove completeness; an adapter needs a stable covered range or
-sound overlap and reconciliation for possibly missed entities. An unproven
-range cannot advance a completion checkpoint without durable retry or proven
-rediscovery. A plan change requires a catch-up scan for newly eligible
-entities. Time-dependent queries require periodic rediscovery or durable due
-records even when an entity does not change.
+The combined search must not miss candidates because of pagination, provider
+result caps, delayed indexing, or concurrent changes. Reaching the last page
+does not prove the search is complete. An adapter must establish a stable
+covered range or use overlap and reconciliation to find possible misses. If
+coverage is uncertain, it cannot mark the range complete unless it records a
+durable retry or can prove the entities will be found later. When the search
+plan changes, scan for newly eligible entities. Queries that depend on time
+need periodic rediscovery or durable due records, even when an entity does not
+change.
 
-Before entity-source discovery is enabled, a versioned normative query
-protocol must define source declarations, allowed operators, routing facts,
-provider mappings, bounds, pagination, coverage evidence, and conformance
-cases. Before source-backed execution is enabled, a new major authorization
-contract under [ADR 0015](0015-normative-specifications-directory.md) must
-define the source-query admission gate and actor evidence. This ADR does not
-choose query syntax or require full entity hydration during discovery.
+Entity-source discovery cannot be enabled until there is a versioned normative
+query protocol. It must define source declarations, allowed operators, routing
+facts, provider mappings and limits, pagination, coverage evidence, and
+conformance cases. Source-backed execution cannot be enabled until a new major
+authorization contract under
+[ADR 0015](0015-normative-specifications-directory.md) defines the
+source-query admission gate and actor evidence. This ADR leaves query syntax
+open and does not require fetching every entity field during discovery.
 
 ## Forge scope
 
-This applies to GitHub, GitLab, Forgejo, and Jira entity-source adapters.
-Each adapter must prove the combined-search and local-recheck semantics for
-the source queries it accepts. Existing event-reconstructing poll drivers,
-including Jira's `--jql` override, remain under
-[ADR 0063](0063-polling-based-work-discovery.md). Event-only harnesses
-without an entity source are unaffected.
+This applies to entity-source adapters for GitHub, GitLab, Forgejo, and Jira.
+Each adapter must show that it can combine and locally check the queries it
+accepts. Existing poll drivers that reconstruct events, including Jira's
+`--jql` override, remain under
+[ADR 0063](0063-polling-based-work-discovery.md). Harnesses without an
+entity source are unaffected.
 
 ## Consequences
 
-- Logical searches scale with source scopes rather than harness count;
-  broader searches can increase result volume and local routing work.
+- Search work grows with the number of source scopes, not harnesses. Broader
+  searches may return more results and require more local routing.
 - Source queries cannot use provider features that cannot be combined and
-  rechecked locally; harness CEL remains a separate predicate.
-- Partial scans and uncertain query results stay visible and retryable rather
-  than silently omitting candidates or admitting a sandbox.
-- Event-backed runs for source-backed harnesses also reject current query
-  non-matches while preserving the existing event-actor gate.
+  checked locally. Harness CEL remains a separate condition.
+- Partial scans and uncertain results stay visible and retryable; they cannot
+  silently drop candidates or start a sandbox.
+- For source-backed harnesses, event-backed runs also reject entities that no
+  longer match the source query and still check the event actor's authorization.
