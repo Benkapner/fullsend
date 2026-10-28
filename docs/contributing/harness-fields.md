@@ -42,9 +42,8 @@ These fields can appear at the harness top level (as defaults) and inside
 
 ### Fields that stay at top level only
 
-These fields are platform-neutral and cannot be overridden per-forge or
-per-overlay. A key for one of them under `forge:` or `overlays:` is ignored,
-not an error:
+These fields cannot be overridden per-forge or per-overlay. A key for one of
+them under `forge:` or `overlays:` is ignored, not an error:
 
 | Field              | Rationale                                          |
 |--------------------|----------------------------------------------------|
