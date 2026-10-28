@@ -537,8 +537,8 @@ func ExpectedScaffoldContent(ctx context.Context, resolved ResolvedConfig, dcfg 
 		// like FULLSEND_VERSION match what installation/convergence
 		// actually render regardless of whether the manifest happened
 		// to record the SHA or the tag.
-		installCfg.UpstreamRef = dcfg.UpstreamRef
-		installCfg.UpstreamTag = dcfg.UpstreamTag
+		installCfg.UpstreamRef, installCfg.UpstreamTag = matchingReleaseRefTag(
+			resolved.FullsendRef, dcfg.UpstreamRef, dcfg.UpstreamTag)
 	}
 
 	// When the manifest pins a fullsend_ref, fetch remote scaffold

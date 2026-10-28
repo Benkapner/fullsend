@@ -2913,7 +2913,7 @@ func convergeRefFiles(ctx context.Context,
 		dryRef := targetRef
 		dryTag := ""
 		if !isExplicitPin {
-			dryRef, dryTag = cfg.UpstreamRef, cfg.UpstreamTag
+			dryRef, dryTag = matchingReleaseRefTag(targetRef, cfg.UpstreamRef, cfg.UpstreamTag)
 		} else if !isSHARef(targetRef) && isSHARef(currentRef) && isSemver(targetRef) {
 			// Only resolve to SHA for semver tags. Branch refs are used
 			// directly to match resolveTargetRef and avoid non-idempotent
@@ -2988,7 +2988,7 @@ func convergeRefFiles(ctx context.Context,
 	// shifts the branch HEAD. See #6553.
 	var newRef, newTag string
 	if !isExplicitPin {
-		newRef, newTag = cfg.UpstreamRef, cfg.UpstreamTag
+		newRef, newTag = matchingReleaseRefTag(targetRef, cfg.UpstreamRef, cfg.UpstreamTag)
 	} else if isSHARef(targetRef) {
 		newRef = targetRef
 	} else if isSHARef(currentRef) && isSemver(targetRef) {
@@ -3507,15 +3507,7 @@ func resolveTargetRef(ctx context.Context, fullsendRef, upstreamRef, upstreamTag
 		// above does, so status/drift comparisons against the actually
 		// committed workflow ref stay consistent regardless of whether
 		// resolved.FullsendRef happens to be populated yet.
-		ref = upstreamRef
-		if fullsendRef != upstreamTag {
-			// The manifest holds a commit SHA, not the release tag that
-			// install writes back. Any other CLI treats that SHA as an
-			// explicit pin with no tag, so drop the tag here too: the
-			// same manifest then renders the same runner image (dev)
-			// under every CLI version.
-			tag = ""
-		}
+		ref, tag = matchingReleaseRefTag(fullsendRef, upstreamRef, upstreamTag)
 	} else if ref != "" {
 		manifestRef = ref
 		// Only SHA-pin semver tags. Branch names are used directly
@@ -3532,6 +3524,23 @@ func resolveTargetRef(ctx context.Context, fullsendRef, upstreamRef, upstreamTag
 		}
 	}
 	return resolvedRef{ref: ref, tag: tag, manifestRef: manifestRef}
+}
+
+// matchingReleaseRefTag returns the (ref, tag) pair to render for a
+// fullsendRef that matches the running release's upstreamRef or
+// upstreamTag. It is the single normalization shared by resolveTargetRef,
+// convergeRefFiles, and ExpectedScaffoldContent so install, convergence,
+// and status agree on what a matching pin renders.
+//
+// When fullsendRef is the release tag, the release's own (ref, tag) pair
+// is used. When it is the commit SHA, the tag is dropped: any other CLI
+// treats that SHA as an explicit pin with no tag, so the same manifest
+// then renders the same runner image (dev) under every CLI version.
+func matchingReleaseRefTag(fullsendRef, upstreamRef, upstreamTag string) (ref, tag string) {
+	if fullsendRef != upstreamTag {
+		return upstreamRef, ""
+	}
+	return upstreamRef, upstreamTag
 }
 
 // isUnstampedInstallRef reports whether installedRef is what a build
