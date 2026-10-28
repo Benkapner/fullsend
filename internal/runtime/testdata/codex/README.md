@@ -78,10 +78,14 @@ after a `thread/revert`; `codex-rs/rollout/src/rollout_file_name.rs`), created a
 recorded item before its first line is written; that line, a `session_meta` carrying
 `parent_thread_id`, waits on git info, and a failed write leaves the file empty until a retry or
 with a cut first line for good (codex ends the fragment and writes `session_meta` on the next
-line), so the name is the identity of a file without a usable first line
-(`codex-rs/rollout/src/recorder.rs`: `write_pending_once`, `write_session_meta`,
-`ensure_rollout_is_newline_terminated`); and in an exec run with approvals off and memories off by
-default only the root and its spawned children write rollouts there.
+line), so the name is the identity of a file without a usable first line; each line is written
+whole with its newline in one `write_all`, and every `SessionMeta` field before `parent_thread_id`
+is a scalar, so a first line that does not end in `}` and its newline is cut, whether read while it
+is written or closed by codex after a failed write (`codex-rs/rollout/src/recorder.rs`:
+`write_pending_once`, `write_session_meta`, `ensure_rollout_is_newline_terminated`,
+`JsonlWriter::write_line`; `codex-rs/protocol/src/protocol.rs`, `SessionMeta`); and in an exec run
+with approvals off and memories off by default only the root and its spawned children write
+rollouts there.
 
 Top-level `ThreadEvent` — serde `tag = "type"`, the variant payload flattened
 next to it:

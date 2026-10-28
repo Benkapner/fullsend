@@ -1389,7 +1389,12 @@ func TestCountCodexChildRollouts(t *testing.T) {
 		{"the primary's own file with a cut first line is not a child", []codexRolloutHead{{NameID: root}}, root, 0, nil, ""},
 		{"two heads with no id count twice", []codexRolloutHead{{}, {}}, root, 2, nil, ""},
 		{"two files of one thread count once", []codexRolloutHead{{Meta: true, ID: a1, Parent: root}, {Meta: true, ID: a1, Parent: root, NameID: a1}, {NameID: a1}}, root, 1, []string{a1}, ""},
-		{"a session_meta root cut before its id is not counted, whatever its name", []codexRolloutHead{{Meta: true, NameID: a1}}, root, 0, nil, ""},
+		{"a whole session_meta line with no parent is a root, whatever its name", []codexRolloutHead{{Meta: true, NameID: a1}}, root, 0, nil, ""},
+		{"a session_meta line cut before its parent counts under its name", []codexRolloutHead{{Meta: true, Cut: true, ID: a1, NameID: a1}}, root, 1, []string{a1}, ""},
+		{"a cut session_meta line under the primary's own name is not a child", []codexRolloutHead{{Meta: true, Cut: true, ID: root, NameID: root}}, root, 0, nil, ""},
+		{"a cut session_meta line that names its parent is read by content", []codexRolloutHead{{Meta: true, Cut: true, ID: a1, Parent: root, NameID: a2}}, root, 1, []string{a1}, ""},
+		{"a cut session_meta line with no name id takes its content id", []codexRolloutHead{{Meta: true, Cut: true, ID: a1}}, root, 1, []string{a1}, ""},
+		{"empty primary with a cut session_meta line", []codexRolloutHead{{Meta: true, Cut: true, ID: a1, NameID: a1}}, "", 0, nil, "the run's primary thread id is unknown"},
 		{"a counted session_meta head with no usable id takes its name's id", []codexRolloutHead{{Meta: true, ID: "x", Parent: root, NameID: a1}}, root, 1, []string{a1}, ""},
 		{"a counted head naming the primary counts with no id", []codexRolloutHead{{Meta: true, Parent: root, NameID: root}, {Meta: true, ID: root, Parent: root}}, root, 2, nil, ""},
 		{"a child known only by its name is not a parent", []codexRolloutHead{{NameID: a1}, {Meta: true, ID: g1, Parent: a1}}, root, 1, []string{a1}, ""},
@@ -1435,7 +1440,9 @@ func TestCountCodexChildRollouts_NameKnownParentNeedsTheStream(t *testing.T) {
 
 // The read command under /bin/sh: recursive over date directories, one line
 // per file, a quoted key inside a string inert, an empty, undecodable or
-// unreadable first line known by its file name's thread id, a revert's second
+// unreadable first line, or a session_meta line cut before its parent, known
+// by its file name's thread id, an unclosed line that names its parent read
+// by content, a revert's second
 // file of a thread counted once, a name that carries no thread id read by
 // content, a missing directory empty, and a find that cannot read a directory
 // exits 3.
@@ -1444,6 +1451,7 @@ func TestCodexChildRolloutsReadCommand_UnderSh(t *testing.T) {
 	const (
 		torn, empty, spaced = "01a06300-0000-7000-8000-0000000000ee", "01a06300-0000-7000-8000-0000000000e1", "01a06300-0000-7000-8000-0000000000e2"
 		locked, revert      = "01a06300-0000-7000-8000-0000000000e3", "01a06300-0000-7000-8000-0000000000e4"
+		cutMeta, unclosed   = "01a06300-0000-7000-8000-0000000000e5", "01a06300-0000-7000-8000-0000000000e6"
 	)
 	sessions := writeCodexChildRollouts(t)
 	writeCodexRollout(t, sessions, "2026/09/29", codexChildSameModelID, codexRolloutLine(codexChildSameModelID, codexRootThreadID))
@@ -1452,7 +1460,9 @@ func TestCodexChildRolloutsReadCommand_UnderSh(t *testing.T) {
 	writeCodexRollout(t, sessions, "2026/09/30", empty, "")
 	writeCodexRollout(t, sessions, "2026/09/30", codexChildSameModelID+"_"+revert, "")
 	writeCodexRollout(t, sessions, "2026/09/30", spaced+" copy", codexRolloutLine(spaced, codexRootThreadID))
-	want := []string{codexChildSameModelID, codexChildOtherModelID, torn, empty, spaced}
+	writeCodexRollout(t, sessions, "2026/09/30", cutMeta, `{"timestamp":"2026-09-29T15:46:31.000Z","type":"session_meta","payload":{"id":"`+cutMeta+`"`)
+	writeCodexRollout(t, sessions, "2026/09/30", unclosed, strings.TrimSuffix(codexRolloutLine(unclosed, codexRootThreadID), "\n"))
+	want := []string{codexChildSameModelID, codexChildOtherModelID, torn, empty, spaced, cutMeta, unclosed}
 	if os.Geteuid() != 0 {
 		writeCodexRollout(t, sessions, "2026/09/30", locked, codexRolloutLine(locked, ""))
 		lockedPath := filepath.Join(sessions, "2026/09/30", "rollout-2026-09-29T15-46-40-"+locked+".jsonl")
@@ -1557,6 +1567,20 @@ func TestCodexRun_AdmissionCheckCountsTheChildrenOnDisk(t *testing.T) {
 			assert.EqualError(t, err, msg(1, 0))
 		})
 	}
+	const cutChild = "01a06300-0000-7000-8000-0000000000d2"
+	fragment := `{"timestamp":"2026-09-29T15:46:31.000Z","type":"session_meta","payload":{"id":"` + cutChild + `"`
+	for name, content := range map[string]string{
+		"still being written":                  fragment,
+		"closed by codex after a failed write": fragment + "\n" + codexRolloutLine(cutChild, codexRootThreadID),
+	} {
+		t.Run("a child cut after the session_meta marker, "+name+", its spawn lost from the stream, still counts", func(t *testing.T) {
+			head := func(sessions string) { writeCodexRollout(t, sessions, "2026/09/29", cutChild, content) }
+			_, _, _, err := runCodexChildrenCase(t, lostSpawns(t), true, 0, nil, head)
+			assert.EqualError(t, err, msg(1, 0), "a cut line proves no root: the file counts under its name")
+			_, _, _, err = runCodexChildrenCase(t, lostSpawns(t), true, 1, nil, head)
+			require.NoError(t, err)
+		})
+	}
 	t.Run("a cut root of the agent's own codex exec does not pull in its children", func(t *testing.T) {
 		const inner, innerChild = "01a06300-0000-7000-8000-0000000000c3", "01a06300-0000-7000-8000-0000000000c4"
 		_, _, _, err := runCodexChildrenCase(t, oneSpawn(t), true, 2, []string{codexChildSameModelID}, func(sessions string) {
@@ -1636,6 +1660,7 @@ func TestParseCodexRolloutHeads(t *testing.T) {
 		"1 none none " + named + "\n" +
 		"0 none none " + named + "\n" +
 		"0 none none 01a06300\n" +
+		"2 \"id\":\"" + codexChildOtherModelID + "\" none none\n" +
 		"\n" +
 		"0 none none\n" +
 		"/sandbox/weird name\n"
@@ -1645,11 +1670,12 @@ func TestParseCodexRolloutHeads(t *testing.T) {
 		{Meta: true, NameID: named},
 		{NameID: named},
 		{},
+		{Meta: true, Cut: true, ID: codexChildOtherModelID},
 		{},
 		{},
 	}, heads)
 	n, ids, err := countCodexChildRollouts(heads, codexRootThreadID, nil)
 	require.NoError(t, err)
-	assert.Equal(t, 5, n, "the child, the head known by its name, and the three without an id; the root-shaped head is not counted, whatever its name")
-	assert.Equal(t, []string{named, codexChildSameModelID}, ids)
+	assert.Equal(t, 6, n, "the child, the head known by its name, the cut session_meta line by its content id, and the three without an id; the whole root-shaped line is not counted, whatever its name")
+	assert.Equal(t, []string{named, codexChildOtherModelID, codexChildSameModelID}, ids)
 }
