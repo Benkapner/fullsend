@@ -1798,7 +1798,16 @@ commit SHA. It is **not supported for production**: every runner image change
 merged to `main`, including an OpenShell bump, reaches the project as soon as
 it is published, before any release has been tested with it. A commit SHA
 cannot select an image of its own, because the runner image is built only for
-`main` commits that change it.
+`main` commits that change it. When a CLI that is itself a release renders the
+templates, a SHA pin of that release's commit resolves to the release image;
+any other CLI resolves the same SHA to `dev`. To keep the image stable across
+CLI upgrades, pin the release tag (`vX.Y.Z`) rather than its commit SHA.
+
+Use a CLI newer than v0.51.0 to install or upgrade. Earlier CLIs do not render
+the image tag, so they would commit the unrendered placeholder, which is not a
+valid image tag. The `:dev` rewrite for templates fetched from an older pin
+applies to releases from v0.32.0, the first release that published a runner
+image.
 
 ### Assigning runners
 

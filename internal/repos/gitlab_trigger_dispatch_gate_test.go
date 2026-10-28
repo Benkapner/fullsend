@@ -380,6 +380,7 @@ func TestCheckGitLabTriggerDispatchGate_RunnerImage(t *testing.T) {
 		{scaffold.RunnerImageRepository + ":dev", true},
 		{scaffold.RunnerImageRepository + ":abc1234", false},
 		{scaffold.RunnerImageRepository + ":$TAG", false},
+		{scaffold.RunnerImageRepository + ":__FULLSEND_RUNNER_IMAGE_TAG__", false},
 		{"ghcr.io/example/fullsend-runner:0.50.0", false},
 	} {
 		for _, path := range []string{fullsendPollTemplatePath, fullsendAgentTemplatePath, fullsendDispatcherTemplatePath} {

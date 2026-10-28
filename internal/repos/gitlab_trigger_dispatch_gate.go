@@ -568,12 +568,19 @@ func gitlabJobChainProblem(ctx context.Context, client forge.Client, owner, repo
 	).Replace(string(shipped)))
 	// The installer also renders the runner image tag from fullsend_ref
 	// (#8865). The tag only selects which Fullsend-published runner image
-	// runs the job; accept a committed tag of a form the installer renders
-	// by rendering it into the shipped job. Any other image still
-	// mismatches.
-	if tag, ok := gitlabCommittedRunnerImageTag(committed, job.jobName); ok {
-		shipped = []byte(scaffold.RenderRunnerImageTag(string(shipped), tag))
+	// runs the job, and the gate does not know the effective ref, so it
+	// accepts any tag form the installer renders (a release version,
+	// "latest", or "dev") by rendering the committed tag into the shipped
+	// job. That is intentional: the repository is published only by
+	// Fullsend, and a tag that no longer matches fullsend_ref is reported
+	// as content drift by `repos status` and repaired by `repos install`.
+	// A committed image whose tag is not one of those forms, including the
+	// unrendered placeholder, cannot run and so defers activation.
+	tag, ok := gitlabCommittedRunnerImageTag(committed, job.jobName)
+	if !ok {
+		return "the committed " + job.label + " in " + job.templatePath + " does not run " + job.scriptPath + " under the shipped job configuration, so " + job.consequence + "; merge the scaffold repair first"
 	}
+	shipped = []byte(scaffold.RenderRunnerImageTag(string(shipped), tag))
 	if job.templatePath == fullsendAgentTemplatePath {
 		// The installer also renders config.inference.wif_audience into the
 		// agent job's id_tokens audience. The audience only selects which
