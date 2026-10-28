@@ -156,6 +156,10 @@ The repository's existing infrastructure provides all the coordination needed:
   [ADR 0151](../ADRs/0151-harness-human-role-minimums.md) sets a platform
   `triage` floor and a configurable `human_min_role` for each harness. The
   platform applies that minimum before evaluating the harness's CEL predicate.
+  [ADR 0149](../ADRs/0149-coalesce-entity-source-discovery-queries.md)
+  combines source queries into one logical candidate search and routes each
+  possible result locally. A bound run rechecks source-query membership,
+  including when an event supplies the candidate.
 
 No agent orchestrates other agents. Each agent independently observes the state of the PR and acts according to its role:
 

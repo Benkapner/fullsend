@@ -537,12 +537,27 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0151](ADRs/0151-harness-human-role-minimums.md),
   [Authorization Contract v2](normative/authorization/v2/)).
 
+- Entity-source discovery (target state): `fullsend poll` combines admissible
+  harness queries into one logical candidate search per source scope and routes
+  possible matches locally. A bound `run` rechecks source-query membership
+  before event-backed or eventless sandbox cycles
+  ([ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)).
+  Implementation and the normative query protocol are tracked in
+  [#8418](https://github.com/fullsend-ai/fullsend/issues/8418) and
+  [#8421](https://github.com/fullsend-ai/fullsend/issues/8421).
+
 **Open questions:**
 
 - What field-level normalized-entity contract and provider query plans can
-  prove partial-history coverage and represent handled state? Selective
-  acquisition and its authorization rules are decided in
-  [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md).
+  support entity-first evaluation, prove partial-history coverage, and
+  represent handled state? See
+  [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md)
+  for selective acquisition and its authorization rules, and
+  [ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)
+  for query combination and local routing. The normative discovery protocol,
+  including query syntax, adapter mappings, and discovery coverage evidence,
+  remains open, as do the normalized entity-history and handled-state
+  contracts.
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
