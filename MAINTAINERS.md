@@ -37,8 +37,10 @@ familiarity needed for a maintainer role.
 
 ## Process
 
-1. **File an issue** titled "Maintainer nomination: \<your GitHub
-   handle\>". In the issue, link to merged PRs you have authored or
+1. **File a nomination issue** using the
+   [Maintainer Nomination](https://github.com/fullsend-ai/org/issues/new?template=maintainer-request.yml)
+   template in [fullsend-ai/org](https://github.com/fullsend-ai/org).
+   In the issue, link to merged PRs you have authored or
    substantive reviews you have provided that demonstrate your
    familiarity with the project.
 2. **Current maintainers discuss.** The maintainers will review your
