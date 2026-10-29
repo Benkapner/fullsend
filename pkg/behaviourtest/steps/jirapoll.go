@@ -35,15 +35,6 @@ func (m *routerMatcher) Match(_ context.Context, event *normevent.Event) ([]jira
 	if !harnessdispatch.IsAuthorized(event) {
 		return nil, nil
 	}
-	// The gate passed. When it passed through an event-level exception
-	// (e.g. the Jira label-added rule, ADR 0152) rather than actor.role,
-	// present the actor to the legacy router as write, as the production
-	// celMatcher authorizes every harness in that case; otherwise the
-	// router's own write check on label routes would deny it again.
-	actorRole := string(event.Actor.Role)
-	if !normevent.IsWriteAuthorized(event.Actor.Role) {
-		actorRole = string(normevent.RoleWrite)
-	}
 	// Convert normevent.Event → dispatch.NormalizedEvent for the legacy router.
 	de := dispatch.NormalizedEvent{
 		Repo: event.Repo,
@@ -59,7 +50,7 @@ func (m *routerMatcher) Match(_ context.Context, event *normevent.Event) ([]jira
 		Actor: dispatch.Actor{
 			ID:             event.Actor.ID,
 			Kind:           string(event.Actor.Kind),
-			Role:           actorRole,
+			Role:           string(event.Actor.Role),
 			IsEntityAuthor: event.Actor.IsEntityAuthor,
 		},
 		State: dispatch.State{

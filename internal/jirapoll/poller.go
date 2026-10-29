@@ -149,9 +149,9 @@ func (p *Poller) Run(ctx context.Context) error {
 	// The project role roster (GET /project/{key}/role, which Jira Cloud
 	// serves only with the Administer Projects permission) is not loaded
 	// here. processIssue loads it on first use, only when an event needs
-	// project-role resolution (see roleSourceFor), so a setup that uses
-	// the jira authorization lists, or only label triggers under the
-	// jira_editors rule, never calls it. A load FAILURE fails the whole
+	// project-role resolution (see roleSourceFor), so a setup whose jira
+	// authorization entry uses the lists, or only label triggers under
+	// the jira_editors rule, never calls it. A load FAILURE fails the whole
 	// cycle (see ensureRoleStructure), leaving checkpoints untouched so
 	// the next cron run retries.
 

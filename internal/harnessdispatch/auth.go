@@ -30,10 +30,10 @@ const (
 // Label-added events are authorized without a role threshold because GitHub
 // label application needs triage/write access and bots often lack a
 // collaborator role in that API (mirroring bash label routing). Jira
-// label-added events are authorized the same way by default, because Jira
-// requires the Edit Issues permission to change labels (the jira
-// authorization provider's labels: jira_editors rule); AuthOptions can turn
-// that exception off so they take the role threshold instead. Bot-submitted
+// label-added events take the per-harness role threshold by default; they
+// are authorized without one only when AuthOptions.JiraLabelsByEditPermission
+// is set, because Jira requires the Edit Issues permission to change labels
+// (the jira authorization provider's labels: jira_editors rule). Bot-submitted
 // pull_request_review events are also authorized without a role threshold so
 // downstream CEL can filter review state, bot identity, and other review-stage
 // guards.
@@ -59,7 +59,7 @@ func authorizeEvent(event *normevent.Event, opts AuthOptions) eventAuth {
 		return eventAllowed
 	}
 	if event.Source.System == normevent.SystemJira && isLabelAdded(event) &&
-		!opts.JiraLabelsRequireRole {
+		opts.JiraLabelsByEditPermission {
 		return eventAllowed
 	}
 	if event.Actor.Kind == normevent.ActorBot && event.Actor.RoleVerified != nil {
@@ -82,28 +82,32 @@ func authorizeEvent(event *normevent.Event, opts AuthOptions) eventAuth {
 }
 
 // AuthOptions carries the configuration-derived inputs to the dispatch
-// gate. The zero value is the default policy.
+// gate. The zero value is the default policy: a Jira label-added event
+// takes the per-harness role threshold like any other event.
 type AuthOptions struct {
-	// JiraLabelsRequireRole turns off the Jira label-added exception, so a
-	// Jira label-added event must satisfy the per-harness role threshold
-	// like any other event. Set it when the jira authorization provider
-	// selects labels: allowlist or labels: project_roles; the poller then
-	// resolves the label author's actor.role from that source.
-	JiraLabelsRequireRole bool
+	// JiraLabelsByEditPermission turns on the Jira label-added exception:
+	// a Jira label-added event is authorized without a role threshold,
+	// because Jira requires the Edit Issues permission to change labels.
+	// Set it only when a jira authorization provider entry is present and
+	// selects labels: jira_editors (its default); under allowlist or
+	// project_roles the poller resolves the label author's actor.role from
+	// that source and the threshold applies.
+	JiraLabelsByEditPermission bool
 }
 
 // AuthOptionsFor derives the dispatch gate policy from the loaded config's
-// jira authorization provider: Jira label-added events keep the Edit Issues
-// exception under labels: jira_editors (the default, also when no jira
-// provider is listed) and take the role threshold under allowlist or
-// project_roles.
+// jira authorization provider: Jira label-added events get the Edit Issues
+// exception only when a jira provider entry is present and selects
+// labels: jira_editors (the default for an entry). With no jira entry, or
+// under allowlist or project_roles, they take the role threshold.
 func AuthOptionsFor(cfg config.ConfigReader) AuthOptions {
 	pr, ok := cfg.(config.PerRepoConfigReader)
 	if !ok {
 		return AuthOptions{}
 	}
+	ja := pr.JiraAuthorization()
 	return AuthOptions{
-		JiraLabelsRequireRole: pr.JiraAuthorization().EffectiveJiraLabels() != config.JiraLabelsEditors,
+		JiraLabelsByEditPermission: ja != nil && ja.EffectiveJiraLabels() == config.JiraLabelsEditors,
 	}
 }
 
@@ -162,10 +166,12 @@ func IsEventAuthorizedWith(event *normevent.Event, opts AuthOptions) bool {
 }
 
 // IsHarnessAuthorized reports whether event may dispatch a harness whose
-// role: field is harnessRole. Event-level exceptions (GitHub and Jira
-// label-added, recognized bots, GitHub bot review_submitted) authorize every
-// harness; event-level denials deny every harness; the remaining path
-// requires actor.role to satisfy RequiredActorRole(harnessRole).
+// role: field is harnessRole. Event-level exceptions (GitHub label-added,
+// recognized bots, GitHub bot review_submitted) authorize every harness; Jira
+// label-added is such an exception only under IsHarnessAuthorizedWith with
+// AuthOptions.JiraLabelsByEditPermission set. Event-level denials deny every
+// harness; the remaining path requires actor.role to satisfy
+// RequiredActorRole(harnessRole).
 func IsHarnessAuthorized(event *normevent.Event, harnessRole string) bool {
 	return IsHarnessAuthorizedWith(event, harnessRole, AuthOptions{})
 }

@@ -459,13 +459,15 @@ func newCELMatcher(ctx context.Context, fullsendDir string) (*celMatcher, error)
 }
 
 // authOptions returns the dispatch gate policy for the configured jira
-// provider: Jira label-added events keep the Edit Issues exception under
-// labels: jira_editors (the default) and take the role threshold under
-// allowlist or project_roles, where the poller resolves the label
-// author's role from that source.
+// provider: with no jira entry, Jira label-added events take the
+// per-harness role threshold as before; with an entry, they are authorized
+// by Jira's Edit Issues permission under labels: jira_editors (the default)
+// and take the role threshold under allowlist or project_roles, where the
+// poller resolves the label author's role from that source.
 func (m *celMatcher) authOptions() harnessdispatch.AuthOptions {
 	return harnessdispatch.AuthOptions{
-		JiraLabelsRequireRole: m.jiraAuth.EffectiveJiraLabels() != config.JiraLabelsEditors,
+		JiraLabelsByEditPermission: m.jiraAuth != nil &&
+			m.jiraAuth.EffectiveJiraLabels() == config.JiraLabelsEditors,
 	}
 }
 
@@ -482,6 +484,7 @@ func jiraPollAuthorization(p *config.AuthorizationProvider) jirapoll.Authorizati
 		return jirapoll.ActorList{Groups: l.Groups, Accounts: l.Accounts}
 	}
 	return jirapoll.Authorization{
+		Configured:      true,
 		Write:           list(p.Write),
 		Triage:          list(p.Triage),
 		ListsConfigured: p.Write != nil || p.Triage != nil,

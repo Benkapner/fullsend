@@ -20,12 +20,14 @@ const (
 	// roleFromLists resolves the actor against the jira authorization
 	// provider's write and triage lists.
 	roleFromLists
-	// roleNotResolved leaves the role unresolved. It applies to label-added
-	// events under the jira_editors rule, which the dispatch gate
-	// authorizes by Jira's Edit Issues permission, not by actor.role; and,
-	// when no jira lists are configured, to events that are neither slash
-	// commands nor label additions, so that they never require the
-	// admin-only project role roster.
+	// roleNotResolved leaves the role unresolved. It applies only when a
+	// jira provider entry is present: to label-added events under the
+	// jira_editors rule, which the dispatch gate authorizes by Jira's Edit
+	// Issues permission, not by actor.role; and, when the entry sets no
+	// lists, to events that are neither slash commands nor label
+	// additions, so that they never require the admin-only project role
+	// roster. With no jira entry the roster resolves every event, so
+	// nothing is left unresolved.
 	roleNotResolved
 )
 
@@ -37,16 +39,21 @@ const unresolvedRole = "none"
 // roleSourceFor picks the role source for event per the jira
 // authorization provider:
 //
-//   - a label-added event follows the labels: rule (jira_editors: not
+//   - with no jira entry (Authorization.Configured false), every event
+//     uses the project role roster;
+//   - otherwise a label-added event follows the labels: rule (jira_editors: not
 //     resolved; allowlist: the lists; project_roles: the roster);
 //   - any other event uses the lists when any are configured;
 //   - otherwise a slash-command comment uses the project role roster,
 //     and every remaining event is not resolved.
 //
 // Only roleFromProjectRoles events make the poller load the roster, so a
-// setup that uses the lists, or only label triggers under jira_editors,
-// never calls GET /project/{key}/role.
+// setup whose jira entry uses the lists, or only label triggers under
+// jira_editors, never calls GET /project/{key}/role.
 func (p *Poller) roleSourceFor(event JiraEvent) roleSource {
+	if !p.opts.Authorization.Configured {
+		return roleFromProjectRoles
+	}
 	auth := p.opts.Authorization
 	if event.Type == "label_changed" && event.LabelAction == "added" {
 		switch auth.labelMode() {

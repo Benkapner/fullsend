@@ -60,26 +60,35 @@ func jiraLabelEvent(action string, role normevent.ActorRole) *normevent.Event {
 }
 
 func TestIsAuthorized_JiraLabelAddedByEditPermission(t *testing.T) {
-	// labels: jira_editors (default): Jira required Edit Issues to add the
-	// label, so actor.role is not consulted.
+	// A jira provider entry with labels: jira_editors: Jira required Edit
+	// Issues to add the label, so actor.role is not consulted.
+	opts := AuthOptions{JiraLabelsByEditPermission: true}
 	ev := jiraLabelEvent("added", normevent.RoleNone)
-	assert.True(t, IsEventAuthorized(ev))
-	assert.True(t, IsAuthorized(ev))
-	assert.True(t, IsHarnessAuthorizedWith(ev, "coder", AuthOptions{}))
+	assert.True(t, IsEventAuthorizedWith(ev, opts))
+	assert.True(t, IsHarnessAuthorizedWith(ev, "coder", opts))
+	assert.True(t, IsHarnessAuthorizedWith(ev, "triage", opts))
 }
 
-func TestIsAuthorized_JiraLabelAddedRequiresRoleWhenConfigured(t *testing.T) {
-	opts := AuthOptions{JiraLabelsRequireRole: true}
+func TestIsAuthorized_JiraLabelAddedRequiresRoleByDefault(t *testing.T) {
+	// The zero AuthOptions is the pre-existing behaviour: a Jira label-added
+	// event takes the per-harness role threshold.
+	opts := AuthOptions{}
 
-	assert.False(t, IsEventAuthorizedWith(jiraLabelEvent("added", normevent.RoleNone), opts))
+	none := jiraLabelEvent("added", normevent.RoleNone)
+	assert.False(t, IsAuthorized(none))
+	assert.False(t, IsEventAuthorized(none))
+	assert.False(t, IsEventAuthorizedWith(none, opts))
 	assert.False(t, IsHarnessAuthorizedWith(jiraLabelEvent("added", normevent.RoleExternal), "coder", opts))
+
+	write := jiraLabelEvent("added", normevent.RoleWrite)
+	assert.True(t, IsAuthorized(write))
+	assert.True(t, IsEventAuthorizedWith(write, opts))
+	assert.True(t, IsHarnessAuthorizedWith(write, "coder", opts))
 
 	triage := jiraLabelEvent("added", normevent.RoleTriage)
 	assert.True(t, IsEventAuthorizedWith(triage, opts))
 	assert.True(t, IsHarnessAuthorizedWith(triage, "triage", opts))
 	assert.False(t, IsHarnessAuthorizedWith(triage, "coder", opts))
-
-	assert.True(t, IsHarnessAuthorizedWith(jiraLabelEvent("added", normevent.RoleWrite), "coder", opts))
 }
 
 func TestIsAuthorized_JiraLabelRemovedRequiresRole(t *testing.T) {
@@ -90,7 +99,7 @@ func TestIsAuthorized_JiraLabelRemovedRequiresRole(t *testing.T) {
 func TestIsAuthorized_JiraLabelOptionDoesNotAffectGitHub(t *testing.T) {
 	ev := jiraLabelEvent("added", normevent.RoleNone)
 	ev.Source.System = normevent.SystemGitHub
-	assert.True(t, IsEventAuthorizedWith(ev, AuthOptions{JiraLabelsRequireRole: true}))
+	assert.True(t, IsEventAuthorizedWith(ev, AuthOptions{JiraLabelsByEditPermission: true}))
 }
 
 func TestIsAuthorized_BotReviewSubmittedOnGitHub(t *testing.T) {
@@ -412,10 +421,10 @@ func TestFilterAuthorizedHarnesses(t *testing.T) {
 	assert.Empty(t, FilterAuthorizedHarnesses(nil, human(normevent.RoleWrite)))
 
 	jiraLabel := jiraLabelEvent("added", normevent.RoleTriage)
-	assert.Equal(t, []string{"review", "code", "triage", "custom", "nil-harness"},
-		names(FilterAuthorizedHarnesses(candidates, jiraLabel)))
 	assert.Equal(t, []string{"review", "triage"},
-		names(FilterAuthorizedHarnessesWith(candidates, jiraLabel, AuthOptions{JiraLabelsRequireRole: true})))
+		names(FilterAuthorizedHarnesses(candidates, jiraLabel)))
+	assert.Equal(t, []string{"review", "code", "triage", "custom", "nil-harness"},
+		names(FilterAuthorizedHarnessesWith(candidates, jiraLabel, AuthOptions{JiraLabelsByEditPermission: true})))
 }
 
 func TestIsLifecycleCloseAuthorized(t *testing.T) {
@@ -471,8 +480,9 @@ func TestAuthOptionsFor(t *testing.T) {
 		assert.NoError(t, err)
 		return cfg
 	}
-	assert.False(t, AuthOptionsFor(parse("version: \"1\"\n")).JiraLabelsRequireRole)
-	assert.False(t, AuthOptionsFor(parse("authorization:\n  - provider: jira\n")).JiraLabelsRequireRole)
-	assert.True(t, AuthOptionsFor(parse("authorization:\n  - provider: jira\n    labels: allowlist\n")).JiraLabelsRequireRole)
-	assert.True(t, AuthOptionsFor(parse("authorization:\n  - provider: jira\n    labels: project_roles\n")).JiraLabelsRequireRole)
+	assert.False(t, AuthOptionsFor(parse("version: \"1\"\n")).JiraLabelsByEditPermission)
+	assert.True(t, AuthOptionsFor(parse("authorization:\n  - provider: jira\n")).JiraLabelsByEditPermission)
+	assert.True(t, AuthOptionsFor(parse("authorization:\n  - provider: jira\n    labels: jira_editors\n")).JiraLabelsByEditPermission)
+	assert.False(t, AuthOptionsFor(parse("authorization:\n  - provider: jira\n    labels: allowlist\n")).JiraLabelsByEditPermission)
+	assert.False(t, AuthOptionsFor(parse("authorization:\n  - provider: jira\n    labels: project_roles\n")).JiraLabelsByEditPermission)
 }

@@ -433,7 +433,7 @@ func TestDispatch_JiraLabelPolicyFromConfig(t *testing.T) {
 		authYAML  string
 		wantAgent bool
 	}{
-		{name: "no jira provider keeps the Edit Issues default", authYAML: "", wantAgent: true},
+		{name: "no jira provider requires a role", authYAML: "", wantAgent: false},
 		{name: "jira_editors", authYAML: "authorization:\n  - provider: jira\n", wantAgent: true},
 		{name: "allowlist requires a role", authYAML: "authorization:\n  - provider: jira\n    labels: allowlist\n", wantAgent: false},
 		{name: "project_roles requires a role", authYAML: "authorization:\n  - provider: jira\n    labels: project_roles\n", wantAgent: false},

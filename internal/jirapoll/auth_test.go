@@ -3,6 +3,7 @@ package jirapoll
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -135,8 +136,8 @@ func TestRunAuth_JiraEditorsLabelSkipsProjectRoles(t *testing.T) {
 		authTestLabelAdded("100", "editor", "ready-to-code", now.Add(-10*time.Minute)),
 	}
 
-	m := newGateMatcher(harnessdispatch.AuthOptions{})
-	p := authTestPoller(mc, m, Authorization{})
+	m := newGateMatcher(harnessdispatch.AuthOptions{JiraLabelsByEditPermission: true})
+	p := authTestPoller(mc, m, Authorization{Configured: true})
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
@@ -173,8 +174,9 @@ func TestRunAuth_ListsAuthorizeSlashCommands(t *testing.T) {
 
 	m := newGateMatcher(harnessdispatch.AuthOptions{})
 	p := authTestPoller(mc, m, Authorization{
-		Write:  ActorList{Groups: []string{"example-team-developers"}, Accounts: []string{"acct-writer"}},
-		Triage: ActorList{Groups: []string{"gid-team"}, Accounts: []string{"acct-triager"}},
+		Configured: true,
+		Write:      ActorList{Groups: []string{"example-team-developers"}, Accounts: []string{"acct-writer"}},
+		Triage:     ActorList{Groups: []string{"gid-team"}, Accounts: []string{"acct-triager"}},
 	})
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -221,8 +223,9 @@ func TestRunAuth_AccountListsMakeNoJiraCalls(t *testing.T) {
 	}
 
 	p := authTestPoller(mc, newGateMatcher(harnessdispatch.AuthOptions{}), Authorization{
-		Write:  ActorList{Accounts: []string{"acct-writer"}},
-		Triage: ActorList{Accounts: []string{"acct-triager"}},
+		Configured: true,
+		Write:      ActorList{Accounts: []string{"acct-writer"}},
+		Triage:     ActorList{Accounts: []string{"acct-triager"}},
 	})
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -246,7 +249,7 @@ func TestRunAuth_EmptyConfiguredListsDenyEveryone(t *testing.T) {
 	// The lists were configured but every entry has been removed: nobody is
 	// named, so nobody is authorized, and the project role roster (which a
 	// project Developer would pass) is not consulted.
-	p := authTestPoller(mc, newGateMatcher(harnessdispatch.AuthOptions{}), Authorization{ListsConfigured: true})
+	p := authTestPoller(mc, newGateMatcher(harnessdispatch.AuthOptions{}), Authorization{Configured: true, ListsConfigured: true})
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
@@ -265,7 +268,8 @@ func TestRunAuth_ListGroupsCachedPerCycle(t *testing.T) {
 	mc.comments["PROJ-2"] = []jira.Comment{authTestComment("2", "dev", "/fs-code", now.Add(-10*time.Minute))}
 
 	p := authTestPoller(mc, newGateMatcher(harnessdispatch.AuthOptions{}), Authorization{
-		Write: ActorList{Groups: []string{"devs"}},
+		Configured: true,
+		Write:      ActorList{Groups: []string{"devs"}},
 	})
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -286,7 +290,8 @@ func TestRunAuth_ListGroupLookupFailureFailsIssue(t *testing.T) {
 	mc.comments["PROJ-1"] = []jira.Comment{authTestComment("1", "dev", "/fs-code", now.Add(-10*time.Minute))}
 
 	p := authTestPoller(mc, newGateMatcher(harnessdispatch.AuthOptions{}), Authorization{
-		Write: ActorList{Groups: []string{"devs"}},
+		Configured: true,
+		Write:      ActorList{Groups: []string{"devs"}},
 	})
 	if err := p.Run(context.Background()); err == nil {
 		t.Fatal("expected Run() to fail when the only issue's group lookup fails")
@@ -313,10 +318,11 @@ func TestRunAuth_LabelsAllowlist(t *testing.T) {
 		authTestLabelAdded("101", "stranger", "ready-to-code", now.Add(-10*time.Minute)),
 	}
 
-	m := newGateMatcher(harnessdispatch.AuthOptions{JiraLabelsRequireRole: true})
+	m := newGateMatcher(harnessdispatch.AuthOptions{})
 	p := authTestPoller(mc, m, Authorization{
-		Triage: ActorList{Accounts: []string{"acct-triager"}},
-		Labels: LabelsAllowlist,
+		Configured: true,
+		Triage:     ActorList{Accounts: []string{"acct-triager"}},
+		Labels:     LabelsAllowlist,
 	})
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -340,12 +346,13 @@ func TestRunAuth_LabelsProjectRoles(t *testing.T) {
 		authTestLabelAdded("101", "editor", "ready-to-code", now.Add(-10*time.Minute)),
 	}
 
-	m := newGateMatcher(harnessdispatch.AuthOptions{JiraLabelsRequireRole: true})
+	m := newGateMatcher(harnessdispatch.AuthOptions{})
 	// Lists configured for comments do not apply to labels under
 	// project_roles.
 	p := authTestPoller(mc, m, Authorization{
-		Write:  ActorList{Accounts: []string{"editor"}},
-		Labels: LabelsProjectRoles,
+		Configured: true,
+		Write:      ActorList{Accounts: []string{"editor"}},
+		Labels:     LabelsProjectRoles,
 	})
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -366,8 +373,9 @@ func TestRunAuth_LabelsProjectRolesLoadFailureFailsCycle(t *testing.T) {
 		authTestLabelAdded("100", "dev", "ready-to-code", now.Add(-10*time.Minute)),
 	}
 
-	p := authTestPoller(mc, newGateMatcher(harnessdispatch.AuthOptions{JiraLabelsRequireRole: true}), Authorization{
-		Labels: LabelsProjectRoles,
+	p := authTestPoller(mc, newGateMatcher(harnessdispatch.AuthOptions{}), Authorization{
+		Configured: true,
+		Labels:     LabelsProjectRoles,
 	})
 	err := p.Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "load project roles for PROJ") {
@@ -405,13 +413,70 @@ func TestRunAuth_NoProviderSlashCommandUsesProjectRoles(t *testing.T) {
 	}
 }
 
+func TestRunAuth_NoEntryLabelAddedUsesRoleThreshold(t *testing.T) {
+	// With no jira entry, a label-added event takes the per-harness role
+	// threshold and the actor resolves through the project role roster,
+	// which is loaded once for the cycle.
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleMembership = map[string]string{"dev": "Developers"}
+	mc.searchResult = []jira.Issue{authTestIssue("PROJ-1", now), authTestIssue("PROJ-2", now)}
+	mc.changelog["PROJ-1"] = []jira.ChangelogEntry{
+		authTestLabelAdded("100", "dev", "ready-to-code", now.Add(-20*time.Minute)),
+	}
+	mc.changelog["PROJ-2"] = []jira.ChangelogEntry{
+		authTestLabelAdded("101", "norole", "ready-to-code", now.Add(-10*time.Minute)),
+	}
+
+	m := newGateMatcher(harnessdispatch.AuthOptions{})
+	p := authTestPoller(mc, m, Authorization{})
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	assertAgents(t, p, "dev", "code", "triage")
+	assertAgents(t, p, "norole")
+	if got := m.roleOf("dev"); got != "write" {
+		t.Errorf("actor.role for dev = %q, want write", got)
+	}
+	if mc.roleActorsCalls != 1 {
+		t.Errorf("GetProjectRoleActors called %d times, want 1 (loaded once per cycle)", mc.roleActorsCalls)
+	}
+}
+
+func TestRunAuth_NoEntryIssueOpenedResolvesThroughProjectRoles(t *testing.T) {
+	// With no jira entry, even an issue-opened event resolves its actor
+	// through the roster: a Developers member is write and dispatches the
+	// triage harness.
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleMembership = map[string]string{"reporter-id": "Developers"}
+	mc.searchResult = []jira.Issue{authTestIssue("PROJ-1", now)}
+
+	m := newGateMatcher(harnessdispatch.AuthOptions{})
+	p := authTestPoller(mc, m, Authorization{})
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if got := m.roleOf("reporter-id"); got != "write" {
+		t.Errorf("actor.role for reporter-id = %q, want write", got)
+	}
+	if !slices.Contains(dispatchedBy(p, "reporter-id"), "triage") {
+		t.Errorf("dispatches for reporter-id = %v, want the triage harness", dispatchedBy(p, "reporter-id"))
+	}
+	if mc.roleActorsCalls != 1 {
+		t.Errorf("GetProjectRoleActors called %d times, want 1", mc.roleActorsCalls)
+	}
+}
+
 func TestRunAuth_NoEventsSkipsProjectRoles(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	mc := newMockClient()
 	mc.roleErr = errAdminOnly
 	mc.searchResult = []jira.Issue{authTestIssue("PROJ-1", now)}
 
-	p := authTestPoller(mc, newGateMatcher(harnessdispatch.AuthOptions{}), Authorization{})
+	// A jira entry is present: the issue's only event is its first-poll
+	// opened event, which the entry without lists leaves unresolved.
+	p := authTestPoller(mc, newGateMatcher(harnessdispatch.AuthOptions{}), Authorization{Configured: true})
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
@@ -433,7 +498,7 @@ func TestRunAuth_SelfAuthoredEventsFilteredWithLists(t *testing.T) {
 
 	m := newGateMatcher(harnessdispatch.AuthOptions{})
 	// Even if the poller account is listed, its own events never dispatch.
-	p := authTestPoller(mc, m, Authorization{Write: ActorList{Accounts: []string{"poller-service-account"}}})
+	p := authTestPoller(mc, m, Authorization{Configured: true, Write: ActorList{Accounts: []string{"poller-service-account"}}})
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
@@ -445,10 +510,11 @@ func TestRunAuth_SelfAuthoredEventsFilteredWithLists(t *testing.T) {
 	}
 }
 
-func TestRunAuth_NonCommandEventsWithoutListsSkipProjectRoles(t *testing.T) {
-	// Without lists, only slash commands consult the roster: an issue
-	// opened (first poll) and a plain comment are not resolved and do not
-	// pass a role threshold, and the admin-only roster is never loaded.
+func TestRunAuth_EntryWithoutListsNonCommandEventsSkipProjectRoles(t *testing.T) {
+	// With a jira entry that sets no lists, only slash commands consult the
+	// roster: an issue opened (first poll) and a plain comment are not
+	// resolved and do not pass a role threshold, and the admin-only roster
+	// is never loaded.
 	now := time.Now().Truncate(time.Second)
 	mc := newMockClient()
 	mc.roleErr = errAdminOnly
@@ -456,7 +522,7 @@ func TestRunAuth_NonCommandEventsWithoutListsSkipProjectRoles(t *testing.T) {
 	mc.comments["PROJ-1"] = []jira.Comment{authTestComment("1", "commenter", "thanks!", now.Add(-10*time.Minute))}
 
 	m := newGateMatcher(harnessdispatch.AuthOptions{})
-	p := authTestPoller(mc, m, Authorization{})
+	p := authTestPoller(mc, m, Authorization{Configured: true})
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
@@ -478,7 +544,7 @@ func TestRunAuth_ListsAuthorizeIssueOpened(t *testing.T) {
 	mc.searchResult = []jira.Issue{authTestIssue("PROJ-1", now)}
 
 	m := newGateMatcher(harnessdispatch.AuthOptions{})
-	p := authTestPoller(mc, m, Authorization{Triage: ActorList{Accounts: []string{"reporter-id"}}})
+	p := authTestPoller(mc, m, Authorization{Configured: true, Triage: ActorList{Accounts: []string{"reporter-id"}}})
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
@@ -492,7 +558,7 @@ func TestResolveRole_ListsApplyToNonCommandEvents(t *testing.T) {
 	p := &Poller{
 		opts: Options{
 			JiraProject:   "PROJ",
-			Authorization: Authorization{Triage: ActorList{Accounts: []string{"t"}}},
+			Authorization: Authorization{Configured: true, Triage: ActorList{Accounts: []string{"t"}}},
 		},
 		roleMembership: map[string]string{"t": "Administrators"},
 	}
@@ -511,21 +577,26 @@ func TestRoleSourceFor(t *testing.T) {
 	comment := JiraEvent{Type: "comment_added", CommentBody: "/fs-code now"}
 	plain := JiraEvent{Type: "comment_added", CommentBody: "looks good"}
 	opened := JiraEvent{Type: "opened"}
-	lists := Authorization{Write: ActorList{Accounts: []string{"a"}}}
+	lists := Authorization{Configured: true, Write: ActorList{Accounts: []string{"a"}}}
+	entry := Authorization{Configured: true}
 	tests := []struct {
 		name  string
 		auth  Authorization
 		event JiraEvent
 		want  roleSource
 	}{
-		{"label default", Authorization{}, label, roleNotResolved},
-		{"label jira_editors with lists", Authorization{Write: lists.Write, Labels: LabelsJiraEditors}, label, roleNotResolved},
-		{"label allowlist", Authorization{Labels: LabelsAllowlist}, label, roleFromLists},
-		{"label project_roles", Authorization{Write: lists.Write, Labels: LabelsProjectRoles}, label, roleFromProjectRoles},
-		{"comment without lists", Authorization{Labels: LabelsAllowlist}, comment, roleFromProjectRoles},
+		{"no entry: label", Authorization{}, label, roleFromProjectRoles},
+		{"no entry: slash command", Authorization{}, comment, roleFromProjectRoles},
+		{"no entry: plain comment", Authorization{}, plain, roleFromProjectRoles},
+		{"no entry: opened", Authorization{}, opened, roleFromProjectRoles},
+		{"label default", entry, label, roleNotResolved},
+		{"label jira_editors with lists", Authorization{Configured: true, Write: lists.Write, Labels: LabelsJiraEditors}, label, roleNotResolved},
+		{"label allowlist", Authorization{Configured: true, Labels: LabelsAllowlist}, label, roleFromLists},
+		{"label project_roles", Authorization{Configured: true, Write: lists.Write, Labels: LabelsProjectRoles}, label, roleFromProjectRoles},
+		{"comment without lists", Authorization{Configured: true, Labels: LabelsAllowlist}, comment, roleFromProjectRoles},
 		{"comment with lists", lists, comment, roleFromLists},
-		{"plain comment without lists", Authorization{}, plain, roleNotResolved},
-		{"opened without lists", Authorization{}, opened, roleNotResolved},
+		{"plain comment without lists", entry, plain, roleNotResolved},
+		{"opened without lists", entry, opened, roleNotResolved},
 		{"opened with lists", lists, opened, roleFromLists},
 	}
 	for _, tt := range tests {

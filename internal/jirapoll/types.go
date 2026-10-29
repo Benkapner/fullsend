@@ -52,9 +52,8 @@ type Options struct {
 	FirstPollBackfillWindow time.Duration // How far back to backfill comments/changelog on an issue's first poll (default: 24h)
 
 	// Authorization holds the jira authorization provider from
-	// config.yaml. The zero value (no provider) resolves slash commands and
-	// other non-label events through the Jira project role roster and
-	// authorizes label-added events by Jira's Edit Issues permission.
+	// config.yaml. The zero value (no provider entry) resolves every event
+	// through the Jira project role roster.
 	Authorization Authorization
 }
 
@@ -76,8 +75,12 @@ type ActorList struct {
 // Authorization is the poller's view of the jira authorization provider:
 // the write and triage lists and the label-added event rule.
 type Authorization struct {
-	Write  ActorList
-	Triage ActorList
+	// Configured records that a jira provider entry is present in
+	// config.yaml; the zero value means no entry and selects the
+	// project-role model for every event.
+	Configured bool
+	Write      ActorList
+	Triage     ActorList
 	// ListsConfigured records that the jira provider set a write: or
 	// triage: list, even an empty one. It keeps the lists authoritative
 	// (deny everyone not named) after the last entry is removed, instead of

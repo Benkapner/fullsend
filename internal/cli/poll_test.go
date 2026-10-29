@@ -750,9 +750,15 @@ func TestCELMatcher_JiraLabelRule(t *testing.T) {
 		return got
 	}
 
-	editors := &celMatcher{candidates: candidates}
+	noEntry := &celMatcher{candidates: candidates}
+	assert.Empty(t, agents(noEntry, jiraLabelAddedEvent(normevent.RoleNone)),
+		"no jira entry: the role threshold applies")
+	assert.Equal(t, []string{"triage"}, agents(noEntry, jiraLabelAddedEvent(normevent.RoleTriage)))
+	assert.Equal(t, []string{"triage", "code"}, agents(noEntry, jiraLabelAddedEvent(normevent.RoleWrite)))
+
+	editors := &celMatcher{candidates: candidates, jiraAuth: &config.AuthorizationProvider{Provider: config.AuthProviderJira}}
 	assert.Equal(t, []string{"triage", "code"}, agents(editors, jiraLabelAddedEvent(normevent.RoleNone)),
-		"jira_editors (default): any label author dispatches")
+		"jira entry with labels: jira_editors (default): any label author dispatches")
 
 	for _, labels := range []string{config.JiraLabelsAllowlist, config.JiraLabelsProjectRoles} {
 		m := &celMatcher{candidates: candidates, jiraAuth: &config.AuthorizationProvider{Provider: config.AuthProviderJira, Labels: labels}}
@@ -776,8 +782,9 @@ authorization:
 	m, err := newCELMatcher(context.Background(), dir)
 	require.NoError(t, err)
 	require.NotNil(t, m.jiraAuth)
-	assert.True(t, m.authOptions().JiraLabelsRequireRole)
+	assert.False(t, m.authOptions().JiraLabelsByEditPermission)
 	assert.Equal(t, jirapoll.Authorization{
+		Configured:      true,
 		Write:           jirapoll.ActorList{Groups: []string{"devs"}},
 		Triage:          jirapoll.ActorList{Accounts: []string{"acct"}},
 		ListsConfigured: true,
@@ -794,8 +801,8 @@ authorization:
 	m, err = newCELMatcher(context.Background(), dir)
 	require.NoError(t, err)
 	require.NotNil(t, m.jiraAuth)
-	assert.False(t, m.authOptions().JiraLabelsRequireRole)
-	assert.Equal(t, jirapoll.Authorization{Labels: config.JiraLabelsEditors}, jiraPollAuthorization(m.jiraAuth))
+	assert.True(t, m.authOptions().JiraLabelsByEditPermission)
+	assert.Equal(t, jirapoll.Authorization{Configured: true, Labels: config.JiraLabelsEditors}, jiraPollAuthorization(m.jiraAuth))
 
 	// An invalid labels value fails config loading.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
@@ -881,5 +888,5 @@ func TestNewCELMatcher_RejectsAliasedMisspelledJiraKey(t *testing.T) {
 
 func TestJiraPollAuthorization_NilProvider(t *testing.T) {
 	assert.Equal(t, jirapoll.Authorization{}, jiraPollAuthorization(nil))
-	assert.False(t, (&celMatcher{}).authOptions().JiraLabelsRequireRole)
+	assert.False(t, (&celMatcher{}).authOptions().JiraLabelsByEditPermission)
 }
