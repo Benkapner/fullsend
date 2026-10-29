@@ -56,17 +56,23 @@ check: changing labels needs the **Edit Issues** permission.
 
 ## Decision
 
-Jira actors are authorized without the project role roster unless a
-repository opts into it:
+The `jira` authorization provider is opt-in. A repository with no `jira`
+entry under `authorization:` keeps the previous behavior: every Jira event
+resolves its actor role through the project role roster, and a label-added
+event takes the per-harness role threshold like any other event. A repository
+that adds a `jira` entry authorizes Jira actors without the project role
+roster unless it opts into it:
 
-1. **Label-added events are authorized by Jira's Edit Issues permission**
-   by default, like GitHub label-added events. The dispatch gate admits a
-   Jira `label_changed` event with `label.action: added` for every matched
-   harness. The poller still drops its own account's events as bot events.
+1. **With a `jira` entry, label-added events are authorized by Jira's Edit
+   Issues permission** by default (`labels: jira_editors`), like GitHub
+   label-added events. The dispatch gate admits a Jira `label_changed` event
+   with `label.action: added` for every matched harness. The poller still
+   drops its own account's events as bot events.
 2. **A `jira` provider under `authorization:`** in `.fullsend/config.yaml`
    lists Jira groups and account IDs for the Fullsend `write` and `triage`
-   roles. It also sets `labels:` to `jira_editors` (the default), `allowlist`,
-   or `project_roles`. It applies only to events with `source.system: jira`.
+   roles. It also sets `labels:` to `jira_editors` (the default once the entry
+   is present), `allowlist`, or `project_roles`. It applies only to events
+   with `source.system: jira`.
    When the provider sets a `write` or `triage` list (even an empty one),
    the lists are authoritative for slash commands and every other non-label
    event, so emptying them denies everyone rather than re-enabling the
@@ -76,16 +82,18 @@ repository opts into it:
    which needs only Browse users and groups, and are cached per actor per
    cycle. Account entries need no Jira call. `labels: allowlist` checks label
    authors against the same lists. `labels: project_roles` uses the roster.
-3. **The roster is loaded only when an event uses it.** That happens for a
-   slash command when no lists are configured, and for a label-added event
-   under `labels: project_roles`. A load failure still fails the cycle
-   without advancing checkpoints. Without lists, the other events (issue
+3. **The roster is loaded only when an event uses it.** With no `jira`
+   entry, that is every event. With an entry, it is a slash command when no
+   lists are configured, and a label-added event under
+   `labels: project_roles`. A load failure still fails the cycle without
+   advancing checkpoints. With an entry but no lists, the other events (issue
    opened, edited, closed or reopened, plain comments, label removals) are
    not resolved, carry `actor.role: none`, and pass no role threshold. A
-   setup that uses the lists, or only label triggers under `jira_editors`,
-   never calls `GET /rest/api/3/project/<KEY>/role`.
+   setup whose `jira` entry uses the lists, or only label triggers under
+   `jira_editors`, never calls `GET /rest/api/3/project/<KEY>/role`.
 
-With no `jira` provider, slash commands keep the project-role lookup.
+With no `jira` provider, every Jira event, label-added included, resolves
+through the project role roster and takes the per-harness role threshold.
 
 ## Forge scope
 
@@ -98,12 +106,15 @@ that driver. GitHub, GitLab, and Forgejo event authorization, and the
 
 - A Jira poller needs only Browse Projects, Edit Issues, Add Comments, and
   Edit Own Comments. It also needs Browse users and groups when the lists use
-  groups, and Administer Projects only when project roles are used.
-- By default, Jira label triggers are authorized by Edit Issues. In many
-  projects that is broader than the Developers role, so repositories that
-  want the old rule must set `labels: project_roles`.
-- Without lists, Jira issue opened and edited events no longer pass role
-  thresholds. A trigger on them, such as the default triage harness's, needs
-  the `jira` lists.
+  groups, and Administer Projects only when project roles are used. A
+  repository that adds no `jira` entry changes nothing and keeps needing
+  Administer Projects.
+- Once a repository adds a `jira` entry, its Jira label triggers are
+  authorized by Edit Issues by default. In many projects that is broader than
+  the Developers role, so such repositories that want the old rule must set
+  `labels: project_roles`.
+- With a `jira` entry but no lists, Jira issue opened and edited events no
+  longer pass role thresholds. A trigger on them, such as the default triage
+  harness's, needs the `jira` lists.
 - Repository configuration becomes a second place to keep Jira
   authorization in sync with Jira group membership.

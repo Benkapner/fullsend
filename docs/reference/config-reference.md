@@ -319,7 +319,7 @@ GitLab authorization
 |---|---|
 | `write.groups`, `write.accounts` | Jira groups (by name or group ID) and Jira account IDs granted the Fullsend `write` role |
 | `triage.groups`, `triage.accounts` | Jira groups and account IDs granted the Fullsend `triage` role |
-| `labels` | How a label-added event is authorized: `jira_editors` (default), `allowlist`, or `project_roles` |
+| `labels` | How a label-added event is authorized: `jira_editors` (default once the entry is present), `allowlist`, or `project_roles` |
 
 - **Slash commands and other non-label events:** when the entry sets a
   `write` or `triage` list (an empty list counts as set, so it denies
@@ -339,14 +339,16 @@ GitLab authorization
   poll cycle. That needs the poller account to hold the Browse users and
   groups global permission. Account entries need no Jira call.
 
-Without a `jira` entry, slash commands use the project role lookup and
-label-added events use `jira_editors`. Unknown keys in a `jira` entry, an
+The provider is opt-in. Without a `jira` entry, every Jira event, including
+label-added events, resolves through the project role lookup and takes the
+per-harness role threshold, which needs Administer Projects. Unknown keys in a `jira` entry, an
 unknown `labels` value, and empty group or account entries fail config
 loading. See
 [Jira integration](../guides/user/jira-integration.md#actor-role-resolution)
 for the permissions each setting needs.
 
-Default: absent (`owners_file` off; Jira as described above). The field is
+Default: absent (`owners_file` off; Jira resolves every event through the
+project role lookup). The field is
 not inherited from `config.base.yaml`: each repo opts in in its own
 `config.yaml`. Unknown or duplicate providers fail config validation, and also fail
 `jira-poll` and harness dispatch at load time, and

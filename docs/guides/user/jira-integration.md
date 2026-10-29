@@ -372,9 +372,13 @@ The `entity.key` field is required when `source.system` is `"jira"` — it carri
 
 ## Actor role resolution
 
-The poller decides which Jira users may trigger agents from the `jira`
-provider under `authorization:` in `.fullsend/config.yaml`
-([ADR 0152](../../ADRs/0152-authorize-jira-poll-actors-without-project-administration.md)):
+The `jira` provider under `authorization:` in `.fullsend/config.yaml` is
+opt-in
+([ADR 0152](../../ADRs/0152-authorize-jira-poll-actors-without-project-administration.md)).
+With no `jira` entry, the poller resolves every event, label-added events
+included, through the Jira project roles (see
+[Project role mapping](#project-role-mapping)), which needs Administer
+Projects. To authorize actors without that permission, add a `jira` entry:
 
 ```yaml
 authorization:
@@ -388,9 +392,10 @@ authorization:
     labels: jira_editors  # jira_editors (default) | allowlist | project_roles
 ```
 
-- **Label added.** By default (`labels: jira_editors`, also used when there
-  is no `jira` provider), any human who adds a label can trigger the agents
-  whose trigger matches it. Jira only lets users with the Edit Issues
+- **Label added.** When a `jira` entry exists, by default
+  (`labels: jira_editors`), any human who adds a label can trigger the agents
+  whose trigger matches it. With no `jira` entry, a label-added event takes
+  the project-role rule described below instead. Jira only lets users with the Edit Issues
   permission change labels, so this works like GitHub, where applying a
   label needs triage access. Edit Issues is often granted more widely than
   the Developers role. Set `labels: allowlist` to check label authors
@@ -406,9 +411,10 @@ authorization:
   sets `role: triage` or `role: review`. Everyone else is denied. This also
   applies to issues being opened or edited.
 - **Slash commands without lists.** Slash commands are authorized by the
-  actor's Jira project role, as in the table below. Issues being opened,
-  edited, closed, or reopened, plain comments, and label removals are not
-  authorized for any agent.
+  actor's Jira project role, as in the table below. When a `jira` entry exists
+  but sets no lists, issues being opened, edited, closed, or reopened, plain
+  comments, and label removals are not authorized for any agent. With no
+  `jira` entry, every event takes the project-role rule.
 
 Group entries match a Jira group's name or group ID and are checked with
 Jira's user-groups API, once per actor per poll cycle. Account entries are
@@ -421,11 +427,12 @@ the user's Jira profile: the ID is the last part of its URL.
 |---|---|
 | Browse Projects, Edit Issues, Add Comments, Edit Own Comments | Always |
 | Browse users and groups (global permission) | Only when the `jira` lists name groups |
-| Administer Projects (the **Administrators** project role) | Only when project roles are used: slash commands without `jira` lists, or `labels: project_roles` |
+| Administer Projects (the **Administrators** project role) | Only when project roles are used: no `jira` entry, slash commands without `jira` lists, or `labels: project_roles` |
 
 The poller reads the project role list only in a cycle that has an event
-needing it. A setup that uses the lists, or only label triggers under
-`jira_editors`, never needs Administer Projects.
+needing it. A setup whose `jira` entry uses the lists, or only label triggers
+under `jira_editors`, never needs Administer Projects. With no `jira` entry,
+every event needs the role list.
 
 ### Project role mapping
 
@@ -454,8 +461,8 @@ The role resolved above feeds directly into the dispatch authorization gate (see
 
 If your Jira project's membership is broader than your GitHub repo's collaborator list — which is common, since the two are usually administered separately — treat that gap as real: anyone in that gap can use their Jira membership alone to induce agent-proposed changes to your repository. Before enabling this driver, check who holds `write`-mapped roles in the target Jira project and make sure you're comfortable with each of them being able to do that.
 
-The same applies to the `jira` lists and to label triggers. Under the
-default `labels: jira_editors`, anyone with Edit Issues on the project can
+The same applies to the `jira` lists and to label triggers. Under a `jira`
+entry's default `labels: jira_editors`, anyone with Edit Issues on the project can
 add a label such as `ready-to-code` and dispatch the agent whose trigger
 matches it. Use `labels: allowlist` if that group is broader than you want.
 
@@ -536,7 +543,7 @@ However, more pollers against the same Jira project means more API calls per cyc
 | Slash command ignored (with `jira` lists) | Actor is not in the `write` list (or the `triage` list for triage-level agents) | Add the actor's account ID or one of their groups to the right list — see [Actor role resolution](#actor-role-resolution) |
 | Slash command ignored (without `jira` lists) | Actor lacks `write` role in Jira project | The actor must be a member of a Jira project role named exactly "Developers" or "Administrators" — see [Project role mapping](#project-role-mapping) if you use custom role names |
 | Issue opened or edited on Jira never dispatches triage | No `jira` lists configured; without lists only slash commands and label additions can dispatch | Add the `jira` authorization lists — see [Actor role resolution](#actor-role-resolution) |
-| Label added but nothing dispatched | `labels: allowlist` or `labels: project_roles` is set and the label author is not authorized by it | Add the author to the lists, or use the default `labels: jira_editors` |
+| Label added but nothing dispatched | There is no `jira` entry, or it sets `labels: allowlist` or `labels: project_roles`, and the label author is not authorized by it | Add the author to the lists, or add a `jira` entry with the default `labels: jira_editors` |
 | Slash commands silently ignored when using `--jql` | `--jira-project` not provided and no `jira` lists — all actors resolve to `external` and fail the role gate | Add `--jira-project PROJ` alongside `--jql` in your workflow file, or configure the `jira` lists |
 | Duplicate dispatches | `lastCheck` was cleared or missing | The poller treats a missing `lastCheck` as "never polled" and processes all recent changes. This is self-correcting — the next cycle advances `lastCheck` past the duplicates |
 | Old comment or label change on a newly polled issue never dispatches | Activity predates the first-poll backfill window | On an issue's first poll, activity older than the 24-hour backfill window is permanently skipped (the checkpoint advances past it). To pick up older activity, scope the initial `--jql` to recently updated issues and widen it gradually, or have someone re-trigger by commenting again |

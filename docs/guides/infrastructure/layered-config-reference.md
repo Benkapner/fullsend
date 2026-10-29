@@ -522,8 +522,9 @@ backends. Two providers are supported, `owners_file` and `jira`:
 - `jira` — decides which Jira users may trigger agents through the
   `jira-poll` input driver, from `write` and `triage` lists of Jira groups
   and account IDs and a `labels` rule (`jira_editors`, the default,
-  `allowlist`, or `project_roles`) for label-added events. It applies only
-  to Jira events. Like `owners_file` it is overlay-only: it is never
+  `allowlist`, or `project_roles`) for label-added events. It is opt-in: with
+  no `jira` entry, every Jira event resolves through the project role
+  roster. It applies only to Jira events. Like `owners_file` it is overlay-only: it is never
   inherited from `config.base.yaml`, so there is no base fallback. See the
   [`authorization` field](../../reference/config-reference.md#authorization)
   for the keys and their effects.

@@ -410,11 +410,13 @@ The existing design principle is that [the repo is the coordinator](problems/age
   as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
   scope is per-repo mode only.
 - Jira poll actor authorization does not require the poller to administer the
-  Jira project. Jira label-added events are authorized by Jira's Edit Issues
-  permission by default. A `jira` provider under `authorization:` lists Jira
-  groups and account IDs for the `write` and `triage` roles, which are
-  authoritative for slash commands and other non-label events. The admin-only
-  project role roster is loaded only for slash commands without lists or under
+  Jira project once a repository opts in with a `jira` provider under
+  `authorization:`. With no `jira` entry, every Jira event resolves through the
+  admin-only project role roster. The entry lists Jira groups and account IDs
+  for the `write` and `triage` roles, which are authoritative for slash
+  commands and other non-label events, and Jira label-added events are
+  authorized by Jira's Edit Issues permission by default. With an entry, the
+  roster is loaded only for slash commands without lists or under
   `labels: project_roles`
   ([ADR 0152](ADRs/0152-authorize-jira-poll-actors-without-project-administration.md)).
 - Process lifecycle (target state): bound `fullsend run` and `fullsend poll`
