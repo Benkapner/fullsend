@@ -76,6 +76,10 @@ full documentation site.
 - When extending a Go interface with new methods, see
   [Go Code § Interface documentation](docs/contributing/go-code.md) for sync
   requirements.
+- When adding a repository variable or secret to the install path in
+  `internal/repos/`, add it to the matching uninstall list in the same
+  change. See
+  [Go Code § Install/uninstall parity](docs/contributing/go-code.md#installuninstall-parity-in-internalrepos).
 - When adding a new skill under `skills/`, check user-facing guides
   (`docs/guides/user/customizing-with-skills.md`,
   `docs/guides/user/bring-your-own-agent.md`, `docs/guides/README.md`) for
