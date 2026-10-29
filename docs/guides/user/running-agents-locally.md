@@ -382,6 +382,11 @@ To lock all harnesses in the directory at once:
 fullsend lock --all --fullsend-dir /path/to/.fullsend
 ```
 
+If `lock.yaml` exists but cannot be parsed, or declares a version this
+fullsend does not understand, `fullsend lock` exits with an error and
+leaves the file unchanged. Delete the file to regenerate it, or upgrade
+fullsend if the version is newer. A missing lock file is not an error.
+
 When `--forge` is specified, only that platform variant is locked. When omitted,
 all forge variants defined in the harness are resolved and the union of their
 dependencies is locked.
