@@ -114,7 +114,7 @@ from the default branch otherwise, so a PR cannot add its author. See the
 [`authorization` field](../../../reference/config-reference.md#authorization).
 
 On Jira the `jira` provider under `authorization` in `.fullsend/config.yaml`
-([ADR 0152](../../../ADRs/0152-authorize-jira-poll-actors-without-project-administration.md))
+([ADR 0153](../../../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md))
 is opt-in. It applies only to events with `source.system: jira`. With no
 `jira` entry, every Jira event, label-added included, takes its role from the
 project role roster (see **Without lists** below), and a label-added event
@@ -143,7 +143,9 @@ source for each event is chosen by the provider:
   project, or whose issue belongs to a different project, are mapped to
   `external` (fail-closed). When a `jira` entry exists but sets no lists, only
   a slash-command comment uses the roster and any other event's role is not
-  resolved.
+  resolved, except that an entry with `labels: project_roles` and no lists
+  resolves every event through the roster, exactly as with no `jira` entry.
+  That entry is the explicit way to keep the no-entry behavior.
 
 An event whose role is not resolved carries `actor.role: none`, which no
 threshold admits. Reading the roster (`GET /rest/api/3/project/<KEY>/role`)
@@ -293,7 +295,7 @@ authorized the same way, regardless of `actor.role`, because Jira requires
 the Edit Issues permission to change an issue's labels. This applies only
 when the repository has a `jira` provider entry whose `labels` rule is
 `jira_editors`, the default once the entry is present
-([ADR 0152](../../../ADRs/0152-authorize-jira-poll-actors-without-project-administration.md)).
+([ADR 0153](../../../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
 It is often broader than Jira's Developers role. A repository with no `jira`
 entry, or one that sets `labels: allowlist` or `labels: project_roles`, does
 not get the exception: those label events take the ordinary per-harness

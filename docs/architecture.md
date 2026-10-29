@@ -417,8 +417,9 @@ The existing design principle is that [the repo is the coordinator](problems/age
   commands and other non-label events, and Jira label-added events are
   authorized by Jira's Edit Issues permission by default. With an entry, the
   roster is loaded only for slash commands without lists or under
-  `labels: project_roles`
-  ([ADR 0152](ADRs/0152-authorize-jira-poll-actors-without-project-administration.md)).
+  `labels: project_roles` (which, with no lists, resolves every event through
+  the roster, as with no entry)
+  ([ADR 0153](ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
 - Process lifecycle (target state): bound `fullsend run` and `fullsend poll`
   support once, resident polling, and deadline-bounded polling. Bare
   `fullsend poll` and non-CI bound runs default to once; a CI bound run with

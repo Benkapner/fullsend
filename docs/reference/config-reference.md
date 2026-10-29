@@ -313,7 +313,7 @@ The GitHub collaborator API always applies; this provider is checked first:
 Decides which Jira users may trigger agents through the `jira-poll` input
 driver. It applies only to events from Jira and does not change GitHub or
 GitLab authorization
-([ADR 0152](../ADRs/0152-authorize-jira-poll-actors-without-project-administration.md)).
+([ADR 0153](../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
 
 | Key | Meaning |
 |---|---|
@@ -330,14 +330,23 @@ GitLab authorization
   Jira project roles are not consulted. When neither list is set, slash
   commands use the Jira project role lookup instead. That lookup needs
   Administer Projects. Other non-label events, such as an issue being opened
-  or edited, are then not authorized for any agent.
+  or edited, are then not authorized for any agent, unless the entry sets
+  `labels: project_roles`: with that value and no lists, every event
+  (labels, slash commands, opened, edited, closed, reopened, plain comments,
+  label removals) resolves through the project role lookup, exactly as with
+  no `jira` entry.
 - **Label-added events**: `jira_editors` authorizes anyone who could add the
   label, which needs Jira's Edit Issues permission. `allowlist` checks the
   label author against the same lists as slash commands. `project_roles`
   uses the Jira project role lookup.
 - Group entries are resolved with Jira's user-groups API, once per actor per
   poll cycle. That needs the poller account to hold the Browse users and
-  groups global permission. Account entries need no Jira call.
+  groups global permission. Account entries need no Jira call. Project-role
+  resolution calls the same API for an actor when a project role is granted
+  to a group.
+
+To keep today's behavior explicitly, use the two-line entry
+`- provider: jira` with `labels: project_roles` and no lists.
 
 The provider is opt-in. Without a `jira` entry, every Jira event, including
 label-added events, resolves through the project role lookup and takes the

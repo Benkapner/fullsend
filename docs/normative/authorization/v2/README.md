@@ -116,7 +116,7 @@ from the default branch otherwise, so a PR cannot add its author. See the
 [`authorization` field](../../../reference/config-reference.md#authorization).
 
 On Jira the `jira` provider under `authorization` in `.fullsend/config.yaml`
-([ADR 0152](../../../ADRs/0152-authorize-jira-poll-actors-without-project-administration.md))
+([ADR 0153](../../../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md))
 is opt-in, exactly as specified in
 [v1](../v1/README.md#forge-native-permission-mapping). With no `jira` entry,
 every Jira event resolves through the project role roster. With an entry, the
@@ -124,8 +124,9 @@ mapping source for each event is the provider's `write` and `triage` lists
 (authoritative once either list is set), the project role roster, or no
 resolved role (`none`), per event type and the provider's `labels` rule. The
 rest of this paragraph describes the project role roster, the source used for
-every event when no `jira` entry exists and for slash commands when an entry
-sets no list.
+every event when no `jira` entry exists (or when an entry sets
+`labels: project_roles` and no list) and for slash commands when any other
+entry sets no list.
 The roster is the project's role membership for the
 configured `--jira-project`, resolved once per poll cycle for event-backed
 dispatch. Entity-source CEL may reuse a completed

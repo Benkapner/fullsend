@@ -1,5 +1,5 @@
 ---
-title: "152. Authorize Jira poll actors without project administration"
+title: "153. Authorize Jira poll actors without project administration"
 status: Accepted
 relates_to:
   - security-threat-model
@@ -10,7 +10,7 @@ topics:
   - least-privilege
 ---
 
-# 152. Authorize Jira poll actors without project administration
+# 153. Authorize Jira poll actors without project administration
 
 Date: 2026-10-28
 
@@ -82,15 +82,21 @@ roster unless it opts into it:
    which needs only Browse users and groups, and are cached per actor per
    cycle. Account entries need no Jira call. `labels: allowlist` checks label
    authors against the same lists. `labels: project_roles` uses the roster.
+   A `jira` entry with `labels: project_roles` and no `write` or `triage`
+   list resolves every event through the roster, exactly as having no entry
+   does. That two-line entry is how a repository states that it keeps
+   today's behavior.
 3. **The roster is loaded only when an event uses it.** With no `jira`
-   entry, that is every event. With an entry, it is a slash command when no
-   lists are configured, and a label-added event under
+   entry, that is every event. With an entry, it is every event under
+   `labels: project_roles` with no lists, a slash command when no lists are
+   configured under any other `labels:` value, and a label-added event under
    `labels: project_roles`. A load failure still fails the cycle without
-   advancing checkpoints. With an entry but no lists, the other events (issue
-   opened, edited, closed or reopened, plain comments, label removals) are
-   not resolved, carry `actor.role: none`, and pass no role threshold. A
-   setup whose `jira` entry uses the lists, or only label triggers under
-   `jira_editors`, never calls `GET /rest/api/3/project/<KEY>/role`.
+   advancing checkpoints. With an entry that sets no lists and does not
+   select `labels: project_roles`, the other events (issue opened, edited,
+   closed or reopened, plain comments, label removals) are not resolved,
+   carry `actor.role: none`, and pass no role threshold. A setup whose `jira`
+   entry uses the lists, or only label triggers under `jira_editors`, never
+   calls `GET /rest/api/3/project/<KEY>/role`.
 
 With no `jira` provider, every Jira event, label-added included, resolves
 through the project role roster and takes the per-harness role threshold.
@@ -105,16 +111,20 @@ that driver. GitHub, GitLab, and Forgejo event authorization, and the
 ## Consequences
 
 - A Jira poller needs only Browse Projects, Edit Issues, Add Comments, and
-  Edit Own Comments. It also needs Browse users and groups when the lists use
-  groups, and Administer Projects only when project roles are used. A
+  Edit Own Comments. It also needs Browse users and groups when the lists name
+  groups, or when project-role resolution finds a role granted to a group
+  (it then calls `GET /rest/api/3/user/groups` for the actor), and
+  Administer Projects only when project roles are used. A
   repository that adds no `jira` entry changes nothing and keeps needing
   Administer Projects.
 - Once a repository adds a `jira` entry, its Jira label triggers are
   authorized by Edit Issues by default. In many projects that is broader than
   the Developers role, so such repositories that want the old rule must set
   `labels: project_roles`.
-- With a `jira` entry but no lists, Jira issue opened and edited events no
-  longer pass role thresholds. A trigger on them, such as the default triage
-  harness's, needs the `jira` lists.
+- With a `jira` entry that sets no lists and does not select
+  `labels: project_roles`, Jira issue opened and edited events no longer pass
+  role thresholds. A trigger on them, such as the default triage harness's,
+  needs the `jira` lists, or `labels: project_roles`, which resolves them
+  through project roles.
 - Repository configuration becomes a second place to keep Jira
   authorization in sync with Jira group membership.
