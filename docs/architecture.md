@@ -334,7 +334,19 @@ End-to-end **behaviour tests** use the shared framework in `pkg/behaviourtest/` 
 - Is the runtime a single model call, a loop (plan-act-observe), or something more structured?
 - How does the runtime interact with the sandbox boundaries — does it know what it can't do, or does it just hit walls? (For tool access: both — prose instructions inform the runtime, and `permissions.deny` hard-blocks execution; see [ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md). Broader sandbox interaction remains open.)
 - How do we swap model providers or versions without changing the rest of the stack?
-- What is the interface between the harness and the runtime? (A system prompt? A configuration file? An API contract?) (Decided: the runner-side contract is `runtime.Runtime` + `BootstrapInput`, the runtime-neutral sandbox tool-hook contract in [ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md), and optional capability interfaces. Each runtime translates the harness prompt into its own instruction slot — pi's `APPEND_SYSTEM.md`, codex's `developer_instructions` ([ADR 0099](ADRs/0099-codex-agent-runtime.md)) — rather than a shared format.)
+- What is the interface between the harness and the runtime? (A system prompt? A
+  configuration file? An API contract?) (Decided: the runner-side contract is
+  `runtime.Runtime` + `BootstrapInput`, the runtime-neutral sandbox tool-hook
+  contract in [ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md), and
+  optional capability interfaces.
+  Each runtime translates the harness prompt into its own instruction slot — pi's
+  `APPEND_SYSTEM.md`, codex's `developer_instructions` ([ADR
+  0099](ADRs/0099-codex-agent-runtime.md)) — rather than a shared format.
+  Hook scripts on every runtime resolve their interpreter and `PATH` from
+  agent-unwritable directories — Claude Code bakes them into the digest-checked
+  `hooks.json` at Bootstrap, while Codex and pi export trusted values and deny
+  each hook call when they are absent ([ADR
+  0152](ADRs/0152-hook-interpreter-trust.md)).)
 
 ## Agent Identity Provider
 
