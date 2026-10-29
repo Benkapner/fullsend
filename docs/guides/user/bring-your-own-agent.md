@@ -934,7 +934,8 @@ variables to the runner:
 |----------|-------------|
 | `FULLSEND_WORK_ITEM_URL` | Canonical, tracker-agnostic work item URL (`https://...`) |
 | `FULLSEND_WORK_ITEM_KEY` | Canonical key (`42` on GitHub, `PROJ-123` on Jira) |
-| `ISSUE_NUMBER` | Numeric GitHub issue/PR number; empty for Jira work items (use `FULLSEND_WORK_ITEM_KEY` in tracker-independent scripts) |
+| `FULLSEND_WORK_ITEM_SOURCE` | Tracker the work item came from (`github`, `gitlab`, `jira`); set by `fullsend run` from `_normalized_event.source.system`, or the detected forge when there is no normalized event |
+| `ISSUE_NUMBER` | Numeric GitHub issue/PR number; empty for Jira work items, where `fullsend run` clears it (use `FULLSEND_WORK_ITEM_KEY` in tracker-independent scripts) |
 | `REPO_FULL_NAME` | Repository slug (`owner/repo`) |
 | `GITHUB_ISSUE_URL` | Deprecated, use `FULLSEND_WORK_ITEM_URL` instead. |
 
