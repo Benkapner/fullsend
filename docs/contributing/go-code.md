@@ -670,10 +670,18 @@ entry, and the symptom only appears on user repositories after
   (`install.go`), the single source of truth for variable classification.
   Uninstall reads `uninstallVariables` (GitHub and default) or
   `gitlabUninstallVars`, selected by `UninstallVarsForForge`.
-- **Secrets.** Both sides already derive from `managedInferenceSecrets`,
-  so adding an auth method to `inferenceSecretsForAuth` keeps install and
-  uninstall in step automatically. Prefer extending that function over
-  hardcoding a secret name into either list.
+- **Secrets.** The two sides are built differently, so a new inference
+  secret has to be added in both. Uninstall derives from
+  `managedInferenceSecrets`, which loops `inferenceSecretsForAuth`;
+  install builds its own map in `installSecretsForForge`, which names the
+  secrets directly and calls neither function. Add the secret to
+  `inferenceSecretsForAuth` so uninstall deletes it, and to
+  `installSecretsForForge` so install writes it.
+- **Values provisioned outside those builders.** GitLab installs
+  `FULLSEND_DISPATCH_SECRET` through `seedGitLabPollState`, not through
+  `managedVarsForForge`. Anything added by a similar out-of-band path
+  needs a cleanup entry too, and needs naming in the parity test, which
+  cannot discover it.
 
 ### The invariant is one-way
 
@@ -689,6 +697,9 @@ jobs unrelated to Fullsend in the same project may depend on.
 `TestInstallUninstallVariableParity` and
 `TestInstallUninstallSecretParity`
 (`internal/repos/install_uninstall_parity_test.go`) enforce the one-way
-invariant across every forge and inference auth. If you add a name that
-is intentionally not cleaned up, extend the comment in that file rather
-than weakening the assertion.
+invariant across every forge and inference auth. They catch a name that
+install writes and uninstall does not delete. They do not catch the
+opposite, a name added to `inferenceSecretsForAuth` that
+`installSecretsForForge` never writes, so that case still depends on
+review. If you add a name that is intentionally not cleaned up, extend
+the comment in that file rather than weakening the assertion.

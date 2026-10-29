@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // Install writes repository variables and secrets from one set of builders;
@@ -24,6 +26,24 @@ import (
 // gitlabUninstallVars excludes the legacy shared forge token, and
 // gitlabUninstallSecrets excludes the unprefixed OPENAI_API_KEY because other
 // jobs in the same project may depend on it.
+//
+// One consequence worth stating: the secret check does not catch a name added
+// to inferenceSecretsForAuth that installSecretsForForge never writes. Only
+// uninstall derives from managedInferenceSecrets; install names its secrets
+// directly, so the two sides must both be updated by hand.
+
+// installSideExtras names repository values install provisions outside the
+// variable builders, which the parity check therefore cannot discover on its
+// own. GitLab's FULLSEND_DISPATCH_SECRET is written by seedGitLabPollState
+// (install.go, GitLab branch only) through poll.EnsureDispatchSecret, and is
+// cleaned up from gitlabUninstallVars.
+//
+// This list is itself hand-maintained, which is the very thing these tests
+// exist to discourage. It is the narrow cost of keeping the check in the test
+// package; if install grows another out-of-band value, add it here.
+var installSideExtras = map[string][]string{
+	ForgeGitLab: {forge.SecretDispatch},
+}
 
 // parityInstallConfig returns a config with every optional field populated, so
 // the variable builders emit their maximal set. A conditional variable that is
@@ -58,6 +78,12 @@ func TestInstallUninstallVariableParity(t *testing.T) {
 						"install writes variable %q on %s but uninstall does not delete it; "+
 							"add it to the uninstall list for that forge", v.Name, forgeName)
 				}
+				for _, name := range installSideExtras[forgeName] {
+					assert.Contains(t, cleanup, name,
+						"install provisions %q on %s outside managedVarsForForge but uninstall "+
+							"does not delete it; add it to the uninstall list for that forge",
+						name, forgeName)
+				}
 			})
 		}
 	}
@@ -77,8 +103,9 @@ func TestInstallUninstallSecretParity(t *testing.T) {
 				for name := range written {
 					assert.Contains(t, cleanup, name,
 						"install writes secret %q on %s but uninstall does not delete it; "+
-							"add it to inferenceSecretsForAuth so both sides stay derived "+
-							"from managedInferenceSecrets", name, forgeName)
+							"add it to inferenceSecretsForAuth, which is what "+
+							"managedInferenceSecrets and both uninstall lists are built from",
+						name, forgeName)
 				}
 			})
 		}
