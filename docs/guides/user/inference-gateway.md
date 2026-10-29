@@ -22,9 +22,8 @@ sidebar_label: Using an inference gateway
 
 Agents on the [pi](../../runtimes/pi.md), [Claude Code](../../runtimes/claude.md) and
 [Codex](../../runtimes/codex.md) runtimes can reach their models through an
-OpenAI/Anthropic-compatible inference gateway that trusts the job's GitHub Actions OIDC token
-([ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md)). Codex needs a gateway that
-serves the Responses API. The gateway holds the
+OpenAI/Anthropic-compatible inference gateway that trusts the job's GitHub Actions OIDC token.
+Codex needs a gateway that serves the Responses API. The gateway holds the
 upstream provider credential, so on the recommended path your repository stores no reusable key.
 This page follows the [agentgateway](https://github.com/agentgateway/agentgateway) setup in the
 [operator guide](../infrastructure/inference-gateway-operator.md). The flags and fields are
@@ -93,15 +92,13 @@ fails.
   runner reads the gateway key from `FULLSEND_INFERENCE_GATEWAY_API_KEY`: a repository secret in
   CI, or the environment on a local run. The block needs no `audience` in this mode. It is a
   supported mode, but not the primary or safest one, because it relies on a long-lived secret:
-  a leaked key works until the operator revokes it. Use `oidc` whenever the gateway supports it
-  ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md)).
+  a leaked key works until the operator revokes it. Use `oidc` whenever the gateway supports it.
 
 By default the key travels as `Authorization: Bearer`. If your operator says the gateway reads the
 key from `x-api-key` on its Messages API, add `messages_auth_header: x-api-key` to an `api-key`
 block. Claude Code and pi `anthropic-messages` models then send it as `x-api-key`, and every other
 model keeps `Authorization: Bearer`. The setting is refused with `auth: oidc`
-([ADR 0142](../../ADRs/0142-inference-gateway-x-api-key-header-for-messages-models.md),
-[config reference](../../reference/config-reference.md)).
+([config reference](../../reference/config-reference.md)).
 
 The `api-key` mode also applies to local runs: a local `fullsend run` with
 `FULLSEND_INFERENCE_GATEWAY_API_KEY` in its environment takes the same route as CI. The `oidc`

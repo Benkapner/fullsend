@@ -436,8 +436,7 @@ Status comment behavior is configured via `status_notifications` in
 > `.fullsend/config.yaml` instead (see the [config reference](../../reference/config-reference.md)).
 > For the CI setup, see [Using an inference gateway](inference-gateway.md).
 > A local run can use that block too with `auth: api-key`, which reads the gateway key from
-> `FULLSEND_INFERENCE_GATEWAY_API_KEY` and needs no OIDC endpoint
-> ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md)).
+> `FULLSEND_INFERENCE_GATEWAY_API_KEY` and needs no OIDC endpoint.
 
 On the [pi](../../runtimes/pi.md) runtime, an agent can reach its model through an
 OpenAI/Anthropic-compatible inference gateway (Praxis, LiteLLM, agentgateway, ...). The

@@ -563,9 +563,7 @@ to carry the credential over.
   iteration follows a refresh.
 - **Bound to one endpoint.** The gateway substitutes the placeholder only on requests to
   `api.openai.com` `/v1/responses` — the endpoint the profile names — so even a compromised agent
-  cannot get the token resolved against another host its policy allows. The design and what was
-  verified against OpenShell 0.0.115 are in
-  [ADR 0092](../../ADRs/0092-openai-wif-credential-delivery.md).
+  cannot get the token resolved against another host its policy allows.
 
 ## Troubleshooting
 

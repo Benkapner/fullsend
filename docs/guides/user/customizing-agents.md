@@ -282,13 +282,11 @@ Register the overlay in `.fullsend/config.yaml` as usual (`name: code` /
   to one sandbox without a duplicate-key rejection.
 - *Read-only.* Both registry hosts are `access: read-only`.
 - *Readable by the agent.* This is the standard exposure of any static
-  OpenShell credential
-  ([ADR 0025](../../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)):
-  a placeholder resolves wherever it appears in a request to a bound host,
-  and the registry echoes unknown package names in its 404 body. A value read
-  back that way is the job's own workflow token until the job ends, and
-  through the proxy it can only reach the hosts the role's profiles allow; see
-  [ADR 0114](../../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md).
+  OpenShell credential: a placeholder resolves wherever it appears in a
+  request to a bound host, and the registry echoes unknown package names in
+  its 404 body. A value read back that way is the job's own workflow token
+  until the job ends, and through the proxy it can only reach the hosts the
+  role's profiles allow.
 
 **Notes.**
 
