@@ -91,6 +91,9 @@ subagents: correctness → anthropic-vertex/claude-opus-4-6 (from frontmatter)
 subagents: docs-currency → google-vertex/gemini-3.8-flash (from subagents.docs-currency)
 ```
 
+On codex a delegating agent prints the run-level default and one line per persona with its own
+`subagents` entry; see [Codex › Child models](../runtimes/codex.md#child-models).
+
 A malformed `subagents` key or model reference is rejected by config validation, before the
 sandbox is created, like the other invalid overrides above. A key that names no discovered
 persona, or a model this run cannot serve, is caught slightly later — at Bootstrap, once the
@@ -173,7 +176,8 @@ differences in the last bullet.
   sub-agent, which is what keeps the invariant true across a retry.
 - **What stays parent-only.** `num_turns` and `tool_calls` are read from the parent's stream and are
   not broken down or added to per model — a child's turns and tool calls are recorded in its own
-  session transcript (`transcripts/<agent>-sub<seq>-*.jsonl`) instead.
+  session transcript (`transcripts/<agent>-sub<seq>-*.jsonl`; on codex
+  `transcripts/<agent>-sub<seq>-<role>.jsonl`, see [Codex › At a glance](../runtimes/codex.md#at-a-glance)) instead.
 - A model spec of `unknown` is a pi usage record, or a codex child rollout, that carries no model
   at all; its usage is bucketed there rather than dropped. A dispatch rejected *before* a model was
   resolved writes no record, so it never reaches the breakdown.

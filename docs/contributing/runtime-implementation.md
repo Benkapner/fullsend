@@ -203,7 +203,7 @@ Harness `security.fail_mode` controls whether critical findings **block** the ru
 | Interface | Responsibility |
 |-----------|----------------|
 | `runtime.Runtime` | Name, config dir, env exports, bootstrap, run loop, per-iteration cleanup, user processes cleanup |
-| `runtime.BootstrapInput` | Portable agent name/path, skill dirs, declared plugins (`Plugins() []PluginInput` — name, host path, format kind, env, pi args; ADR 0094) to upload, and the per-repo model alias overrides (`ModelAliases() map[string]string`, from `models.aliases`; nil when the repo sets none). A runtime loads the entries whose `Kind` it reads and must warn and skip the rest, never drop them silently, and the agent's per-persona sub-agent model map (`AgentSubagents() map[string]*string`, from `agents[].subagents`; a nil value is a tombstone; ADR 0104), the parent's resolved model (`ParentModel() string`), and whether the run-scoped OpenAI provider was attached (`OpenAIProviderAttached() bool`). pi admits a configured child's `openai/` model only when that is true, because `OPENAI_API_KEY` is in the sandbox only then (#7981) |
+| `runtime.BootstrapInput` | Sandbox name, portable agent name/path, skill dirs, declared plugins (`Plugins() []PluginInput` — name, host path, format kind, env, pi args; ADR 0094) to upload, and the per-repo model alias overrides (`ModelAliases() map[string]string`, from `models.aliases`; nil when the repo sets none). A runtime loads the entries whose `Kind` it reads and must warn and skip the rest, never drop them silently, and the agent's per-persona sub-agent model map (`AgentSubagents() map[string]*string`, from `agents[].subagents`; a nil value is a tombstone; ADR 0104), the parent's resolved model (`ParentModel() string`), the run's resolved effort (`Effort() string`: the harness effort after the `agents:` entry and `--effort`, or `""` when none is set; when set, codex binds it as every native child's effort and checks it against each child model's supported levels), and whether the run-scoped OpenAI provider was attached (`OpenAIProviderAttached() bool`). pi admits a configured child's `openai/` model only when that is true, because `OPENAI_API_KEY` is in the sandbox only then (#7981) |
 | `runtime.SandboxHooksBootstrap` | Optional `BootstrapInput` extension — runtime-neutral sandbox tool hook config (`security.SandboxHookConfig`); every runtime should honour it |
 | `runtime.TranscriptHandler` | Extract transcripts/debug logs; parse errors for CI annotations |
 | `runtime.DebugLogNamer` | Optional — names the per-iteration debug-log artifact (default `agent-debug.log`) |
@@ -1166,7 +1166,7 @@ flowchart TB
   0.159.3) its `.codex/skills` even with the project untrusted; both are covered by the host-side
   and in-sandbox context scans, which match `SKILL.md` anywhere in the repo. The agent reads those
   files through the shell, and Codex 0.157.0 truncates a single exec at 10,000 tokens (head and
-  tail), so `codexNoSubagentNote` tells it to count lines with `awk 'END { print NR }'` (`wc -l`
+  tail), so both runtime notes (`codexChunkedReadNote`) tell it to count lines with `awk 'END { print NR }'` (`wc -l`
   misses a last line with no trailing newline) then `sed -n` a long `SKILL.md` in at most
   200-line ranges, one per tool call (#7831). A native child runs with its role's
   `developer_instructions` in place of the parent's, so every role file opens with
@@ -1267,7 +1267,7 @@ Matcher translation, per group:
 |---|---|---|
 | `Bash` | `Bash` | codex's shell tool has the same name |
 | `Write`, `Edit`, `MultiEdit` | `apply_patch` | the canonical name; `Write`/`Edit` would also match as aliases |
-| `Agent`, `Task` | `spawn_agent` | not reachable in v1 — no sub-agent roster is wired |
+| `Agent`, `Task` | `spawn_agent` | reached by a delegating agent's spawns (ADR 0126); the spawn guard is the last row |
 | `Read`, `Glob`, `Grep`, `LS`, `WebFetch`, `WebSearch` | *dropped, with a note* | no codex tool; the `Bash` groups cover this work |
 | `*` (`security.AllTools`) | *matcher key omitted* | an absent matcher matches every tool |
 | `PostToolUseFailure` (any tools) | *not wired* | codex has no such event and does not need one — see below |
@@ -1367,22 +1367,37 @@ file when a child starts, so Run exports their digests as `FULLSEND_CODEX_SPAWN_
 handler re-hashes them, and lists `agents/`, before applying the policy, on its own deadline below
 the hook timeout at which codex kills a handler and lets the call through. No role, no spawn.
 
-A handler codex kills at that timeout still lets the call through, so after each iteration the
-runner cross-checks the stream's completed `spawn_agent` items, read on the host, against the
-guard's `codex_spawn_guard_admit` lines in `/sandbox/workspace/.security/findings.jsonl` and fails
-the run (`codex_spawn_without_admission`) on a shortfall, a spawn not sent by the primary thread,
-a spawn item too long to read, or a failed read. The count spans the run's iterations, so
-`ClearIterationArtifacts` must leave `.security/` in place (it clears `output/`, the sessions
-directory and the debug log, nothing else under the workspace). Codex can drop a stream
-notification under backpressure and says so on stderr: the launch sets `RUST_LOG` outright after
-`.env` (codex's default filter with `codex_exec` and `codex_app_server::in_process` at warn; codex's
-commands inherit it), the runner scans that stderr on the host (the sandbox log under `--debug`)
-and warns on the line, and on exec's warning that its `thread/read` backfill of the turn's items
-failed. The check cannot catch a forged admission (the log is agent-writable), a surplus admission
-covering a later spawn (counts, not ids), a resume (a `wait` item in the stream), or a spawn both
-of whose notifications codex dropped, or whose dropped completed item the backfill did not bring
-back (it runs only for a completed turn on a non-ephemeral thread, and only when `thread/read`
-succeeds).
+A handler codex kills at that timeout still lets the call through, so after each iteration of a
+delegating agent (and any iteration whose stream shows a spawn) the runner counts the iteration's
+spawns from two sources, each child once by thread id, and cross-checks the run's total against the
+guard's `codex_spawn_guard_admit` lines in `/sandbox/workspace/.security/findings.jsonl`: the
+stream's `spawn_agent` items, read on the host, completed or failed (a blocked spawn returns before
+the handler and emits none, `core/src/tools/registry.rs`; a spawn refused at the thread limit fails
+at `reserve_spawn_slot` after the guard admitted it and names no child), counted by their receiver
+ids plus the items that name none; and the rollouts under the sessions directory whose
+`session_meta` parent is the primary thread or a counted child, plus any file whose first line is
+empty, cut before it names a parent, or not a `session_meta` record, under the thread id in its
+name, the run's own excepted; such a file is a parent only when the stream names it. A child writes
+its rollout at its first recorded item, so a spawn the stream lost is still counted; a previous
+iteration's files and a root the agent's own `codex exec` writes under `CODEX_HOME` are not, unless
+their first line is empty, cut or 1 MiB or longer. The run fails (`codex_spawn_without_admission`)
+on a shortfall, a spawn not sent by the primary thread, a spawn item too long to read, an unknown
+primary thread id with a child-shaped rollout present, or a failed read of either side. The count
+spans the run's iterations, so `ClearIterationArtifacts` must leave `.security/` in place (it
+clears `output/`, the sessions directory and the debug log, nothing else under the workspace). The
+usage fold reads the union of the stream's children and the children on disk. Codex can drop a
+stream notification under backpressure, of any thread, and says so on stderr: the launch sets
+`RUST_LOG` outright after `.env` (codex's default filter with `codex_exec` and
+`codex_app_server::in_process` at warn; codex's commands inherit it), and the runner scans that
+stderr on the host (the sandbox log under `--debug`) and warns on the line and on exec's warning
+that its `thread/read` backfill of the turn's items failed. Drops stay warnings, as #8712 settled:
+most drops hide no spawn. The check cannot catch a forged admission (the log is agent-writable), a
+resume (a `wait` item in the stream), a spawn hidden from both sides (stream items lost and the
+rollout, or an ancestor's, deleted, renamed or its `session_meta` edited), a child that never
+recorded an item, or a surplus admission covering a later spawn (counts, not ids): codex can reject
+an admitted call before it emits an item (`parse_collab_input` on a spawn with no message, or
+`prepare_agent_spawn_config` after `item.started`), and another PreToolUse hook running beside the
+guard can block a call the guard admitted.
 
 **PATH is pinned across `.env` for the same reason the interpreter is.** The hook scripts resolve
 their tools by name — `tirith_check.py` runs a bare `tirith` — so a `.env` that prepends a directory
@@ -1527,11 +1542,8 @@ Two artefacts of the run are worth knowing about:
   and local smoke runs.
 - The rollout session files are archived as transcripts but not error-classified: only the tee'd
   `exec --json` capture yields a verdict, which is what the runner's exit-code override reads.
-- Sub-agent roles are generated (`agents/<role>.toml`, digest-guarded) for an agent with the `Agent`
-  tool under harness security whose parent model Codex resolves to collaboration V1 (ADR 0126), but
-  codex's multi-agent tools stay off (`[agents] enabled = false`), so `review`/`retro` are unsupported;
-  `Bootstrap` appends a runtime note telling the agent to execute sub-agent definitions itself, in
-  order, as it does for pi.
+- Native sub-agents (ADR 0126) have not completed a fleet-shaped run; `review`/`retro` stay on
+  Claude Code in the docs until one does.
 
 ### Re-check on a `CODEX_VERSION` bump
 
@@ -1553,4 +1565,6 @@ Two artefacts of the run are worth knowing about:
 | Project trust and `AGENTS.md` | the pinned untrusted entry must still stop codex recording its own trust level, the repo's `.codex/` layer must stay unloaded, and `$CODEX_HOME/AGENTS.md` must still load while the project is untrusted, or the bridge stops reaching the agent | `codex-rs/app-server/src/request_processors/thread_processor.rs` (trust write), `codex-rs/config/src/loader/mod.rs`, `codex-rs/core/src/agents_md.rs`, `codex-rs/codex-home/src/instructions/mod.rs` |
 | JSONL event structs, rollout line types and rollout file naming | the stream parser and transcript extraction; a rollout line type missing from `codexRolloutEnvelopes` discards the whole transcript | `codex-rs/exec/src/exec_events.rs`, `codex-rs/history/src/rollout_payload.rs` (`RolloutItemWire`), `codex-rs/thread-store/src/local/helpers.rs` |
 | The multi-agent tool names (`multi_agent_v1*`, `collaboration*`, the bare V1 `spawn_agent`), the block contract (exit 2 with non-empty stderr blocks; a timeout kills the handler and lets the call through), `agent_id` and `agent_type` in a child's payload, the spawn arguments, and what a child start rereads (`hooks.json` and the role file) | the spawn guard's matcher, pass-through set, policy, digest set and deadline rest on them; a renamed tool is denied (loud), but a payload without `agent_id`, a new model or effort argument, a changed block contract or a child that rereads another file turns a deny into a pass | `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`, `codex-rs/core/src/tools/registry.rs` (`function_hook_tool_name`), `codex-rs/hooks/src/engine/command_runner.rs` (the timeout branch), `codex-rs/core/src/agent/role.rs` (the role file, read at spawn) |
-| The bundled catalog's `multi_agent_version` entries, the version codex supplies to an entry that carries none, and the floor model (`codex debug models --bundled`; at 0.159.3 `gpt-5.6-luna` is the listed model that selects `v1`, and `gpt-5.5` carries no version, which the `multi_agent` feature, on by default, resolves to V1) | part two of the delegation gate and the child-model floor rest on them: a bump that moves the floor to V2, or drops it, turns native sub-agents off for every agent; a bump that turns `multi_agent` off by default, or gives the null entry a version, changes which parents delegate; and the fixture `internal/runtime/testdata/codex/models-bundled-0.159.3.json` must be regenerated, never edited | `codex-rs/models-manager/models.json` in the bumped tag; regenerate the fixture with the one-liner in `codex_personas_test.go`'s `TestCodexCatalog` comment and run `go test ./internal/runtime/ -run 'TestCodexCatalog\|TestCodexParentResolvesV1'` |
+| The bundled catalog's `multi_agent_version`, `default_reasoning_level` and `supported_reasoning_levels` entries, the version codex supplies to an entry that carries none, and the floor model (`codex debug models --bundled`; at 0.159.3 `gpt-5.6-luna` is the listed model that selects `v1` and defaults to `medium`, and `gpt-5.5` carries no version, which the `multi_agent` feature, on by default, resolves to V1, and lists `low` to `xhigh`) | part two of the delegation gate, the child-model floor and the child-effort check rest on them: the floor must stay listed, or every delegating agent without `subagents.default` or `FULLSEND_CODEX_SUBAGENT_MODEL` fails Bootstrap, while the floor's own collaboration version does not matter for children (a child runs under its parent's; moving luna to V2 only stops luna parents from delegating); a bump that turns `multi_agent` off by default, or gives the null entry a version, changes which parents delegate; a changed level set changes which run efforts Bootstrap accepts; and the fixture `internal/runtime/testdata/codex/models-bundled-0.159.3.json` must be regenerated, never edited | `codex-rs/models-manager/models.json` in the bumped tag; regenerate the fixture with the one-liner in `codex_personas_test.go`'s `TestCodexCatalog` comment and run `go test ./internal/runtime/ -run 'TestCodexCatalog\|TestCodexParentResolvesV1\|TestResolveCodexChildModels_Effort'` |
+| The `[agents]` keys codex reads (`enabled`, `max_concurrent_threads_per_session`, `max_depth`, `default_subagent_model`, `default_subagent_reasoning_effort`, and `[agents.<name>]` `description` and `config_file`) and the order of the child path: with no model argument a child takes `default_subagent_model` and, with no effort argument, `default_subagent_reasoning_effort`, else that model's catalog default; a role file applies after and its effort is checked against its own model | `codexAgentsBlock` writes the keys and Bootstrap checks the child efforts on that order; a renamed key or a changed order silently changes every child's model or effort | `codex-rs/config/src/config_toml.rs` (`AgentsToml`), `codex-rs/core/src/config/mod.rs`, `codex-rs/core/src/agent/child_config.rs` (`apply_requested_spawn_agent_model_overrides`, `apply_spawn_agent_role`), `codex-rs/core/src/agent/role.rs` |
+| What writes a rollout under the sessions directory in an exec run, rollout naming and the date layout, creation at a child's first recorded item, a PreToolUse block returning before the tool handler, and spawn-slot reservation before thread creation | the disk side of the admission cross-check (the four facts are in `internal/runtime/testdata/codex/README.md`) | `codex-rs/core/src/tools/registry.rs`, `codex-rs/core/src/agent/control/spawn.rs`, `codex-rs/rollout/src/rollout_file_name.rs`, `codex-rs/features/src/lib.rs` (the memories default) |

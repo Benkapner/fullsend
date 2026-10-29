@@ -47,7 +47,7 @@ agents:                              # Registered agent sources and per-agent tu
     runtime: claude                  # Per-agent runtime override
     model: opus                      # Per-agent model override (model id or provider/id)
     effort: high                     # Per-agent reasoning effort: low, medium, high, xhigh, max
-    subagents:                       # Per-agent sub-agent model map
+    subagents:                       # Per-agent sub-agent model map (pi and codex)
       default: sonnet                # Fallback model for personas without an explicit entry
       code-reviewer: opus            # Model for a specific persona
     # trigger: <CEL expression>      # When the built-in review agent runs (review entry only)
@@ -205,7 +205,10 @@ effort, sub-agent models and the trigger.
 - **`subagents`** — Map of persona names to model references. The `default`
   key sets the fallback for personas without an explicit entry. A `~` (null)
   value tombstones an inherited entry. Keys must be lowercase alphanumeric
-  segments joined by hyphens (max 64 chars).
+  segments joined by hyphens (max 64 chars). On codex, for an agent that
+  delegates, the values must be OpenAI ids and a key must name a registered
+  persona or `default`; see
+  [Codex › Child models](../runtimes/codex.md#child-models).
 - **`trigger`** — A [CEL trigger](../guides/user/cel-triggers-reference.md)
   (a boolean over the normalized `event`). It decides routing for the
   built-in review, retro, triage and prioritize agents only: on one of those
