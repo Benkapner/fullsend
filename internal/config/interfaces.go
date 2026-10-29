@@ -66,11 +66,21 @@ type PerRepoConfigReader interface {
 	ConfigForge() string
 	ConfigTracker() string
 	ConfigMintURL() string
+	// ConfigMintURLFromFile returns the mint URL as set in config.yaml or
+	// config.base.yaml only. Empty means neither file sets mint_url — the
+	// compiled default is not consulted here (contrast with
+	// ConfigMintURL, which falls all the way through to the compiled
+	// default). Callers that need to distinguish "the file is silent" from
+	// "the file resolves to the default" (e.g. fullsend run's
+	// warn-and-skip-minting fallback) use this instead of ConfigMintURL.
+	ConfigMintURLFromFile() string
 	ConfigKeepHistory() bool
 	ConfigInferenceProvider() string
 	ConfigInferenceProject() string
 	ConfigInferenceRegion() string
 	ConfigInferenceWIFProvider() string
+	ConfigInferenceWIFAudience() string
+	ConfigInferenceServiceAccount() string
 	ConfigInferenceOpenAI() OpenAIWIFConfig
 	// ConfigInferenceGateway returns the effective inference.gateway
 	// block, layered field by field (ADR 0137).
@@ -112,6 +122,8 @@ type PerRepoConfigWriter interface {
 	SetInferenceProject(string)
 	SetInferenceRegion(string)
 	SetInferenceWIFProvider(string)
+	SetInferenceWIFAudience(string)
+	SetInferenceServiceAccount(string)
 	SetInferenceOpenAI(OpenAIWIFConfig)
 	SetInferenceGateway(InferenceGatewayConfig)
 	// MergeInferenceGateway layers the set fields of g over this layer's
@@ -415,6 +427,20 @@ func (c *perRepoConfig) ConfigMintURL() string {
 	return ""
 }
 
+// ConfigMintURLFromFile returns the mint URL as set in config.yaml or
+// config.base.yaml only; see the PerRepoConfigReader doc comment for why
+// this stops short of the compiled default that ConfigMintURL falls
+// through to.
+func (c *perRepoConfig) ConfigMintURLFromFile() string {
+	if c.MintURL != "" {
+		return c.MintURL
+	}
+	if c.parent != nil {
+		return c.parent.ConfigMintURLFromFile()
+	}
+	return ""
+}
+
 // ConfigInferenceProvider returns the inference provider (e.g. "vertex").
 func (c *perRepoConfig) ConfigInferenceProvider() string {
 	if c.Inference != nil && c.Inference.Provider != "" {
@@ -455,6 +481,30 @@ func (c *perRepoConfig) ConfigInferenceWIFProvider() string {
 	}
 	if c.parent != nil {
 		return c.parent.ConfigInferenceWIFProvider()
+	}
+	return ""
+}
+
+// ConfigInferenceWIFAudience returns the GitLab agent job's ID token
+// audience for an existing WIF provider.
+func (c *perRepoConfig) ConfigInferenceWIFAudience() string {
+	if c.Inference != nil && c.Inference.WIFAudience != "" {
+		return c.Inference.WIFAudience
+	}
+	if c.parent != nil {
+		return c.parent.ConfigInferenceWIFAudience()
+	}
+	return ""
+}
+
+// ConfigInferenceServiceAccount returns the service account email the
+// GitLab agent job impersonates for Vertex inference.
+func (c *perRepoConfig) ConfigInferenceServiceAccount() string {
+	if c.Inference != nil && c.Inference.ServiceAccount != "" {
+		return c.Inference.ServiceAccount
+	}
+	if c.parent != nil {
+		return c.parent.ConfigInferenceServiceAccount()
 	}
 	return ""
 }
@@ -596,6 +646,16 @@ func (c *perRepoConfig) SetStatusNotifications(sn *StatusNotificationConfig) {
 // SetInferenceWIFProvider sets the WIF provider resource name.
 func (c *perRepoConfig) SetInferenceWIFProvider(wifProvider string) {
 	c.ensureInference().WIFProvider = wifProvider
+}
+
+// SetInferenceWIFAudience sets the GitLab agent job's ID token audience.
+func (c *perRepoConfig) SetInferenceWIFAudience(audience string) {
+	c.ensureInference().WIFAudience = audience
+}
+
+// SetInferenceServiceAccount sets the service account email to impersonate.
+func (c *perRepoConfig) SetInferenceServiceAccount(email string) {
+	c.ensureInference().ServiceAccount = email
 }
 
 // SetModelAliases sets the per-repo model alias overrides; a nil or

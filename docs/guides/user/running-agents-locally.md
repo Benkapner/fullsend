@@ -382,6 +382,11 @@ To lock all harnesses in the directory at once:
 fullsend lock --all --fullsend-dir /path/to/.fullsend
 ```
 
+If `lock.yaml` exists but cannot be parsed, or declares a version this
+fullsend does not understand, `fullsend lock` exits with an error and
+leaves the file unchanged. Delete the file to regenerate it, or upgrade
+fullsend if the version is newer. A missing lock file is not an error.
+
 When `--forge` is specified, only that platform variant is locked. When omitted,
 all forge variants defined in the harness are resolved and the union of their
 dependencies is locked.
@@ -406,7 +411,7 @@ target issue/PR. These flags mirror what the CI workflows pass automatically:
 | `--run-url` | URL of the CI/CD run shown in the status comment |
 | `--status-repo` | Repository (`owner/repo`) to post status comments on |
 | `--status-number` | Issue or PR number for status comments |
-| `--mint-url` | Mint service URL for on-demand status comment tokens (default: `$FULLSEND_MINT_URL`) |
+| `--mint-url` | Mint service URL for on-demand status comment tokens (default: layered `mint_url` from `--fullsend-dir`, then `$FULLSEND_MINT_URL`) |
 | `--forge` | Forge platform (`github` or `gitlab`); when omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 
 Example:
@@ -427,7 +432,7 @@ fullsend run triage \
 For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent resolves its credential through the [GitLab role-credential contract](../../contributing/gitlab-role-credentials.md) and exports `GITLAB_TOKEN` (and `PUSH_TOKEN`, for roles with repository-write access) itself; it does not require the mint service. Set the matching per-role secret (Poller/Analyst/Coder, or a registered custom role). A missing role secret fails closed and does not fall back to `FULLSEND_FORGE_TOKEN` or a directly-set `GITLAB_TOKEN`. See the [operations guide](../getting-started/operations.md#gitlab-ci) for required environment variables. Self-hosted instances that use a private CA have a separate [certificate-provisioning contract](../getting-started/operations.md#private-ca-self-hosted-gitlab).
 
 Status comment behavior is configured via `status_notifications` in
-`config.yaml`. See [Status Notifications](customizing-agents.md#status-notifications).
+`config.yaml`. See [`status_notifications`](../../reference/config-reference.md#status_notifications).
 
 ## Using an inference gateway (experimental)
 
@@ -849,7 +854,7 @@ or gateway routing issues).
 
 1. **Start with a restrictive policy.** Create or modify a policy YAML that
    blocks the endpoint you want to test. See
-   [Building custom agents — Sandbox policy](building-custom-agents.md#step-3-define-the-sandbox-policy)
+   [Bring Your Own Agent — Sandbox policy](bring-your-own-agent.md#sandbox-policy)
    for the policy format.
 
 2. **Run the agent locally with `--keep-sandbox`:**

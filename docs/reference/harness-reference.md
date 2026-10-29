@@ -143,7 +143,7 @@ Most fields are self-explanatory from the inline comments above. This section ex
 
 **`role`** — The agent's identity within fullsend. Dispatch uses the role to match config-registered agents to built-in defaults (same-name config agents take precedence). The role also determines which GitHub App credentials **and permissions** the mint service issues. It must be a role the mint serves: on the hosted mint that is the fixed built-in set (`triage`, `coder`, `review`, `retro`, `prioritize`, `fullsend`); custom roles require your own mint. An unserved role returns `403`. See [Custom Agent Identity](../guides/user/custom-agent-identity.md).
 
-**`privilege_levels`** — Maps run-stages to named mint privilege levels so the LLM sandbox can receive a narrower token than host-side scripts. Keys: `pre_script`, `runtime`, `post_script`, and `default` (covers unlisted stages). `validation_loop` is not a key — it inherits `runtime` because it shares that stage's security context. Level names are lowercase identifiers (`read` and `write` on every role; custom roles may define more). When the field is omitted, every stage gets `write`, matching pre-ADR-0073 behavior. The runner mints the `runtime` token **before** provider credential expansion and `host_files` with `expand: true`, remints around `pre_script` when that stage differs, and remints for `post_script` after sandbox teardown. A remint failure is fatal (aborts the run) whenever the configured stage level differs from the currently active token's level; it is non-fatal — falling back to the existing token — only when the levels match (a same-level expiry refresh). **Top level only** — it is not a `ForgeConfig` field, so a `privilege_levels` key placed under `overlays:`/`forge:` is silently ignored; only `base:` composition (see the merge table below) can override it. See [ADR 0073](../ADRs/0073-named-mint-privilege-levels.md).
+**`privilege_levels`** — Maps run-stages to named mint privilege levels so the LLM sandbox can receive a narrower token than host-side scripts. Keys: `pre_script`, `runtime`, `post_script`, and `default` (covers unlisted stages). `validation_loop` is not a key — it inherits `runtime` because it shares that stage's security context. Level names are lowercase identifiers (`read` and `write` on every role; custom roles may define more). When the field is omitted, every stage gets `write`, matching pre-ADR-0073 behavior. The runner mints the `runtime` token **before** provider credential expansion and `host_files` with `expand: true`, remints around `pre_script` when that stage differs, and remints for `post_script` after sandbox teardown. A remint failure is fatal (aborts the run) whenever the configured stage level differs from the currently active token's level; it is non-fatal — falling back to the existing token — only when the levels match (a same-level expiry refresh). **Top level only** — a `privilege_levels` key placed under `overlays:`/`forge:` is silently ignored; only `base:` composition (see the merge table below) can override it. See [ADR 0073](../ADRs/0073-named-mint-privilege-levels.md).
 
 **`slug`** — Install-time hint used by `fullsend github setup` to find or name the GitHub App. The `<org>-<role>` convention keeps slugs unique when multiple orgs share a mint. The **mint does not read `slug`** when issuing a token — identity and permissions come from `role`, so changing `slug` alone changes neither. For a custom GitHub App identity, see [Custom Agent Identity](../guides/user/custom-agent-identity.md).
 
@@ -191,7 +191,7 @@ These rules make a run fail before `pre_script` starts:
   scripts (`pre_script`, `post_script`, `validation_loop`) only as `env.runner`
   values, and the sandbox gate independently blocks them from `env.sandbox`
   exports; see [Migrating proxy and certificate
-  settings](../guides/user/customizing-agents.md#migrating-proxy-and-certificate-settings)
+  settings](#migrating-proxy-and-certificate-settings)
   for where the proxy and TLS-trust settings go instead. Names are matched
   case-insensitively, so `path` or `github_token` is refused like `PATH` or
   `GITHUB_TOKEN`.
@@ -201,7 +201,7 @@ These rules make a run fail before `pre_script` starts:
 
 `fullsend run` masks each value, and each line of a multi-line value, in the GitHub Actions log. It also registers the value, its lines and its JSON-escaped form for redaction from pre-script failure detail and validation feedback. Both match exact strings: a value a script transforms (base64, URL-encoded, a substring) is not hidden, and a line shorter than that minimum is masked but not redacted.
 
-These rules cover names in the GitHub object only. GitLab is unchanged: each secret is its own masked CI/CD variable, `${NAME}` reads it directly, and no name is refused there (keeping fullsend's own credentials out of GitLab host-side scripts is tracked in [#8146](https://github.com/fullsend-ai/fullsend/issues/8146)). For setup, see [Building custom agents § Pass secrets to host-side scripts](../guides/user/building-custom-agents.md#pass-secrets-to-host-side-scripts-github).
+These rules cover names in the GitHub object only. GitLab is unchanged: each secret is its own masked CI/CD variable, `${NAME}` reads it directly, and no name is refused there (keeping fullsend's own credentials out of GitLab host-side scripts is tracked in [#8146](https://github.com/fullsend-ai/fullsend/issues/8146)). For setup, see [Bring Your Own Agent § Pass secrets to host-side scripts](../guides/user/bring-your-own-agent.md#pass-secrets-to-host-side-scripts-github).
 
 **`env.sandbox`** — Variables exported into the sandbox environment. Reserved
 names are dropped instead of exported, matched case-insensitively: the
@@ -213,13 +213,11 @@ interpreter, loader and shell-behavior names such as `HTTPS_PROXY`,
 `SSL_CERT_FILE`, `GIT_SSH_COMMAND`, `NODE_OPTIONS` and `IFS`). `fullsend run`
 warns once when the harness loads, naming every dropped key, and once per key on
 stderr as it writes the sandbox environment; `fullsend lock` prints the
-load-time warning when it composes a harness. The full list is in the
-`env.sandbox` note in [Customizing
-agents](../guides/user/customizing-agents.md#reserved-envsandbox-names),
-where blocked proxy and certificate settings go instead is in [Migrating proxy
-and certificate
-settings](../guides/user/customizing-agents.md#migrating-proxy-and-certificate-settings),
-and the warnings are described in [`fullsend run` § Reserved `env.sandbox`
+load-time warning when it composes a harness. The full list is in [Reserved
+`env.sandbox` names](#reserved-envsandbox-names), where blocked proxy and
+certificate settings go instead is in [Migrating proxy and certificate
+settings](#migrating-proxy-and-certificate-settings), and the warnings are
+described in [`fullsend run` § Reserved `env.sandbox`
 keys](../cli/run.md#reserved-envsandbox-keys).
 
 **`agent_input`** — A local directory, not a file. When a URL `base:` harness declares it, the inherited value is cleared rather than fetched; supply the directory in the child harness if needed. See [Harness field semantic types](../contributing/harness-fields.md#semantic-types-adr-0127).
@@ -288,11 +286,146 @@ A pi-format entry must also satisfy pi's own loader rule:
 - **`pi.args`** — flags the extension registered with `pi.registerFlag`, each `--flag` or `--flag=value` (pi has no single-dash options), never one of pi's own option names, with no value starting with `-` or `@`. One bare word may follow a `--flag` written without `=`; any other bare word is prompt text pi would prepend to the agent's prompt.
 - **`env` keys** match `^[A-Z_][A-Z0-9_]*$` and may not name the interpreter environment (`PATH`, `HOME`, `TMPDIR`, `ENV`, `BASH_ENV`, `SHELL`, `IFS`, `CDPATH`, `PROMPT_COMMAND`, `LD_*`, `DYLD_*`, `PYTHON*`, `NODE_*`, `SSL_*`, `JITI_*`, `GIT_*`, `JAVA_TOOL_OPTIONS`, `RUBYOPT`, `PERL5OPT`), a credential- or proxy-shaped name (`*_API_KEY`, `*_TOKEN`, `*_SECRET*`, `*_PROXY`), a trust-store or resolver name (`HOSTALIASES`, `OPENSSL_CONF`, `SSLKEYLOGFILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GOPROXY`, `GOFLAGS`), or a runner/provider family (`PI_*`, `FULLSEND_*`, `TIRITH_*`, `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*`, `ANTHROPIC_*`, `XAI_*`, `OPENAI_*`, `AZURE_*`, `AWS_*`, `CLOUD_ML_REGION`).
 
-`plugins` is a top-level field only: it is not part of `ForgeConfig`, so a `plugins:` key under `forge:` or `overlays:` is silently ignored. Walkthrough for the pi side: [Pi § Plugins (pi extensions)](../runtimes/pi.md#plugins-pi-extensions). Rationale and run-time mechanics: [Runtime Implementation § Pi extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
+`plugins` is a top-level field only: a `plugins:` key under `forge:` or `overlays:` is silently ignored. Walkthrough for the pi side: [Pi § Plugins (pi extensions)](../runtimes/pi.md#plugins-pi-extensions). Rationale and run-time mechanics: [Runtime Implementation § Pi extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
 **`api_servers`** — Planned host-side HTTP servers outside the sandbox, exposed to it via port forwarding; server startup is not yet implemented. The intended design would keep API credentials on the trusted runner rather than inside the sandbox.
+
+## Reserved `env.sandbox` names
+
+`env.sandbox` cannot modify runner infrastructure or security settings through
+the reserved names below. The runner drops these names before writing the
+sandbox environment, case-insensitively:
+
+- **Runner infrastructure and process-loading safeguards:** `PATH`, `HOME`,
+  `SHELL`, `BASH_ENV`, `ENV`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `TRACEPARENT`,
+  and every `FULLSEND_*` variable the runner itself exports into the sandbox
+  (its output and fetch plumbing, the repository path, role and slug, the
+  iteration budget and deadline, and its own `PATH` entry). The set grows
+  with the runner; the warnings described below name any such key a harness
+  sets.
+- **Credentials it mints or receives:** `FULLSEND_GCP_OIDC_AUTH_FILE`,
+  `FULLSEND_TRIGGER_TOKEN`, `FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN`,
+  `FULLSEND_WEBHOOK_SECRET`, `FULLSEND_INFERENCE_GATEWAY_API_KEY`,
+  `FULLSEND_OPENAI_API_KEY`, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, the
+  runner-secret bundle and its staging path (`FULLSEND_GITHUB_RUNNER_SECRETS`,
+  `FULLSEND_GITHUB_RUNNER_SECRETS_FILE`), and the GitHub Actions OpenID Connect
+  (OIDC) request pair `ACTIONS_ID_TOKEN_REQUEST_URL` /
+  `ACTIONS_ID_TOKEN_REQUEST_TOKEN`. The runner uses this pair to request a
+  token proving the job's identity.
+- **Non-secret, runner-only inputs that select those credentials:**
+  `FULLSEND_GCP_OIDC_URL`, `FULLSEND_GCP_PROJECT_ID`,
+  `FULLSEND_GCP_WIF_PROVIDER`, `FULLSEND_OPENAI_AUDIENCE`,
+  `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID`,
+  `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID`.
+- **Security-sensitive names also refused in URL-sourced provider credential
+  definitions:** proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`,
+  `ALL_PROXY`), Transport Layer Security (TLS) trust settings that select
+  certificates for verifying encrypted connections (`SSL_CERT_FILE`,
+  `SSL_CERT_DIR`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`), git configuration
+  (`GIT_SSH_COMMAND`, `GIT_CONFIG_GLOBAL`, `GIT_EXEC_PATH`, `GIT_ASKPASS`,
+  `GIT_TEMPLATE_DIR`), interpreter injection (`NODE_OPTIONS`, `PYTHONPATH`,
+  `PYTHONSTARTUP`, `JAVA_TOOL_OPTIONS`, `RUBYOPT`, `PERL5OPT`),
+  dynamic-linker hooks (`LD_AUDIT`, `DYLD_INSERT_LIBRARIES`), shell behavior
+  (`IFS`, `CDPATH`, `PROMPT_COMMAND`) and the resolver alias file
+  (`HOSTALIASES`).
+
+The list is by name, not by namespace: harness-supplied hook inputs such as
+`FULLSEND_CANARY_TOKEN` and `FULLSEND_TOOL_ALLOWLIST` are still delivered
+through `env.sandbox` — see
+[Runtime Implementation](../contributing/runtime-implementation.md).
+Matching is case-insensitive, so `https_proxy` is dropped exactly as
+`HTTPS_PROXY` is.
+
+This deny-list covers selected names, not every variable that can affect
+network routing, certificate trust, Git or interpreter behavior. An unlisted
+name is not necessarily safe.
+
+`fullsend run` warns when the harness loads, naming all reserved keys it will
+drop, and warns again on stderr for each key as it writes the sandbox
+environment. To check the harness without starting an agent:
+
+1. Run `fullsend lock <agent-name>`. It reports the same lint warning when it
+   loads and composes the harness. Locking may fetch dependencies and write the
+   lock file. If the entry is already current, it skips composition and does
+   not check the keys. `lock` composes without event context, so a key added
+   by an overlay guarded on `event` is reported only by `fullsend run`.
+2. Run `fullsend lock <agent-name> --update` (or
+   `fullsend lock --all --update`) to check the composed harness when the entry
+   is current. This forces dependency re-resolution and may change the lock
+   file; it is not a diagnostics-only operation.
+
+No key-specific warning on a cache hit means the keys were not checked, not
+that they are allowed.
+
+A key must start with an ASCII letter or underscore, followed only by ASCII
+letters, digits or underscores. `fullsend run` skips invalid names and warns
+on stderr; this separate identifier check is not reported by `fullsend lock`.
+Dropping a key removes that one `env.sandbox` export; it does not unset a value
+that reaches the sandbox another way, as `host_files` `.env.d` does.
+
+This gate covers `env.sandbox` only. `host_files` `.env.d` files are read
+before the runtime starts: every launch and the runner's in-sandbox probes
+read them as data and take only assignment lines, and never take the
+dynamic-loader, interpreter and shell-startup variables that the `.env.d` host
+files entry in [Field details](#field-details) lists. `.env` itself is still
+valid shell that an agent may source, so keep treating these files like
+`pre_script`. Either way, `.env.d` is not a general migration path for blocked
+proxy or certificate settings; that entry has the per-runtime rules.
+
+## Migrating proxy and certificate settings
+
+Coordinate these changes with the operator of your OpenShell gateway:
+
+- **Corporate proxies:** use the operator-managed outbound-network settings
+  for the OpenShell version and compute driver you deploy; fullsend records
+  the version it pins in
+  [`.github/scripts/openshell-version.sh`](https://github.com/fullsend-ai/fullsend/blob/main/.github/scripts/openshell-version.sh)
+  at your release tag.
+  The [OpenShell gateway configuration reference](https://github.com/NVIDIA/OpenShell/blob/v0.1.4/docs/how-it-works/gateways/configuration.mdx)
+  for that version describes proxy chaining for policy-approved TLS
+  connections using the HTTP CONNECT method to establish a tunnel. Plain-HTTP
+  destination traffic remains direct. These are not fullsend harness fields or
+  a general replacement for every `HTTP_PROXY` or `ALL_PROXY` use. Do not
+  reintroduce application proxy exports through `.env.d` as a workaround.
+  **GitHub Action limitation:** fullsend's own GitHub Action writes
+  `gateway.toml` with a fixed template and has no input for upstream proxy or
+  CA settings. Self-hosted Actions runners behind a corporate proxy that relied
+  on `HTTPS_PROXY` in `env.sandbox` have no configuration step available yet.
+  This is tracked as a follow-up for an Action proxy input
+  ([#8505](https://github.com/fullsend-ai/fullsend/issues/8505)).
+- **Additional certificate authorities (CAs):** preserve the active sandbox's
+  OpenShell CA certificate and other required roots in application trust.
+  OpenShell's supervisor also verifies upstream TLS separately. Follow the
+  selected driver's certificate-provisioning instructions in that reference,
+  which documents `proxy_ca_bundle` for a corporate proxy. It requires
+  `https_proxy`, and on Kubernetes it is a path in the gateway Pod mounted
+  from a ConfigMap, not a host path. Do not assume that replacing a
+  generated bundle with a custom-only file, or changing only the agent
+  image's trust store, configures both trust paths. Have the gateway operator
+  validate the required application and supervisor connections before
+  deployment. The linked tag is what the pinned gateway supports; a setting
+  documented only at a later OpenShell tag is not available until fullsend
+  bumps the pin. If the linked tag does not document `additional_ca_bundle`
+  (added in OpenShell 0.1.5, for Podman gateways), a private CA used without
+  a corporate proxy has no gateway-level replacement for `SSL_CERT_FILE` or
+  `NODE_EXTRA_CA_CERTS` at that version.
+- **Git settings:** place git configuration with `host_files` (a git config
+  file or shell rc file the tools load) or use the tool's own configuration,
+  instead of `GIT_SSH_COMMAND`, `GIT_CONFIG_GLOBAL`, `GIT_ASKPASS` and the
+  other blocked `GIT_*` names. `host_files` content is trusted like
+  `pre_script`. Git and TLS equivalents the list does not yet cover, such as
+  `GIT_SSH`, `GIT_CONFIG_*` and `REQUESTS_CA_BUNDLE`, are tracked in
+  [#8503](https://github.com/fullsend-ai/fullsend/issues/8503).
+- **Interpreter, loader and shell names:** `NODE_OPTIONS`, `PYTHONPATH`,
+  `JAVA_TOOL_OPTIONS`, `LD_AUDIT`, `IFS` and the other blocked names of this
+  class have no supported replacement route into the sandbox. They are
+  blocked because they change how code is loaded or run. Which of them
+  `host_files` `.env.d` still delivers differs by runtime; the `.env.d` host
+  files entry in [Field details](#field-details) lists what each runtime drops
+  or unsets. Whatever it delivers, it does so only because that file is
+  trusted like `pre_script`, so it is not a sanctioned way to restore them.
 
 ## Deprecated fields
 
@@ -328,7 +461,7 @@ More-specific entries go last so they override broader defaults.
 | `plugins`, `api_servers` | Concatenated (base + child); each entry keeps its own `env`/`pi` |
 | `host_files` | Concatenated; child overrides by `dest` |
 | `env`, `runner_env` (deprecated) | Merged; child keys win |
-| `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Top-level only — not a `ForgeConfig` field, so this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
+| `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Top-level only — this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
 | `validation_loop` | Field-level merge; child/overlay non-zero values win, omitted fields inherit |
 | `security` | Child replaces entirely |
 | `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution |

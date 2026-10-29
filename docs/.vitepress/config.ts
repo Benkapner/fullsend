@@ -322,10 +322,6 @@ export default defineConfig({
                 { text: "Config Reference", link: "/reference/config-reference" },
                 { text: "Harness Field Reference", link: "/reference/harness-reference" },
                 { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
-                {
-                  text: "Building custom agents (deprecated)",
-                  link: "/guides/user/building-custom-agents",
-                },
               ],
             },
             {
@@ -419,6 +415,11 @@ export default defineConfig({
               text: "Architecture Decisions",
               collapsed: true,
               items: getMarkdownFiles("ADRs", "ADRs"),
+            },
+            {
+              text: "Normative Specifications",
+              collapsed: true,
+              items: getMarkdownFiles("normative", "normative"),
             },
             {
               text: "Design Documents",

@@ -31,7 +31,7 @@ const fullsendDispatchInclude = ".gitlab/ci/fullsend-dispatch.yml"
 // (fullsendPipelineInclude) before typed dispatch activation enforces
 // the pipeline-variable restriction — see
 // gitlabPollAndAgentTemplatesLanded.
-const fullsendAgentTemplatePath = ".gitlab/ci/fullsend-agent.yml"
+const fullsendAgentTemplatePath = scaffold.GitLabAgentTemplatePath
 const fullsendPollTemplatePath = ".gitlab/ci/fullsend-poll.yml"
 
 // fullsendDispatcherTemplatePath is the webhook dispatcher job template

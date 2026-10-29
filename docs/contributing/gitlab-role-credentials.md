@@ -1472,18 +1472,24 @@ falls back to pipeline-variable dispatch. GitLab vendor mode and
 version pins without matching upstream templates are rejected before writes.
 Agent input bridges explicitly disable expansion, and poll-job links are
 logged only after creator/HMAC authentication.
-The webhook fast-path's `TRIGGER_PAYLOAD` classification
-and the `CI_JOB_TOKEN` running-job identity pin are implemented. Live GitLab
-validation of issue-to-agent dispatch passed on GitLab.com Free and
-self-managed EE; that run covered issue-open and polling dispatch, not
-issue-update dispatch. Self-managed CE is non-gating: earlier CE runs used a
-patched agents helper, and the latest CE rerun was stopped by the sandbox SSRF
-guard before the agents read issue data, so stock agents on custom-port CE
-remain unverified: see
+Native `TRIGGER_PAYLOAD` delivery under `no_one_allowed` is verified: the
+#8245 webhook runs dispatched agents on projects where install had verified
+the restriction. The `CI_JOB_TOKEN` running-job identity pin is implemented,
+but its invalid and valid-foreign token override cases have not been tested
+on a target GitLab version, so the identity claim stays gated on the
+restriction. Live GitLab validation of issue-to-agent dispatch passed on
+GitLab.com Free and self-managed EE; that run covered issue-open and polling
+dispatch, not issue-update dispatch. Self-managed CE is non-gating: earlier
+CE runs used a patched agents helper, and the stock-agents CE reruns did not
+reach issue data inside the sandbox, so stock agents on custom-port CE remain
+unverified. See
 [GitLab webhook validation status](../normative/normalized-event/v1/README.md#gitlab-webhook-validation-status)
-and ADR 0125 (Caveats). Flip the env var to `enforced` fleet-wide only after
-the [#8245](https://github.com/fullsend-ai/fullsend/issues/8245)
-live-validation gate closes. Poll jobs
+and
+[ADR 0125 security-gate status](../normative/normalized-event/v1/README.md#adr-0125-security-gate-status),
+which also lists the gates still open. The
+[#8245](https://github.com/fullsend-ai/fullsend/issues/8245)
+live-validation gate that a fleet-wide flip of the env var to `enforced`
+waits on closed on 2026-10-24. Poll jobs
 resolve `FULLSEND_GITLAB_POLLER_TOKEN` once, after the schedule-only pin.
 The Go CLI then overrides `GITLAB_TOKEN` / `PUSH_TOKEN` from the
 registered role credential; nothing restores `FULLSEND_FORGE_TOKEN`.

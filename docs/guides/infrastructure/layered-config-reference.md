@@ -147,6 +147,8 @@ the overlay → base → code defaults chain.
 | `inference.project` | `string` (nested) | Scalar override | `""` (empty) |
 | `inference.region` | `string` (nested) | Scalar override | `"global"` |
 | `inference.wif_provider` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.wif_audience` | `string` (nested) | Scalar override | `""` (empty; GitLab agent job keeps `aud: "fullsend"`) |
+| `inference.service_account` | `string` (nested) | Scalar override | `""` (empty; no impersonation) |
 | `inference.openai.audience` | `string` (nested) | Scalar override | `""` (empty) |
 | `inference.openai.identity_provider_id` | `string` (nested) | Scalar override | `""` (empty) |
 | `inference.openai.service_account_id` | `string` (nested) | Scalar override | `""` (empty) |
@@ -238,8 +240,9 @@ unset (`""`) falls through to parent, then to code default
 
 **`inference`** groups inference backend settings under a single YAML key
 (`inference:`) using the `PerRepoInferenceConfig` struct. Each subfield
-(`provider`, `project`, `region`, `wif_provider`, and the three under
-`openai`) resolves independently through scalar override semantics:
+(`provider`, `project`, `region`, `wif_provider`, `wif_audience`,
+`service_account`, and the three under `openai`) resolves independently
+through scalar override semantics:
 
 - **`inference.provider`**: Inference provider identifier (e.g. `"vertex"`).
   Unset (`""`) falls through to parent, then to code default `"vertex"`.
@@ -249,6 +252,11 @@ unset (`""`) falls through to parent, then to code default
   through to parent, then to code default `"global"`.
 - **`inference.wif_provider`**: Full WIF provider resource name. Unset (`""`)
   falls through to parent (no code default — must be provided by the installer).
+- **`inference.wif_audience`** and **`inference.service_account`**: GitLab
+  `vertex-wif` options for an existing WIF provider, read by
+  `fullsend repos install`: the agent job's ID token audience and the service
+  account it impersonates. Unset (`""`) falls through to parent; with no
+  value the agent job keeps `aud: "fullsend"` and direct federation.
 - **`inference.openai.{audience,identity_provider_id,service_account_id}`**:
   the OpenAI Workload Identity identifiers for GPT on pi or codex (ADR 0092), written
   by `fullsend github setup --openai-*`; they can also come from configuration
@@ -555,6 +563,8 @@ compiled-in defaults apply:
 | `inference.project` | `""` (empty — must be provided) |
 | `inference.region` | `"global"` |
 | `inference.wif_provider` | `""` (empty — must be provided) |
+| `inference.wif_audience` | `""` (empty — `aud: "fullsend"`) |
+| `inference.service_account` | `""` (empty — no impersonation) |
 | `models.aliases` | `nil` (fleet alias table compiled into the runtimes) |
 | `create_issues` | `nil` |
 | `status_notifications` | `nil` |

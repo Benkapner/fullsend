@@ -36,9 +36,11 @@ Each enabled `agents:` entry is resolved and composed through the same machinery
   fetched from the allowlisted hosts with caching.
 - Override-only entries (settings only, `source:` unset) resolve their harness from the
   [agents repository](https://github.com/fullsend-ai/agents), exactly as run does —
-  linting a built-in agent lints the fetched upstream harness. These cannot resolve
-  under `--offline`: the fallback needs one request to pin the revision
-  ([#8743](https://github.com/fullsend-ai/fullsend/issues/8743)).
+  linting a built-in agent lints the fetched upstream harness. Under `--offline` these
+  use the agents revision most recently cached by an online run in the same `.fullsend`
+  directory. Run that online run with the same forge (`--forge` or CI auto-detection)
+  as the offline run; otherwise the forge-specific files are not cached and the
+  offline run fails.
 - Harnesses are composed with `base:` chains, CEL-guarded overlays, and the forge
   section for the effective platform, so diagnostics see the harness as it would
   execute. Without a platform (`--forge` omitted, none in config, no CI env), the forge
@@ -78,7 +80,7 @@ position (`forge[<name>].…`).
 | `env.sandbox` | warning | `env.sandbox` coexists with a `host_files` entry delivering `.env.d/` files; `env.sandbox` values take precedence on key collision |
 | `allowed_remote_resources` | warning | `allowed_remote_resources` is declared without `allow_runtime_fetch: true`; the implicit runtime fetch service start is deprecated — add `allow_runtime_fetch: true` to silence it |
 | `forge` | warning | `forge` is deprecated; use overlays with CEL `when` expressions instead ([ADR 0088](../ADRs/0088-cel-guarded-overlays.md)) |
-| `validation_loop.preflight_check` | warning | The value looks like a bare script path; `preflight_check` runs verbatim as a `sh -c` command on the host and is never fetched or resolved like `pre_script`/`post_script` — use `pre_script` for a fetched script, or inline the command |
+| `validation_loop.preflight_check` | error | The value looks like a bare script path (for example `scripts/common-preflight.sh`) rather than a self-contained command; `preflight_check` runs verbatim as a `sh -c` command on the host and is never fetched or resolved like `pre_script`/`post_script` — if a fetched harness script was intended, use `pre_script`; otherwise inline the command (for example `python3 -c 'import jsonschema'`) |
 | `runner_env`, `env.runner`, `env.sandbox`, `host_files[<n>].src`, `forge[<name>].…` | warning | An env entry named `GITHUB_ISSUE_URL`, or a value or `host_files` source referencing it (`$GITHUB_ISSUE_URL` / `${GITHUB_ISSUE_URL}`), which is deprecated; use `FULLSEND_WORK_ITEM_URL` instead |
 | `config.yaml` | error | Semantic validation of `config.yaml` fails — for example an unsupported `version`, an unknown `runtime`, or an `agents[]` entry whose `trigger` does not compile or does not return a boolean. Merged `agents[]` entries and model aliases are validated, including those inherited from `config.base.yaml`; other inherited settings (such as `version` or `runtime`) are not. Errors are labelled `config.yaml` even when the entry comes from the base file. When an `agents[]` entry is invalid, no agent harness is resolved, because every agent would fail with the same error |
 
@@ -98,6 +100,6 @@ still linted, and every error is reported together at the end.
 ## Related
 
 - [CEL Triggers Reference](../guides/user/cel-triggers-reference.md) for writing `trigger` expressions
-- [Checking a trigger before you merge](../guides/user/customizing-agents.md#checking-a-trigger-before-you-merge) for passing and failing `trigger` examples and a CI job
+- [Checking a trigger before you merge](../guides/user/cel-triggers-reference.md#checking-a-trigger-before-you-merge) for passing and failing `trigger` examples and a CI job
 - [Bring Your Own Agent](../guides/user/bring-your-own-agent.md) for harness and `config.yaml` layout
 - [CLI internals](../guides/dev/cli-internals.md) for the full command tree

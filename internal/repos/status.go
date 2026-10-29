@@ -322,6 +322,10 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 			status.Error = err.Error()
 			return status
 		}
+		if err := checkPinnedServiceAccountSupport(ctx, cfg, dcfg.UpstreamRef, dcfg.UpstreamTag, resolver); err != nil {
+			status.Error = err.Error()
+			return status
+		}
 	}
 	status.ExpectedMintURL = cfg.MintURL
 
@@ -337,11 +341,12 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		appSet = cfg.AppSet
 	}
 	expectedVars, varValErr := staticExpectedVarValues(InstallConfig{
-		Forge:             cfg.Forge,
-		MintURL:           cfg.MintURL,
-		InferenceRegion:   cfg.expectedInferenceRegion(),
-		ReviewAppClientID: dcfg.ReviewAppClientID,
-		AppSet:            appSet,
+		Forge:                   cfg.Forge,
+		MintURL:                 cfg.MintURL,
+		InferenceRegion:         cfg.expectedInferenceRegion(),
+		InferenceServiceAccount: cfg.DeclaredServiceAccount,
+		ReviewAppClientID:       dcfg.ReviewAppClientID,
+		AppSet:                  appSet,
 	}, cfg.MintURL)
 	if varValErr != nil {
 		status.Error = fmt.Sprintf("building expected variable values for %s/%s: %v", owner, repo, varValErr)
@@ -411,6 +416,15 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 			Expected: expected,
 			Actual:   actual,
 		})
+	}
+
+	// Report the configuration error install would fail on: nothing will
+	// refresh a live agent job script that ignores the service account.
+	if workflowPresent && presetLoaded {
+		if err := checkEstablishedServiceAccountSupport(ctx, cfg, dcfg.UpstreamRef, components); err != nil {
+			status.Error = err.Error()
+			return status
+		}
 	}
 
 	checkObsoleteInferenceConfig(ctx, client, cfg, &status)
@@ -521,8 +535,9 @@ func ApplyGitLabTriggerAccountStatus(status *RepoStatus, diag GitLabTriggerAccou
 }
 
 // checkObsoleteInferenceConfig reports Fullsend-managed inference secrets
-// and variables that belong to a method the repository's inference.auth
-// does not select. A valid selection does not make leftover configuration
+// and variables the repository's effective configuration does not use (a
+// method inference.auth does not select, or an undeclared
+// inference.service_account on GitLab). A valid selection does not make leftover configuration
 // healthy desired state: convergence deletes these once the selected
 // method is established, so status reports them as drift. Secrets are
 // checked for presence only — secret values are never read. GitLab's
@@ -532,19 +547,19 @@ func checkObsoleteInferenceConfig(ctx context.Context, client forge.Client, cfg 
 	if status.Error != "" {
 		return
 	}
-	for _, name := range obsoleteInferenceVariables(cfg.InferenceAuth) {
-		_, exists, err := client.GetRepoVariable(ctx, cfg.Owner, cfg.Repo, name)
+	for _, v := range obsoleteInferenceVariables(cfg) {
+		_, exists, err := client.GetRepoVariable(ctx, cfg.Owner, cfg.Repo, v.name)
 		if err != nil {
-			status.Error = fmt.Sprintf("checking obsolete variable %s for %s/%s: %v", name, cfg.Owner, cfg.Repo, err)
+			status.Error = fmt.Sprintf("checking obsolete variable %s for %s/%s: %v", v.name, cfg.Owner, cfg.Repo, err)
 			return
 		}
 		if !exists {
 			continue
 		}
 		status.Drifts = append(status.Drifts, Drift{
-			Field:    name,
+			Field:    v.name,
 			Expected: "absent",
-			Actual:   fmt.Sprintf("obsolete variable (inference.auth is %s)", cfg.InferenceAuth),
+			Actual:   fmt.Sprintf("obsolete variable (%s)", v.reason),
 		})
 	}
 }

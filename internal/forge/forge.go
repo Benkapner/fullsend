@@ -47,6 +47,12 @@ const (
 	VarReviewClientID = "FULLSEND_REVIEW_CLIENT_ID"
 	VarAppSet         = "FULLSEND_APP_SET"
 
+	// VarGCPServiceAccount is the GitLab CI/CD variable naming the
+	// service account the agent job impersonates for Vertex inference
+	// (config.inference.service_account). Written only when configured;
+	// unset keeps direct federated identity.
+	VarGCPServiceAccount = "FULLSEND_GCP_SERVICE_ACCOUNT"
+
 	// User-managed OpenAI Workload Identity identifier variables.
 	VarOpenAIAudience           = "FULLSEND_OPENAI_AUDIENCE"
 	VarOpenAIIdentityProviderID = "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID"
@@ -54,7 +60,8 @@ const (
 
 	// Retired GitLab poller state variables. Superseded by HMAC-signed
 	// state.json on fullsend-poll-state-slash / fullsend-poll-state-events.
-	// Install no longer seeds them; converge migrate-then-deletes them.
+	// Install and converge neither seed nor migrate them; uninstall
+	// deletes any leftovers.
 	VarLastPollAtFast     = "FULLSEND_LAST_POLL_AT_FAST"
 	VarLastPollAtFull     = "FULLSEND_LAST_POLL_AT_FULL"
 	VarLabelState         = "FULLSEND_LABEL_STATE"
@@ -634,15 +641,57 @@ type ReviewThreadComment struct {
 	CreatedAt          string              `json:"created_at"`
 }
 
+// DiffSide identifies which side of a diff a review-thread position refers to.
+// Left is the old (base) version of the file; right is the new (head)
+// version.
+type DiffSide string
+
+const (
+	// DiffSideLeft is the old (base) side of the diff.
+	DiffSideLeft DiffSide = "left"
+	// DiffSideRight is the new (head) side of the diff.
+	DiffSideRight DiffSide = "right"
+)
+
 // ReviewThread represents the resolution state and comments of a pull-request
 // review thread. Forges that do not expose review threads return
 // ErrNotSupported.
+//
+// Position fields use one contract across forges; a nil value means the forge
+// did not report that value. Line numbers on a side are line numbers in that
+// side's version of the file.
 type ReviewThread struct {
-	ID                     string                `json:"id"`
-	IsResolved             bool                  `json:"is_resolved"`
-	Path                   string                `json:"path"`
-	Line                   *int                  `json:"line"`
-	OriginalLine           *int                  `json:"original_line"`
+	ID         string `json:"id"`
+	IsResolved bool   `json:"is_resolved"`
+	Path       string `json:"path"`
+	// Side is the diff side Line (and OriginalLine) refers to. Nil when the
+	// thread has no diff position.
+	Side *DiffSide `json:"side"`
+	// Line is the last line of the thread's range on Side in the current
+	// diff. Nil when the thread no longer maps onto the current diff (for
+	// example an outdated GitHub thread) or has no line position.
+	Line *int `json:"line"`
+	// StartSide and StartLine give the first line of a multi-line range.
+	// Both are nil for single-line threads. StartLine is nil for an outdated
+	// multi-line thread, while StartSide may still be set.
+	StartSide *DiffSide `json:"start_side"`
+	StartLine *int      `json:"start_line"`
+	// OriginalLine is the line on Side, and OriginalStartLine is the start
+	// line on StartSide, in the diff the thread was created against. For
+	// cross-side ranges the two belong to different file versions. Nil when
+	// the forge does not report the original position (GitLab).
+	OriginalLine      *int `json:"original_line"`
+	OriginalStartLine *int `json:"original_start_line"`
+	// OldLine and NewLine are the current position's line numbers in the
+	// old (left) and new (right) file. A removed line has only OldLine, an
+	// added line only NewLine, and an unchanged context line may have both
+	// when the forge reports them (GitLab). GitHub reports one side only.
+	OldLine *int `json:"old_line"`
+	NewLine *int `json:"new_line"`
+	// IsOutdated reports whether the forge marks the thread as outdated by
+	// later pushes. Nil when the forge does not expose outdated state
+	// (GitLab); a nil NewLine alone never implies an outdated thread.
+	IsOutdated             *bool                 `json:"is_outdated"`
 	ResolvedBy             string                `json:"resolved_by"`
 	ResolvedByType         string                `json:"resolved_by_type"`
 	ResolvedByRole         normevent.ActorRole   `json:"resolved_by_role"`

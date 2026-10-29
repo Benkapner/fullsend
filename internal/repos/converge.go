@@ -503,6 +503,7 @@ func selectedCredentialContractLive(ctx context.Context, resolved ResolvedConfig
 type obsoleteInferenceItem struct {
 	name     string
 	variable bool
+	reason   string
 }
 
 // kind is the noun used in messages ("secret" or "variable").
@@ -540,10 +541,10 @@ func removeObsoleteInferenceSecrets(ctx context.Context, resolved ResolvedConfig
 	client := resolved.ForgeConfig.Client
 	var items []obsoleteInferenceItem
 	for _, name := range obsoleteInferenceSecrets(resolved.InferenceAuth) {
-		items = append(items, obsoleteInferenceItem{name: name})
+		items = append(items, obsoleteInferenceItem{name: name, reason: "inference.auth is " + resolved.InferenceAuth})
 	}
-	for _, name := range obsoleteInferenceVariables(resolved.InferenceAuth) {
-		items = append(items, obsoleteInferenceItem{name: name, variable: true})
+	for _, v := range obsoleteInferenceVariables(resolved) {
+		items = append(items, obsoleteInferenceItem{name: v.name, variable: true, reason: v.reason})
 	}
 	keepVerb := "kept"
 	if dryRun {
@@ -626,7 +627,7 @@ func removeObsoleteInferenceSecrets(ctx context.Context, resolved ResolvedConfig
 			actions = append(actions, ComponentAction{
 				Component: item.component(),
 				Action:    "delete",
-				Detail:    fmt.Sprintf("would delete obsolete %s (inference.auth is %s)", name, resolved.InferenceAuth),
+				Detail:    fmt.Sprintf("would delete obsolete %s (%s)", name, item.reason),
 			})
 			progress(repoFullName, "dry-run", fmt.Sprintf("Would delete obsolete %s %s", item.kind(), name))
 			continue
@@ -647,7 +648,7 @@ func removeObsoleteInferenceSecrets(ctx context.Context, resolved ResolvedConfig
 		actions = append(actions, ComponentAction{
 			Component: item.component(),
 			Action:    "delete",
-			Detail:    fmt.Sprintf("deleted obsolete %s (inference.auth is %s)", name, resolved.InferenceAuth),
+			Detail:    fmt.Sprintf("deleted obsolete %s (%s)", name, item.reason),
 		})
 		progress(repoFullName, "sync", fmt.Sprintf("Deleted obsolete %s %s", item.kind(), name))
 	}
@@ -967,11 +968,12 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			// FULLSEND_REVIEW_CLIENT_ID, and FULLSEND_APP_SET. The mint
 			// URL and region are the effective configuration's values.
 			expectedVars, varValErr := staticExpectedVarValues(InstallConfig{
-				Forge:             resolved.Forge,
-				MintURL:           resolved.MintURL,
-				InferenceRegion:   resolved.expectedInferenceRegion(),
-				ReviewAppClientID: reviewClientID,
-				AppSet:            effectiveAppSet,
+				Forge:                   resolved.Forge,
+				MintURL:                 resolved.MintURL,
+				InferenceRegion:         resolved.expectedInferenceRegion(),
+				InferenceServiceAccount: resolved.DeclaredServiceAccount,
+				ReviewAppClientID:       reviewClientID,
+				AppSet:                  effectiveAppSet,
 			}, resolved.MintURL)
 			if varValErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: varValErr}
@@ -1433,6 +1435,23 @@ func convergeRepo(ctx context.Context,
 			}
 		}
 	}
+	// A pinned scaffold whose agent job script predates service-account
+	// impersonation would ignore FULLSEND_GCP_SERVICE_ACCOUNT; reject it
+	// before any variable is written.
+	if err := checkPinnedServiceAccountSupport(ctx, resolved, cfg.UpstreamRef, cfg.UpstreamTag, refResolver); err != nil {
+		cr.Error = err
+		return cr
+	}
+	// With no ref at all only an unstamped install or a missing script is
+	// refreshed from the embedded templates, so any other established
+	// installation's live agent job script must already read the
+	// variable. A fresh install renders the embedded templates.
+	if workflowPresent(d.components) {
+		if err := checkEstablishedServiceAccountSupport(ctx, resolved, cfg.UpstreamRef, d.components); err != nil {
+			cr.Error = err
+			return cr
+		}
+	}
 	// A release build supplies the target when an OpenAI WIF manifest is
 	// unpinned, including migration from an existing github setup install.
 	if auth == InferenceAuthOpenAIWIF && resolved.FullsendRef == "" && cfg.UpstreamRef != "" {
@@ -1591,6 +1610,10 @@ func convergeRepo(ctx context.Context,
 			ControlRunnerTags: gitlabControlRunnerTags(cfg.Manifest),
 			Runtime:           resolved.Runtime,
 			Direct:            cfg.Direct,
+			// GitLab existing-provider options (validated by
+			// applyEffectiveInfrastructure and vertexCredentialInputs).
+			InferenceWIFAudience:    resolved.DeclaredWIFAudience,
+			InferenceServiceAccount: resolved.DeclaredServiceAccount,
 			// Supplied inputs replace every secret of the selected
 			// method; without inputs the existing secrets are reused
 			// (validation already required them to be present).
@@ -2890,7 +2913,7 @@ func convergeRefFiles(ctx context.Context,
 		dryRef := targetRef
 		dryTag := ""
 		if !isExplicitPin {
-			dryRef, dryTag = cfg.UpstreamRef, cfg.UpstreamTag
+			dryRef, dryTag = matchingReleaseRefTag(targetRef, cfg.UpstreamRef, cfg.UpstreamTag)
 		} else if !isSHARef(targetRef) && isSHARef(currentRef) && isSemver(targetRef) {
 			// Only resolve to SHA for semver tags. Branch refs are used
 			// directly to match resolveTargetRef and avoid non-idempotent
@@ -2965,7 +2988,7 @@ func convergeRefFiles(ctx context.Context,
 	// shifts the branch HEAD. See #6553.
 	var newRef, newTag string
 	if !isExplicitPin {
-		newRef, newTag = cfg.UpstreamRef, cfg.UpstreamTag
+		newRef, newTag = matchingReleaseRefTag(targetRef, cfg.UpstreamRef, cfg.UpstreamTag)
 	} else if isSHARef(targetRef) {
 		newRef = targetRef
 	} else if isSHARef(currentRef) && isSemver(targetRef) {
@@ -3036,6 +3059,9 @@ func convergeRefFiles(ctx context.Context,
 			for _, file := range remote {
 				templateFiles = append(templateFiles, forge.TreeFile{Path: file.Path, Content: file.Content, Mode: file.Mode})
 			}
+		}
+		if tplErr == nil {
+			templateFiles, tplErr = applyGitLabExistingWIFTemplates(templateFiles, resolved.DeclaredWIFAudience, resolved.DeclaredServiceAccount)
 		}
 		if tplErr != nil {
 			actions = append(actions, ComponentAction{
@@ -3217,6 +3243,9 @@ func convergeScaffoldFiles(ctx context.Context,
 		templateFiles, tplErr := collectGitLabUpgradeTemplates(
 			gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest), templateRef, "",
 		)
+		if tplErr == nil {
+			templateFiles, tplErr = applyGitLabExistingWIFTemplates(templateFiles, resolved.DeclaredWIFAudience, resolved.DeclaredServiceAccount)
+		}
 		if tplErr != nil {
 			actions = append(actions, ComponentAction{
 				Component: "scaffold",
@@ -3478,7 +3507,7 @@ func resolveTargetRef(ctx context.Context, fullsendRef, upstreamRef, upstreamTag
 		// above does, so status/drift comparisons against the actually
 		// committed workflow ref stay consistent regardless of whether
 		// resolved.FullsendRef happens to be populated yet.
-		ref = upstreamRef
+		ref, tag = matchingReleaseRefTag(fullsendRef, upstreamRef, upstreamTag)
 	} else if ref != "" {
 		manifestRef = ref
 		// Only SHA-pin semver tags. Branch names are used directly
@@ -3495,6 +3524,23 @@ func resolveTargetRef(ctx context.Context, fullsendRef, upstreamRef, upstreamTag
 		}
 	}
 	return resolvedRef{ref: ref, tag: tag, manifestRef: manifestRef}
+}
+
+// matchingReleaseRefTag returns the (ref, tag) pair to render for a
+// fullsendRef that matches the running release's upstreamRef or
+// upstreamTag. It is the single normalization shared by resolveTargetRef,
+// convergeRefFiles, and ExpectedScaffoldContent so install, convergence,
+// and status agree on what a matching pin renders.
+//
+// When fullsendRef is the release tag, the release's own (ref, tag) pair
+// is used. When it is the commit SHA, the tag is dropped: any other CLI
+// treats that SHA as an explicit pin with no tag, so the same manifest
+// then renders the same runner image (dev) under every CLI version.
+func matchingReleaseRefTag(fullsendRef, upstreamRef, upstreamTag string) (ref, tag string) {
+	if fullsendRef != upstreamTag {
+		return upstreamRef, ""
+	}
+	return upstreamRef, upstreamTag
 }
 
 // isUnstampedInstallRef reports whether installedRef is what a build
@@ -3539,15 +3585,6 @@ func convergeRepoCredentials(ctx context.Context, d convergeDiscovery, wifProvid
 	// 2a: Check for variable drift.
 	varActions := convergeVariables(ctx, resolved, d.components, cfg.DryRun, progress)
 	actions = append(actions, varActions...)
-
-	// 2a-ii: GitLab retired poll-state CI/CD vars. Migrate leftover
-	// values into poll-state branches, then delete the vars. Known-
-	// retired: CheckOrphanVars will not warn about them.
-	if resolved.Forge == ForgeGitLab {
-		retireActions := retireGitLabLegacyVars(ctx, resolved.ForgeConfig.Client,
-			resolved.Owner, resolved.Repo, cfg.DryRun, progress)
-		actions = append(actions, retireActions...)
-	}
 
 	// 2b: Converge secrets (existence-only — values cannot be read back).
 	secretActions := convergeSecrets(ctx, d, wifProvider, cfg, progress)
