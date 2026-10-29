@@ -297,6 +297,28 @@ The bare-JWT prefix pattern is skipped when a file-content tool (`Read`, `Grep`,
 
 Every rewrite attaches `hookSpecificOutput.additionalContext` so the agent knows the output was changed and why. Every hook entry carries `timeout: 30` — Claude Code's 600 s default fails open, and so does the 30 s one (PreToolUse blockers included); the scripts finish in milliseconds and `tirith_check.py` bounds its own scan at 5 s, so the budget is headroom, not a ceiling the scripts approach.
 
+### Hook interpreter and PATH conformance
+
+How each runtime satisfies ADR 0152's rules for hook interpreter and
+`PATH` trust. The shared machinery lives in `internal/runtime/env_data.go`
+at `bbe0ab242`: `envDataTrustedPath` computes the trusted `PATH`,
+`envDataReadlink` finds a readlink held to the same rule, and `envDataPin`
+resolves the interpreter through it. After #8633, the Codex trusted
+`PATH` and `readlink` are recorded by `envDataTrustedPin` within
+`codexBinaryPin` (`codex_run.go` on current `main`), with `envDataLoad`
+pinning only `python3`.
+
+| Runtime | Interpreter | Hook `PATH` | Failure mode |
+|---|---|---|---|
+| Claude Code | `hookPreflightInterpreter` resolves the absolute `python3` via the launch's `envDataPin` at Bootstrap; `GenerateHooksConfigPinned` renders `PATH='<trusted>' <python> -E -s -B <script>` into `hooks.json`, protected by the digest check (#8261) | Baked into `hooks.json` at Bootstrap, covered by its digest | Bootstrap fails with an actionable error when no trusted `python3` exists or it is below the 3.11 floor |
+| Codex | Same `hookPreflightInterpreter` for the interpreter; written into `hooks.json` at Bootstrap | `FULLSEND_TRUSTED_PATH` (the launch `PATH` minus agent-writable directories), recorded read-only before `.env` by `envDataTrustedPin` within `codexBinaryPin` (post-#8633; at `bbe0ab242` it was recorded by `envDataLoad`), exported after it; the adapter sets its children's `PATH` from it | Adapter denies each hooked call when the trusted `PATH` is missing, empty, or has non-absolute entries; Codex itself still starts |
+| pi | `FULLSEND_PI_HOOK_PYTHON` (the launch's `envDataPin` result, #8589); exported after `.env`, on the loader drop list | `FULLSEND_PI_HOOK_PATH` (the trusted `PATH`, #8589); same export discipline | Adapter blocks each hook (fail closed) when either variable is missing or not an absolute path; pi still starts |
+| OpenCode | Not wired; installs no sandbox tool hooks (unbound-force#515) | — | — |
+
+Gaps against the rules are tracked in
+[#8763](https://github.com/fullsend-ai/fullsend/issues/8763) and
+[#8764](https://github.com/fullsend-ai/fullsend/issues/8764).
+
 ### Hook fail modes
 
 | Component | On malformed / oversized input (> 10 × 1024 × 1024 characters, text-mode stdin) | On its own error |
