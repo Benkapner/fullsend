@@ -537,6 +537,54 @@ func TestRunAuth_EntryWithoutListsNonCommandEventsSkipProjectRoles(t *testing.T)
 	}
 }
 
+func TestRunAuth_ProjectRolesWithoutListsResolvesIssueOpened(t *testing.T) {
+	// labels: project_roles with no lists is the explicit "keep the no-entry
+	// behaviour" entry: an issue opened by a Developers member resolves
+	// through the roster and dispatches triage, under the real gate.
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleMembership = map[string]string{"reporter-id": "Developers"}
+	mc.searchResult = []jira.Issue{authTestIssue("PROJ-1", now)}
+
+	m := newGateMatcher(harnessdispatch.AuthOptions{})
+	p := authTestPoller(mc, m, Authorization{Configured: true, Labels: LabelsProjectRoles})
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if got := m.roleOf("reporter-id"); got != "write" {
+		t.Errorf("actor.role for reporter-id = %q, want write", got)
+	}
+	if !slices.Contains(dispatchedBy(p, "reporter-id"), "triage") {
+		t.Errorf("dispatches for reporter-id = %v, want the triage harness", dispatchedBy(p, "reporter-id"))
+	}
+	if mc.roleActorsCalls != 1 {
+		t.Errorf("GetProjectRoleActors called %d times, want 1", mc.roleActorsCalls)
+	}
+}
+
+func TestRunAuth_JiraEditorsWithoutListsDoesNotDispatchIssueOpened(t *testing.T) {
+	// Under the default labels: jira_editors with no lists, the same
+	// Developers member's issue-opened event is not resolved and does not
+	// dispatch, and the roster is never loaded.
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleMembership = map[string]string{"reporter-id": "Developers"}
+	mc.searchResult = []jira.Issue{authTestIssue("PROJ-1", now)}
+
+	m := newGateMatcher(harnessdispatch.AuthOptions{})
+	p := authTestPoller(mc, m, Authorization{Configured: true, Labels: LabelsJiraEditors})
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if got := m.roleOf("reporter-id"); got != "none" {
+		t.Errorf("actor.role for reporter-id = %q, want none", got)
+	}
+	assertAgents(t, p, "reporter-id")
+	if mc.roleActorsCalls != 0 {
+		t.Errorf("GetProjectRoleActors called %d times, want 0", mc.roleActorsCalls)
+	}
+}
+
 func TestRunAuth_ListsAuthorizeIssueOpened(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	mc := newMockClient()
@@ -598,6 +646,12 @@ func TestRoleSourceFor(t *testing.T) {
 		{"plain comment without lists", entry, plain, roleNotResolved},
 		{"opened without lists", entry, opened, roleNotResolved},
 		{"opened with lists", lists, opened, roleFromLists},
+		{"project_roles without lists: label", Authorization{Configured: true, Labels: LabelsProjectRoles}, label, roleFromProjectRoles},
+		{"project_roles without lists: slash command", Authorization{Configured: true, Labels: LabelsProjectRoles}, comment, roleFromProjectRoles},
+		{"project_roles without lists: plain comment", Authorization{Configured: true, Labels: LabelsProjectRoles}, plain, roleFromProjectRoles},
+		{"project_roles without lists: opened", Authorization{Configured: true, Labels: LabelsProjectRoles}, opened, roleFromProjectRoles},
+		{"project_roles with lists: opened", Authorization{Configured: true, Write: lists.Write, Labels: LabelsProjectRoles}, opened, roleFromLists},
+		{"jira_editors without lists: opened", Authorization{Configured: true, Labels: LabelsJiraEditors}, opened, roleNotResolved},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

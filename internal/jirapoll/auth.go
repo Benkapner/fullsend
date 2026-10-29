@@ -21,7 +21,9 @@ const (
 	// provider's write and triage lists.
 	roleFromLists
 	// roleNotResolved leaves the role unresolved. It applies only when a
-	// jira provider entry is present: to label-added events under the
+	// jira provider entry is present (and does not select labels:
+	// project_roles with no lists, which resolves every event through the
+	// roster): to label-added events under the
 	// jira_editors rule, which the dispatch gate authorizes by Jira's Edit
 	// Issues permission, not by actor.role; and, when the entry sets no
 	// lists, to events that are neither slash commands nor label
@@ -41,6 +43,9 @@ const unresolvedRole = "none"
 //
 //   - with no jira entry (Authorization.Configured false), every event
 //     uses the project role roster;
+//   - with labels: project_roles and no lists, every event uses the
+//     project role roster, exactly as with no jira entry (the explicit
+//     way to keep that behaviour);
 //   - otherwise a label-added event follows the labels: rule (jira_editors: not
 //     resolved; allowlist: the lists; project_roles: the roster);
 //   - any other event uses the lists when any are configured;
@@ -55,6 +60,9 @@ func (p *Poller) roleSourceFor(event JiraEvent) roleSource {
 		return roleFromProjectRoles
 	}
 	auth := p.opts.Authorization
+	if auth.labelMode() == LabelsProjectRoles && !auth.HasLists() {
+		return roleFromProjectRoles
+	}
 	if event.Type == "label_changed" && event.LabelAction == "added" {
 		switch auth.labelMode() {
 		case LabelsAllowlist:

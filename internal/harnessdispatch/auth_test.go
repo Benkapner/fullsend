@@ -91,6 +91,28 @@ func TestIsAuthorized_JiraLabelAddedRequiresRoleByDefault(t *testing.T) {
 	assert.False(t, IsHarnessAuthorizedWith(triage, "coder", opts))
 }
 
+func TestIsAuthorized_JiraOpenedFollowsActorRole(t *testing.T) {
+	// A Jira issue-opened event takes the per-harness role threshold under
+	// every AuthOptions value, including the labels: project_roles policy
+	// that resolves every event through project roles: a write actor
+	// dispatches triage, an unresolved actor does not.
+	jiraOpened := func(role normevent.ActorRole) *normevent.Event {
+		return &normevent.Event{
+			Transition: normevent.Transition{Kind: normevent.TransitionOpened},
+			Source:     normevent.Source{System: normevent.SystemJira},
+			Actor:      normevent.Actor{ID: "557058:abc", Kind: normevent.ActorHuman, Role: role},
+		}
+	}
+	for _, opts := range []AuthOptions{{}, {JiraLabelsByEditPermission: true}} {
+		write := jiraOpened(normevent.RoleWrite)
+		assert.True(t, IsEventAuthorizedWith(write, opts))
+		assert.True(t, IsHarnessAuthorizedWith(write, "triage", opts))
+		none := jiraOpened(normevent.RoleNone)
+		assert.False(t, IsEventAuthorizedWith(none, opts))
+		assert.False(t, IsHarnessAuthorizedWith(none, "triage", opts))
+	}
+}
+
 func TestIsAuthorized_JiraLabelRemovedRequiresRole(t *testing.T) {
 	assert.False(t, IsAuthorized(jiraLabelEvent("removed", normevent.RoleNone)))
 	assert.True(t, IsAuthorized(jiraLabelEvent("removed", normevent.RoleWrite)))
