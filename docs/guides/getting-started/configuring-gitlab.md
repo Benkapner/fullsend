@@ -755,9 +755,9 @@ deleted. Polling continues with the current Poller throughout.
 Retirement also enforces the GitLab Free-tier account quota. Fullsend does not
 rely on a numeric Free-tier limit, so the bound is that at most one old/new
 pair of Poller accounts exists at a time: the current Poller plus either one
-pending replacement or one retiring Poller. At most three abandoned replacements may
-also await deletion. Repeated installs and rotations therefore return to a
-single Poller instead of accumulating service accounts.
+pending replacement or one retiring Poller. At most three abandoned
+replacements may also await deletion. Repeated installs and rotations
+therefore return to a single Poller instead of accumulating service accounts.
 
 The current Poller is not raised, so its own credentials do not block the
 handoff. The checks that guard the temporary Maintainer elevation apply to the

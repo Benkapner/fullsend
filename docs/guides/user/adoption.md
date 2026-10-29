@@ -167,7 +167,14 @@ Start small — docs-only paths, or dependency update paths already covered by R
 
 The team always retains control — CODEOWNERS and branch protection are the safety net, and auto-merge scope can be dialed back at any time by editing CODEOWNERS.
 
-For more granular control, the review agent includes a PR-level risk assessment sub-agent that produces a composite risk score based on blast radius, path sensitivity, CI impact, dependency risk, test coverage, and author context. This score can further gate auto-merge eligibility beyond file-path matching. The team is still gathering evidence on graduation criteria for autonomous merging — see the [autonomy spectrum](../../problems/autonomy-spectrum.md) for the open questions.
+For more granular control, the review agent includes a PR-level risk
+assessment sub-agent that produces a composite risk score based on blast
+radius, path sensitivity, CI impact, dependency risk, test coverage, and
+author context. This score can further gate auto-merge eligibility beyond
+file-path matching. The team is still gathering evidence on graduation
+criteria for autonomous merging — see the
+[autonomy spectrum](../../problems/autonomy-spectrum.md) for the open
+questions.
 
 ### Bring Your Own Agents
 

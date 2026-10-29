@@ -206,7 +206,9 @@ Mode is inferred from `PER_REPO_WIF_REPOS` — there is no separate trust-mode f
 **Public mint**: `PER_REPO_WIF_REPOS` is `*`.
 
 - **PER_REPO_WIF_REPOS**: Any repository may mint (cross-org isolation still enforced at installation lookup). For the GCF mint, all repos use `WIF_PROVIDER_NAME`
-- **job_workflow_ref validation**: Same as tight mode — the upstream plus repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`). `ALLOWED_WORKFLOW_FILES` basename gate applies
+- **job_workflow_ref validation**: Same as tight mode — the upstream plus
+  repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`).
+  `ALLOWED_WORKFLOW_FILES` basename gate applies
 - **WORKFLOW_HOST_REPOS**: Same semantics as tight mode — controls which repos may host workflows. Defaults to `fullsend-ai/fullsend` when unset
 - **mint enroll**: Succeeds without changing mint configuration (repository registration is unnecessary); **mint unenroll** for individual repositories is not supported in public mode
 
@@ -245,7 +247,9 @@ A single mint instance can serve multiple orgs:
 
 ### Bot-Role Lookup Endpoint
 
-`POST /v1/bot-role` resolves a GitHub App bot login to the mint role registered for that App. Dispatch authorization uses it to recognize Fullsend's own bots.
+`POST /v1/bot-role` resolves a GitHub App bot login to the mint role
+registered for that App. Dispatch authorization uses it to recognize
+Fullsend's own bots.
 
 - **Authentication:** GitHub Actions OIDC bearer token, with the same per-repo enrollment and workflow-host checks as `POST /v1/token`.
 - **Request:** `{"actor_login": "<app-slug>[bot]", "repo": "owner/repo"}`. `repo` must be the token's `repository` claim (otherwise `403`). Other fields, such as `role`, are ignored.
@@ -339,8 +343,13 @@ Secrets and variables are deployed on the target repository.
 - `FULLSEND_GCP_PROJECT_ID`
 - `FULLSEND_GCP_WIF_PROVIDER`
 - `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for repos whose `inference.auth` is `openai-api-key` (written by `repos install --openai-api-key`; not set by `github setup`)
-- `FULLSEND_INFERENCE_GATEWAY_API_KEY` — inference gateway API key for repos whose `inference.gateway.auth` is `api-key` (set by the repository admin, not by `github setup`)
-- `FULLSEND_GITHUB_RUNNER_SECRETS` — optional, set by you: a JSON object of name → literal value for host-side scripts, resolved through each harness's `env.runner` ([setup](../user/bring-your-own-agent.md#pass-secrets-to-host-side-scripts-github))
+- `FULLSEND_INFERENCE_GATEWAY_API_KEY` — inference gateway API key for repos
+  whose `inference.gateway.auth` is `api-key` (set by the repository admin,
+  not by `github setup`)
+- `FULLSEND_GITHUB_RUNNER_SECRETS` — optional, set by you: a JSON object of
+  name → literal value for host-side scripts, resolved through each harness's
+  `env.runner`
+  ([setup](../user/bring-your-own-agent.md#pass-secrets-to-host-side-scripts-github))
 
 Repos whose `inference.auth` is `openai-wif` need no Fullsend-managed inference secret: they authenticate with the user-managed `FULLSEND_OPENAI_*` identifier variables or `inference.openai` configuration, and the GCP secrets above are written only when Vertex sub-agents are configured.
 

@@ -22,9 +22,10 @@ sidebar_label: Using an inference gateway
 
 Agents on the [pi](../../runtimes/pi.md), [Claude Code](../../runtimes/claude.md) and
 [Codex](../../runtimes/codex.md) runtimes can reach their models through an
-OpenAI/Anthropic-compatible inference gateway that trusts the job's GitHub Actions OIDC token.
-Codex needs a gateway that serves the Responses API. The gateway holds the
-upstream provider credential, so on the recommended path your repository stores no reusable key.
+OpenAI/Anthropic-compatible inference gateway that trusts the job's GitHub
+Actions OIDC token. Codex needs a gateway that serves the Responses API. The
+gateway holds the upstream provider credential, so on the recommended path
+your repository stores no reusable key.
 This page follows the [agentgateway](https://github.com/agentgateway/agentgateway) setup in the
 [operator guide](../infrastructure/inference-gateway-operator.md). The flags and fields are
 listed in [`fullsend github setup`](../../cli/github.md) and the
@@ -92,7 +93,8 @@ fails.
   runner reads the gateway key from `FULLSEND_INFERENCE_GATEWAY_API_KEY`: a repository secret in
   CI, or the environment on a local run. The block needs no `audience` in this mode. It is a
   supported mode, but not the primary or safest one, because it relies on a long-lived secret:
-  a leaked key works until the operator revokes it. Use `oidc` whenever the gateway supports it.
+  a leaked key works until the operator revokes it. Use `oidc` whenever the
+  gateway supports it.
 
 By default the key travels as `Authorization: Bearer`. If your operator says the gateway reads the
 key from `x-api-key` on its Messages API, add `messages_auth_header: x-api-key` to an `api-key`
