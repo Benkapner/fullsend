@@ -453,8 +453,9 @@ the user's Jira profile: the ID is the last part of its URL.
 | Administer Projects (the **Administrators** project role) | Only when project roles are used: no `jira` entry, `labels: project_roles`, or slash commands when the `jira` entry sets no lists |
 
 The poller reads the project role list only in a cycle that has an event
-needing it. A setup whose `jira` entry uses the lists, or only label triggers
-under `jira_editors`, never needs Administer Projects. With no `jira` entry,
+needing it. A setup whose `jira` entry uses the lists without
+`labels: project_roles`, or only label triggers under `jira_editors`, never
+needs Administer Projects. With no `jira` entry,
 or with `labels: project_roles` and no lists, every event needs the role list.
 
 ### Project role mapping

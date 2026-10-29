@@ -53,8 +53,8 @@ const unresolvedRole = "none"
 //     and every remaining event is not resolved.
 //
 // Only roleFromProjectRoles events make the poller load the roster, so a
-// setup whose jira entry uses the lists, or only label triggers under
-// jira_editors, never calls GET /project/{key}/role.
+// setup whose jira entry uses the lists without labels: project_roles, or
+// only label triggers under jira_editors, never calls GET /project/{key}/role.
 func (p *Poller) roleSourceFor(event JiraEvent) roleSource {
 	if !p.opts.Authorization.Configured {
 		return roleFromProjectRoles
