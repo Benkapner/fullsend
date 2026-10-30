@@ -108,8 +108,8 @@ explicit `FULLSEND_TRACKER` or `ISSUE_URL` points somewhere else. Code stops if
   tracked in [#6704](https://github.com/fullsend-ai/fullsend/issues/6704).
 - **Updates Jira cannot apply:** triage lists them under **Not applied in
   Jira** in its comment instead of dropping them. This covers a label add for
-  a label not used anywhere on the Jira site (Jira does not create labels on
-  demand), and component changes skipped because the issue's current
+  a label not used anywhere on the Jira site (triage does not create new
+  labels), and component changes skipped because the issue's current
   components could not be read.
 - **Retries:** comments are not duplicated. The code-stage update and the
   sticky triage comments use fixed markers. Other triage comments use a marker
@@ -154,7 +154,13 @@ implementation
 | `JIRA_USER_EMAIL` | Email associated with the token |
 | `JIRA_BASE_URL` | Jira instance URL, e.g. `https://myteam.atlassian.net` |
 
-`fullsend run` reads `JIRA_TOKEN` and `JIRA_USER_EMAIL` for its own Jira calls but does not pass them on to host-side pre/post/validation scripts by default. A harness whose scripts call Jira must declare them under `env.runner` (for example `JIRA_TOKEN: "${JIRA_TOKEN}"`). The built-in triage and code harnesses already do this in their Jira overlays, so their post-scripts can write results to the Jira issue. See [Harness reference § `env.runner`](../../reference/harness-reference.md#field-details).
+`fullsend run` reads `JIRA_TOKEN` and `JIRA_USER_EMAIL` for its own Jira calls
+but does not pass them on to host-side pre/post/validation scripts by default. A
+harness whose scripts call Jira must declare them under `env.runner` (for
+example `JIRA_TOKEN: "${JIRA_TOKEN}"`). The built-in triage and code harnesses
+already do this in their Jira overlays, so their post-scripts can write results
+to the Jira issue. See
+[Harness reference § `env.runner`](../../reference/harness-reference.md#field-details).
 
 ### Sandbox credentials and network access
 
@@ -167,7 +173,20 @@ The wildcard host (`*.atlassian.net`) permits egress to any Atlassian Cloud tena
 
 ## Repo configuration
 
-The Jira poller produces the same [NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and GitLab do, so routing works the same way. Until built-in harnesses ship native Jira `trigger` expressions ([#6672](https://github.com/fullsend-ai/fullsend/issues/6672)), each agent that should handle Jira events still needs a matching `trigger` — see [Setup overview](#setup-overview) step 6. For Jira-triggered runs, `fullsend run` exports `FULLSEND_WORK_ITEM_SOURCE`, `FULLSEND_WORK_ITEM_KEY`, and `FULLSEND_WORK_ITEM_URL`, clears `ISSUE_NUMBER`, and fails closed on a malformed Jira identity. The built-in triage and code agents write their results to the Jira issue, while branches, commits, PRs or MRs, review, and merge stay on the code host. See [Where built-in agent results appear](#where-built-in-agent-results-appear) for details.
+The Jira poller produces the same
+[NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and GitLab
+do, so routing works the same way. Until built-in harnesses ship native Jira
+`trigger` expressions
+([#6672](https://github.com/fullsend-ai/fullsend/issues/6672)), each agent that
+should handle Jira events still needs a matching `trigger` — see
+[Setup overview](#setup-overview) step 6. For Jira-triggered runs,
+`fullsend run` exports `FULLSEND_WORK_ITEM_SOURCE`, `FULLSEND_WORK_ITEM_KEY`,
+and `FULLSEND_WORK_ITEM_URL`, clears `ISSUE_NUMBER`, and fails closed on a
+malformed Jira identity. The built-in triage and code agents write their results
+to the Jira issue, while branches, commits, PRs or MRs, review, and merge stay
+on the code host. See
+[Where built-in agent results appear](#where-built-in-agent-results-appear) for
+details.
 
 If your repo already has a `.fullsend/config.yaml` from `fullsend github setup`, add a harness override with the Jira `trigger` expressions from step 6 (see [Configuring agent behavior](customizing-agents.md#configuration-with-base-composition)) and you are ready to receive dispatches.
 
