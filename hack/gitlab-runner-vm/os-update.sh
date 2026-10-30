@@ -24,7 +24,10 @@
 #      (which trips the unit's stop timeout and kills the job). A job that
 #      raced the idle check finishes; if the drain outlasts
 #      FULLSEND_OS_UPDATE_DRAIN_TIMEOUT_SEC the hold is released, the job is
-#      left alone, and the update is deferred.
+#      left alone, and the update is deferred. shutdown_timeout is raised to
+#      DRAIN_TIMEOUT_SEC + FULLSEND_OS_UPDATE_JOB_MAX_SEC (default 24h) so the
+#      graceful shutdown already under way does not kill that job before it
+#      ends; set JOB_MAX_SEC to at least the longest job timeout.
 #   4. `dnf upgrade` within the installed release. This never passes
 #      --releasever or runs system-upgrade: a Fedora major-version upgrade is
 #      a separate lifecycle change (recreate the VM).
@@ -59,12 +62,19 @@ RELOAD_SETTLE_SEC="${FULLSEND_OS_UPDATE_RELOAD_SETTLE_SEC:-2}"
 VERIFY_ATTEMPTS="${FULLSEND_OS_UPDATE_VERIFY_ATTEMPTS:-10}"
 VERIFY_RETRY_SEC="${FULLSEND_OS_UPDATE_VERIFY_RETRY_SEC:-30}"
 START_SETTLE_SEC="${FULLSEND_OS_UPDATE_START_SETTLE_SEC:-5}"
+# Longest job the update must not cut off. shutdown_timeout is raised to
+# DRAIN_TIMEOUT_SEC + JOB_MAX_SEC; keep it at or above the longest job timeout
+# the runner can be given.
+JOB_MAX_SEC="${FULLSEND_OS_UPDATE_JOB_MAX_SEC:-86400}"
+# Matches a top-level shutdown_timeout key, indented or not (an indented key
+# is still valid TOML, so a column-0 match would leave a duplicate key).
+SHUTDOWN_TIMEOUT_KEY_RE='^[[:space:]]*shutdown_timeout[[:space:]]*='
 
 log() { echo "==> $*"; }
 warn() { echo "WARN: $*" >&2; }
 err() { echo "ERROR: $*" >&2; }
 
-for _var in RETRY_SEC DEFER_MAX_SEC DRAIN_TIMEOUT_SEC POLL_SEC RELOAD_SETTLE_SEC \
+for _var in RETRY_SEC DEFER_MAX_SEC DRAIN_TIMEOUT_SEC JOB_MAX_SEC POLL_SEC RELOAD_SETTLE_SEC \
   VERIFY_ATTEMPTS VERIFY_RETRY_SEC START_SETTLE_SEC; do
   if ! [[ "${!_var}" =~ ^[0-9]+$ ]]; then
     err "${_var} must be a non-negative integer (got: ${!_var})"
@@ -133,7 +143,7 @@ write_shutdown_timeout() {
     if [ -n "${line}" ]; then
       printf '%s\n' "${line}"
     fi
-    grep -v '^shutdown_timeout' "${CONFIG_TOML}" || [ $? -eq 1 ]
+    grep -Ev "${SHUTDOWN_TIMEOUT_KEY_RE}" "${CONFIG_TOML}" || [ $? -eq 1 ]
   } > "${tmp}"; then
     rm -f "${tmp}"
     return 1
@@ -146,16 +156,20 @@ write_shutdown_timeout() {
 }
 
 # shutdown_timeout bounds how long gitlab-runner waits for jobs after SIGQUIT
-# (lib.sh's drain_runner_vm relies on the same). Raise it past the drain cap so
-# the runner never kills a job before this script gives up and defers. The
-# original value is saved once, so a deferred drain that leaves the raised
-# value in place is still restored by a later run.
+# (lib.sh's drain_runner_vm relies on the same). Once SIGQUIT is sent that
+# deadline cannot be cancelled: releasing the hold and starting the unit does
+# nothing to a runner that is still shutting down. So raise it past the drain
+# cap by JOB_MAX_SEC, the longest job we must not cut off: a job that raced
+# the idle check and is still running when the drain gives up and defers is
+# left alone for that long. The original value is saved once, so a deferred
+# drain that leaves the raised value in place is still restored by a later
+# run.
 raise_shutdown_timeout() {
   local orig grep_rc=0
   [ -f "${CONFIG_TOML}" ] || return 0
   if [ ! -f "${SHUTDOWN_TIMEOUT_ORIG_FILE}" ]; then
     # grep exits 1 when no shutdown_timeout is set (saved as an empty line).
-    orig=$(grep -m1 '^shutdown_timeout' "${CONFIG_TOML}") || grep_rc=$?
+    orig=$(grep -E -m1 "${SHUTDOWN_TIMEOUT_KEY_RE}" "${CONFIG_TOML}") || grep_rc=$?
     if [ "${grep_rc}" -gt 1 ]; then
       return 1
     fi
@@ -164,7 +178,7 @@ raise_shutdown_timeout() {
       return 1
     fi
   fi
-  write_shutdown_timeout "shutdown_timeout = $((DRAIN_TIMEOUT_SEC + 3600))"
+  write_shutdown_timeout "shutdown_timeout = $((DRAIN_TIMEOUT_SEC + JOB_MAX_SEC))"
 }
 
 restore_shutdown_timeout() {

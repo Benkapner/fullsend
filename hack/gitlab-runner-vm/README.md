@@ -606,7 +606,11 @@ systemctl list-timers fullsend-os-update.timer
    drop-in `gitlab-runner.service.d/os-update-hold.conf`
    (`ConditionPathExists=!<hold file>`) keeps `Restart=always` from starting
    the runner again. If the drain takes longer than 6 hours, the job is
-   left running, the hold is removed, and the update is deferred.
+   left running, the hold is removed, and the update is deferred. Starting
+   the unit again does not cancel a graceful shutdown already under way, so
+   `shutdown_timeout` is raised to the drain cap plus
+   `FULLSEND_OS_UPDATE_JOB_MAX_SEC` (default 24 hours). Set it to at least
+   your longest job timeout; a job that runs past it is killed.
 4. Runs `dnf -y upgrade`, then `dnf needs-restarting -r`. If a reboot is
    needed, or the check cannot tell, the VM reboots while still drained. The
    hold file keeps gitlab-runner from starting at boot.

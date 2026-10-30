@@ -297,7 +297,7 @@ elif called 'dnf -y upgrade'; then
   fail "upgrade ran although the drain did not finish: $(calls)"
 elif [ -e "${HOLD_FILE}" ]; then
   fail "hold file left behind after a deferred drain (runner could not come back)"
-elif ! grep -qx 'shutdown_timeout = 3600' "${CONFIG_TOML}"; then
+elif ! grep -qx 'shutdown_timeout = 86400' "${CONFIG_TOML}"; then
   fail "shutdown_timeout should stay raised past the cap while the job runs: $(cat "${CONFIG_TOML}")"
 elif printf '%s' "${RUN_OUT}" | grep -Fq 'update deferred, job left running'; then
   pass "drain cap releases the hold, leaves the job running, and defers"
@@ -313,6 +313,48 @@ if [ "${RUN_RC}" -eq 0 ] && ! grep -q '^shutdown_timeout' "${CONFIG_TOML}"; then
   pass "a later run restores the shutdown_timeout saved before the deferred drain"
 else
   fail "shutdown_timeout not restored on a later run (rc=${RUN_RC}): $(cat "${CONFIG_TOML}")"
+fi
+
+# The graceful shutdown started by QUIT cannot be cancelled, so the deadline
+# left on a deferred job must be the drain cap plus the longest job, not just
+# a fixed hour past the cap.
+reset_fixtures
+DNF_CHECK_RC=100 QUIT_KEEPS_RUNNING=1 FULLSEND_OS_UPDATE_DRAIN_TIMEOUT_SEC=100 \
+  FULLSEND_OS_UPDATE_JOB_MAX_SEC=5000 run_update
+if [ "${RUN_RC}" -eq 0 ] && grep -qx 'shutdown_timeout = 5100' "${CONFIG_TOML}" \
+  && [ "$(grep -c '^shutdown_timeout' "${CONFIG_TOML}")" -eq 1 ]; then
+  pass "a deferred drain leaves shutdown_timeout at the drain cap plus the longest job"
+else
+  fail "deferred shutdown_timeout is not cap + job max (rc=${RUN_RC}): $(cat "${CONFIG_TOML}")"
+fi
+
+reset_fixtures
+FULLSEND_OS_UPDATE_JOB_MAX_SEC=abc DNF_CHECK_RC=100 run_update
+if [ "${RUN_RC}" -ne 0 ] && ! called 'dnf' && printf '%s' "${RUN_OUT}" | grep -Fq 'JOB_MAX_SEC must be a non-negative integer'; then
+  pass "a non-numeric JOB_MAX_SEC is rejected before doing anything"
+else
+  fail "non-numeric JOB_MAX_SEC not rejected (rc=${RUN_RC}): ${RUN_OUT}"
+fi
+
+echo "== indented shutdown_timeout =="
+reset_fixtures
+printf 'concurrent = 1\n  shutdown_timeout = 7\n\n[[runners]]\n  name = "r"\n' > "${CONFIG_TOML}"
+DNF_CHECK_RC=100 QUIT_KEEPS_RUNNING=1 FULLSEND_OS_UPDATE_DRAIN_TIMEOUT_SEC=0 run_update
+if [ "$(grep -Ec '^[[:space:]]*shutdown_timeout' "${CONFIG_TOML}")" -ne 1 ] \
+  || ! grep -qx 'shutdown_timeout = 86400' "${CONFIG_TOML}"; then
+  fail "indented shutdown_timeout left a duplicate key: $(cat "${CONFIG_TOML}")"
+else
+  pass "an indented shutdown_timeout is replaced, not duplicated"
+fi
+: > "${CALLS}"
+echo 0 > "${BUSY_COUNT_FILE}"
+echo active > "${SVC_STATE}"
+DNF_CHECK_RC=100 run_update
+if [ "${RUN_RC}" -eq 0 ] && [ "$(grep -Ec '^[[:space:]]*shutdown_timeout' "${CONFIG_TOML}")" -eq 1 ] \
+  && grep -qx '  shutdown_timeout = 7' "${CONFIG_TOML}"; then
+  pass "an indented original shutdown_timeout is saved and restored"
+else
+  fail "indented shutdown_timeout not restored (rc=${RUN_RC}): $(cat "${CONFIG_TOML}")"
 fi
 
 echo "== reboot and resume =="
