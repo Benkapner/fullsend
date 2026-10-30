@@ -206,7 +206,9 @@ Mode is inferred from `PER_REPO_WIF_REPOS` — there is no separate trust-mode f
 **Public mint**: `PER_REPO_WIF_REPOS` is `*`.
 
 - **PER_REPO_WIF_REPOS**: Any repository may mint (cross-org isolation still enforced at installation lookup). For the GCF mint, all repos use `WIF_PROVIDER_NAME`
-- **job_workflow_ref validation**: Same as tight mode — the upstream plus repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`). `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2, revised 2026-08-05)
+- **job_workflow_ref validation**: Same as tight mode — the upstream plus
+  repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`).
+  `ALLOWED_WORKFLOW_FILES` basename gate applies
 - **WORKFLOW_HOST_REPOS**: Same semantics as tight mode — controls which repos may host workflows. Defaults to `fullsend-ai/fullsend` when unset
 - **mint enroll**: Succeeds without changing mint configuration (repository registration is unnecessary); **mint unenroll** for individual repositories is not supported in public mode
 
@@ -245,7 +247,9 @@ A single mint instance can serve multiple orgs:
 
 ### Bot-Role Lookup Endpoint
 
-`POST /v1/bot-role` resolves a GitHub App bot login to the mint role registered for that App ([ADR 0107](../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md)). Dispatch authorization uses it to recognize Fullsend's own bots.
+`POST /v1/bot-role` resolves a GitHub App bot login to the mint role
+registered for that App. Dispatch authorization uses it to recognize
+Fullsend's own bots.
 
 - **Authentication:** GitHub Actions OIDC bearer token, with the same per-repo enrollment and workflow-host checks as `POST /v1/token`.
 - **Request:** `{"actor_login": "<app-slug>[bot]", "repo": "owner/repo"}`. `repo` must be the token's `repository` claim (otherwise `403`). Other fields, such as `role`, are ignored.
@@ -339,8 +343,13 @@ Secrets and variables are deployed on the target repository.
 - `FULLSEND_GCP_PROJECT_ID`
 - `FULLSEND_GCP_WIF_PROVIDER`
 - `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for repos whose `inference.auth` is `openai-api-key` (written by `repos install --openai-api-key`; not set by `github setup`)
-- `FULLSEND_INFERENCE_GATEWAY_API_KEY` — inference gateway API key for repos whose `inference.gateway.auth` is `api-key` ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md); set by the repository admin, not by `github setup`)
-- `FULLSEND_GITHUB_RUNNER_SECRETS` — optional, set by you: a JSON object of name → literal value for host-side scripts, resolved through each harness's `env.runner` ([ADR 0136](../../ADRs/0136-runner-secrets-through-one-stored-secret.md); [setup](../user/bring-your-own-agent.md#pass-secrets-to-host-side-scripts-github))
+- `FULLSEND_INFERENCE_GATEWAY_API_KEY` — inference gateway API key for repos
+  whose `inference.gateway.auth` is `api-key` (set by the repository admin,
+  not by `github setup`)
+- `FULLSEND_GITHUB_RUNNER_SECRETS` — optional, set by you: a JSON object of
+  name → literal value for host-side scripts, resolved through each harness's
+  `env.runner`
+  ([setup](../user/bring-your-own-agent.md#pass-secrets-to-host-side-scripts-github))
 
 Repos whose `inference.auth` is `openai-wif` need no Fullsend-managed inference secret: they authenticate with the user-managed `FULLSEND_OPENAI_*` identifier variables or `inference.openai` configuration, and the GCP secrets above are written only when Vertex sub-agents are configured.
 
@@ -417,7 +426,7 @@ lives in a single HMAC-signed `state.json` document per poll mode on
 `fullsend-poll-state-slash` and `fullsend-poll-state-events`. The
 signature reuses `FULLSEND_DISPATCH_SECRET` with per-branch,
 per-project domain separation, so the poller can run at Developer
-access instead of Maintainer. See ADR 0067.
+access instead of Maintainer.
 - `FULLSEND_LAST_POLL_AT_FAST` — Legacy; superseded by `last_poll_at_fast` in `state.json` on `fullsend-poll-state-slash`
 - `FULLSEND_LAST_POLL_AT_FULL` — Legacy; superseded by `last_poll_at_full` in `state.json` on `fullsend-poll-state-events`
 - `FULLSEND_LABEL_STATE` — Legacy; superseded by `label_state` in `state.json` on `fullsend-poll-state-events`

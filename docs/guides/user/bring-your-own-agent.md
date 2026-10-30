@@ -815,18 +815,14 @@ for the full preference order and sanitization rules.
 
 **Pre-script context is a snapshot.** The pre-script sees the work item as it
 was when the run started. Changes made after that (a new push, an edited title
-or body) arrive only through a later run
-([ADR 0106](../../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
+or body) arrive only through a later run.
 When a script decides something from the work item, read the head SHA, title
 and body from the forge API (for example
 `gh pr view "$PR_NUMBER" --repo "$REPO_FULL_NAME" --json headRefOid,title,body`),
 not from the event payload, which can be older still. Do not stage that content
-where the agent reads it:
-[ADR 0133](../../ADRs/0133-actor-attributed-data-security-boundary.md) forbids
-exposing unfiltered source content to the model, and forge context for the
-agent will come from the runner's filtered snapshot
-([ADR 0141](../../ADRs/0141-deterministic-filtered-entity-context-staging.md),
-not yet implemented).
+where the agent reads it: unfiltered source content must never reach the
+model. Forge context for the agent will come from a filtered snapshot that the
+runner stages (not yet implemented).
 
 #### Post-script
 
@@ -981,8 +977,7 @@ the value. `fullsend run` deletes the file as soon as it has read it, so the
 object is never in the environment of `fullsend run` or of any process it
 starts. A host-side script receives only the names its harness references in
 `env.runner`, as ordinary environment variables. The values never enter the
-sandbox
-([ADR 0136](../../ADRs/0136-runner-secrets-through-one-stored-secret.md)).
+sandbox.
 
 The example below is a review harness whose pre-script fetches the Jira issue
 named in the pull request title.
@@ -1035,8 +1030,7 @@ named in the pull request title.
    This example uses the token for a decision: it skips the review when the
    Jira issue named in the pull request title (for example
    `PROJ-123: fix login`) is already done. It hands the agent nothing, because
-   raw forge or Jira content must not reach the model
-   ([ADR 0133](../../ADRs/0133-actor-attributed-data-security-boundary.md)):
+   raw forge or Jira content must not reach the model:
 
    ```bash
    #!/usr/bin/env bash
