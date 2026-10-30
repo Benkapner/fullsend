@@ -91,9 +91,11 @@ The transport declares eleven metadata inputs and nine base64 chunks, at
 most 1000 characters each. All three template layers validate the chunk
 alphabet and length; fixed code reconstructs the payload as data. Variable
 bridges disable expansion, and creator/HMAC authentication precedes caller
-link logging and credential selection. Note bodies are bounded to 800 Unicode
-characters with a truncation marker and note ID; oversized payloads fail
-before a pipeline is created. GitLab's 20-input limit leaves no spare root
+link logging and credential selection. Non-command note bodies, such as bot
+review notes, are bounded to 800 Unicode characters with a truncation marker.
+A `/fs-*` command body is carried untruncated, and the dispatcher fails closed
+before a pipeline is created when a command payload exceeds the nine-chunk
+budget. Other oversized payloads also fail before a pipeline is created. GitLab's 20-input limit leaves no spare root
 inputs: conflicting declarations or excess inputs fail explicitly.
 
 Compatible user input declarations, jobs, includes, and header settings

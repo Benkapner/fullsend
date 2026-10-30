@@ -248,6 +248,16 @@ This payload provides backwards-compatible legacy forge fields (`issue`,
 `pull_request`, `comment`) alongside `_normalized_event` (the serialized
 `normevent.Event` map).
 
+GitLab has a second, separate builder: `buildEventPayload` in
+`internal/poll/dispatch.go`, shared by the poller and the webhook dispatcher.
+It emits a minimal payload, and its `_normalized_event` is a partial map that
+carries only `transition.comment.body` (see
+`docs/normative/normalized-event/v1/README.md`). Its unit tests are in
+`internal/poll/dispatch_test.go` and `internal/poll/webhook_dispatch_test.go`;
+`run-agent-job.sh` reads the body in
+`internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/`, and
+`internal/scaffold/gitlab_fix_instruction_test.go` covers that script.
+
 When resolving CEL-guarded overlays via `ResolveOverlays(event, forgePlatform,
 config)`, the runtime passes the deserialized `normevent.Event` directly as
 the `event` variable in the CEL environment (see [CEL environment](#cel-environment)
@@ -255,7 +265,9 @@ above). When adding, modifying, or removing fields in normalized event structure
 or `event_payload`:
 
 1. Update `buildEventPayload` in `internal/harnessdispatch/project.go` and its
-   unit tests in `internal/harnessdispatch/project_test.go`.
+   unit tests in `internal/harnessdispatch/project_test.go`. If the change
+   affects GitLab dispatch, also update `buildEventPayload` in
+   `internal/poll/dispatch.go` and its tests.
 2. Update the projection table in `docs/normative/normalized-event/v1/README.md`.
 3. If new event fields or properties are exposed to overlay CEL evaluation,
    document them in the [CEL environment](#cel-environment) table above.
