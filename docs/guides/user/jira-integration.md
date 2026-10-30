@@ -7,11 +7,26 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 ## Setup overview
 
 1. **Create a Jira service account** and an API token. Store the credentials as GitHub Actions secrets. See [Credential setup](#credential-setup).
-2. **Grant it two project roles** in the target Jira project:
-   - **Developers** — so the poller can operate on issues and write the entity properties it uses for lock and checkpoint coordination.
-   - **Administrators** — so the poller can inspect other users' project-role membership when authorizing slash commands.
+2. **Grant it the minimum Jira permissions** in the target project, usually
+   through the **Developers** project role. The poller needs Browse
+   Projects, Edit Issues, Add Comments, and Edit Own Comments to operate on
+   issues and write the entity properties it uses for lock and checkpoint
+   coordination. Then choose how Jira users are authorized:
+   - **Recommended:** list who may trigger agents under a `jira` provider in
+     `.fullsend/config.yaml`. The service account then also needs the
+     Browse users and groups global permission, but only if the lists name
+     groups.
+   - **Project roles:** with no `jira` entry, every Jira event is authorized by
+     the actor's Jira project role; with an entry that sets no lists, slash
+     commands are. Reading project roles needs the **Administrators** project
+     role (Administer Projects). With `labels: project_roles`, label-added
+     events are too, and with no lists every event is. See
+     [Keeping project roles](#keeping-project-roles-as-today).
 
-   Giving one account both sets of access is more power than we want long-term and needs a follow-up design. See [Actor role resolution](#actor-role-resolution).
+   With no `jira` entry, label-added events also go through project roles, so
+   the poller needs Administer Projects. A `jira` entry (default
+   `labels: jira_editors`) authorizes them by Edit Issues instead. See
+   [Actor role resolution](#actor-role-resolution).
 3. **Install fullsend** in the GitHub repository that will run the agents (`fullsend github setup`). See [Configuring GitHub](../getting-started/configuring-github.md) and [Prerequisites](#prerequisites).
 4. **Copy the Jira poller workflow** into `.github/workflows/fullsend-poll-jira.yml`. See [Scheduled workflow](#scheduled-workflow).
 
@@ -46,6 +61,11 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
    > `/fs-triage`, and on GitHub an entry registered under another name, such
    > as `my-triage`, is dispatched on every issue a person opens or edits.
    > Set your own trigger to keep a narrower one.
+   > On Jira, an issue opener or editor gets triage access or above from the
+   > project roles when there is no `jira` entry (or `labels: project_roles`
+   > with no lists), or from the `jira` authorization lists when there is
+   > one. Any other `jira` entry that sets no `write` or `triage` list leaves
+   > opened and edited events unresolved, so they do not dispatch. See [Actor role resolution](#actor-role-resolution).
 
 ## How it works
 
@@ -141,7 +161,12 @@ implementation
 
 - A GitHub repo with fullsend installed (`fullsend github setup` completed).
 - A Jira Cloud instance. **Jira Data Center is not currently supported** — the client is hard-wired to Cloud-only APIs (REST v3, cursor-based search pagination, `groupId`-based group lookup), so requests against a Data Center instance will fail. Tracked as future work.
-- A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens)) for a dedicated service account in the **Developers** and **Administrators** project roles. See [Setup overview](#setup-overview) for why both roles are required today.
+- A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens))
+  for a dedicated service account with the
+  [minimum Jira permissions](#minimum-jira-permissions). That is usually the
+  **Developers** project role. The **Administrators** role is needed only
+  when project roles are used: with no `jira` entry, for slash commands when
+  the `jira` entry sets no lists, or for `labels: project_roles`.
 
 ## Credential setup
 
@@ -309,9 +334,9 @@ fullsend poll \
   --fullsend-dir .fullsend
 ```
 
-**`--jira-project` is required for any project using slash commands.** Without it the poller cannot resolve Jira project roles, so all actors default to the `external` role and every `/fs-*` command silently fails the role gate. Always provide `--jira-project` alongside `--jql` unless you are certain your routing rules do not depend on actor roles.
+**`--jira-project` is required for any project using slash commands whose roles come from Jira project roles.** Without it the poller cannot resolve Jira project roles, so all actors default to the `external` role and every `/fs-*` command silently fails the role gate. When the `jira` authorization entry sets `write` or `triage` lists and does not use `labels: project_roles`, roles come from those lists instead and `--jira-project` is not needed for role resolution. Otherwise, provide `--jira-project` alongside `--jql` unless you are certain your routing rules do not depend on actor roles.
 
-Technically `--jql` can be used without `--jira-project`, but the only scenario where that is safe is a read-only polling setup with no slash-command-based dispatch.
+Technically `--jql` can be used without `--jira-project`. That is safe in a read-only polling setup with no slash-command-based dispatch, or when the `jira` authorization entry sets `write` or `triage` lists without `labels: project_roles`, so that actor roles come from the lists and the project roles are never read (with `labels: project_roles`, label-added events still read them).
 
 Custom JQL must be a **bounded query**: Jira's enhanced search endpoint rejects queries without a search restriction (e.g. a bare `ORDER BY updated DESC`) with a 400 on every cycle. Always include at least a `project = ...` or similar restriction, as the examples above do.
 
@@ -459,7 +484,7 @@ go run ./cmd/fullsend poll \
 
 Replace `PROJ` with your Jira project key and `owner/repo` with the GitHub repository slug where agent workflows run.
 
-> **Note:** `--jira-project` is effectively required when your project uses slash commands (`/fs-triage`, `/fs-code`, etc.). Without it, the poller cannot resolve Jira project roles and all actors default to `external`, which silently fails the role gate for write-gated commands. See [#6089](https://github.com/fullsend-ai/fullsend/issues/6089) for details.
+> **Note:** `--jira-project` is effectively required when your project uses slash commands (`/fs-triage`, `/fs-code`, etc.) and roles come from Jira project roles. Without it, the poller cannot resolve Jira project roles and all actors default to `external`, which silently fails the role gate for write-gated commands. It is not needed for role resolution when the `jira` authorization entry sets `write` or `triage` lists, because the lists decide the role. See [#6089](https://github.com/fullsend-ai/fullsend/issues/6089) for details.
 
 ### Inspecting output
 
@@ -552,9 +577,91 @@ The `entity.key` field is required when `source.system` is `"jira"` — it carri
 
 ## Actor role resolution
 
+The `jira` provider under `authorization:` in `.fullsend/config.yaml` is
+opt-in
+([ADR 0153](../../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+With no `jira` entry, the poller resolves every event, label-added events
+included, through the Jira project roles (see
+[Project role mapping](#project-role-mapping)), which needs Administer
+Projects. To authorize actors without that permission, add a `jira` entry:
+
+```yaml
+authorization:
+  - provider: jira
+    write:            # Fullsend role write
+      groups: [example-team-developers]
+      accounts: ["5f7c012e0b2a4c001f3d9876"]   # Jira account IDs
+    triage:           # Fullsend role triage
+      groups: [example-team]
+      accounts: []
+    labels: jira_editors  # jira_editors (default) | allowlist | project_roles
+```
+
+- **Label added.** When a `jira` entry exists, by default
+  (`labels: jira_editors`), any human who adds a label can trigger the agents
+  whose trigger matches it. With no `jira` entry, a label-added event takes
+  the project-role rule described below instead. Jira only lets users with the Edit Issues
+  permission change labels, so this works like GitHub, where applying a
+  label needs triage access. Edit Issues is often granted more widely than
+  the Developers role. Set `labels: allowlist` to check label authors
+  against the lists below, or `labels: project_roles` to keep the
+  project-role rule described below.
+- **Slash commands and other activity, with lists.** When the `jira` entry
+  sets a `write` or `triage` list, the lists decide, and Jira project roles
+  are not read. A list left empty (for example after removing its last
+  entry) still counts as set, so everyone is denied; remove the `write` and
+  `triage` keys entirely to stop using the lists (see the next bullet for
+  what then decides). An actor listed under `write` (by account ID,
+  or through a listed group) can run every agent. An actor listed only under
+  `triage` can run `/fs-triage` and custom agents whose harness
+  sets `role: triage` or `role: review`. Everyone else is denied. This also
+  applies to issues being opened or edited.
+- **Slash commands without lists.** Slash commands are authorized by the
+  actor's Jira project role, as in the table below. When a `jira` entry exists
+  but sets no lists and does not set `labels: project_roles`, issues being
+  opened, edited, closed, or reopened, plain comments, and label removals are
+  not authorized for any agent. With no `jira` entry, or with
+  `labels: project_roles` and no lists, every event takes the project-role
+  rule.
+
+### Keeping project roles as today
+
+To keep authorizing every Jira event through project roles, as with no
+`jira` entry, write the two-line entry:
+
+```yaml
+authorization:
+  - provider: jira
+    labels: project_roles
+```
+
+It needs no lists. If you add a `write` or `triage` list to it, the lists
+decide every event except label-added ones.
+
+Group entries match a Jira group's name or group ID and are checked with
+Jira's user-groups API, once per actor per poll cycle. Account entries are
+compared with the actor's account ID directly. To find an account ID, open
+the user's Jira profile: the ID is the last part of its URL.
+
+### Minimum Jira permissions
+
+| Permission | When the poller account needs it |
+|---|---|
+| Browse Projects, Edit Issues, Add Comments, Edit Own Comments | Always |
+| Browse users and groups (global permission) | When the `jira` lists name groups, or when project-role resolution finds a project role granted to a group (the poller then calls `GET /user/groups` for the actor) |
+| Administer Projects (the **Administrators** project role) | Only when project roles are used: no `jira` entry, `labels: project_roles`, or slash commands when the `jira` entry sets no lists |
+
+The poller reads the project role list only in a cycle that has an event
+needing it. A setup whose `jira` entry uses the lists without
+`labels: project_roles`, or only label triggers under `jira_editors`, never
+needs Administer Projects. With no `jira` entry,
+or with `labels: project_roles` and no lists, every event needs the role list.
+
+### Project role mapping
+
 > **Known limitation.** Roles are resolved by Jira project **role name**, not by actual granted permissions. This is intentional for the MVP — see below.
 
-The poller maps each event actor to a dispatch authorization role (`read`, `write`, `admin`) by looking up their Jira project role membership and matching on the role's **name**:
+When project roles are used, the poller maps each event actor to a dispatch authorization role (`read`, `write`, `admin`) by looking up their Jira project role membership and matching on the role's **name**:
 
 | Jira project role name (case-insensitive) | Dispatch role |
 |---|---|
@@ -578,6 +685,11 @@ The role resolved above feeds directly into the dispatch authorization gate (see
 The same holds for a [GitLab target](#gitlab-runtime): the agent job skips its GitLab Developer-access check for Jira dispatches, so project membership in GitLab is not checked either.
 
 If your Jira project's membership is broader than your GitHub repo's collaborator list — which is common, since the two are usually administered separately — treat that gap as real: anyone in that gap can use their Jira membership alone to induce agent-proposed changes to your repository. Before enabling this driver, check who holds `write`-mapped roles in the target Jira project and make sure you're comfortable with each of them being able to do that.
+
+The same applies to the `jira` lists and to label triggers. Under a `jira`
+entry's default `labels: jira_editors`, anyone with Edit Issues on the project can
+add a label such as `ready-to-code` and dispatch the agent whose trigger
+matches it. Use `labels: allowlist` if that group is broader than you want.
 
 ## Poll coordination
 
@@ -615,7 +727,7 @@ Three edge cases of checkpoint tracking are worth knowing:
   independently of GitHub Actions avoids the auto-disable risk.
 - **Comment edits count as new activity, and are attributed to the editor.** The poller filters comments on the later of their created and updated timestamps, so editing a comment (for example, adding a slash command to an old comment) is detected on the next cycle. Jira bumps a comment's updated timestamp on modifications other than body edits too (such as visibility changes), and any such bump counts as activity. The flip side: modifying a comment whose slash command was already dispatched makes it look new again and can re-dispatch it. An edit-detected comment is attributed to the account that last modified it (Jira's `updateAuthor`), not the original author — so a user who edits someone else's comment to inject a command is authorized on *their own* role, not the original author's.
 
-Because each cron run is a fresh process, per-cycle Jira API cost is worth sizing for: every cycle that selects at least one issue makes one call to load the project's role structure (a role-list call plus one detail call per role), then one additional call for each distinct actor below the highest role priority the first time they're seen that cycle, to check their group memberships (cached per actor for the rest of the cycle, but not across cron runs). Cost scales with the number of distinct commenting actors per cycle rather than the size of the groups backing a role.
+Because each cron run is a fresh process, per-cycle Jira API cost is worth sizing for: a cycle loads the project's role structure (a role-list call plus one detail call per role) only when some selected issue has an event that needs project-role resolution (no `jira` entry, `labels: project_roles`, or a slash command when the `jira` entry sets no lists), then, in such a cycle, makes one additional call for each distinct actor below the highest role priority the first time they're seen that cycle, to check their group memberships (cached per actor for the rest of the cycle, but not across cron runs). Cost scales with the number of distinct commenting actors per cycle rather than the size of the groups backing a role.
 
 Two more scaling limits:
 
@@ -670,8 +782,13 @@ However, more pollers against the same Jira project means more API calls per cyc
 | 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Ask your Atlassian org admin to allow API token access for project data |
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
 | Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. Confirm `JIRA_USER_EMAIL` / `JIRA_TOKEN` are the same account that posts comments and labels. Human follow-up, including `/fs-triage`, still dispatches |
-| Slash command ignored | Actor lacks `write` role in Jira project | The actor must be a member of a Jira project role named exactly "Developers" or "Administrators" — see [Actor role resolution](#actor-role-resolution) if you use custom role names |
-| Slash commands silently ignored when using `--jql` | `--jira-project` not provided — all actors resolve to `external` and fail the role gate | Add `--jira-project PROJ` alongside `--jql` in your workflow file |
+| `load project roles for PROJ: ... 401 You cannot edit the configuration of this project` | The poller read Jira project roles without Administer Projects. That happens with no `jira` entry in `.fullsend/config.yaml`, with `labels: project_roles`, or on a slash command when the entry sets no lists | Add a `jira` entry with `write`/`triage` lists so project roles are not read, or grant the service account the **Administrators** project role. See [Minimum Jira permissions](#minimum-jira-permissions) |
+| `resolve jira list groups: ... get user groups` errors | The `jira` lists name groups, or project-role resolution found a role granted to a group, but the service account lacks the Browse users and groups global permission | Grant Browse users and groups, or list account IDs instead of groups |
+| Slash command ignored (with `jira` lists) | Actor is not in the `write` list (or the `triage` list for triage-level agents) | Add the actor's account ID or one of their groups to the right list — see [Actor role resolution](#actor-role-resolution) |
+| Slash command ignored (without `jira` lists) | Actor lacks `write` role in Jira project | The actor must be a member of a Jira project role named exactly "Developers" or "Administrators" — see [Project role mapping](#project-role-mapping) if you use custom role names |
+| Issue opened or edited on Jira never dispatches triage | A `jira` entry is present but sets no `write` or `triage` list and not `labels: project_roles`, so opened and edited events are unresolved (with no `jira` entry, or with `labels: project_roles` and no lists, they resolve through project roles) | Add `write`/`triage` lists to the entry, or set `labels: project_roles`. See [Actor role resolution](#actor-role-resolution) |
+| Label added but nothing dispatched | There is no `jira` entry, or it sets `labels: allowlist` or `labels: project_roles`, and the label author is not authorized by it | Add the author to the lists, or add a `jira` entry with the default `labels: jira_editors` |
+| Slash commands silently ignored when using `--jql` | `--jira-project` not provided and no `jira` lists — all actors resolve to `external` and fail the role gate | Add `--jira-project PROJ` alongside `--jql` in your workflow file, or configure the `jira` lists |
 | Duplicate dispatches | `lastCheck` was cleared or missing | The poller treats a missing `lastCheck` as "never polled" and processes all recent changes. This is self-correcting — the next cycle advances `lastCheck` past the duplicates |
 | Old comment or label change on a newly polled issue never dispatches | Activity predates the first-poll backfill window | On an issue's first poll, activity older than the 24-hour backfill window is permanently skipped (the checkpoint advances past it). To pick up older activity, scope the initial `--jql` to recently updated issues and widen it gradually, or have someone re-trigger by commenting again |
 | Activity during a long outage or disabled workflow is missing after resume | Poller gap exceeded the 24-hour backfill window | The same 24-hour window that bounds a first poll also bounds resumption — any `lastCheck` older than 24 hours is clamped forward. Check the run log for `predates the backfill window` — if present, events in the gap are permanently lost. Have affected users re-trigger by commenting again. See [Poll coordination](#poll-coordination) |

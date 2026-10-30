@@ -83,7 +83,7 @@ These fields live on `perRepoConfig` in `internal/config/config.go`. Unset means
 | `inference.provider` | Inference backend id | Overlay, base, compiled `vertex` | Overlay, then base, then `vertex`. No workflow variable found | Accessor at install and run setup | Already layered | Yes. |
 | `kill_switch` | Stop all agent dispatch | Overlay, base, compiled `false` | Overlay, then base, then `false`. Both direct reads — GitHub's "Check kill switch" bash step and GitLab's `run-agent-job.sh` — now consult `config.base.yaml` when `config.yaml` is silent on the key, matching the Go accessor | `internal/harnessdispatch`, `reusable-dispatch.yml`, and GitLab's `run-agent-job.sh` | Already layered | Yes. A central stop belongs in the base file. |
 
-`authorization` (extra permission sources, today `owners_file`) is
+`authorization` (extra permission sources, today `owners_file` and `jira`) is
 overlay-only by design, not an accessor gap: a base-file value under this
 key is ignored, and the bash check in `reusable-dispatch.yml` also reads
 only `.fullsend/config.yaml`, so the two reads agree. It does not fit the
