@@ -631,6 +631,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// Fail closed when a dispatch payload declares a Jira source but its
+	// normalized event did not validate. Falling through would route the
+	// run as forge-originated and hand the numeric Jira entity ID to forge
+	// issue/PR operations (#2264). The check also applies when the other
+	// dispatch channel supplied a valid forge event, so a disagreement between
+	// the channels cannot bypass the guard.
+	if dispatchJiraClaimUnresolved(eventFile, sOpts.trackerSource, absFullsendDir) {
+		return fmt.Errorf("dispatch payload declares a Jira source but its normalized event is missing required fields or is invalid; refusing to run without a valid Jira work-item identity")
+	}
+	workItemEnv, err := resolveWorkItemIdentity(eventMap, sOpts.trackerSource, forgePlatform, os.Getenv)
+	if err != nil {
+		return err
+	}
+
 	composeOpts := harness.ComposeOpts{
 		WorkspaceRoot: absFullsendDir,
 		FetchPolicy:   policy,
@@ -890,8 +904,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if sOpts.statusRepo != "" {
 		setFlagEnv("REPO_FULL_NAME", sOpts.statusRepo)
 	}
-	if sOpts.statusNum != 0 {
-		setFlagEnv("ISSUE_NUMBER", fmt.Sprintf("%d", sOpts.statusNum))
+	if issueNumber, ok := issueNumberFlagEnv(sOpts); ok {
+		setFlagEnv("ISSUE_NUMBER", issueNumber)
+	}
+	for k, v := range workItemEnv {
+		setFlagEnv(k, v)
 	}
 
 	// Mint the runtime-stage token before env expansion so provider
@@ -4495,6 +4512,17 @@ func resolveWorkItemID() string {
 	if v := strings.TrimSpace(os.Getenv("ISSUE_KEY")); v != "" {
 		return v // source-neutral canonical key, e.g. "owner/repo#123" or "PROJ-123"
 	}
+	// Jira runs clear ISSUE_NUMBER and carry identity in the
+	// FULLSEND_WORK_ITEM_* exports instead, so prefer those before the
+	// forge-shaped fallbacks below.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv(envWorkItemSource)), "jira") {
+		if v := strings.TrimSpace(os.Getenv(envWorkItemKey)); v != "" {
+			return v
+		}
+		if v := strings.TrimSpace(os.Getenv(envWorkItemURL)); v != "" {
+			return v
+		}
+	}
 	repo := strings.TrimSpace(os.Getenv("REPO_FULL_NAME"))
 	num := strings.TrimSpace(os.Getenv("ISSUE_NUMBER"))
 	if repo != "" && num != "" {
@@ -6713,28 +6741,12 @@ func prHeadSHAFromEventPath(path string) string {
 // if the normalized event is absent or invalid (best-effort; overlays fall
 // back to the empty-map behavior documented in ResolveOverlays).
 func extractNormalizedEventFromDispatch(fullsendDir string) map[string]any {
-	// Try 1: on-disk dispatch event-payload.json (reusable-dispatch path).
-	if m := extractNormalizedEventFromFile(filepath.Join(fullsendDir, "dispatch", "event-payload.json")); m != nil {
-		return m
+	for _, payload := range dispatchEventPayloads(fullsendDir) {
+		if m := extractNormalizedEventFromPayload(payload); m != nil {
+			return m
+		}
 	}
-	// Try 2: GITHUB_EVENT_PATH → inputs.event_payload (workflow_call path).
-	ghEventPath := os.Getenv("GITHUB_EVENT_PATH")
-	if ghEventPath == "" {
-		return nil
-	}
-	data, err := os.ReadFile(ghEventPath)
-	if err != nil {
-		return nil
-	}
-	var wrapper struct {
-		Inputs struct {
-			EventPayload string `json:"event_payload"`
-		} `json:"inputs"`
-	}
-	if err := json.Unmarshal(data, &wrapper); err != nil || wrapper.Inputs.EventPayload == "" {
-		return nil
-	}
-	return extractNormalizedEventFromPayload([]byte(wrapper.Inputs.EventPayload))
+	return nil
 }
 
 // extractNormalizedEventFromFile reads a JSON file and extracts _normalized_event.
