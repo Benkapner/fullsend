@@ -77,11 +77,65 @@ The `event_type` field in dispatch records (e.g. `"comment_added"`, `"label_chan
 
 For a Jira-sourced run, `fullsend run` exports the tracker-independent `FULLSEND_WORK_ITEM_SOURCE` (`jira`), `FULLSEND_WORK_ITEM_KEY` (for example `PROJ-123`), and `FULLSEND_WORK_ITEM_URL` variables from the normalized event, replacing any inherited values, and clears `ISSUE_NUMBER` because a Jira key has no GitHub or GitLab issue number. The run fails closed, rather than guessing an identity, when the dispatch payload declares Jira but its key or URL is missing or malformed. Harness scripts that handle Jira work items should read the `FULLSEND_WORK_ITEM_*` variables instead of `ISSUE_NUMBER`.
 
-Built-in agent pipelines have not been adapted to this yet, so substantive results — comments, labels, pull requests, and so on — still go to **GitHub** unless a custom harness routes them elsewhere. Run-status notifications (start, completion, and orphan reconciliation) are routed through `tracker.Client` to the tracker that originated the event, so Jira-triggered runs update the Jira issue as well. The Jira issue does not receive the agent's substantive output automatically.
+### Where built-in agent results appear
 
-The CLI primitive for posting comments to Jira exists — `fullsend issues post-comment --tracker jira` — along with the underlying `tracker.Client` Jira implementation ([#5989](https://github.com/fullsend-ai/fullsend/issues/5989)). However, the built-in agent pipeline does not use it yet: agent pre/post scripts still expect a GitHub issue number, not a Jira key ([#2264](https://github.com/fullsend-ai/fullsend/issues/2264)).
+Starting with the agents release that follows v0.52.0
+([agents#1843](https://github.com/fullsend-ai/agents/pull/1843)), the built-in
+triage and code agents write their results to the Jira issue that started the
+run. This works for both GitHub and GitLab code-host targets. Run-status
+notifications (start, completion, and orphan reconciliation) are routed through
+`tracker.Client` to the originating tracker, so the Jira issue also receives
+run-status updates.
 
-This means the person who commented `/fs-triage` on a Jira issue will see the run-status updates in Jira, but with the built-in agents may need to check the linked GitHub repo for the triage result. Until agent-pipeline integration lands ([#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), treat Jira as a **trigger source for substantive built-in-agent output**: it can start agent work, while that output appears in GitHub. Custom agents can use `fullsend issues post-comment --tracker jira` directly to post results back to Jira, and `fullsend issues create --tracker jira` to create Jira issues and sub-tasks. See [Issue commands](issues-commands.md) for usage.
+| Stage | Written to the Jira issue | Stays on the code host |
+|---|---|---|
+| triage | The triage comment, label and component updates, and close actions as Jira transitions | No code artifacts |
+| code | A short code-stage update with the URL of the created or updated PR (GitHub target) or MR (GitLab target) | Branch, commits, PR or MR, review, and merge |
+
+Review, fix, and retro act on pull or merge request events on the code host and
+do not write to Jira.
+
+The post-scripts write to the issue at `FULLSEND_WORK_ITEM_URL`. Triage stops
+before any write if `FULLSEND_WORK_ITEM_KEY` does not match that URL, or if an
+explicit `FULLSEND_TRACKER` or `ISSUE_URL` points somewhere else. Code stops if
+`FULLSEND_TRACKER` and `FULLSEND_WORK_ITEM_SOURCE` are both set and disagree.
+
+- **Transitions:** triage closes issues with the Jira transition names set by
+  `JIRA_DUPLICATE_TRANSITION`, `JIRA_NOT_PLANNED_TRANSITION`, and
+  `JIRA_SPLIT_TRANSITION` in the triage harness's Jira overlay (by default
+  `Duplicate`, `Won't Do`, and `Obsolete`). Override them in a harness if your
+  Jira workflow uses different names. Tracker-neutral transition discovery is
+  tracked in [#6704](https://github.com/fullsend-ai/fullsend/issues/6704).
+- **Updates Jira cannot apply:** triage lists them under **Not applied in
+  Jira** in its comment instead of dropping them. This covers a label add for
+  a label not used anywhere on the Jira site (Jira does not create labels on
+  demand), and component changes skipped because the issue's current
+  components could not be read.
+- **Retries:** comments are not duplicated. The code-stage update and the
+  sticky triage comments use fixed markers. Other triage comments use a marker
+  scoped to the CI run (`GITHUB_RUN_ID` or `CI_PIPELINE_ID`). A re-run of the
+  same workflow or pipeline edits its earlier comment, while a new triage run
+  posts a new one.
+- **Write failures:** a failed Jira write fails the step, so it is never
+  reported as a success. For triage this covers label adds and removals,
+  component updates, comments, and transitions. For code the step fails even
+  though the PR or MR already exists.
+- **Bot loops:** the writes authenticate as `JIRA_USER_EMAIL` / `JIRA_TOKEN`,
+  the same account the poller classifies as `actor.kind: bot`, so they do not
+  dispatch agents again. See [How it works](#how-it-works).
+- **Credentials:** the triage and code harnesses pass `JIRA_USER_EMAIL` and
+  `JIRA_TOKEN` to the runner-side post-scripts only. The sandbox gets the
+  `jira-ro` provider's placeholder, not the real token.
+
+When the code agent makes no PR or MR, or the run fails, nothing beyond the
+run-status update is written to Jira.
+
+Custom agents can use `fullsend issues post-comment --tracker jira` to post
+results back to Jira, and `fullsend issues create --tracker jira` to create
+Jira issues and sub-tasks. These commands use the `tracker.Client` Jira
+implementation
+([#5989](https://github.com/fullsend-ai/fullsend/issues/5989)). See
+[Issue commands](issues-commands.md) for usage.
 
 ## Prerequisites
 
@@ -100,7 +154,7 @@ This means the person who commented `/fs-triage` on a Jira issue will see the ru
 | `JIRA_USER_EMAIL` | Email associated with the token |
 | `JIRA_BASE_URL` | Jira instance URL, e.g. `https://myteam.atlassian.net` |
 
-`fullsend run` reads `JIRA_TOKEN` and `JIRA_USER_EMAIL` for its own Jira calls but does not pass them on to host-side pre/post/validation scripts by default. A harness whose scripts call Jira must declare them under `env.runner` (for example `JIRA_TOKEN: "${JIRA_TOKEN}"`). See [Harness reference § `env.runner`](../../reference/harness-reference.md#field-details).
+`fullsend run` reads `JIRA_TOKEN` and `JIRA_USER_EMAIL` for its own Jira calls but does not pass them on to host-side pre/post/validation scripts by default. A harness whose scripts call Jira must declare them under `env.runner` (for example `JIRA_TOKEN: "${JIRA_TOKEN}"`). The built-in triage and code harnesses already do this in their Jira overlays, so their post-scripts can write results to the Jira issue. See [Harness reference § `env.runner`](../../reference/harness-reference.md#field-details).
 
 ### Sandbox credentials and network access
 
@@ -113,7 +167,7 @@ The wildcard host (`*.atlassian.net`) permits egress to any Atlassian Cloud tena
 
 ## Repo configuration
 
-The Jira poller produces the same [NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and GitLab do, so routing works the same way. Until built-in harnesses ship native Jira `trigger` expressions ([#6672](https://github.com/fullsend-ai/fullsend/issues/6672)), each agent that should handle Jira events still needs a matching `trigger` — see [Setup overview](#setup-overview) step 6. Built-in agent output is currently written to GitHub by default, while run-status notifications route to Jira for Jira-triggered runs. For Jira-triggered runs, `fullsend run` exports `FULLSEND_WORK_ITEM_SOURCE`, `FULLSEND_WORK_ITEM_KEY`, and `FULLSEND_WORK_ITEM_URL`, clears `ISSUE_NUMBER`, and fails closed on a malformed Jira identity. See [Event semantics — input only](#event-semantics--input-only) for details. Additionally, the built-in agents' pre/post scripts do not yet understand Jira work-item payloads (they expect a GitHub issue number, not a Jira key — [#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), so dispatched agent runs will not complete successfully until that follow-up lands. See the Troubleshooting section below.
+The Jira poller produces the same [NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and GitLab do, so routing works the same way. Until built-in harnesses ship native Jira `trigger` expressions ([#6672](https://github.com/fullsend-ai/fullsend/issues/6672)), each agent that should handle Jira events still needs a matching `trigger` — see [Setup overview](#setup-overview) step 6. For Jira-triggered runs, `fullsend run` exports `FULLSEND_WORK_ITEM_SOURCE`, `FULLSEND_WORK_ITEM_KEY`, and `FULLSEND_WORK_ITEM_URL`, clears `ISSUE_NUMBER`, and fails closed on a malformed Jira identity. The built-in triage and code agents write their results to the Jira issue, while branches, commits, PRs or MRs, review, and merge stay on the code host. See [Where built-in agent results appear](#where-built-in-agent-results-appear) for details.
 
 If your repo already has a `.fullsend/config.yaml` from `fullsend github setup`, add a harness override with the Jira `trigger` expressions from step 6 (see [Configuring agent behavior](customizing-agents.md#configuration-with-base-composition)) and you are ready to receive dispatches.
 
@@ -266,7 +320,7 @@ for issues and merge requests.
   dispatches.
 - `JIRA_TOKEN`, `JIRA_USER_EMAIL`, and `JIRA_BASE_URL` are set as protected,
   masked CI/CD variables. The agent jobs need them as well, to post run status
-  to the Jira issue.
+  and the triage and code results to the Jira issue.
 
 `fullsend` does not yet create the schedule or the Jira variables for you.
 That setup is tracked in
@@ -603,7 +657,8 @@ However, more pollers against the same Jira project means more API calls per cyc
 | Old comment or label change on a newly polled issue never dispatches | Activity predates the first-poll backfill window | On an issue's first poll, activity older than the 24-hour backfill window is permanently skipped (the checkpoint advances past it). To pick up older activity, scope the initial `--jql` to recently updated issues and widen it gradually, or have someone re-trigger by commenting again |
 | Activity during a long outage or disabled workflow is missing after resume | Poller gap exceeded the 24-hour backfill window | The same 24-hour window that bounds a first poll also bounds resumption — any `lastCheck` older than 24 hours is clamped forward. Check the run log for `predates the backfill window` — if present, events in the gap are permanently lost. Have affected users re-trigger by commenting again. See [Poll coordination](#poll-coordination) |
 | GitLab Jira dispatch fails with `does not accept Jira work items` | The project's scaffold predates Jira dispatch | Rerun `fullsend repos install` for the project and merge the scaffold update. See [GitLab runtime](#gitlab-runtime) |
-| Dispatched agent workflow fails immediately | Agent pre/post scripts don't understand Jira-keyed payloads yet | Known limitation, tracked in [#2264](https://github.com/fullsend-ai/fullsend/issues/2264). The dispatch step above still runs the workflow and produces a `NormalizedEvent`, but built-in agent scripts expect a GitHub issue number, not a Jira key |
+| Triage or code results do not appear on the Jira issue | The built-in agents are pinned to a release that predates Jira result writes | Use built-in agents from the agents release that follows v0.52.0, or later. Re-pin a harness registered with `source:` or composed with `base:` with `fullsend agent update <name>`. See [Where built-in agent results appear](#where-built-in-agent-results-appear) |
+| Code step fails after the PR or MR was created | The Jira write of the code-stage update failed | Check the step log for the Jira error, and confirm `JIRA_USER_EMAIL`, `JIRA_TOKEN`, and `JIRA_BASE_URL` reach the agent job and the account can comment on the issue. A re-run edits the existing update rather than posting a second one |
 
 ## See also
 
