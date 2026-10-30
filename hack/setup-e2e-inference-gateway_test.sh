@@ -796,6 +796,9 @@ CC_SEED="${SHIM_DIR}/cc-seed"
 fresh_state
 ECHO_KEY_HASH="${ECHO_HASH}" run_setup --project "${PROJECT}" --with-vertex \
   || { fail "change-control seed failed"; cat "${STATE}/out" >&2; }
+expect_out "the keyed gateway probes a wrong key" "wrong key: GET /v1/models -> HTTP 401 text/plain"
+if grep -E -- '-H authorization: Bearer .*/v1/models$' "${STATE}/curl.log" | grep -vq -- '-X POST'; then
+  pass "the wrong-key probe sends an authorization bearer"; else fail "wrong-key probe sent no bearer"; fi
 if [[ "$(grep -c 'OK: no credential: POST .* -> HTTP 403' "${STATE}/out")" == "12" ]]; then
   pass "the post-deploy check makes 12 anonymous calls, each refused with 403"; else fail "anonymous calls"; fi
 for m in claude-haiku-5-5 gemini-3.8-flash gpt-oss-120b echo; do
@@ -872,6 +875,12 @@ expect_out "adding REAL_KEY_HASH passes the diff" "only where a change is allowe
 cc_run || fail "removing REAL_KEY_HASH failed"
 expect_out "removing REAL_KEY_HASH passes the diff" "only where a change is allowed"
 if [[ "$(cfg_version)" == "$((seed_version + 2))" ]]; then pass "both real key changes roll out"; else fail "real key versions"; fi
+
+# Allowed: an agentgateway version bump changes only the masked config header.
+cc_reset
+live_edit 's|agentgateway v1.7.0, llm mode|agentgateway v1.6.0, llm mode|'
+cc_run || fail "agentgateway bump run failed"
+expect_out "an agentgateway bump passes the diff" "only where a change is allowed"
 
 # Frozen: the echo key hash, the pool list, the auth mode and the RPM cap.
 cc_reset

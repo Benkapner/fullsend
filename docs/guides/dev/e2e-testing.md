@@ -363,7 +363,9 @@ changes:
   (`pkg/behaviourtest/drivers/install/driver.go`). Edit `POOL_ORGS` or
   `POOL_REPOS` at the top of the script.
 - **agentgateway bump:** change `AGW_VERSION`, and `AGW_DIGEST` to the
-  release's multi-arch index digest.
+  release's multi-arch index digest. The version in the config header is
+  masked, so a bump passes the frozen-path diff and needs no
+  `--allow-frozen-change`.
 - **Model change:** edit `VERTEX_MODELS`, plus `vertex_params` for a
   model-as-a-service model.
 
@@ -470,8 +472,8 @@ defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
    > dry run above shows the script adopts it unchanged.
 
 The 401s must be `text/plain` from agentgateway, with the body
-`authentication failed`. agentgateway v1.7.0 gives every refusal that same
-body and writes the reason to its access log. An HTML 401 comes from
+`authentication failed`. agentgateway v1.7.0 gives every jwtAuth and apiKey
+authentication refusal that same body and writes the reason to its access log. An HTML 401 comes from
 Cloud Run's invoker check, which means `--no-invoker-iam-check` is missing,
 and the script fails. The probes need no token, so a positive check is left
 to the behaviour test, which mints a GitHub Actions OIDC token for a pool

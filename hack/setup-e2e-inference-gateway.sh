@@ -129,9 +129,11 @@ vertex_params() {
 NAME="fullsend-e2e-gateway"
 AUDIENCE="fullsend-e2e-gateway"
 AGW_VERSION="v1.7.0"
-# The multi-arch index digest of that release, as in
-# hack/check-gateway-doc-configs. A run refuses an upstream tag that resolves
-# to anything else. Bump it together with AGW_VERSION.
+# The multi-arch index digest of that release (the same value
+# hack/check-gateway-doc-configs pins for the operator guide's version). A run
+# refuses an upstream tag that resolves to anything else. Bump it together with
+# AGW_VERSION; the version in the config header is masked, so a bump is not a
+# frozen change.
 AGW_DIGEST="sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b"
 UPSTREAM_IMAGE="ghcr.io/agentgateway/agentgateway:${AGW_VERSION}"
 CONFIG_SECRET="${NAME}-config"
@@ -775,6 +777,7 @@ mask_config() {
     --argjson real "$(printf '%s\n' "${VERTEX_MODELS[@]}" | jq -R . | jq -sc .)" \
     --arg allow "      - allow: '${REAL_KEY_CEL}'" '
     (split($pool) | [.[0]] + (.[1:] | map(sub("^(, \"[^\"]*\")*\\]"; "]"))) | join($pool))
+    | sub("(?<h># fullsend-e2e-gateway \\(fullsend#8285\\): agentgateway )v[^,]+,"; "\(.h)<version>,")
     | split("\n") | . as $l
     | def real_model($m): $m != null and ($real | index([$m])) != null;
       reduce range(0; length) as $i ({out: [], skip: 0, type: "", model: null};
