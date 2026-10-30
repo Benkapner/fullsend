@@ -56,6 +56,12 @@ human threshold for decision-relevant entity facts with the selected harness's
 effective `human_min_role`, enforced by the platform above an immutable
 `triage` floor. Actor provenance and fail-closed filtering remain required.
 
+[ADR 0149](0149-coalesce-entity-source-discovery-queries.md) partially
+supersedes the optional query sharing below: entity-source discovery requires
+one combined logical search per source scope and local per-harness routing.
+For source-backed harnesses, even an event-supplied candidate must pass a
+current local source-query membership check before sandbox admission.
+
 ## Context
 
 [ADR 0061](0061-harness-cel-dispatch.md) made a `NormalizedEvent` the sole CEL

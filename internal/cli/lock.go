@@ -45,7 +45,12 @@ before locking. When --forge is omitted and the harness has a forge: section,
 all forge variants are resolved and the union of dependencies is locked.
 
 The lock file should be committed to version control so all environments
-use the same pinned dependencies.`,
+use the same pinned dependencies.
+
+If lock.yaml exists but cannot be parsed, or declares a version this
+fullsend does not understand, the command exits with an error and leaves
+the file unchanged. Delete the file to regenerate it, or upgrade fullsend
+if the version is newer. A missing lock file is not an error.`,
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rFlags.maxDepth < 0 {
@@ -80,6 +85,35 @@ use the same pinned dependencies.`,
 	return cmd
 }
 
+// loadLockOrAbort loads path. A missing file is not an error (nil, nil).
+// Any other Load error aborts before the caller can rewrite the file.
+func loadLockOrAbort(path string, printer *ui.Printer) (*lock.LockFile, error) {
+	lf, err := lock.Load(path)
+	if err != nil {
+		printer.StepFail("Could not load existing lock file")
+		return nil, lockLoadError(path, err)
+	}
+	return lf, nil
+}
+
+func lockLoadError(path string, err error) error {
+	var ver *lock.UnsupportedVersionError
+	if errors.As(err, &ver) {
+		if ver.Version > ver.Expected {
+			return fmt.Errorf("lock file %s uses version %d; this fullsend understands version %d. Upgrade fullsend",
+				path, ver.Version, ver.Expected)
+		}
+		return fmt.Errorf("lock file %s cannot be parsed (version %d, expected %d). Delete it if you intend to regenerate it",
+			path, ver.Version, ver.Expected)
+	}
+	var parse *lock.ParseError
+	if errors.As(err, &parse) {
+		return fmt.Errorf("lock file %s cannot be parsed: %v. Delete it if you intend to regenerate it",
+			path, parse.Err)
+	}
+	return fmt.Errorf("could not read lock file %s: %w", path, err)
+}
+
 func runLock(ctx context.Context, agentName, fullsendDir, forgeFlag string, update bool, rFlags resolveFlags, printer *ui.Printer) error {
 	printer.Banner(Version())
 	printer.Header("Locking dependencies: " + agentName)
@@ -96,10 +130,9 @@ func runLock(ctx context.Context, agentName, fullsendDir, forgeFlag string, upda
 
 	lockPath := filepath.Join(absFullsendDir, "lock.yaml")
 
-	lf, err := lock.Load(lockPath)
+	lf, err := loadLockOrAbort(lockPath, printer)
 	if err != nil {
-		printer.StepWarn("Could not load existing lock file: " + err.Error())
-		lf = nil
+		return err
 	}
 
 	result, err := lockOneAgent(ctx, agentName, absFullsendDir, forgeFlag, update, lf, rFlags, printer)
@@ -490,10 +523,9 @@ func runLockAll(ctx context.Context, fullsendDir, forgeFlag string, update bool,
 	}
 
 	lockPath := filepath.Join(absFullsendDir, "lock.yaml")
-	lf, err := lock.Load(lockPath)
+	lf, err := loadLockOrAbort(lockPath, printer)
 	if err != nil {
-		printer.StepWarn("Could not load existing lock file: " + err.Error())
-		lf = nil
+		return err
 	}
 
 	now := time.Now().UTC()

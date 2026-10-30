@@ -282,13 +282,11 @@ Register the overlay in `.fullsend/config.yaml` as usual (`name: code` /
   to one sandbox without a duplicate-key rejection.
 - *Read-only.* Both registry hosts are `access: read-only`.
 - *Readable by the agent.* This is the standard exposure of any static
-  OpenShell credential
-  ([ADR 0025](../../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)):
-  a placeholder resolves wherever it appears in a request to a bound host,
-  and the registry echoes unknown package names in its 404 body. A value read
-  back that way is the job's own workflow token until the job ends, and
-  through the proxy it can only reach the hosts the role's profiles allow; see
-  [ADR 0114](../../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md).
+  OpenShell credential: a placeholder resolves wherever it appears in a
+  request to a bound host, and the registry echoes unknown package names in
+  its 404 body. A value read back that way is the job's own workflow token
+  until the job ends, and through the proxy it can only reach the hosts the
+  role's profiles allow.
 
 **Notes.**
 
@@ -646,7 +644,10 @@ GitLab uses its own stage router, which applies the same triage and write
 split to slash commands. The GitLab agent job also requires the event actor
 to hold Developer access or higher for every stage except retro and
 prioritize, so automatic triage of a newly opened issue runs only when its
-author is a Developer, Maintainer, or Owner.
+author is a Developer, Maintainer, or Owner. Jira work items dispatched to a
+GitLab project skip that check, because their actor has no GitLab account; the
+Jira poller authorizes them by Jira project role (see
+[Jira integration](jira-integration.md#gitlab-runtime)).
 See the
 [Authorization Contract](../../normative/authorization/v1/README.md) for the
 full role hierarchy, exception rules, and implementation notes.

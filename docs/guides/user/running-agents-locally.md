@@ -382,6 +382,11 @@ To lock all harnesses in the directory at once:
 fullsend lock --all --fullsend-dir /path/to/.fullsend
 ```
 
+If `lock.yaml` exists but cannot be parsed, or declares a version this
+fullsend does not understand, `fullsend lock` exits with an error and
+leaves the file unchanged. Delete the file to regenerate it, or upgrade
+fullsend if the version is newer. A missing lock file is not an error.
+
 When `--forge` is specified, only that platform variant is locked. When omitted,
 all forge variants defined in the harness are resolved and the union of their
 dependencies is locked.
@@ -406,7 +411,7 @@ target issue/PR. These flags mirror what the CI workflows pass automatically:
 | `--run-url` | URL of the CI/CD run shown in the status comment |
 | `--status-repo` | Repository (`owner/repo`) to post status comments on |
 | `--status-number` | Issue or PR number for status comments |
-| `--mint-url` | Mint service URL for on-demand status comment tokens (default: `$FULLSEND_MINT_URL`) |
+| `--mint-url` | Mint service URL for on-demand status comment tokens (default: layered `mint_url` from `--fullsend-dir`, then `$FULLSEND_MINT_URL`) |
 | `--forge` | Forge platform (`github` or `gitlab`); when omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 
 Example:
@@ -436,8 +441,7 @@ Status comment behavior is configured via `status_notifications` in
 > `.fullsend/config.yaml` instead (see the [config reference](../../reference/config-reference.md)).
 > For the CI setup, see [Using an inference gateway](inference-gateway.md).
 > A local run can use that block too with `auth: api-key`, which reads the gateway key from
-> `FULLSEND_INFERENCE_GATEWAY_API_KEY` and needs no OIDC endpoint
-> ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md)).
+> `FULLSEND_INFERENCE_GATEWAY_API_KEY` and needs no OIDC endpoint.
 
 On the [pi](../../runtimes/pi.md) runtime, an agent can reach its model through an
 OpenAI/Anthropic-compatible inference gateway (Praxis, LiteLLM, agentgateway, ...). The

@@ -108,6 +108,27 @@ Harnesses and pre-scripts that require forge-agnostic work item URLs SHOULD use
 `FULLSEND_WORK_ITEM_KEY` from the normalized entity for Jira events. For
 forge-native events, the generic key and `ISSUE_NUMBER` carry the same value.
 
+`fullsend run` reads the normalized event embedded in the dispatch payload.
+On GitLab, the agent job extracts it from the signed `jira_*` dispatch payload
+and passes it with `--event-file`.
+For a Jira event it sets `FULLSEND_WORK_ITEM_SOURCE`, `FULLSEND_WORK_ITEM_KEY`,
+and `FULLSEND_WORK_ITEM_URL` from that event, replacing any inherited values.
+It also clears `ISSUE_NUMBER` before pre-scripts, post-scripts, and harness
+env expansion run. Neither the numeric Jira entity ID nor the numeric suffix
+of the key reaches scripts as a forge issue number. The run fails before any
+script runs in three cases:
+
+- `entity.key` is missing or is not a Jira key such as `PROJ-123`. The key
+  must match `^[A-Z][A-Z0-9_]+-[1-9][0-9]*$`, so single-character project keys
+  such as `P-1` are rejected.
+- `entity.url` is missing or is not an `https` URL.
+- The payload declares `source.system: jira`, but its normalized event fails
+  validation.
+
+For forge-native events, `fullsend run` only fills in
+`FULLSEND_WORK_ITEM_SOURCE` when the caller left it unset. It uses
+`source.system`, or the detected forge when no normalized event is present.
+
 ## Example
 
 Issue comment with slash command:

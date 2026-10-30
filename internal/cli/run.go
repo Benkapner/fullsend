@@ -471,7 +471,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sOpts.statusRepo, "status-repo", "", "repository (owner/repo) for status comments")
 	cmd.Flags().IntVar(&sOpts.statusNum, "status-number", 0, "issue/PR number for status comments")
 	cmd.Flags().IntVar(&sOpts.statusComment, "status-comment-id", 0, "ID of the triggering comment, for comment-scoped reactions on slash-command runs (optional)")
-	cmd.Flags().StringVar(&sOpts.mintURL, "mint-url", "", "mint service URL for on-demand status tokens (default: $FULLSEND_MINT_URL)")
+	cmd.Flags().StringVar(&sOpts.mintURL, "mint-url", "", "mint service URL for agent and status tokens (default: layered mint_url from --fullsend-dir, then $FULLSEND_MINT_URL)")
 	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi, codex, opencode, dummy or dummy-playback; also $FULLSEND_RUNTIME)")
 	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi, codex, and opencode — codex takes OpenAI ids and gateway/<model> only; also $FULLSEND_MODEL)")
 	cmd.Flags().StringVar(&oFlags.effort, "effort", "", "override the harness effort level for this run (low, medium, high, xhigh, max; also $FULLSEND_EFFORT)")
@@ -629,6 +629,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			sOpts.trackerProject = proj
 			sOpts.statusNum = num
 		}
+	}
+
+	// Fail closed when a dispatch payload declares a Jira source but its
+	// normalized event did not validate. Falling through would route the
+	// run as forge-originated and hand the numeric Jira entity ID to forge
+	// issue/PR operations (#2264). The check also applies when the other
+	// dispatch channel supplied a valid forge event, so a disagreement between
+	// the channels cannot bypass the guard.
+	if dispatchJiraClaimUnresolved(eventFile, sOpts.trackerSource, absFullsendDir) {
+		return fmt.Errorf("dispatch payload declares a Jira source but its normalized event is missing required fields or is invalid; refusing to run without a valid Jira work-item identity")
+	}
+	workItemEnv, err := resolveWorkItemIdentity(eventMap, sOpts.trackerSource, forgePlatform, os.Getenv)
+	if err != nil {
+		return err
 	}
 
 	composeOpts := harness.ComposeOpts{
@@ -890,8 +904,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if sOpts.statusRepo != "" {
 		setFlagEnv("REPO_FULL_NAME", sOpts.statusRepo)
 	}
-	if sOpts.statusNum != 0 {
-		setFlagEnv("ISSUE_NUMBER", fmt.Sprintf("%d", sOpts.statusNum))
+	if issueNumber, ok := issueNumberFlagEnv(sOpts); ok {
+		setFlagEnv("ISSUE_NUMBER", issueNumber)
+	}
+	for k, v := range workItemEnv {
+		setFlagEnv(k, v)
 	}
 
 	// Mint the runtime-stage token before env expansion so provider
@@ -903,9 +920,31 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// credential (Poller/Analyst/Coder or a custom role) and export
 	// GITLAB_TOKEN / PUSH_TOKEN from that CI/CD variable. Missing role
 	// credentials fail closed; there is no shared-token fallback. #6865 #7499.
-	mintURL := sOpts.mintURL
-	if mintURL == "" {
-		mintURL = os.Getenv("FULLSEND_MINT_URL")
+	// Precedence: flag > config.yaml/config.base.yaml mint_url > env (#8192).
+	mintURL, mintSource := resolveMintURL(sOpts.mintURL, orgCfg, os.Getenv)
+	// A mint_url that only came from the file layer is an implicit default
+	// meant to make CI convenient; it must not turn a previously-safe local
+	// run into a hard failure by attempting a GitHub Actions OIDC exchange
+	// that isn't available outside Actions. A flag or FULLSEND_MINT_URL is
+	// an explicit signal from the operator, so those stay fail-closed below
+	// (#8400). Two conditions narrow the downgrade to a genuine local run,
+	// not just "OIDC env happens to be empty" (review feedback on #8400):
+	//   - FULLSEND_MINT_URL must also be unset. The file wins the endpoint
+	//     precedence either way, but an operator who separately set the
+	//     env var still signalled real intent to mint, even though that
+	//     value is shadowed, so a mint failure must stay loud.
+	//   - GITHUB_ACTIONS must not be "true". Downgrading solely on missing
+	//     OIDC env would also silently fall back to the ambient (often
+	//     broader) GH_TOKEN inside Actions when a workflow is missing
+	//     id-token: write — a misconfiguration that should fail loudly,
+	//     not swap in unscoped credentials.
+	mintSkipWarning := ""
+	if mintSource == mintURLSourceFile &&
+		os.Getenv("FULLSEND_MINT_URL") == "" &&
+		os.Getenv("GITHUB_ACTIONS") != "true" &&
+		!hasActionsOIDCEnv(os.Getenv) {
+		mintSkipWarning = "config.yaml/config.base.yaml sets mint_url for a local run with no FULLSEND_MINT_URL, but GitHub Actions OIDC is unavailable; skipping token minting for role " + h.Role
+		mintURL = ""
 	}
 	runtimeLevel := h.PrivilegeLevelForStage(harness.PrivilegeStageRuntime)
 	var minted bool
@@ -921,7 +960,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if mintErr != nil {
 			return fmt.Errorf("agent token minting failed: %w", mintErr)
 		}
-		if !minted && mintURL == "" {
+		switch {
+		case mintSkipWarning != "":
+			printer.StepWarn(mintSkipWarning)
+		case !minted && mintURL == "":
 			printer.StepWarn("No --mint-url provided; skipping token minting for role " + h.Role)
 		}
 	}
@@ -1381,7 +1423,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				defer dCancel()
 				if status == "cancelled" && builtInGitHubReview(agentName, forgePlatform, sOpts.trackerSource) {
 					parts := strings.SplitN(sOpts.statusRepo, "/", 2)
-					client, err := newStatusGitHubForgeClient(dCtx, sOpts.mintURL, h.Role, parts[1])
+					// Resolve through the same flag > layered config file >
+					// env precedence as setupStatusNotifierGitHub, not just
+					// flag > env: otherwise a file-only mint_url mints
+					// against "" here (even though the start comment above
+					// minted correctly), and a file value competing with a
+					// different FULLSEND_MINT_URL would mint against the
+					// env endpoint instead of the file-selected one (#8400).
+					cancelMintURL, _ := resolveMintURL(sOpts.mintURL, orgCfg, os.Getenv)
+					client, err := newStatusGitHubForgeClient(dCtx, cancelMintURL, h.Role, parts[1])
 					if err == nil {
 						// Reuse this freshly minted write client for completion so
 						// cancellation cleanup does not spend time on a second mint.
@@ -4462,6 +4512,17 @@ func resolveWorkItemID() string {
 	if v := strings.TrimSpace(os.Getenv("ISSUE_KEY")); v != "" {
 		return v // source-neutral canonical key, e.g. "owner/repo#123" or "PROJ-123"
 	}
+	// Jira runs clear ISSUE_NUMBER and carry identity in the
+	// FULLSEND_WORK_ITEM_* exports instead, so prefer those before the
+	// forge-shaped fallbacks below.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv(envWorkItemSource)), "jira") {
+		if v := strings.TrimSpace(os.Getenv(envWorkItemKey)); v != "" {
+			return v
+		}
+		if v := strings.TrimSpace(os.Getenv(envWorkItemURL)); v != "" {
+			return v
+		}
+	}
 	repo := strings.TrimSpace(os.Getenv("REPO_FULL_NAME"))
 	num := strings.TrimSpace(os.Getenv("ISSUE_NUMBER"))
 	if repo != "" && num != "" {
@@ -6375,8 +6436,8 @@ func titleCase(s string) string {
 // code-hosting forge (ADR 0093).
 func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
 	var notifyCfg config.StatusNotificationConfig
-	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
-	if fsCfg := tryLoadFullsendConfig(orgConfigPath, printer); fsCfg != nil {
+	fsCfg := tryLoadLayeredFullsendConfig(fullsendDir, printer)
+	if fsCfg != nil {
 		// StatusNotifications is part of the shared ConfigReader interface,
 		// so this works for both orgConfig and perRepoConfig.
 		if sn := fsCfg.StatusNotifications(); sn != nil {
@@ -6401,7 +6462,7 @@ func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, 
 	if forgePlatform == "gitlab" {
 		return setupStatusNotifierGitLab(notifyCfg, owner, repo, sOpts, printer)
 	}
-	return setupStatusNotifierGitHub(notifyCfg, owner, repo, role, sOpts, printer)
+	return setupStatusNotifierGitHub(notifyCfg, fsCfg, owner, repo, role, sOpts, printer)
 }
 
 // builtInGitHubReview identifies the one review run that can be retried with
@@ -6450,11 +6511,8 @@ func resolveBuiltInGitHubReviewCancellationGuidance(
 // setupStatusNotifierGitHub creates a status notifier for GitHub. It mints
 // a fresh token via the mint service for each API call and reads SHA/run ID
 // from GitHub Actions environment variables.
-func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner, repo, role string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
-	mintURL := sOpts.mintURL
-	if mintURL == "" {
-		mintURL = os.Getenv("FULLSEND_MINT_URL")
-	}
+func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, orgCfg config.ConfigReader, owner, repo, role string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+	mintURL, _ := resolveMintURL(sOpts.mintURL, orgCfg, os.Getenv)
 	if mintURL == "" {
 		return nil, fmt.Errorf("no mint URL available (set --mint-url or FULLSEND_MINT_URL)")
 	}
@@ -6683,28 +6741,12 @@ func prHeadSHAFromEventPath(path string) string {
 // if the normalized event is absent or invalid (best-effort; overlays fall
 // back to the empty-map behavior documented in ResolveOverlays).
 func extractNormalizedEventFromDispatch(fullsendDir string) map[string]any {
-	// Try 1: on-disk dispatch event-payload.json (reusable-dispatch path).
-	if m := extractNormalizedEventFromFile(filepath.Join(fullsendDir, "dispatch", "event-payload.json")); m != nil {
-		return m
+	for _, payload := range dispatchEventPayloads(fullsendDir) {
+		if m := extractNormalizedEventFromPayload(payload); m != nil {
+			return m
+		}
 	}
-	// Try 2: GITHUB_EVENT_PATH → inputs.event_payload (workflow_call path).
-	ghEventPath := os.Getenv("GITHUB_EVENT_PATH")
-	if ghEventPath == "" {
-		return nil
-	}
-	data, err := os.ReadFile(ghEventPath)
-	if err != nil {
-		return nil
-	}
-	var wrapper struct {
-		Inputs struct {
-			EventPayload string `json:"event_payload"`
-		} `json:"inputs"`
-	}
-	if err := json.Unmarshal(data, &wrapper); err != nil || wrapper.Inputs.EventPayload == "" {
-		return nil
-	}
-	return extractNormalizedEventFromPayload([]byte(wrapper.Inputs.EventPayload))
+	return nil
 }
 
 // extractNormalizedEventFromFile reads a JSON file and extracts _normalized_event.
@@ -6906,6 +6948,62 @@ func maybeRemintAgentTokenForStage(ctx context.Context, h *harness.Harness, mint
 		cleanup()
 		syncRunnerEnvTokens(h)
 	}, nil
+}
+
+// mintURLSource identifies where resolveMintURL's returned value came
+// from. Callers with a fail-closed mint path (e.g. runAgent) use this to
+// distinguish an explicit signal — a flag or FULLSEND_MINT_URL, where an
+// operator deliberately asked for minting — from the implicit file layer,
+// so a config.yaml/config.base.yaml-sourced mint_url does not turn a
+// previously-safe local run into a hard failure when GitHub Actions OIDC
+// isn't available (#8400).
+type mintURLSource int
+
+const (
+	mintURLSourceNone mintURLSource = iota
+	mintURLSourceFlag
+	mintURLSourceFile
+	mintURLSourceEnv
+)
+
+// resolveMintURL resolves the token mint URL with the precedence order
+// documented in docs/contributing/config-source-inventory.md's mint_url
+// row: an explicit flag value wins outright (one-run override); then
+// config.yaml/config.base.yaml's mint_url ("file should win" over the
+// variable kept for older workflows/binaries); then FULLSEND_MINT_URL;
+// then "" so callers keep today's warn-and-skip-minting behavior. The
+// compiled default (DefaultPerRepoMintURL) is deliberately not consulted
+// here — ConfigMintURLFromFile stops short of it, so an installed repo
+// that never configured mint_url anywhere still resolves to "".
+//
+// orgCfg may be nil (no config loaded) or may not implement
+// PerRepoConfigReader (e.g. deprecated org-mode config); both cases
+// simply skip the file layer and fall through to the environment.
+func resolveMintURL(flagValue string, orgCfg config.ConfigReader, getenv func(string) string) (string, mintURLSource) {
+	if flagValue != "" {
+		return flagValue, mintURLSourceFlag
+	}
+	if prc, ok := orgCfg.(config.PerRepoConfigReader); ok {
+		if u := prc.ConfigMintURLFromFile(); u != "" {
+			return u, mintURLSourceFile
+		}
+	}
+	if u := getenv("FULLSEND_MINT_URL"); u != "" {
+		return u, mintURLSourceEnv
+	}
+	return "", mintURLSourceNone
+}
+
+// hasActionsOIDCEnv reports whether the GitHub Actions OIDC request
+// environment variables are present. mintclient.MintToken's only
+// credential path is exchanging a GitHub Actions OIDC JWT
+// (ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN), so
+// their absence means any mint attempt is guaranteed to fail with a
+// generic "is this running in GitHub Actions" error. Callers use this to
+// decide whether to downgrade an implicit (file-sourced) mint attempt to
+// a warn-and-skip instead of a hard failure (#8400).
+func hasActionsOIDCEnv(getenv func(string) string) bool {
+	return getenv("ACTIONS_ID_TOKEN_REQUEST_URL") != "" && getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN") != ""
 }
 
 // mintAgentToken mints a write-level GitHub App installation token for the

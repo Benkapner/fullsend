@@ -198,8 +198,7 @@ reads the key from a file. You mount that file from Secret Manager in [step 6](#
 
 ### Accept a static key as well (`auth: api-key`)
 
-A repository that sets `auth: api-key`
-([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md)) sends a key you issue
+A repository that sets `auth: api-key` sends a key you issue
 instead of an OIDC token, in the same `Authorization: Bearer` header. (A repository can instead
 send its key as `x-api-key` on `/v1/messages` with `messages_auth_header: x-api-key`; that needs a
 gateway that reads the header, see
@@ -557,8 +556,8 @@ to the whole host, so the job's token never reaches another service behind the s
 - The prefix must be a clean path: no `..`, `.` or empty segments, no percent-encoding, and only
   letters, digits, `-`, `.`, `_` and `~` in each segment. The host must still serve `https` on
   port 443.
-- One gateway per repository still applies ([ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md)):
-  a repository's `inference.gateway.url` names one host and prefix.
+- One gateway per repository still applies: a repository's
+  `inference.gateway.url` names one host and prefix.
 
 ## Header custody for an x-api-key gateway
 
@@ -568,9 +567,9 @@ to the whole host, so the job's token never reaches another service behind the s
 > shown.
 
 Some gateways read the caller's key on the Messages API (`/v1/messages`) from `x-api-key`, the
-header Anthropic documents for API keys on that API. A repository in the `api-key` mode can send
-its key there by setting `messages_auth_header: x-api-key` in its `inference.gateway` block
-([ADR 0142](../../ADRs/0142-inference-gateway-x-api-key-header-for-messages-models.md)). Then:
+header Anthropic documents for API keys on that API. A repository in the
+`api-key` mode can send its key there by setting
+`messages_auth_header: x-api-key` in its `inference.gateway` block. Then:
 
 - Claude Code, and pi models with `api: anthropic-messages`, send the key as `x-api-key` and set
   no credential in `Authorization`.

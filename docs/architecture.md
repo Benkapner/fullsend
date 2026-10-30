@@ -323,7 +323,7 @@ flowchart TB
   without overlays, and `FULLSEND_FALLBACK_MODELS` applies as each runtime
   allows. Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
-- Native Codex children run under a runner-owned policy: Bootstrap registers roles for an agent with the `Agent` tool, under harness security, whose parent model Codex resolves to collaboration V1 (a V2 or unlisted parent keeps the multi-agent tools off), and binds each child's model (a persona's own entry in its role file, the run-level default otherwise), and a mandatory dispatch hook admits only fresh-context V1 spawns of registered roles after checking `hooks.json` and the role files against runner-held digests ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md)); not yet implemented, so review and retro still run in one context on Codex ([#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
+- Native Codex children run under a runner-owned policy: Bootstrap registers roles for an agent with the `Agent` tool, under harness security, whose parent model Codex resolves to collaboration V1 on the direct route (a V2, unlisted or `gateway/` parent keeps the multi-agent tools off), and binds each child's model (a persona's own entry in its role file, the run-level default otherwise) and the run's effort, and a mandatory dispatch hook admits only fresh-context V1 spawns of registered roles after checking `hooks.json` and the role files against runner-held digests; after each iteration the runner checks the spawns seen in the stream or in the children's rollouts on disk, each child once, against the hook's admissions ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md), [#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
 
 ### Behaviour testing
 
@@ -334,7 +334,19 @@ End-to-end **behaviour tests** use the shared framework in `pkg/behaviourtest/` 
 - Is the runtime a single model call, a loop (plan-act-observe), or something more structured?
 - How does the runtime interact with the sandbox boundaries — does it know what it can't do, or does it just hit walls? (For tool access: both — prose instructions inform the runtime, and `permissions.deny` hard-blocks execution; see [ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md). Broader sandbox interaction remains open.)
 - How do we swap model providers or versions without changing the rest of the stack?
-- What is the interface between the harness and the runtime? (A system prompt? A configuration file? An API contract?) (Decided: the runner-side contract is `runtime.Runtime` + `BootstrapInput`, the runtime-neutral sandbox tool-hook contract in [ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md), and optional capability interfaces. Each runtime translates the harness prompt into its own instruction slot — pi's `APPEND_SYSTEM.md`, codex's `developer_instructions` ([ADR 0099](ADRs/0099-codex-agent-runtime.md)) — rather than a shared format.)
+- What is the interface between the harness and the runtime? (A system prompt? A
+  configuration file? An API contract?) (Decided: the runner-side contract is
+  `runtime.Runtime` + `BootstrapInput`, the runtime-neutral sandbox tool-hook
+  contract in [ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md), and
+  optional capability interfaces.
+  Each runtime translates the harness prompt into its own instruction slot — pi's
+  `APPEND_SYSTEM.md`, codex's `developer_instructions` ([ADR
+  0099](ADRs/0099-codex-agent-runtime.md)) — rather than a shared format.
+  Hook scripts on every runtime resolve their interpreter and `PATH` from
+  agent-unwritable directories — Claude Code bakes them into the digest-checked
+  `hooks.json` at Bootstrap, while Codex and pi export trusted values and deny
+  each hook call when they are absent ([ADR
+  0152](ADRs/0152-hook-interpreter-trust.md)).)
 
 ## Agent Identity Provider
 
@@ -548,12 +560,27 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0151](ADRs/0151-harness-human-role-minimums.md),
   [Authorization Contract v2](normative/authorization/v2/)).
 
+- Entity-source discovery (target state): `fullsend poll` combines admissible
+  harness queries into one logical candidate search per source scope and routes
+  possible matches locally. A bound `run` rechecks source-query membership
+  before event-backed or eventless sandbox cycles
+  ([ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)).
+  Implementation and the normative query protocol are tracked in
+  [#8418](https://github.com/fullsend-ai/fullsend/issues/8418) and
+  [#8421](https://github.com/fullsend-ai/fullsend/issues/8421).
+
 **Open questions:**
 
 - What field-level normalized-entity contract and provider query plans can
-  prove partial-history coverage and represent handled state? Selective
-  acquisition and its authorization rules are decided in
-  [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md).
+  support entity-first evaluation, prove partial-history coverage, and
+  represent handled state? See
+  [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md)
+  for selective acquisition and its authorization rules, and
+  [ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)
+  for query combination and local routing. The normative discovery protocol,
+  including query syntax, adapter mappings, and discovery coverage evidence,
+  remains open, as do the normalized entity-history and handled-state
+  contracts.
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner

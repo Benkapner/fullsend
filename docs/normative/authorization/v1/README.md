@@ -217,7 +217,11 @@ The bash dispatch implementation uses a parameterized
 > webhook routing do not use `harnessdispatch`: `dispatch.HarnessRouter`
 > gates slash commands per stage (triage and review at `triage`, other stages
 > at `write`) and label routes at `write`, and the agent job then requires
-> Developer access for every stage except retro and prioritize. The bash path (GitHub webhook
+> Developer access for every stage except retro and prioritize. The one
+> exception to that agent-job check is Jira work items dispatched to GitLab
+> (`jira_*` events): the Jira poller authorizes the actor by Jira project role
+> during polling, and the agent job skips the Developer-access check for these
+> signed events. The bash path (GitHub webhook
 > dispatch) applies the same thresholds per stage through
 > `has_repo_permission`.
 > Among the Go paths, only `fullsend dispatch --route retro` applies the
