@@ -66,7 +66,9 @@ const (
 
 	// jiramock account IDs: commenter-001 and changer-001 hold the Jira
 	// "Developers" role (actor.role write); bot-001 is the account /myself
-	// returns, i.e. the account fullsend writes to Jira as.
+	// returns, i.e. the account fullsend writes to Jira as. newJiraLifecycle
+	// also puts bot-001 in a group-backed "Administrators" role so its
+	// comments pass authorization and only bot classification can stop them.
 	lifecycleDeveloper = "commenter-001"
 	lifecycleOutsider  = "outsider-001"
 	lifecycleJiraBot   = "bot-001"
@@ -226,6 +228,11 @@ func newJiraLifecycle(t *testing.T, host string) *jiraLifecycle {
 	if host == jirapoll.TargetForgeGitLab {
 		l.repo = lifecycleGitLabRepo
 	}
+	// Give the bot account a write-or-higher project role. Without one its
+	// comments would be rejected as external, masking a regression in the
+	// poller's self-authored-comment (bot) classification.
+	state.SetRoleGroup("Administrators", "fullsend-bot-group")
+	state.SetUserGroups(lifecycleJiraBot, "fullsend-bot-group")
 	state.AddIssue(lifecycleIssueKey, []string{"bug"})
 	return l
 }
