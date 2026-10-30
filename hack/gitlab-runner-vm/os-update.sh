@@ -132,12 +132,15 @@ runner_busy() {
   return 1
 }
 
-# Rewrite config.toml in place (cat >) so the file keeps its owner and mode;
-# gitlab-runner runs as RUNNER_USER and must keep reading it.
+# Replace config.toml atomically: build the new file next to it, copy the
+# original owner and mode (gitlab-runner runs as RUNNER_USER and must keep
+# reading it), then mv it into place. A failed write (for example a full root
+# filesystem) never touches the live config, which holds the runner
+# registration.
 # Usage: write_shutdown_timeout <line or empty to drop the key>
 write_shutdown_timeout() {
   local line="$1" tmp
-  tmp=$(mktemp) || return 1
+  tmp=$(mktemp "${CONFIG_TOML}.XXXXXX") || return 1
   # grep exits 1 when nothing is left to print (fine); 2 or more is an error.
   if ! {
     if [ -n "${line}" ]; then
@@ -148,11 +151,12 @@ write_shutdown_timeout() {
     rm -f "${tmp}"
     return 1
   fi
-  if ! cat "${tmp}" > "${CONFIG_TOML}"; then
+  if ! chmod --reference="${CONFIG_TOML}" "${tmp}" \
+    || ! chown --reference="${CONFIG_TOML}" "${tmp}" \
+    || ! mv -f "${tmp}" "${CONFIG_TOML}"; then
     rm -f "${tmp}"
     return 1
   fi
-  rm -f "${tmp}"
 }
 
 # shutdown_timeout bounds how long gitlab-runner waits for jobs after SIGQUIT

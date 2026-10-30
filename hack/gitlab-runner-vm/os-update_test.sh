@@ -133,6 +133,13 @@ cat > "${SHIM_DIR}/id" <<'STUB'
 echo 1000
 STUB
 
+# mv: fails on demand (MV_FAILS=1), otherwise the real one.
+cat > "${SHIM_DIR}/mv" <<'STUB'
+#!/bin/sh
+if [ "${MV_FAILS:-0}" = "1" ]; then exit 1; fi
+exec /usr/bin/mv "$@"
+STUB
+
 chmod +x "${SHIM_DIR}"/*
 
 # --- helpers ---------------------------------------------------------------
@@ -218,7 +225,8 @@ echo "== update without reboot =="
 reset_fixtures
 printf 'shutdown_timeout = 7\n' | cat - "${CONFIG_TOML}" > "${CONFIG_TOML}.new"
 cat "${CONFIG_TOML}.new" > "${CONFIG_TOML}"
-inode_before=$(stat -c %i "${CONFIG_TOML}")
+rm -f "${CONFIG_TOML}.new"
+chmod 640 "${CONFIG_TOML}"
 DNF_CHECK_RC=100 DNF_RESTART_RC=0 run_update
 if [ "${RUN_RC}" -ne 0 ]; then
   fail "update should succeed (rc=${RUN_RC}): ${RUN_OUT}"
@@ -236,8 +244,10 @@ elif [ -e "${HOLD_FILE}" ] || [ "$(cat "${SVC_STATE}")" != "active" ]; then
 elif [ "$(grep -c '^shutdown_timeout' "${CONFIG_TOML}")" -ne 1 ] \
   || ! grep -qx 'shutdown_timeout = 7' "${CONFIG_TOML}"; then
   fail "shutdown_timeout not restored: $(cat "${CONFIG_TOML}")"
-elif [ "$(stat -c %i "${CONFIG_TOML}")" != "${inode_before}" ]; then
-  fail "config.toml was replaced (owner/mode would change)"
+elif [ "$(stat -c '%a %u:%g' "${CONFIG_TOML}")" != "640 $(id -u):$(id -g)" ]; then
+  fail "config.toml lost its mode/owner: $(stat -c '%a %u:%g' "${CONFIG_TOML}")"
+elif ls "${CONFIG_TOML}".* >/dev/null 2>&1; then
+  fail "temp files left next to config.toml: $(ls "${CONFIG_TOML}".*)"
 elif ! grep -Fq '[[runners]]' "${CONFIG_TOML}"; then
   fail "config.toml lost its runner block"
 else
@@ -474,6 +484,21 @@ elif [ -e "${HOLD_FILE}" ] || [ "$(cat "${SVC_STATE}")" != "active" ]; then
   fail "runner not left available after a failed shutdown_timeout rewrite"
 else
   pass "a failed shutdown_timeout rewrite aborts the drain before QUIT"
+fi
+
+reset_fixtures
+config_before=$(cat "${CONFIG_TOML}")
+DNF_CHECK_RC=100 MV_FAILS=1 run_update
+if [ "${RUN_RC}" -eq 0 ]; then
+  fail "a failed config.toml replacement should fail the unit: ${RUN_OUT}"
+elif [ "$(cat "${CONFIG_TOML}")" != "${config_before}" ]; then
+  fail "config.toml changed although the replacement failed: $(cat "${CONFIG_TOML}")"
+elif ls "${CONFIG_TOML}".* >/dev/null 2>&1; then
+  fail "temp file left behind after a failed replacement: $(ls "${CONFIG_TOML}".*)"
+elif called 'QUIT' || called 'dnf -y upgrade'; then
+  fail "QUIT or upgrade ran although config.toml was not rewritten: $(calls)"
+else
+  pass "a failed config.toml replacement leaves the original config untouched"
 fi
 
 echo "== unknown runner state is not treated as drained =="
