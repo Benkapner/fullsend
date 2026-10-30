@@ -328,7 +328,7 @@ GitLab authorization
   `write` or `triage` list (an empty list counts as set, so it denies
   everyone), the lists decide. An actor listed
   under `write` gets `write`. An actor listed only under `triage` gets
-  `triage`, which covers `/fs-triage`, `/fs-review`, and custom agents whose
+  `triage`, which covers `/fs-triage` and custom agents whose
   harness sets `role: triage` or `role: review`. Anyone else is denied. The
   Jira project roles are not consulted. When neither list is set, slash
   commands use the Jira project role lookup instead. That lookup needs

@@ -334,7 +334,7 @@ fullsend poll \
   --fullsend-dir .fullsend
 ```
 
-**`--jira-project` is required for any project using slash commands.** Without it the poller cannot resolve Jira project roles, so all actors default to the `external` role and every `/fs-*` command silently fails the role gate. Always provide `--jira-project` alongside `--jql` unless you are certain your routing rules do not depend on actor roles.
+**`--jira-project` is required for any project using slash commands whose roles come from Jira project roles.** Without it the poller cannot resolve Jira project roles, so all actors default to the `external` role and every `/fs-*` command silently fails the role gate. When the `jira` authorization entry sets `write` or `triage` lists, roles come from those lists instead and `--jira-project` is not needed for role resolution. Otherwise, provide `--jira-project` alongside `--jql` unless you are certain your routing rules do not depend on actor roles.
 
 Technically `--jql` can be used without `--jira-project`, but the only scenario where that is safe is a read-only polling setup with no slash-command-based dispatch.
 
@@ -484,7 +484,7 @@ go run ./cmd/fullsend poll \
 
 Replace `PROJ` with your Jira project key and `owner/repo` with the GitHub repository slug where agent workflows run.
 
-> **Note:** `--jira-project` is effectively required when your project uses slash commands (`/fs-triage`, `/fs-code`, etc.). Without it, the poller cannot resolve Jira project roles and all actors default to `external`, which silently fails the role gate for write-gated commands. See [#6089](https://github.com/fullsend-ai/fullsend/issues/6089) for details.
+> **Note:** `--jira-project` is effectively required when your project uses slash commands (`/fs-triage`, `/fs-code`, etc.) and roles come from Jira project roles. Without it, the poller cannot resolve Jira project roles and all actors default to `external`, which silently fails the role gate for write-gated commands. It is not needed for role resolution when the `jira` authorization entry sets `write` or `triage` lists, because the lists decide the role. See [#6089](https://github.com/fullsend-ai/fullsend/issues/6089) for details.
 
 ### Inspecting output
 
@@ -613,7 +613,7 @@ authorization:
   `triage` keys entirely to stop using the lists (see the next bullet for
   what then decides). An actor listed under `write` (by account ID,
   or through a listed group) can run every agent. An actor listed only under
-  `triage` can run `/fs-triage`, `/fs-review`, and custom agents whose harness
+  `triage` can run `/fs-triage` and custom agents whose harness
   sets `role: triage` or `role: review`. Everyone else is denied. This also
   applies to issues being opened or edited.
 - **Slash commands without lists.** Slash commands are authorized by the

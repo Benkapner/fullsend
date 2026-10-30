@@ -126,5 +126,13 @@ that driver. GitHub, GitLab, and Forgejo event authorization, and the
   role thresholds. A trigger on them, such as the default triage harness's,
   needs the `jira` lists, or `labels: project_roles`, which resolves them
   through project roles.
+- The poller and the dispatch load paths now validate the `authorization`
+  block (unknown or duplicate providers, and the `write`, `triage` and
+  `labels` keys on a provider other than `jira`) and fail closed, where the
+  runtime previously did not validate it. This is not a breaking change:
+  `fullsend agent`, `github setup` and `lint` already rejected unknown and
+  duplicate providers through `cfg.Validate()`, so such a repository never had
+  a successful agent run, and the `write`, `triage` and `labels` keys are new
+  in this change, so no existing configuration sets them.
 - Repository configuration becomes a second place to keep Jira
   authorization in sync with Jira group membership.

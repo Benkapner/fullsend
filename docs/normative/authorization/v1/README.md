@@ -534,7 +534,9 @@ authorization boundary. A repository can disable a stage entirely but
 cannot make it available to unauthorized users.
 
 A repository can add permission sources through the `authorization`
-field (today only `owners_file`). These sources extend the
+field (`owners_file`, and `jira` for Jira events; see
+[ADR 0153](../../../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+These sources extend the
 `has_repo_permission` helper and the Go `IsEventAuthorized` gate and
 per-harness filter; they do not
 bypass the gate or change the thresholds.
