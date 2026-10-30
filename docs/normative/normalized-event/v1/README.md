@@ -190,6 +190,12 @@ This moves instruction extraction from downstream workflow steps (e.g.
 `reusable-fix.yml`) into the input adapter — a behavioral change called out in
 [ADR 0061 Consequences](../../../ADRs/0061-harness-cel-dispatch.md).
 
+This applies to the GitHub projection. For GitLab dispatch,
+`_normalized_event.transition.comment` carries only `body`; the dispatcher
+populates neither `command` nor `instruction`, and `run-agent-job.sh` extracts
+the instruction downstream from the body (see
+[GitLab dispatch payload](#gitlab-dispatch-payload)).
+
 ### Actor role mapping (GitHub)
 
 For human actors, `actor.role` uses permission levels aligned with
@@ -420,11 +426,31 @@ have populated `state.change_proposal` for change-proposal workloads, except
 `project_number` (prioritize env) and `run-url` (runtime).
 
 **GitLab event projection:** the table above uses GitHub-oriented examples, but
-the same projection logic applies to GitLab events. `source.raw_type` carries
-the GitLab object type (e.g. `merge_request`, `note`), and
-`event_payload.pull_request` uses the same GitHub-shaped structure for backward
-compatibility — the GitLab adapter maps MR fields into this shape so downstream
-workflows do not need forge-specific handling.
+the GitLab input adapter follows the same mapping when it converts events.
+`source.raw_type` carries the GitLab object type (e.g. `merge_request`, `note`),
+and `event_payload.pull_request` uses the same GitHub-shaped structure for
+backward compatibility — the GitLab adapter maps MR fields into this shape so
+downstream workflows do not need forge-specific handling. The payload that the
+GitLab poller and webhook dispatcher put on the dispatch pipeline is a smaller,
+separate shape, described next.
+
+#### GitLab dispatch payload
+
+`buildEventPayload` in `internal/poll/dispatch.go` builds the base64
+`EVENT_PAYLOAD_B64` payload for GitLab dispatch. It does not embed a complete
+NormalizedEvent and emits no `event_payload.comment` and no `note_body`. For a
+note event it adds a **partial** `_normalized_event` containing only
+`transition`, with `transition.kind` set to `comment_added` and
+`transition.comment.body` set to the note body. The envelope fields (`source`,
+`kind`, and the rest) are absent, and `transition.comment` omits `command` and
+`instruction`. Consumers MUST NOT treat this key as a full NormalizedEvent;
+they read `_normalized_event.transition.comment.body` and derive the command
+and instruction from it. `run-agent-job.sh` does this for the `/fs-fix`
+instruction and the retro comment.
+
+A body that starts with `/fs-` is carried untruncated, and dispatch fails closed
+when the payload exceeds the chunk budget. Any other body is bounded to 800
+Unicode code points, with a truncation marker appended when it is cut.
 
 ## GitLab adapter notes
 
