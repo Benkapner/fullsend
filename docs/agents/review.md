@@ -80,7 +80,8 @@ the loop. Dispatch is keyed on the head SHA, so later polls that see the same
 head do not review it again. Diff versions do not record who pushed, so the
 poller cannot authorize the pusher. It therefore reviews pushes only to
 same-project MRs, where any pusher already has project push access. A push to
-a fork MR is not reviewed automatically; comment `/fs-review` instead.
+a fork MR is not reviewed automatically, and re-review of fork MR pushes is
+currently unsupported (the router also denies slash commands on fork MRs).
 
 ## Control labels
 

@@ -212,8 +212,9 @@ func (r *HarnessRouter) routeOpened(event *NormalizedEvent) ([]string, error) {
 // event actor is the MR author), so the pusher is never authorized here.
 // Fork and unknown-origin MRs are denied: a non-member with push access to
 // the fork could otherwise trigger repeated reviews under the author's
-// identity. A fork MR is re-reviewed through an explicit /fs-review. For a
-// same-project MR any pusher already holds project push access.
+// identity. Fork MR re-review is currently unsupported, since
+// routeSlashCommand also denies fork MRs. For a same-project MR any pusher
+// already holds project push access.
 func (r *HarnessRouter) routeSynchronized(event *NormalizedEvent) ([]string, error) {
 	if event.Entity.Kind != "change_proposal" || isForkOrUnknown(event.State) {
 		return nil, nil
