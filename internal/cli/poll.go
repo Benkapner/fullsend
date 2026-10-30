@@ -189,17 +189,7 @@ func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRe
 		return fmt.Errorf("build CEL matcher: %w", err)
 	}
 
-	opts := jirapoll.Options{
-		TargetRepo:  args.targetRepo,
-		JiraBaseURL: args.jiraURL,
-		JiraProject: args.jiraProject,
-		JQL:         args.jqlOverride,
-		OutputPath:  args.outputPath,
-
-		Authorization: jiraPollAuthorization(matcher.jiraAuth),
-	}
-
-	poller := jirapoll.New(jiraClient, matcher, opts)
+	poller := jirapoll.New(jiraClient, matcher, jiraPollOptions(args, matcher))
 	return poller.Run(cmd.Context())
 }
 
@@ -485,6 +475,23 @@ func (m *celMatcher) authOptions() harnessdispatch.AuthOptions {
 	return harnessdispatch.AuthOptions{
 		JiraLabelsByEditPermission: m.jiraAuth != nil &&
 			m.jiraAuth.EffectiveJiraLabels() == config.JiraLabelsEditors,
+	}
+}
+
+// jiraPollOptions builds the poller options every jira-poll target forge
+// shares: the Jira connection, the query, the output path and the jira
+// authorization provider the matcher loaded. Forge-specific callers set
+// their own TargetForge, GitLabURL and Dispatcher on the result, so the
+// authorization lists reach the poller on every target.
+func jiraPollOptions(args jiraPollArgs, matcher *celMatcher) jirapoll.Options {
+	return jirapoll.Options{
+		TargetRepo:  args.targetRepo,
+		JiraBaseURL: args.jiraURL,
+		JiraProject: args.jiraProject,
+		JQL:         args.jqlOverride,
+		OutputPath:  args.outputPath,
+
+		Authorization: jiraPollAuthorization(matcher.jiraAuth),
 	}
 }
 

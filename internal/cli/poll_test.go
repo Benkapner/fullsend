@@ -815,6 +815,54 @@ authorization:
 	assert.Contains(t, err.Error(), "invalid labels")
 }
 
+func TestJiraPollOptions_ForwardsAuthorization(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
+authorization:
+  - provider: jira
+    write:
+      groups: [devs]
+    triage:
+      accounts: [acct]
+    labels: allowlist
+`), 0o644))
+	m, err := newCELMatcher(context.Background(), dir)
+	require.NoError(t, err)
+
+	args := jiraPollArgs{jiraURL: "https://jira.example.com", jiraProject: "PROJ", jqlOverride: "project = PROJ", targetRepo: "group/sub/repo", outputPath: "out.json", fullsendDir: dir}
+	opts := jiraPollOptions(args, m)
+	assert.Equal(t, jirapoll.Options{
+		TargetRepo:  "group/sub/repo",
+		JiraBaseURL: "https://jira.example.com",
+		JiraProject: "PROJ",
+		JQL:         "project = PROJ",
+		OutputPath:  "out.json",
+		Authorization: jirapoll.Authorization{
+			Configured:      true,
+			Write:           jirapoll.ActorList{Groups: []string{"devs"}},
+			Triage:          jirapoll.ActorList{Accounts: []string{"acct"}},
+			ListsConfigured: true,
+			Labels:          config.JiraLabelsAllowlist,
+		},
+	}, opts)
+	assert.True(t, opts.Authorization.HasLists(), "the lists must be authoritative on every target forge")
+
+	// The GitLab entry point layers its target on the shared options, so
+	// the authorization the matcher loaded is still there afterwards.
+	opts.TargetForge = jirapoll.TargetForgeGitLab
+	opts.GitLabURL = "https://gitlab.example.com"
+	assert.True(t, opts.Authorization.Configured)
+	assert.Equal(t, jirapoll.ActorList{Groups: []string{"devs"}}, opts.Authorization.Write)
+
+	// With no jira entry both forges get the zero value: project roles for
+	// every event, as before the provider existed.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
+`), 0o644))
+	m, err = newCELMatcher(context.Background(), dir)
+	require.NoError(t, err)
+	assert.Equal(t, jirapoll.Authorization{}, jiraPollOptions(args, m).Authorization)
+}
+
 func TestNewCELMatcher_RejectsInvalidAuthorization(t *testing.T) {
 	tests := map[string]struct {
 		yaml    string
