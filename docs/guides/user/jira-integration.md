@@ -14,6 +14,8 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
    Giving one account both sets of access is more power than we want long-term and needs a follow-up design. See [Actor role resolution](#actor-role-resolution).
 3. **Install fullsend** in the GitHub repository that will run the agents (`fullsend github setup`). See [Configuring GitHub](../getting-started/configuring-github.md) and [Prerequisites](#prerequisites).
 4. **Copy the Jira poller workflow** into `.github/workflows/fullsend-poll-jira.yml`. See [Scheduled workflow](#scheduled-workflow).
+
+   For a GitLab project, steps 3 and 4 differ: install fullsend in the project with `fullsend repos install` and run the poller from a scheduled GitLab CI job with `--target-forge gitlab`. See [GitLab runtime](#gitlab-runtime).
 5. **Set the Jira project key** (replace `PROJ`) and, if you want a narrower candidate set, a custom `--jql` expression in that workflow. See [Custom JQL](#custom-jql).
 6. **Add a `trigger` expression** on each agent that should handle Jira events:
    add `trigger:` to a harness YAML file registered via `config.yaml`'s
@@ -47,13 +49,13 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 
 ## How it works
 
-A scheduled GitHub Actions workflow runs `fullsend poll --input-driver jira-poll` on a cron. Each cycle:
+A scheduled GitHub Actions workflow runs `fullsend poll --input-driver jira-poll` on a cron. For a GitLab project, a scheduled GitLab CI job runs it with `--target-forge gitlab` instead (see [GitLab runtime](#gitlab-runtime)). Each cycle:
 
 1. Queries Jira for recently updated issues in your project.
 2. Detects new comments and label changes since the last poll.
 3. Converts each change to a [NormalizedEvent](../../normative/normalized-event/v1/) — the forge-neutral event struct that all input drivers (GitHub, GitLab, Jira) produce.
 4. Routes through the standard agent routing rules.
-5. Writes dispatch records that trigger agent workflows.
+5. Writes dispatch records that trigger agent workflows, or, for a GitLab target, starts the agent pipelines directly.
 
 For architectural details on the polling protocol, see [Architecture](../../architecture.md#agent-dispatch-and-coordination-layer).
 
@@ -240,6 +242,120 @@ Technically `--jql` can be used without `--jira-project`, but the only scenario 
 
 Custom JQL must be a **bounded query**: Jira's enhanced search endpoint rejects queries without a search restriction (e.g. a bare `ORDER BY updated DESC`) with a 400 on every cycle. Always include at least a `project = ...` or similar restriction, as the examples above do.
 
+## GitLab runtime
+
+Jira work items can also dispatch agents in a GitLab project. Run the poller
+with `--target-forge gitlab` from a CI job in that project. The poller does
+not write a matrix for a downstream step. It starts each matched agent
+directly, through the same protected pipeline route the GitLab poller uses
+for issues and merge requests.
+
+### Requirements
+
+- The project is installed with `fullsend repos install` from a release that
+  includes Jira dispatch. Older scaffolds limit the `resource_key` pipeline
+  input to GitLab issue and merge request keys. The poller reads the committed
+  `.gitlab/ci/fullsend-pipeline.yml` before each dispatch and fails with
+  `does not accept Jira work items; rerun repos install` when the installed
+  scaffold predates Jira dispatch.
+- The poll job runs in a scheduled pipeline on the protected default branch,
+  so the protected `FULLSEND_GITLAB_POLLER_TOKEN` and
+  `FULLSEND_DISPATCH_SECRET` variables that `repos install` provisions are
+  available to it. The poller refuses to dispatch without
+  `FULLSEND_DISPATCH_SECRET`, because the agent pipeline rejects unsigned
+  dispatches.
+- `JIRA_TOKEN`, `JIRA_USER_EMAIL`, and `JIRA_BASE_URL` are set as protected,
+  masked CI/CD variables. The agent jobs need them as well, to post run status
+  to the Jira issue.
+
+`fullsend` does not yet create the schedule or the Jira variables for you.
+That setup is tracked in
+[#8906](https://github.com/fullsend-ai/fullsend/issues/8906).
+
+### Running the poller
+
+Use the identity the scaffold's `pin-ci-job-identity.sh` pins from the job
+record, as `run-poll-job.sh` does for the GitLab poller, rather than
+`CI_PROJECT_PATH` and `CI_SERVER_URL`. Pipeline variables can override those
+two.
+
+```bash
+export CI_COMMIT_REF_NAME="${FULLSEND_PINNED_REF}"
+fullsend poll \
+  --input-driver jira-poll \
+  --target-forge gitlab \
+  --jira-url "${JIRA_BASE_URL}" \
+  --jira-project PROJ \
+  --project "${FULLSEND_PINNED_PROJECT_PATH}" \
+  --gitlab-url "${FULLSEND_PINNED_GITLAB_URL}" \
+  --fullsend-dir .fullsend
+```
+
+| Flag | GitLab target behavior |
+|---|---|
+| `--target-forge gitlab` | Dispatch to a GitLab project. The default, `github`, keeps the GitHub Actions flow above |
+| `--project` | Full project path, including every nested group (for example `group/subgroup/project`). Defaults to `CI_PROJECT_PATH` |
+| `--gitlab-url` | Instance URL. Must be `https`. A self-managed instance served under a path prefix keeps the prefix |
+| `--output` | Optional. When set, the dispatch records are also written to the file |
+| `--target-repo` | Rejected, because it names a GitHub repository |
+
+The command uses the Poller role credential and the dispatch route the
+scaffold selected in `FULLSEND_GITLAB_DISPATCH_ROUTE`: the Poller API route,
+or the `CI_JOB_TOKEN` child-pipeline route.
+
+### What the agent pipeline receives
+
+Each dispatch is an agent pipeline on the pinned default branch, with these
+typed pipeline inputs signed by the `FULLSEND_DISPATCH_SECRET` HMAC:
+
+| Input | Value |
+|---|---|
+| `stage` | The matched agent |
+| `event_type` | `jira_` plus the event's `source.raw_type`, for example `jira_comment` |
+| `resource_key` | `jira-` plus the Jira key, for example `jira-PROJ-123` |
+| `originating_url` | The Jira browse URL |
+| `repo_full_name` | The full GitLab project path |
+| `is_fork` | `false` |
+| event payload | `{"type": ..., "_normalized_event": ...}`. The comment body and instruction are shortened, ending in `[…truncated]`, when needed to fit GitLab's pipeline input limits |
+
+`actor_id` and `status_iid` are empty: a Jira actor has no GitLab user ID, and
+a Jira issue has no GitLab IID.
+
+The agent job runs the same checks as for any other dispatch: identity pin,
+pipeline creator, HMAC, protected default branch, kill switch, and role
+credential selection. For a `jira_*` event type it then:
+
+- Skips the GitLab Developer-access check on the actor, because the poller
+  already authorized the actor against its Jira project role. See
+  [Jira membership is not GitHub membership](#jira-membership-is-not-github-membership).
+- Passes the normalized event to `fullsend run --event-file`, so the run gets
+  the `FULLSEND_WORK_ITEM_*` variables and posts run status to the Jira issue.
+  A payload without a Jira normalized event fails the job.
+- Refuses the `review` and `fix` stages, which need a merge request.
+
+### Failures
+
+The poller fails closed. An invalid `--project` or `--gitlab-url` stops the
+command before any Jira call. A dispatch also fails, and creates no pipeline,
+when:
+
+- the event targets a different project
+- the Jira key or URL is malformed
+- the project has no fullsend pipeline wrapper, or its scaffold predates Jira
+  dispatch
+- GitLab rejects the pipeline, for example because the Poller credential
+  cannot create pipelines in the project
+
+When any dispatch for a Jira issue fails, that issue's `lastCheck` is not
+advanced and the cycle exits non-zero. The next cycle retries the issue, which
+can dispatch again any of its records that already succeeded.
+
+GitLab targets keep their lock and checkpoint properties in their own
+namespace, `fullsend.poll.gitlab.{instance}.{group path}.{project}.*`, where
+`{instance}` is the host and any path prefix of `--gitlab-url`. A GitLab
+project never shares Jira coordination state with a GitHub repository of the
+same name, or with a project of the same path on another GitLab instance.
+
 ## Local testing
 
 You can run `fullsend poll` locally to verify your Jira connection and inspect dispatch output before deploying the scheduled workflow.
@@ -386,6 +502,8 @@ If your project uses Jira's default role names ("Administrators"/"Developers") w
 
 The role resolved above feeds directly into the dispatch authorization gate (see [Architecture](../../architecture.md#agent-dispatch-and-coordination-layer)) — there is no separate check against the target GitHub repo's actual collaborators. This means anyone holding a Jira project role that maps to `write` (Jira's default "Developers" role, by default) can trigger write-gated slash commands like `/fs-code` against your repo, **even if that person has no GitHub access to it at all**.
 
+The same holds for a [GitLab target](#gitlab-runtime): the agent job skips its GitLab Developer-access check for Jira dispatches, so project membership in GitLab is not checked either.
+
 If your Jira project's membership is broader than your GitHub repo's collaborator list — which is common, since the two are usually administered separately — treat that gap as real: anyone in that gap can use their Jira membership alone to induce agent-proposed changes to your repository. Before enabling this driver, check who holds `write`-mapped roles in the target Jira project and make sure you're comfortable with each of them being able to do that.
 
 ## Poll coordination
@@ -395,7 +513,7 @@ The poller uses Jira entity properties for distributed lock coordination and che
 - **Lock** (`fullsend.poll.{owner}.{repo}.lock`) — prevents concurrent pollers from *detecting changes on* the same issue simultaneously. The lock covers the change-detection window only: it is released when an issue finishes processing, before the dispatch records are written and consumed by the downstream dispatch step, and it is not renewed while an issue is being processed — a cycle that stalls longer than the stale threshold (15 minutes) can have its lock reclaimed by a concurrent poller, which may produce duplicate dispatches. Lock ownership through dispatch scheduling is part of the same tracked follow-up as dispatch confirmation.
 - **Last check** (`fullsend.poll.{owner}.{repo}.lastCheck`) — tracks the timestamp of the most recent processed change. Only changes newer than this timestamp trigger agent dispatch.
 
-These properties are namespaced per target repo, so multiple repos can poll the same Jira project without interference. The properties are visible in Jira's issue properties API but do not appear in the issue UI.
+These properties are namespaced per target repo, so multiple repos can poll the same Jira project without interference. GitLab targets use a separate `fullsend.poll.gitlab.*` namespace that also includes the GitLab instance (see [GitLab runtime](#gitlab-runtime)). The properties are visible in Jira's issue properties API but do not appear in the issue UI.
 
 > **Security note — coordination state is tamperable by any project editor.** Writing an issue entity property requires only Jira's **Edit Issues** permission, which is typically far broader than the project roles this driver maps to `write`. That means anyone who can edit a polled issue can write its `lastCheck` and lock properties. The driver treats both as untrusted: a `lastCheck` dated in the future is ignored (it would otherwise suppress all detection on the issue), and one rewound before the backfill window is clamped to the window's start, so a rewind can replay at most one backfill window of history rather than the whole issue — but within that window it can still re-surface old comments. Per-issue dispatch is capped to bound the blast radius. Even so, **treat Edit-Issues on a polled project as part of the trust boundary**: prefer scoping the poll to a project whose editors you trust, and remember that the authorization gate keys on the *comment's* Jira role, so who can edit issues (and comments) matters as much as who holds `write`.
 
@@ -484,6 +602,7 @@ However, more pollers against the same Jira project means more API calls per cyc
 | Duplicate dispatches | `lastCheck` was cleared or missing | The poller treats a missing `lastCheck` as "never polled" and processes all recent changes. This is self-correcting — the next cycle advances `lastCheck` past the duplicates |
 | Old comment or label change on a newly polled issue never dispatches | Activity predates the first-poll backfill window | On an issue's first poll, activity older than the 24-hour backfill window is permanently skipped (the checkpoint advances past it). To pick up older activity, scope the initial `--jql` to recently updated issues and widen it gradually, or have someone re-trigger by commenting again |
 | Activity during a long outage or disabled workflow is missing after resume | Poller gap exceeded the 24-hour backfill window | The same 24-hour window that bounds a first poll also bounds resumption — any `lastCheck` older than 24 hours is clamped forward. Check the run log for `predates the backfill window` — if present, events in the gap are permanently lost. Have affected users re-trigger by commenting again. See [Poll coordination](#poll-coordination) |
+| GitLab Jira dispatch fails with `does not accept Jira work items` | The project's scaffold predates Jira dispatch | Rerun `fullsend repos install` for the project and merge the scaffold update. See [GitLab runtime](#gitlab-runtime) |
 | Dispatched agent workflow fails immediately | Agent pre/post scripts don't understand Jira-keyed payloads yet | Known limitation, tracked in [#2264](https://github.com/fullsend-ai/fullsend/issues/2264). The dispatch step above still runs the workflow and produces a `NormalizedEvent`, but built-in agent scripts expect a GitHub issue number, not a Jira key |
 
 ## See also

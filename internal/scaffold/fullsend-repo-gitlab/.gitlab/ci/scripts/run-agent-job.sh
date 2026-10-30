@@ -420,7 +420,20 @@ fi
 # ACTOR_ID is the generic actor identity, populated from MR_AUTHOR_ID
 # for MR events or NoteAuthorID for issue/note events. Falls back to
 # MR_AUTHOR_ID for backward compatibility with older dispatch pipelines.
-if [ "${STAGE}" != "retro" ] && [ "${STAGE}" != "prioritize" ]; then
+#
+# Jira work-item dispatches (EVENT_TYPE jira_*, #8919) carry no ACTOR_ID:
+# a Jira actor has no GitLab user ID. The Jira poller already authorized
+# the actor against its Jira project role before dispatching, and
+# EVENT_TYPE is part of the HMAC-verified dispatch message above, so only
+# the poller holding FULLSEND_DISPATCH_SECRET can select this branch. As on
+# GitHub, the Jira project is the authorization boundary for these events.
+JIRA_DISPATCH=false
+case "${EVENT_TYPE:-}" in
+  jira_*) JIRA_DISPATCH=true ;;
+esac
+if [ "${JIRA_DISPATCH}" = "true" ]; then
+  echo "Jira work-item dispatch — actor authorized by the Jira poller's project-role check"
+elif [ "${STAGE}" != "retro" ] && [ "${STAGE}" != "prioritize" ]; then
   AUTH_ACTOR_ID="${ACTOR_ID:-${MR_AUTHOR_ID:-}}"
   if [ -z "${AUTH_ACTOR_ID}" ]; then
     echo "WARNING: No actor identity available — skipping stage (fail-closed)"
@@ -486,6 +499,22 @@ export RUNNER_TEMP="${RUNNER_TEMP:-/tmp}"
 # not "0" — inventing …/issues/0 passes EM-001's work_item check.
 GITLAB_ISSUE_URL=""
 case "${EVENT_TYPE:-}" in
+  jira_*)
+    # A Jira work item has no GitLab issue or merge request. Run status
+    # goes to the Jira issue (fullsend run reads the normalized event
+    # passed with --event-file below), so leave GITLAB_ISSUE_URL empty and
+    # keep the overridable merge-request variables from steering any
+    # GitLab note to a merge request. Merge-request stages have nothing to
+    # act on.
+    case "${STAGE}" in
+      review|fix)
+        echo "ERROR: the ${STAGE} stage needs a merge request — refusing to run it for a Jira work item" >&2
+        exit 1
+        ;;
+    esac
+    unset CI_MERGE_REQUEST_IID
+    export FULLSEND_NOTE_TARGET="issues"
+    ;;
   issue_*)
     if [[ -n "${STATUS_IID:-}" && "${STATUS_IID}" != "0" ]]; then
       GITLAB_ISSUE_URL="${FULLSEND_PINNED_GITLAB_URL}/${FULLSEND_PINNED_PROJECT_PATH}/-/issues/${STATUS_IID}"
@@ -1023,6 +1052,24 @@ if [ "${STAGE}" = "fix" ]; then
   _FS_TARGET_REPO="${FIX_TARGET_REPO}"
 fi
 mkdir -p "${CI_PROJECT_DIR}/output"
+
+# Jira work-item dispatch (#8919): hand fullsend run the normalized Jira
+# event from the HMAC-verified payload. fullsend run validates it, exports
+# the tracker-independent work-item identity (source, key, URL), clears
+# ISSUE_NUMBER, and routes run status to the Jira issue. A payload without
+# a Jira normalized event fails closed rather than running as a GitLab
+# issue.
+_FS_RUN_EVENT_ARGS=()
+if [ "${JIRA_DISPATCH}" = "true" ]; then
+  JIRA_EVENT_FILE=$(mktemp "${RUNNER_TEMP}/fullsend-jira-event.XXXXXX")
+  if ! printf '%s' "${EVENT_PAYLOAD_B64:-}" | base64 -d 2>/dev/null \
+    | jq -e '._normalized_event | select(type == "object" and .source.system == "jira")' > "${JIRA_EVENT_FILE}" 2>/dev/null; then
+    echo "ERROR: Jira dispatch payload has no Jira normalized event — refusing to run (fail-closed)" >&2
+    exit 1
+  fi
+  _FS_RUN_EVENT_ARGS=(--event-file "${JIRA_EVENT_FILE}")
+fi
+
 set +e
 # --status-repo uses the pinned project path (from the CI_JOB_TOKEN
 # job record), not the overridable CI_PROJECT_PATH pipeline variable
@@ -1041,7 +1088,8 @@ fullsend run "${STAGE}" \
   --forge gitlab \
   --run-url "${CI_PIPELINE_URL}" \
   --status-repo "${FULLSEND_PINNED_PROJECT_PATH}" \
-  --status-number "${MR_NUMBER:-${STATUS_IID:-0}}"
+  --status-number "${MR_NUMBER:-${STATUS_IID:-0}}" \
+  ${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}
 RUN_STATUS=$?
 set -e
 

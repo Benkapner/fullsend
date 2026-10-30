@@ -109,6 +109,8 @@ Harnesses and pre-scripts that require forge-agnostic work item URLs SHOULD use
 forge-native events, the generic key and `ISSUE_NUMBER` carry the same value.
 
 `fullsend run` reads the normalized event embedded in the dispatch payload.
+On GitLab, the agent job extracts it from the signed `jira_*` dispatch payload
+and passes it with `--event-file`.
 For a Jira event it sets `FULLSEND_WORK_ITEM_SOURCE`, `FULLSEND_WORK_ITEM_KEY`,
 and `FULLSEND_WORK_ITEM_URL` from that event, replacing any inherited values.
 It also clears `ISSUE_NUMBER` before pre-scripts, post-scripts, and harness

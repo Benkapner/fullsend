@@ -120,18 +120,9 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 		return fmt.Errorf("dispatch for %s/%s requires the typed pipeline-input contract in %s at ref %q; the legacy pipeline-variable dispatch path is no longer supported, so pin the repository's fullsend_ref to %s or later (or remove the pin) and rerun repos install", stage, rk, fullsendPipelineIncludePath, p.opts.PipelineRef, firstTypedDispatchRelease)
 	}
 
-	inputs, inputsErr := dispatchInputs(variables)
-	if inputsErr != nil {
-		return fmt.Errorf("build dispatch inputs for %s/%s: %w", stage, rk, inputsErr)
-	}
-	var webURL string
-	if p.opts.ChildDispatchJobToken != "" {
-		_, webURL, err = p.client.CreateChildPipelineWithInputs(ctx, owner, repo, p.opts.PipelineRef, p.opts.ChildDispatchJobToken, inputs)
-	} else {
-		_, webURL, err = p.client.CreatePipelineWithInputs(ctx, owner, repo, p.opts.PipelineRef, inputs)
-	}
+	webURL, err := p.createAgentPipeline(ctx, owner, repo, stage, rk, variables)
 	if err != nil {
-		return fmt.Errorf("create pipeline for %s/%s: %w", stage, rk, err)
+		return err
 	}
 
 	entityPrefix := "#"
@@ -151,6 +142,29 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 		IID:             event.IID,
 	})
 	return nil
+}
+
+// createAgentPipeline converts the signed dispatch variables into typed
+// pipeline inputs and creates the agent pipeline at p.opts.PipelineRef on
+// the selected route: the CI_JOB_TOKEN child-pipeline route when
+// ChildDispatchJobToken is set, otherwise the Poller API route. It returns
+// the created pipeline's web URL. Callers sign variables and confirm the
+// typed pipeline-input contract first.
+func (p *Poller) createAgentPipeline(ctx context.Context, owner, repo, stage, rk string, variables map[string]string) (string, error) {
+	inputs, err := dispatchInputs(variables)
+	if err != nil {
+		return "", fmt.Errorf("build dispatch inputs for %s/%s: %w", stage, rk, err)
+	}
+	var webURL string
+	if p.opts.ChildDispatchJobToken != "" {
+		_, webURL, err = p.client.CreateChildPipelineWithInputs(ctx, owner, repo, p.opts.PipelineRef, p.opts.ChildDispatchJobToken, inputs)
+	} else {
+		_, webURL, err = p.client.CreatePipelineWithInputs(ctx, owner, repo, p.opts.PipelineRef, inputs)
+	}
+	if err != nil {
+		return "", fmt.Errorf("create pipeline for %s/%s: %w", stage, rk, err)
+	}
+	return webURL, nil
 }
 
 // usesTypedDispatch reports whether the target repository's committed

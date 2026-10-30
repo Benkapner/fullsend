@@ -39,17 +39,34 @@ type JiraClient interface {
 // Compile-time interface check.
 var _ JiraClient = (*jira.LiveClient)(nil)
 
+// Target forges a Jira poller can dispatch agents to.
+const (
+	TargetForgeGitHub = "github"
+	TargetForgeGitLab = "gitlab"
+)
+
+// RecordDispatcher schedules dispatch records directly on the target forge
+// (an output driver). When Options.Dispatcher is set, Run hands each issue's
+// records to it after the dispatch file is written, and commits an issue's
+// lastCheck only when every one of its records was dispatched.
+type RecordDispatcher interface {
+	Dispatch(ctx context.Context, record DispatchRecord) error
+}
+
 // Options configures the Jira poller.
 type Options struct {
-	TargetRepo              string        // GitHub repo slug where agents run (e.g., "acme/platform")
-	JiraBaseURL             string        // Jira instance base URL
-	JiraProject             string        // Jira project key for default JQL
-	JQL                     string        // Custom JQL override
-	OutputPath              string        // Path to write dispatch records JSON
-	M                       int           // Max candidate issues per cycle (default: 50)
-	N                       int           // Max issues to process per cycle (default: 5)
-	StaleThreshold          time.Duration // Lock stale threshold (default: 900s)
-	FirstPollBackfillWindow time.Duration // How far back to backfill comments/changelog on an issue's first poll (default: 24h)
+	TargetRepo              string           // Repo where agents run: a GitHub owner/repo slug, or the full GitLab project path (nested groups allowed)
+	TargetForge             string           // TargetForgeGitHub (default when empty) or TargetForgeGitLab
+	GitLabURL               string           // GitLab instance URL when TargetForge is TargetForgeGitLab; part of the coordination namespace
+	Dispatcher              RecordDispatcher // Optional output driver that schedules records directly (GitLab)
+	JiraBaseURL             string           // Jira instance base URL
+	JiraProject             string           // Jira project key for default JQL
+	JQL                     string           // Custom JQL override
+	OutputPath              string           // Path to write dispatch records JSON
+	M                       int              // Max candidate issues per cycle (default: 50)
+	N                       int              // Max issues to process per cycle (default: 5)
+	StaleThreshold          time.Duration    // Lock stale threshold (default: 900s)
+	FirstPollBackfillWindow time.Duration    // How far back to backfill comments/changelog on an issue's first poll (default: 24h)
 }
 
 // JiraEvent is the intermediate event representation, analogous to poll.RoutableEvent.
