@@ -417,6 +417,8 @@ OVERRIDE_DIR="${WORK_DIR}/gitlab-runner.service.d"
 LIBEXEC="${WORK_DIR}/libexec/os-update.sh"
 INSTALL_STATE="${WORK_DIR}/install-state"
 
+# The assignments below override setup.sh globals read by install_os_update.
+# shellcheck disable=SC2034
 run_install() {
   INSTALL_RC=0
   INSTALL_OUT=$(
