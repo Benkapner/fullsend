@@ -127,14 +127,21 @@ runner_busy() {
 # Usage: write_shutdown_timeout <line or empty to drop the key>
 write_shutdown_timeout() {
   local line="$1" tmp
-  tmp=$(mktemp)
-  {
+  tmp=$(mktemp) || return 1
+  # grep exits 1 when nothing is left to print (fine); 2 or more is an error.
+  if ! {
     if [ -n "${line}" ]; then
       printf '%s\n' "${line}"
     fi
-    grep -v '^shutdown_timeout' "${CONFIG_TOML}" || true
-  } > "${tmp}"
-  cat "${tmp}" > "${CONFIG_TOML}"
+    grep -v '^shutdown_timeout' "${CONFIG_TOML}" || [ $? -eq 1 ]
+  } > "${tmp}"; then
+    rm -f "${tmp}"
+    return 1
+  fi
+  if ! cat "${tmp}" > "${CONFIG_TOML}"; then
+    rm -f "${tmp}"
+    return 1
+  fi
   rm -f "${tmp}"
 }
 
@@ -144,9 +151,18 @@ write_shutdown_timeout() {
 # original value is saved once, so a deferred drain that leaves the raised
 # value in place is still restored by a later run.
 raise_shutdown_timeout() {
+  local orig grep_rc=0
   [ -f "${CONFIG_TOML}" ] || return 0
   if [ ! -f "${SHUTDOWN_TIMEOUT_ORIG_FILE}" ]; then
-    grep -m1 '^shutdown_timeout' "${CONFIG_TOML}" > "${SHUTDOWN_TIMEOUT_ORIG_FILE}" || true
+    # grep exits 1 when no shutdown_timeout is set (saved as an empty line).
+    orig=$(grep -m1 '^shutdown_timeout' "${CONFIG_TOML}") || grep_rc=$?
+    if [ "${grep_rc}" -gt 1 ]; then
+      return 1
+    fi
+    if ! printf '%s\n' "${orig}" > "${SHUTDOWN_TIMEOUT_ORIG_FILE}"; then
+      rm -f "${SHUTDOWN_TIMEOUT_ORIG_FILE}"
+      return 1
+    fi
   fi
   write_shutdown_timeout "shutdown_timeout = $((DRAIN_TIMEOUT_SEC + 3600))"
 }
@@ -160,16 +176,27 @@ restore_shutdown_timeout() {
 }
 
 # Stop gitlab-runner taking new jobs and wait for any job to finish.
-# Returns 0 when drained, 1 when the drain cap was reached (job left running).
+# Returns 0 when drained, 1 when the drain cap was reached (job left running),
+# 2 when a preparation step failed (SIGQUIT was never sent). The caller runs
+# this under `if`/`||`, where errexit is off, so every step is checked here.
 drain_runner() {
   local start now state containers
   log "draining gitlab-runner (cap ${DRAIN_TIMEOUT_SEC}s)"
-  mkdir -p "$(dirname "${HOLD_FILE}")"
-  : > "${HOLD_FILE}"
-  raise_shutdown_timeout
+  if ! mkdir -p "$(dirname "${HOLD_FILE}")" || ! : > "${HOLD_FILE}"; then
+    err "could not create the hold file ${HOLD_FILE} — not draining"
+    return 2
+  fi
+  if ! raise_shutdown_timeout; then
+    err "could not raise shutdown_timeout in ${CONFIG_TOML} — not draining"
+    return 2
+  fi
   # HUP reloads config.toml so the raised shutdown_timeout is in effect before
-  # SIGQUIT starts the graceful shutdown.
-  systemctl kill --kill-whom=main -s HUP "${RUNNER_SERVICE}" >/dev/null 2>&1 || true
+  # SIGQUIT starts the graceful shutdown. Without the reload a running job
+  # could be killed at the old timeout, so a failed HUP aborts the drain.
+  if ! systemctl kill --kill-whom=main -s HUP "${RUNNER_SERVICE}" >/dev/null 2>&1; then
+    err "could not signal ${RUNNER_SERVICE} to reload its config — not draining"
+    return 2
+  fi
   sleep "${RELOAD_SETTLE_SEC}"
   if ! systemctl kill --kill-whom=main -s QUIT "${RUNNER_SERVICE}" >/dev/null 2>&1; then
     warn "could not signal ${RUNNER_SERVICE} — waiting for it to stop anyway"
@@ -178,8 +205,10 @@ drain_runner() {
   start=$(date +%s)
   while true; do
     state=$(runner_state)
+    # Only an observed inactive/failed counts as stopped; an empty or
+    # unrecognised state (a failed query) is unknown, so keep waiting.
     case "${state}" in
-      inactive|failed|unknown|"")
+      inactive|failed)
         if containers=$(running_job_containers) && [ -z "${containers}" ]; then
           log "runner drained"
           return 0
@@ -215,8 +244,17 @@ health_check() {
   return 0
 }
 
+restore_hold() {
+  if ! : > "${HOLD_FILE}"; then
+    err "could not recreate the hold file ${HOLD_FILE}"
+    return 0
+  fi
+  err "hold file restored; run: sudo FULLSEND_RUNNER_USER=${RUNNER_USER} $0 --resume (or wait for the next scheduled run) to retry"
+}
+
 # Verify the runner, then let it take jobs again. On failure the hold file
-# stays, so gitlab-runner stays stopped (including across reboots).
+# stays (or is restored), so gitlab-runner stays stopped (including across
+# reboots) until a later run retries.
 release_runner() {
   local attempt=1 reason
   [ -f "${HOLD_FILE}" ] || return 0
@@ -233,13 +271,18 @@ release_runner() {
   done
   rm -f "${HOLD_FILE}"
   systemctl reset-failed "${RUNNER_SERVICE}" >/dev/null 2>&1 || true
+  # If the runner does not come up, put the hold back so a later --resume or
+  # scheduled run goes through release_runner again instead of leaving it
+  # stopped with nothing left to retry the recovery.
   if ! systemctl start "${RUNNER_SERVICE}"; then
     err "failed to start ${RUNNER_SERVICE}"
+    restore_hold
     return 1
   fi
   sleep "${START_SETTLE_SEC}"
   if [ "$(runner_state)" != "active" ]; then
     err "${RUNNER_SERVICE} is not active after start (state: $(runner_state))"
+    restore_hold
     return 1
   fi
   log "runner healthy and accepting jobs"
@@ -319,13 +362,19 @@ while runner_busy; do
   sleep "${RETRY_SEC}"
 done
 
-if ! drain_runner; then
+drain_rc=0
+drain_runner || drain_rc=$?
+if [ "${drain_rc}" -ne 0 ]; then
   # Do not touch the job: release the hold so Restart=always brings the
   # runner back once the job ends, and try again on the next scheduled run.
   # shutdown_timeout stays raised so the job is not cut off; a later run
   # restores the saved original.
   rm -f "${HOLD_FILE}"
   systemctl start "${RUNNER_SERVICE}" >/dev/null 2>&1 || true
+  if [ "${drain_rc}" -eq 2 ]; then
+    err "drain preparation failed — runner left available, no update applied"
+    exit 1
+  fi
   warn "drain did not finish within ${DRAIN_TIMEOUT_SEC}s — update deferred, job left running"
   exit 0
 fi

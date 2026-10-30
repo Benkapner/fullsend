@@ -56,6 +56,8 @@ echo "systemctl $*" >> "${CALLS}"
 case "$1" in
   is-active)
     state=$(cat "${SVC_STATE}" 2>/dev/null || echo inactive)
+    # "empty" simulates a failed state query: no output, nonzero exit.
+    if [ "${state}" = "empty" ]; then exit 4; fi
     echo "${state}"
     [ "${state}" = "active" ]
     exit $?
@@ -63,16 +65,28 @@ case "$1" in
   show) echo "${MAIN_PID:-4242}" ;;
   kill)
     case "$*" in
+      *"-s HUP"*)
+        if [ "${HUP_FAILS:-0}" = "1" ]; then exit 1; fi
+        ;;
       *"-s QUIT"*)
-        if [ "${QUIT_KEEPS_RUNNING:-0}" != "1" ]; then echo inactive > "${SVC_STATE}"; fi
+        if [ "${STATE_EMPTY_AFTER_QUIT:-0}" = "1" ]; then echo empty > "${SVC_STATE}"
+        elif [ "${QUIT_KEEPS_RUNNING:-0}" != "1" ]; then echo inactive > "${SVC_STATE}"; fi
         ;;
     esac
     ;;
   start)
+    if [ "${START_RC:-0}" != "0" ]; then exit "${START_RC}"; fi
     if [ ! -e "${HOLD_FILE}" ] && [ "${START_FAILS:-0}" != "1" ]; then echo active > "${SVC_STATE}"; fi
     ;;
 esac
 exit 0
+STUB
+
+# mktemp: fails on demand (MKTEMP_FAILS=1), otherwise the real one.
+cat > "${SHIM_DIR}/mktemp" <<'STUB'
+#!/bin/sh
+if [ "${MKTEMP_FAILS:-0}" = "1" ]; then exit 1; fi
+exec /usr/bin/mktemp "$@"
 STUB
 
 # pgrep: a child of gitlab-runner exists for the first BUSY_CALLS calls.
@@ -361,6 +375,74 @@ if [ "${RUN_RC}" -eq 0 ] && [ ! -e "${HOLD_FILE}" ] && [ "$(cat "${SVC_STATE}")"
   pass "timer run releases a runner held by an earlier run before checking updates"
 else
   fail "held runner not released by the timer run (rc=${RUN_RC}): ${RUN_OUT}"
+fi
+
+echo "== failed start restores the hold =="
+reset_fixtures
+: > "${HOLD_FILE}"
+echo inactive > "${SVC_STATE}"
+START_RC=1 run_update --resume
+if [ "${RUN_RC}" -eq 0 ]; then
+  fail "failed systemctl start should fail the unit: ${RUN_OUT}"
+elif [ ! -e "${HOLD_FILE}" ]; then
+  fail "hold file not restored after a failed start (--resume would be a no-op)"
+else
+  pass "a failed start restores the hold file"
+fi
+: > "${CALLS}"
+run_update --resume
+if [ "${RUN_RC}" -eq 0 ] && [ ! -e "${HOLD_FILE}" ] && [ "$(cat "${SVC_STATE}")" = "active" ]; then
+  pass "a later --resume retries and recovers the runner"
+else
+  fail "later --resume did not recover the runner (rc=${RUN_RC}): ${RUN_OUT}"
+fi
+
+reset_fixtures
+: > "${HOLD_FILE}"
+echo inactive > "${SVC_STATE}"
+START_FAILS=1 run_update --resume
+if [ "${RUN_RC}" -eq 0 ]; then
+  fail "a runner that is inactive after start should fail the unit: ${RUN_OUT}"
+elif [ ! -e "${HOLD_FILE}" ]; then
+  fail "hold file not restored when the runner is inactive after start"
+else
+  pass "an inactive runner after start restores the hold file"
+fi
+
+echo "== drain preparation failures do not send QUIT =="
+reset_fixtures
+DNF_CHECK_RC=100 HUP_FAILS=1 run_update
+if [ "${RUN_RC}" -eq 0 ]; then
+  fail "failed HUP should fail the unit: ${RUN_OUT}"
+elif called 'QUIT' || called 'dnf -y upgrade'; then
+  fail "QUIT or upgrade ran although the config reload failed: $(calls)"
+elif [ -e "${HOLD_FILE}" ] || [ "$(cat "${SVC_STATE}")" != "active" ]; then
+  fail "runner not left available after a failed HUP"
+else
+  pass "a failed config reload aborts the drain before QUIT"
+fi
+
+reset_fixtures
+DNF_CHECK_RC=100 MKTEMP_FAILS=1 run_update
+if [ "${RUN_RC}" -eq 0 ]; then
+  fail "failed shutdown_timeout rewrite should fail the unit: ${RUN_OUT}"
+elif called 'QUIT' || called 'dnf -y upgrade'; then
+  fail "QUIT or upgrade ran although shutdown_timeout was not raised: $(calls)"
+elif [ -e "${HOLD_FILE}" ] || [ "$(cat "${SVC_STATE}")" != "active" ]; then
+  fail "runner not left available after a failed shutdown_timeout rewrite"
+else
+  pass "a failed shutdown_timeout rewrite aborts the drain before QUIT"
+fi
+
+echo "== unknown runner state is not treated as drained =="
+reset_fixtures
+DNF_CHECK_RC=100 STATE_EMPTY_AFTER_QUIT=1 FULLSEND_OS_UPDATE_DRAIN_TIMEOUT_SEC=0 run_update
+if called 'dnf -y upgrade'; then
+  fail "upgrade ran although the runner state could not be read: $(calls)"
+elif printf '%s' "${RUN_OUT}" | grep -Fq 'update deferred, job left running'; then
+  pass "an empty state query defers instead of upgrading"
+else
+  fail "empty state output mismatch (rc=${RUN_RC}): ${RUN_OUT}"
 fi
 
 echo "== other guards =="
