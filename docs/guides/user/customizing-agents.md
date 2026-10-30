@@ -646,7 +646,10 @@ GitLab uses its own stage router, which applies the same triage and write
 split to slash commands. The GitLab agent job also requires the event actor
 to hold Developer access or higher for every stage except retro and
 prioritize, so automatic triage of a newly opened issue runs only when its
-author is a Developer, Maintainer, or Owner.
+author is a Developer, Maintainer, or Owner. Jira work items dispatched to a
+GitLab project skip that check, because their actor has no GitLab account; the
+Jira poller authorizes them by Jira project role (see
+[Jira integration](jira-integration.md#gitlab-runtime)).
 See the
 [Authorization Contract](../../normative/authorization/v1/README.md) for the
 full role hierarchy, exception rules, and implementation notes.

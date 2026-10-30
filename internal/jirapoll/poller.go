@@ -179,15 +179,14 @@ func (p *Poller) Run(ctx context.Context) error {
 	var pending []pendingCheckpoint
 	var processErrors int
 	for _, issue := range selected {
+		start := len(p.dispatches)
 		checkpoint, err := p.processIssue(ctx, issue, cycleID)
 		if err != nil {
 			log.Printf("WARNING: processing %s: %v", issue.Key, err)
 			processErrors++
 			continue
 		}
-		if !checkpoint.IsZero() {
-			pending = append(pending, pendingCheckpoint{issueKey: issue.Key, t: checkpoint})
-		}
+		pending = append(pending, pendingCheckpoint{issueKey: issue.Key, t: checkpoint, records: p.dispatches[start:len(p.dispatches):len(p.dispatches)]})
 	}
 	if processErrors > 0 && processErrors == len(selected) {
 		return fmt.Errorf("all %d selected issues failed to process", processErrors)
@@ -208,7 +207,30 @@ func (p *Poller) Run(ctx context.Context) error {
 	// follow-up), a failure in that downstream step will silently drop the
 	// event instead of being retried. Local persistence of dispatches.json
 	// itself is durable before Step 6 below commits any checkpoint.
-	if len(p.dispatches) > 0 {
+	//
+	// With an output driver (Options.Dispatcher, used for GitLab targets)
+	// the records are scheduled here instead, and an issue's checkpoint is
+	// committed only when all of its records were dispatched. A failed
+	// dispatch leaves that issue's checkpoint untouched so the next cycle
+	// retries it; records of the same issue that did dispatch may then be
+	// dispatched again.
+	var dispatchErrors int
+	var firstDispatchErr error
+	if p.opts.Dispatcher != nil {
+		for i := range pending {
+			for _, record := range pending[i].records {
+				if err := p.opts.Dispatcher.Dispatch(ctx, record); err != nil {
+					log.Printf("WARNING: dispatching %s for %s: %v (lastCheck not advanced; the issue is retried next cycle)", record.Agent, pending[i].issueKey, err)
+					pending[i].dispatchFailed = true
+					dispatchErrors++
+					if firstDispatchErr == nil {
+						firstDispatchErr = err
+					}
+					break
+				}
+			}
+		}
+	} else if len(p.dispatches) > 0 {
 		log.Printf("WARNING: committing checkpoints for %d dispatch(es) not yet confirmed as scheduled downstream; see KNOWN LIMITATION note in Run", len(p.dispatches))
 	}
 
@@ -218,8 +240,12 @@ func (p *Poller) Run(ctx context.Context) error {
 	// dispatches are already persisted, so an uncommitted checkpoint means
 	// the next cycle re-detects the same activity and emits duplicates,
 	// which should not masquerade as a clean run.
-	var advanceErrors int
+	var advanceErrors, advanceAttempts int
 	for _, pc := range pending {
+		if pc.t.IsZero() || pc.dispatchFailed {
+			continue
+		}
+		advanceAttempts++
 		if err := p.advanceLastCheck(ctx, pc.issueKey, pc.t); err != nil {
 			log.Printf("WARNING: advancing lastCheck for %s: %v", pc.issueKey, err)
 			advanceErrors++
@@ -228,17 +254,24 @@ func (p *Poller) Run(ctx context.Context) error {
 
 	log.Printf("poll complete: %d candidates, %d unlocked, %d selected, %d dispatches",
 		len(candidates), len(unlocked), len(selected), len(p.dispatches))
+	if dispatchErrors > 0 {
+		return fmt.Errorf("failed to dispatch records for %d issue(s); their lastCheck was not advanced, so they are retried next cycle: %w", dispatchErrors, firstDispatchErr)
+	}
 	if advanceErrors > 0 {
-		return fmt.Errorf("failed to commit lastCheck for %d of %d issues; their activity will be re-detected (and re-dispatched) next cycle", advanceErrors, len(pending))
+		return fmt.Errorf("failed to commit lastCheck for %d of %d issues; their activity will be re-detected (and re-dispatched) next cycle", advanceErrors, advanceAttempts)
 	}
 	return nil
 }
 
 // pendingCheckpoint holds a computed lastCheck value for an issue, deferred
-// until the dispatch file write succeeds (see Run).
+// until the dispatch file write succeeds (see Run), together with the
+// dispatch records the issue produced this cycle. A zero t means there is
+// no checkpoint to advance.
 type pendingCheckpoint struct {
-	issueKey string
-	t        time.Time
+	issueKey       string
+	t              time.Time
+	records        []DispatchRecord
+	dispatchFailed bool // set when Options.Dispatcher failed one of records
 }
 
 // maxRolePriority is the highest value jira.RolePriority can return
