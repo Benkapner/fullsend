@@ -17,10 +17,31 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 
    For a GitLab project, steps 3 and 4 differ: install fullsend in the project with `fullsend repos install` and run the poller from a scheduled GitLab CI job with `--target-forge gitlab`. See [GitLab runtime](#gitlab-runtime).
 5. **Set the Jira project key** (replace `PROJ`) and, if you want a narrower candidate set, a custom `--jql` expression in that workflow. See [Custom JQL](#custom-jql).
-6. **Add a `trigger` expression** on each agent that should handle Jira events:
-   add `trigger:` to a harness YAML file registered via `config.yaml`'s
-   `agents[].source` (see [Configuring agent
-   behavior](customizing-agents.md#configuration-with-base-composition)). The
+6. **Check which agents handle Jira events.** The poller dispatches an agent
+   only when its harness `trigger:` CEL expression matches the Jira event, and
+   produces zero dispatches for a harness with no trigger, its own or
+   inherited. The built-in triage and code harnesses ship triggers that match
+   Jira events, so they need no extra configuration:
+
+   | Built-in agent | Jira events its trigger matches | From |
+   |---|---|---|
+   | triage | A `/fs-triage` comment from a human, the `ready-for-triage` label being added, or a human opening or editing an issue | The agents release that follows v0.49.0 |
+   | code | A `/fs-code` comment from a human, or the `ready-to-code` label being added | The agents release that follows v0.52.0 ([agents#1842](https://github.com/fullsend-ai/agents/pull/1842)) |
+
+   The actor still needs the role the agent requires. See
+   [Actor role resolution](#actor-role-resolution). The default prioritize
+   trigger also matches a `/fs-prioritize` comment on a Jira issue, but
+   prioritize has no Jira support yet
+   ([#2266](https://github.com/fullsend-ai/fullsend/issues/2266)). Review,
+   fix and retro do not run from Jira events: see [How it works](#how-it-works).
+
+   If your built-in agents are pinned to an earlier agents release, or for a
+   custom agent, add a `trigger:` to a harness YAML file registered via
+   `config.yaml`'s `agents[].source` (see [Configuring agent
+   behavior](customizing-agents.md#configuration-with-base-composition)). To
+   use the built-in triggers instead, move to the release listed above. Re-pin
+   a harness registered with `source:` or composed with `base:` with
+   `fullsend agent update <name>`. The
    poller reads only the harness `trigger:`. A `trigger` on an `agents:` entry
    in `config.yaml` does not affect it: that field decides routing for the
    built-in review, retro, triage and prioritize agents on GitHub only
@@ -28,21 +49,17 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
    [Choosing when retro runs](customizing-agents.md#choosing-when-retro-runs),
    [Choosing when triage and prioritize
    run](customizing-agents.md#choosing-when-triage-and-prioritize-run)).
-   The poller produces zero dispatches for a harness with no trigger, its
-   own or inherited. See [CEL Triggers Reference](cel-triggers-reference.md).
-   Native Jira triggers for the default agent suite are tracked in
-   [#6672](https://github.com/fullsend-ai/fullsend/issues/6672).
+   See [CEL Triggers Reference](cel-triggers-reference.md).
 
    > [!WARNING]
-   > After the agents release that follows v0.49.0, the default triage and
-   > prioritize harnesses ship triggers that also match Jira issues; the
-   > review trigger needs a pull request and the retro trigger is limited to
-   > GitHub and GitLab, so neither matches a Jira issue.
-   > A harness you registered with `source:` that points at the default
-   > triage harness, or composes it with `base:`, and sets no trigger of its
-   > own inherits that trigger when you re-pin its ref. From then on every
-   > Jira issue that a person with triage access or above opens or edits
-   > dispatches triage, not only
+   > A harness you registered with `source:` that points at a default
+   > harness, or composes it with `base:`, and sets no trigger of its own
+   > inherits the default trigger when you re-pin its ref to a release that
+   > ships one. For code (from the agents release that follows v0.52.0), a
+   > `/fs-code` comment or an added `ready-to-code` label on a Jira issue then
+   > dispatches it. For triage (from the agents release that follows
+   > v0.49.0), every Jira issue that a person with triage access or above
+   > opens or edits dispatches triage, not only
    > `/fs-triage`, and on GitHub an entry registered under another name, such
    > as `my-triage`, is dispatched on every issue a person opens or edits.
    > Set your own trigger to keep a narrower one.
@@ -67,9 +84,67 @@ The same conventions work across forges:
 | Comment starting with `/fs-code` | code |
 | Label `ready-to-code` added | code |
 
-A slash command is only recognized as the **first token of the comment's first line**; the rest of that line becomes the instruction passed to the agent. A command buried mid-sentence ("please /fs-triage this") or on a later line does not trigger. Slash commands follow the `/fs-{agent}` pattern for stages that can legitimately run against a bare Jira issue. `review`, `fix`, and `retro` are **not** among them: per the [jira-poll adapter spec](../../normative/normalized-event/v1/jira-poll-adapter.md#state), those stages are change-proposal-scoped (they act on an existing PR) and harness CEL triggers for them MUST require `entity.kind == 'change_proposal'` — which a Jira issue comment alone never has. A `/fs-review` comment on a Jira issue is not expected to dispatch anything.
+A slash command is only recognized as the **first token of the comment's first
+line**. The rest of that line is recorded in the normalized event as
+`transition.comment.instruction`. Later lines are not part of it. No built-in
+agent that runs from Jira reads that field: only the fix agent receives an
+instruction today, parsed from the `/fs-fix` comment on the pull or merge
+request, and fix does not run from Jira events. The built-in triage and code
+agents instead read the Jira issue and its comments through the read-only Jira
+provider (`jira-ro`). So the whole comment, including any lines after the
+command, reaches them as part of the issue context, together with every other
+comment on the issue. A custom agent's `trigger` can test
+`event.transition.comment.instruction`.
+A command buried mid-sentence ("please /fs-triage this") or on a later line does not trigger. Slash commands follow the `/fs-{agent}` pattern for stages that can legitimately run against a bare Jira issue. `review`, `fix`, and `retro` are **not** among them: per the [jira-poll adapter spec](../../normative/normalized-event/v1/jira-poll-adapter.md#state), those stages are change-proposal-scoped (they act on an existing PR) and harness CEL triggers for them MUST require `entity.kind == 'change_proposal'` — which a Jira issue comment alone never has. A `/fs-review` comment on a Jira issue is not expected to dispatch anything.
 
 Comments and changelog entries from the **authenticated poller account** are classified as `actor.kind: bot` and do not dispatch agents. The poller learns that identity from Jira's `/myself` endpoint during the auth preflight, so a regular Atlassian service account (plain display name, `accountType: atlassian`) is recognized without renaming it or adding display-name heuristics. This is the invariant that a mutation performed by fullsend — applying `needs-info`, posting a triage comment, writing a run-status update — cannot trigger the same agent again. Human comments, including `/fs-triage`, still dispatch. Filtered self-authored events still advance the per-issue checkpoint, so they are not reconsidered on the next poll.
+
+The poller also classifies an actor as a bot, and drops its events, when
+either of these holds:
+
+- The actor's Jira account type is `app`.
+- The actor's display name, compared case-insensitively, ends in `bot` or
+  `automation` as a separate word, or starts with `Automation for `. A
+  separate word follows a space, hyphen, underscore or `[`, and may be
+  followed by a closing `]`. `Release Bot`, `ci-bot`, `[automation]` and
+  Atlassian's `Automation for Jira` match. `Dependabot` and `Marbot` do not.
+  A person whose display name matches is treated as a bot too, so their
+  comments and label changes do not dispatch.
+
+### Use a dedicated account for the poller
+
+Give the poller a Jira account of its own, such as an Atlassian service
+account, rather than a person's API token. The poller and the built-in agents'
+Jira writes both authenticate as `JIRA_USER_EMAIL` / `JIRA_TOKEN`, and the
+poller treats that account as a bot. If the token belongs to a person:
+
+- That person's own comments and label changes never dispatch agents,
+  including their `/fs-triage` and `/fs-code` commands.
+- Jira history and comments cannot tell what the person did from what
+  fullsend did, because both appear under the person's name.
+- The poller runs with every Jira permission the person holds, not only the
+  ones it needs, and stops working if the person leaves or loses access.
+
+### Labels present when an issue is created
+
+A label-added trigger, such as the code agent's `ready-to-code`, does not fire
+for an issue that was created with the label already applied. The poller
+builds `label_changed` events from the issue's changelog, and Jira records no
+changelog entry for labels set at creation. On an issue's first poll, the
+poller instead emits a single `opened` event with the reporter as the actor
+and the issue's current labels in `state.labels`. It does this only when the
+issue was created within the 24-hour backfill window (see
+[Poll coordination](#poll-coordination)). The default triage trigger matches
+that `opened` event. The default code trigger does not.
+
+To start the code agent on such an issue, do one of the following:
+
+1. Comment `/fs-code` on the issue.
+2. Remove the `ready-to-code` label, then add it again.
+
+The person who comments or re-adds the label needs the role the code agent
+requires, as for any other trigger. See
+[Actor role resolution](#actor-role-resolution).
 
 ## Event semantics — input only
 
@@ -175,11 +250,12 @@ The wildcard host (`*.atlassian.net`) permits egress to any Atlassian Cloud tena
 
 The Jira poller produces the same
 [NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and GitLab
-do, so routing works the same way. Until built-in harnesses ship native Jira
-`trigger` expressions
-([#6672](https://github.com/fullsend-ai/fullsend/issues/6672)), each agent that
-should handle Jira events still needs a matching `trigger` — see
-[Setup overview](#setup-overview) step 6. For Jira-triggered runs,
+do, so routing works the same way. From the agents release that follows
+v0.52.0, the built-in triage and code harnesses ship `trigger` expressions
+that match Jira events. A custom agent, or a built-in agent pinned to an
+earlier release, needs its own matching `trigger`. See
+[Setup overview](#setup-overview) step 6 for which events each built-in
+trigger matches. For Jira-triggered runs,
 `fullsend run` exports `FULLSEND_WORK_ITEM_SOURCE`, `FULLSEND_WORK_ITEM_KEY`,
 and `FULLSEND_WORK_ITEM_URL`, clears `ISSUE_NUMBER`, and fails closed on a
 malformed Jira identity. The built-in triage and code agents write their results
@@ -188,7 +264,12 @@ on the code host. See
 [Where built-in agent results appear](#where-built-in-agent-results-appear) for
 details.
 
-If your repo already has a `.fullsend/config.yaml` from `fullsend github setup`, add a harness override with the Jira `trigger` expressions from step 6 (see [Configuring agent behavior](customizing-agents.md#configuration-with-base-composition)) and you are ready to receive dispatches.
+If your repo already has a `.fullsend/config.yaml` from `fullsend github setup`
+and uses the built-in triage and code agents from the agents release that
+follows v0.52.0 or later, you need no harness changes to receive dispatches.
+Otherwise, add a harness override with a Jira `trigger` expression for each
+agent that should handle Jira events (see step 6 and
+[Configuring agent behavior](customizing-agents.md#configuration-with-base-composition)).
 
 ## Scheduled workflow
 
