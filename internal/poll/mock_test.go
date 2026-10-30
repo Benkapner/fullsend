@@ -187,6 +187,8 @@ func newMockClient() *mockClient {
 		issueErr:       make(map[int]error),
 		mr:             make(map[int]*MergeRequest),
 		mrErr:          make(map[int]error),
+		mrVersions:     make(map[int][]MergeRequestDiffVersion),
+		mrVersionsErr:  make(map[int]error),
 		wrapperContent: typedWrapperFixture(),
 		memberLevel:    make(map[int]int),
 		memberErr:      make(map[int]error),

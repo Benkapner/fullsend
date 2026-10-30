@@ -207,11 +207,18 @@ func (r *HarnessRouter) routeOpened(event *NormalizedEvent) ([]string, error) {
 	return nil, nil
 }
 
-// routeSynchronized dispatches review for a change proposal whose head
-// received new commits, the same way an open does: authorization is left to
-// the agent template, and fork MRs are allowed because review is read-only.
+// routeSynchronized dispatches review for a same-project change proposal
+// whose head received new commits. The poller cannot tell who pushed (the
+// event actor is the MR author), so the pusher is never authorized here.
+// Fork and unknown-origin MRs are denied: a non-member with push access to
+// the fork could otherwise trigger repeated reviews under the author's
+// identity. A fork MR is re-reviewed through an explicit /fs-review. For a
+// same-project MR any pusher already holds project push access.
 func (r *HarnessRouter) routeSynchronized(event *NormalizedEvent) ([]string, error) {
-	if event.Entity.Kind == "change_proposal" && r.validAgents["review"] {
+	if event.Entity.Kind != "change_proposal" || isForkOrUnknown(event.State) {
+		return nil, nil
+	}
+	if r.validAgents["review"] {
 		return []string{"review"}, nil
 	}
 	return nil, nil

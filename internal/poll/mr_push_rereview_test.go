@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,6 +43,7 @@ func TestLatestHeadPush(t *testing.T) {
 		name     string
 		versions []MergeRequestDiffVersion
 		wantSHA  string
+		wantAt   time.Time
 	}{
 		{name: "no versions"},
 		{name: "only the open", versions: []MergeRequestDiffVersion{{ID: 1, HeadCommitSHA: "aaa", CreatedAt: t0}}},
@@ -70,6 +72,24 @@ func TestLatestHeadPush(t *testing.T) {
 			},
 		},
 		{
+			name: "push followed by same-head versions reports the push",
+			versions: []MergeRequestDiffVersion{
+				{ID: 3, HeadCommitSHA: "bbb", CreatedAt: t0.Add(2 * time.Minute)},
+				{ID: 2, HeadCommitSHA: "bbb", CreatedAt: t0.Add(time.Minute)},
+				{ID: 1, HeadCommitSHA: "aaa", CreatedAt: t0},
+			},
+			wantSHA: "bbb",
+			wantAt:  t0.Add(time.Minute),
+		},
+		{
+			name: "head unchanged since the open",
+			versions: []MergeRequestDiffVersion{
+				{ID: 3, HeadCommitSHA: "aaa", CreatedAt: t0.Add(2 * time.Minute)},
+				{ID: 2, HeadCommitSHA: "aaa", CreatedAt: t0.Add(time.Minute)},
+				{ID: 1, HeadCommitSHA: "aaa", CreatedAt: t0},
+			},
+		},
+		{
 			name: "missing head SHA",
 			versions: []MergeRequestDiffVersion{
 				{ID: 2, CreatedAt: t0.Add(time.Minute)},
@@ -85,6 +105,9 @@ func TestLatestHeadPush(t *testing.T) {
 			}
 			if got.HeadCommitSHA != tt.wantSHA {
 				t.Errorf("head = %q, want %q", got.HeadCommitSHA, tt.wantSHA)
+			}
+			if !tt.wantAt.IsZero() && !got.CreatedAt.Equal(tt.wantAt) {
+				t.Errorf("introduced at %v, want %v", got.CreatedAt, tt.wantAt)
 			}
 		})
 	}
@@ -346,5 +369,76 @@ func TestRoutableEventKey_SynchronizedWithoutHeadFallsBack(t *testing.T) {
 	ev := RoutableEvent{Type: "mr_event", Action: "synchronized", IID: 3, UpdatedAt: at}
 	if want := fmt.Sprintf("mr_event-3-synchronized-%d", at.Unix()); ev.Key() != want {
 		t.Errorf("Key() = %q, want %q", ev.Key(), want)
+	}
+}
+
+// TestRun_MRVersionsFailureFailsCycle: a failed diff-version lookup holds
+// the watermark and must also fail the cycle, so a persistent failure does
+// not look like a healthy poll.
+func TestRun_MRVersionsFailureFailsCycle(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-5 * time.Minute)
+	alice := UserRef{ID: 42, Username: "alice"}
+	mc := newMockClient()
+	mc.memberLevel[alice.ID] = 30
+	mc.projectPaths[1] = "group/project"
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339), IssueOpenCutoff: since})
+	mr := pushedMR(14, alice)
+	mr.CreatedAt = since.Add(-time.Hour)
+	mr.UpdatedAt = now
+	mc.mrs = []MergeRequest{mr}
+	mc.mrVersionsErr[14] = errors.New("boom")
+
+	router := dispatch.NewHarnessRouter([]string{"review"})
+	p := New(mc, router, "group/project", withTestSecret(Options{
+		Mode:        "events",
+		BotUserID:   100,
+		GitLabURL:   "https://gitlab.example.com",
+		PipelineRef: "main",
+	}))
+	err := p.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "list diff versions for MR 14") {
+		t.Fatalf("Run error = %v, want diff version lookup failure", err)
+	}
+	state, _ := mc.getPollState()
+	if got, perr := time.Parse(time.RFC3339, state.LastPollAtFull); perr != nil || got.After(since) {
+		t.Errorf("watermark = %q, want held at or before %v", state.LastPollAtFull, since)
+	}
+}
+
+// TestRun_ForkMRPushNotDispatched: a push to a fork MR authored by a
+// project Developer must not trigger review under the author's identity,
+// since the pusher is unknown and may not be a project member.
+func TestRun_ForkMRPushNotDispatched(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-5 * time.Minute)
+	dev := UserRef{ID: 42, Username: "dev"}
+	mc := newMockClient()
+	mc.memberLevel[dev.ID] = 30
+	mc.projectPaths[1] = "group/project"
+	mc.projectPaths[2] = "contributor/project"
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339), IssueOpenCutoff: since})
+	mr := pushedMR(15, dev)
+	mr.SourceProjectID = 2
+	mr.CreatedAt = since.Add(-time.Hour)
+	mr.UpdatedAt = now
+	mc.mrs = []MergeRequest{mr}
+	mc.mrVersions[15] = []MergeRequestDiffVersion{
+		{ID: 41, HeadCommitSHA: "bbb", CreatedAt: now},
+		{ID: 40, HeadCommitSHA: "aaa", CreatedAt: mr.CreatedAt},
+	}
+
+	router := dispatch.NewHarnessRouter([]string{"triage", "code", "review", "fix", "retro"})
+	p := New(mc, router, "group/project", withTestSecret(Options{
+		Mode:        "events",
+		BotUserID:   100,
+		GitLabURL:   "https://gitlab.example.com",
+		PipelineRef: "main",
+	}))
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(mc.pipelineCalls) != 0 {
+		t.Fatalf("pipeline calls = %d, want 0 for a fork MR push: %+v", len(mc.pipelineCalls), mc.pipelineCalls)
 	}
 }

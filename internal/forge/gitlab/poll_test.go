@@ -384,12 +384,15 @@ func TestListMergeRequestDiffVersions_Error(t *testing.T) {
 	pc, mux := setupPollTest(t)
 	ctx := context.Background()
 
+	handlerCalled := false
 	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/10/versions", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 		writeJSON(t, w, http.StatusNotFound, map[string]any{"message": "404 Not Found"})
 	})
 
 	_, err := pc.ListMergeRequestDiffVersions(ctx, "myorg", "myrepo", 10)
 	require.Error(t, err)
+	assert.True(t, handlerCalled)
 }
 
 // ---------------------------------------------------------------------------

@@ -374,6 +374,9 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				// Hold the watermark at the window start so the push is
 				// rediscovered; the persisted watermark never moves back.
 				log.Printf("list diff versions for MR %d: %v (holding push detection for retry)", mr.IID, err)
+				// The cycle must still fail so a persistent lookup failure
+				// does not look like a healthy poll while re-review is down.
+				p.discoveryErrs = append(p.discoveryErrs, fmt.Errorf("list diff versions for MR %d: %w", mr.IID, err))
 				if minSkippedAt.IsZero() || since.Before(minSkippedAt) {
 					minSkippedAt = since
 				}
@@ -501,10 +504,13 @@ func (p *Poller) discoverSlashCommands(ctx context.Context, owner, repo string, 
 	return events, minSkippedAt, nil
 }
 
-// latestHeadPush returns the MR's newest diff version when it moved the
-// head away from the version before it. The first version is the MR's
-// open, and a version that keeps the previous head (for example after a
-// target branch change) is not a push, so neither is reported.
+// latestHeadPush returns the diff version that introduced the MR's current
+// head, when that head replaced a different one. Versions that keep the
+// head (for example after a target branch change) follow the introducing
+// push, so the run of consecutive versions sharing the newest head is
+// walked back to its first member; its creation time is when the push
+// happened. The first version of the MR is its open, not a push, so a head
+// that has been current since the open is not reported.
 func latestHeadPush(versions []MergeRequestDiffVersion) (MergeRequestDiffVersion, bool) {
 	if len(versions) < 2 {
 		return MergeRequestDiffVersion{}, false
@@ -513,11 +519,18 @@ func latestHeadPush(versions []MergeRequestDiffVersion) (MergeRequestDiffVersion
 	slices.SortFunc(sorted, func(a, b MergeRequestDiffVersion) int {
 		return cmp.Compare(b.ID, a.ID)
 	})
-	newest, previous := sorted[0], sorted[1]
-	if newest.HeadCommitSHA == "" || newest.HeadCommitSHA == previous.HeadCommitSHA {
+	head := sorted[0].HeadCommitSHA
+	if head == "" {
 		return MergeRequestDiffVersion{}, false
 	}
-	return newest, true
+	introduced := 0
+	for introduced+1 < len(sorted) && sorted[introduced+1].HeadCommitSHA == head {
+		introduced++
+	}
+	if introduced+1 == len(sorted) {
+		return MergeRequestDiffVersion{}, false
+	}
+	return sorted[introduced], true
 }
 
 // mergedByUser returns the user who merged the MR, preferring the

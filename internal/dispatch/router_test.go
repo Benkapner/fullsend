@@ -336,10 +336,13 @@ func TestHarnessRouter_Synchronized(t *testing.T) {
 		name   string
 		agents []string
 		kind   string
+		state  State
 		want   []string
 	}{
-		{name: "change proposal routes to review", agents: []string{"review", "fix"}, kind: "change_proposal", want: []string{"review"}},
-		{name: "review not in valid set", agents: []string{"fix", "retro"}, kind: "change_proposal", want: nil},
+		{name: "same-project change proposal routes to review", agents: []string{"review", "fix"}, kind: "change_proposal", state: State{ChangeProposal: &ChangeProposalState{}}, want: []string{"review"}},
+		{name: "fork change proposal denied", agents: []string{"review", "fix"}, kind: "change_proposal", state: State{ChangeProposal: &ChangeProposalState{IsFork: true}}, want: nil},
+		{name: "unknown change proposal origin denied", agents: []string{"review", "fix"}, kind: "change_proposal", want: nil},
+		{name: "review not in valid set", agents: []string{"fix", "retro"}, kind: "change_proposal", state: State{ChangeProposal: &ChangeProposalState{}}, want: nil},
 		{name: "work item ignored", agents: []string{"review", "triage"}, kind: "work_item", want: nil},
 	}
 	for _, tt := range tests {
@@ -350,6 +353,7 @@ func TestHarnessRouter_Synchronized(t *testing.T) {
 				Transition: Transition{Kind: "synchronized"},
 				Actor:      Actor{ID: "fullsend-bot", Kind: "bot", Role: "write"},
 				Source:     Source{System: "gitlab"},
+				State:      tt.state,
 			}
 			stages, err := r.Route(event)
 			if err != nil {

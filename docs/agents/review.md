@@ -77,8 +77,10 @@ version on each push. When the newest version moves the MR head and was created
 after the watermark, the poller dispatches review for that head. This includes
 fix-agent pushes to bot-authored MRs, and the fix stage's iteration cap bounds
 the loop. Dispatch is keyed on the head SHA, so later polls that see the same
-head do not review it again. Diff versions do not record who pushed, so the MR author is the actor,
-as for opens.
+head do not review it again. Diff versions do not record who pushed, so the
+poller cannot authorize the pusher. It therefore reviews pushes only to
+same-project MRs, where any pusher already has project push access. A push to
+a fork MR is not reviewed automatically; comment `/fs-review` instead.
 
 ## Control labels
 
