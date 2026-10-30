@@ -442,3 +442,45 @@ func TestRun_ForkMRPushNotDispatched(t *testing.T) {
 		t.Fatalf("pipeline calls = %d, want 0 for a fork MR push: %+v", len(mc.pipelineCalls), mc.pipelineCalls)
 	}
 }
+
+// TestRun_MRPushStateLookupFailureHoldsWatermark: a failed project-path
+// lookup for a synchronized event must fail the cycle and hold the
+// watermark before the push, even when a newer unrelated event is
+// discovered, so the push review is retried once the lookup recovers.
+func TestRun_MRPushStateLookupFailureHoldsWatermark(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-10 * time.Minute)
+	pushAt := since.Add(time.Minute)
+	alice := UserRef{ID: 42, Username: "alice"}
+	mc := newMockClient()
+	mc.memberLevel[alice.ID] = 30
+	// No projectPaths entry: GetProjectPath fails for the pushed MR.
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339), IssueOpenCutoff: since})
+	pushed := pushedMR(16, alice)
+	pushed.CreatedAt = since.Add(-time.Hour)
+	pushed.UpdatedAt = pushAt
+	other := pushedMR(17, alice)
+	other.CreatedAt = now
+	other.UpdatedAt = now
+	mc.mrs = []MergeRequest{pushed, other}
+	mc.mrVersions[16] = []MergeRequestDiffVersion{
+		{ID: 51, HeadCommitSHA: "bbb", CreatedAt: pushAt},
+		{ID: 50, HeadCommitSHA: "aaa", CreatedAt: pushed.CreatedAt},
+	}
+
+	router := dispatch.NewHarnessRouter([]string{"review"})
+	p := New(mc, router, "group/project", withTestSecret(Options{
+		Mode:        "events",
+		BotUserID:   100,
+		GitLabURL:   "https://gitlab.example.com",
+		PipelineRef: "main",
+	}))
+	err := p.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "build change proposal state") {
+		t.Fatalf("Run error = %v, want change proposal state failure", err)
+	}
+	state, _ := mc.getPollState()
+	if got, perr := time.Parse(time.RFC3339, state.LastPollAtFull); perr != nil || got.After(pushAt) {
+		t.Errorf("watermark = %q, want held at or before the push %v", state.LastPollAtFull, pushAt)
+	}
+}

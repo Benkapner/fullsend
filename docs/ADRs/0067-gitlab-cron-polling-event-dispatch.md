@@ -144,7 +144,9 @@ trigger-token threat model for the new inbound-surface controls.
 >
 > **Update (2026-10, #7681):** The poller now detects pushes to open MRs
 > from merge request diff versions and dispatches review as
-> `transition.kind: synchronized`, keyed on the head SHA. See
+> `transition.kind: synchronized`, keyed on the head SHA. Automatic
+> dispatch applies only to same-project MRs; fork MR pushes are not
+> reviewed automatically (use `/fs-review`). See
 > [review agent](../agents/review.md).
 >
 > **Update (2026-09, #7323):** The single shared bot PAT (see "Credential
