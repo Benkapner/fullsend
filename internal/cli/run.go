@@ -2029,9 +2029,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	))
 
 	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
-	if err := sandbox.CreateWithRetry(sandboxName, allProviderNames, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
+	if err := sandbox.CreateWithRetry(sandboxName, allProviderNames, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout, keepSandbox); err != nil {
 		finalizeSandboxSpan(sandboxSpan, err)
 		printer.StepFail("Failed to create sandbox")
+		if keepSandbox {
+			keepFailedSandbox(sandboxName, runDir, printer)
+		}
 		return fmt.Errorf("creating sandbox: %w", err)
 	}
 	finalizeSandboxSpan(sandboxSpan, nil)
@@ -4954,6 +4957,17 @@ func discardSandbox(sandboxName, runDir string, keep bool, printer *ui.Printer) 
 		return
 	}
 	printer.StepDone("Sandbox deleted after the failed preflight")
+}
+
+// keepFailedSandbox reports a sandbox that failed creation and was kept
+// for inspection (--keep-sandbox). CreateWithRetry already left it in place
+// and stopped retrying; this collects its OpenShell logs into the run
+// directory and prints the same hint as the run's own cleanup defer, which
+// is not yet registered when creation fails.
+func keepFailedSandbox(sandboxName, runDir string, printer *ui.Printer) {
+	collectOpenshellLogsFn(sandboxName, runDir, printer)
+	printer.StepWarn(fmt.Sprintf("Sandbox kept (--keep-sandbox): %s", sandboxName))
+	printer.StepInfo(fmt.Sprintf("openshell sandbox exec --tty --name %s -- bash", sandboxName))
 }
 
 // runInferenceProvider maps the resolved runtime to the provider the parent
