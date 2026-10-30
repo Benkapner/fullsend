@@ -4512,6 +4512,17 @@ func resolveWorkItemID() string {
 	if v := strings.TrimSpace(os.Getenv("ISSUE_KEY")); v != "" {
 		return v // source-neutral canonical key, e.g. "owner/repo#123" or "PROJ-123"
 	}
+	// Jira runs clear ISSUE_NUMBER and carry identity in the
+	// FULLSEND_WORK_ITEM_* exports instead, so prefer those before the
+	// forge-shaped fallbacks below.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv(envWorkItemSource)), "jira") {
+		if v := strings.TrimSpace(os.Getenv(envWorkItemKey)); v != "" {
+			return v
+		}
+		if v := strings.TrimSpace(os.Getenv(envWorkItemURL)); v != "" {
+			return v
+		}
+	}
 	repo := strings.TrimSpace(os.Getenv("REPO_FULL_NAME"))
 	num := strings.TrimSpace(os.Getenv("ISSUE_NUMBER"))
 	if repo != "" && num != "" {
