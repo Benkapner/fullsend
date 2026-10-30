@@ -18,8 +18,8 @@ const noFixLabel = "fullsend-no-fix"
 
 // HarnessRouter implements EventRouter by applying the default routing
 // rules from ADR 0067's event routing table. Slash commands (/fs-X)
-// dispatch to any agent in the valid set; label, merge, and MR-open
-// events use hardcoded stage mappings.
+// dispatch to any agent in the valid set; label, merge, MR-open, and
+// MR-push (synchronized) events use hardcoded stage mappings.
 //
 // This is an interim implementation using Go routing rules. ADR 0067
 // prescribes CEL trigger expressions (ADR 0061) for routing; this
@@ -55,6 +55,8 @@ func (r *HarnessRouter) Route(event *NormalizedEvent) ([]string, error) {
 		return r.routeMerge(event)
 	case "opened":
 		return r.routeOpened(event)
+	case "synchronized":
+		return r.routeSynchronized(event)
 	default:
 		return nil, nil
 	}
@@ -201,6 +203,16 @@ func (r *HarnessRouter) routeOpened(event *NormalizedEvent) ([]string, error) {
 		if r.validAgents["review"] {
 			return []string{"review"}, nil
 		}
+	}
+	return nil, nil
+}
+
+// routeSynchronized dispatches review for a change proposal whose head
+// received new commits, the same way an open does: authorization is left to
+// the agent template, and fork MRs are allowed because review is read-only.
+func (r *HarnessRouter) routeSynchronized(event *NormalizedEvent) ([]string, error) {
+	if event.Entity.Kind == "change_proposal" && r.validAgents["review"] {
+		return []string{"review"}, nil
 	}
 	return nil, nil
 }

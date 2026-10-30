@@ -1,9 +1,11 @@
 package poll
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -359,6 +361,43 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 			})
 		}
 
+		// Push to an open MR (GitHub synchronize, #7681): each push to
+		// the source branch records a new diff version, so the newest
+		// version moving the head past the previous one, created inside
+		// the watermark window, is a new head to review. The event is
+		// keyed on the head SHA, so overlapping windows and later
+		// rediscovery never dispatch the same head twice. Versions record
+		// no pusher, so the actor is the MR author, as for opens.
+		if mr.State == "opened" {
+			versions, err := p.client.ListMergeRequestDiffVersions(ctx, owner, repo, mr.IID)
+			if err != nil {
+				// Hold the watermark at the window start so the push is
+				// rediscovered; the persisted watermark never moves back.
+				log.Printf("list diff versions for MR %d: %v (holding push detection for retry)", mr.IID, err)
+				if minSkippedAt.IsZero() || since.Before(minSkippedAt) {
+					minSkippedAt = since
+				}
+			} else if head, ok := latestHeadPush(versions); ok && head.CreatedAt.After(since) {
+				events = append(events, RoutableEvent{
+					Type:            "mr_event",
+					Action:          "synchronized",
+					IID:             mr.IID,
+					UpdatedAt:       head.CreatedAt,
+					HeadSHA:         head.HeadCommitSHA,
+					NoteAuthorID:    mr.Author.ID,
+					NoteAuthorLogin: mr.Author.Username,
+					IsBot:           mr.Author.Bot,
+					MRSource:        mr.SourceProjectID,
+					MRTarget:        mr.TargetProjectID,
+					Labels:          mr.Labels,
+					SourceBranch:    mr.SourceBranch,
+					TargetBranch:    mr.TargetBranch,
+					MRAuthorID:      mr.Author.ID,
+					MRAuthorLogin:   mr.Author.Username,
+				})
+			}
+		}
+
 		notes, err := p.client.ListMergeRequestNotes(ctx, owner, repo, mr.IID)
 		if err != nil {
 			log.Printf("list notes for MR %d: %v (skipping MR entirely)", mr.IID, err)
@@ -460,6 +499,25 @@ func (p *Poller) discoverSlashCommands(ctx context.Context, owner, repo string, 
 		events = append(events, re)
 	}
 	return events, minSkippedAt, nil
+}
+
+// latestHeadPush returns the MR's newest diff version when it moved the
+// head away from the version before it. The first version is the MR's
+// open, and a version that keeps the previous head (for example after a
+// target branch change) is not a push, so neither is reported.
+func latestHeadPush(versions []MergeRequestDiffVersion) (MergeRequestDiffVersion, bool) {
+	if len(versions) < 2 {
+		return MergeRequestDiffVersion{}, false
+	}
+	sorted := slices.Clone(versions)
+	slices.SortFunc(sorted, func(a, b MergeRequestDiffVersion) int {
+		return cmp.Compare(b.ID, a.ID)
+	})
+	newest, previous := sorted[0], sorted[1]
+	if newest.HeadCommitSHA == "" || newest.HeadCommitSHA == previous.HeadCommitSHA {
+		return MergeRequestDiffVersion{}, false
+	}
+	return newest, true
 }
 
 // mergedByUser returns the user who merged the MR, preferring the
@@ -566,6 +624,14 @@ func (p *Poller) filterBotEvents(events []RoutableEvent) []RoutableEvent {
 		// not a bot event, so genuine closed-unmerged MRs still reach
 		// retro.
 		if event.Type == "mr_event" && event.Action == "opened" {
+			filtered = append(filtered, event)
+			continue
+		}
+		// Pushes to a bot-authored MR must re-dispatch review too: the
+		// fix agent pushes to the code agent's MRs, matching GitHub's
+		// synchronize. The fix stage's iteration cap bounds the
+		// review → fix → push loop.
+		if event.Type == "mr_event" && event.Action == "synchronized" {
 			filtered = append(filtered, event)
 			continue
 		}

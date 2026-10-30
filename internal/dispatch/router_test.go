@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -327,6 +328,37 @@ func TestHarnessRouter_OpenedReviewNotInValidSet(t *testing.T) {
 	}
 	if len(stages) != 0 {
 		t.Fatalf("expected no stages when review not in valid set, got %v", stages)
+	}
+}
+
+func TestHarnessRouter_Synchronized(t *testing.T) {
+	tests := []struct {
+		name   string
+		agents []string
+		kind   string
+		want   []string
+	}{
+		{name: "change proposal routes to review", agents: []string{"review", "fix"}, kind: "change_proposal", want: []string{"review"}},
+		{name: "review not in valid set", agents: []string{"fix", "retro"}, kind: "change_proposal", want: nil},
+		{name: "work item ignored", agents: []string{"review", "triage"}, kind: "work_item", want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewHarnessRouter(tt.agents)
+			event := &NormalizedEvent{
+				Entity:     Entity{Kind: tt.kind, ID: 8},
+				Transition: Transition{Kind: "synchronized"},
+				Actor:      Actor{ID: "fullsend-bot", Kind: "bot", Role: "write"},
+				Source:     Source{System: "gitlab"},
+			}
+			stages, err := r.Route(event)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !slices.Equal(stages, tt.want) {
+				t.Fatalf("stages = %v, want %v", stages, tt.want)
+			}
+		})
 	}
 }
 

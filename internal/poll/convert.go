@@ -95,7 +95,7 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 	case "mr_event":
 		authorID = event.NoteAuthorID
 		switch event.Action {
-		case "opened", "closed":
+		case "opened", "closed", "synchronized":
 			actorLogin = event.NoteAuthorLogin
 			if actorLogin == "" {
 				actorLogin = event.MRAuthorLogin
@@ -166,6 +166,8 @@ func translateEventType(event RoutableEvent) string {
 			return "opened"
 		case "closed":
 			return "closed"
+		case "synchronized":
+			return "synchronized"
 		default:
 			return "merged"
 		}
@@ -287,6 +289,8 @@ func mapRawAction(event RoutableEvent) string {
 			return "opened"
 		case "closed":
 			return "closed"
+		case "synchronized":
+			return "synchronized"
 		default:
 			return "merged"
 		}
