@@ -117,6 +117,18 @@ func dispatchEventPayloads(fullsendDir string) [][]byte {
 	return append(payloads, []byte(wrapper.Inputs.EventPayload))
 }
 
+// dispatchJiraClaimUnresolved reports whether run must fail closed because a
+// dispatch payload claims a Jira source that was not resolved into a valid
+// Jira work-item identity. It applies only when no --event-file was given and
+// trackerSource is not already "jira" — including when trackerSource is a
+// forge value taken from the other dispatch channel.
+func dispatchJiraClaimUnresolved(eventFile, trackerSource, fullsendDir string) bool {
+	if eventFile != "" || trackerSource == string(normevent.SystemJira) {
+		return false
+	}
+	return dispatchPayloadClaimsJira(fullsendDir)
+}
+
 // dispatchPayloadClaimsJira reports whether any dispatch event payload
 // embeds a _normalized_event whose source.system is "jira", without
 // validating the rest of the event. run uses it to fail closed when a

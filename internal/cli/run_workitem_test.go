@@ -189,6 +189,56 @@ func TestDispatchPayloadClaimsJira(t *testing.T) {
 	})
 }
 
+func TestDispatchJiraClaimUnresolved(t *testing.T) {
+	const validGitHubPayload = `{"issue":{"number":10},"_normalized_event":{"repo":"org/repo","entity":{"kind":"work_item","id":10,"url":"https://github.com/org/repo/issues/10"},"transition":{"kind":"label_changed","label":{"name":"ready-to-code","action":"added"}},"actor":{"id":"u1","kind":"human","role":"write","is_entity_author":false},"state":{"labels":["ready-to-code"]},"source":{"system":"github","raw_type":"issues"}}}`
+
+	// Invalid Jira dispatch file plus a valid forge event in GITHUB_EVENT_PATH:
+	// the forge event is accepted, but the Jira claim must still fail closed.
+	t.Run("invalid jira dispatch file with valid forge event", func(t *testing.T) {
+		dir := t.TempDir()
+		writeDispatchPayload(t, dir, invalidJiraPayload)
+		wrapper, err := json.Marshal(map[string]any{"inputs": map[string]any{"event_payload": validGitHubPayload}})
+		require.NoError(t, err)
+		path := filepath.Join(dir, "gh-event.json")
+		require.NoError(t, os.WriteFile(path, wrapper, 0o644))
+		t.Setenv("GITHUB_EVENT_PATH", path)
+
+		eventMap := extractNormalizedEventFromDispatch(dir)
+		require.NotNil(t, eventMap, "forge event from GITHUB_EVENT_PATH must be accepted")
+		trackerSource := extractMapString(eventMap, "source", "system")
+		require.Equal(t, "github", trackerSource)
+		assert.True(t, dispatchJiraClaimUnresolved("", trackerSource, dir))
+	})
+
+	t.Run("no event file and no tracker source", func(t *testing.T) {
+		t.Setenv("GITHUB_EVENT_PATH", "")
+		dir := t.TempDir()
+		writeDispatchPayload(t, dir, invalidJiraPayload)
+		assert.True(t, dispatchJiraClaimUnresolved("", "", dir))
+	})
+
+	t.Run("tracker source already jira", func(t *testing.T) {
+		t.Setenv("GITHUB_EVENT_PATH", "")
+		dir := t.TempDir()
+		writeDispatchPayload(t, dir, invalidJiraPayload)
+		assert.False(t, dispatchJiraClaimUnresolved("", "jira", dir))
+	})
+
+	t.Run("event file given", func(t *testing.T) {
+		t.Setenv("GITHUB_EVENT_PATH", "")
+		dir := t.TempDir()
+		writeDispatchPayload(t, dir, invalidJiraPayload)
+		assert.False(t, dispatchJiraClaimUnresolved("event.json", "github", dir))
+	})
+
+	t.Run("no jira claim", func(t *testing.T) {
+		t.Setenv("GITHUB_EVENT_PATH", "")
+		dir := t.TempDir()
+		writeDispatchPayload(t, dir, validGitHubPayload)
+		assert.False(t, dispatchJiraClaimUnresolved("", "github", dir))
+	})
+}
+
 func writeCodeHarnessFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

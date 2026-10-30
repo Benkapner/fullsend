@@ -634,8 +634,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Fail closed when a dispatch payload declares a Jira source but its
 	// normalized event did not validate. Falling through would route the
 	// run as forge-originated and hand the numeric Jira entity ID to forge
-	// issue/PR operations (#2264).
-	if sOpts.trackerSource == "" && dispatchPayloadClaimsJira(absFullsendDir) {
+	// issue/PR operations (#2264). The check also applies when the other
+	// dispatch channel supplied a valid forge event, so a disagreement between
+	// the channels cannot bypass the guard.
+	if dispatchJiraClaimUnresolved(eventFile, sOpts.trackerSource, absFullsendDir) {
 		return fmt.Errorf("dispatch payload declares a Jira source but its normalized event is missing required fields or is invalid; refusing to run without a valid Jira work-item identity")
 	}
 	workItemEnv, err := resolveWorkItemIdentity(eventMap, sOpts.trackerSource, forgePlatform, os.Getenv)

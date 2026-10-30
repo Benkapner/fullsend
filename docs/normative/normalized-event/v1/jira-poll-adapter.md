@@ -116,7 +116,9 @@ env expansion run. Neither the numeric Jira entity ID nor the numeric suffix
 of the key reaches scripts as a forge issue number. The run fails before any
 script runs in three cases:
 
-- `entity.key` is missing or is not a Jira key such as `PROJ-123`.
+- `entity.key` is missing or is not a Jira key such as `PROJ-123`. The key
+  must match `^[A-Z][A-Z0-9_]+-[1-9][0-9]*$`, so single-character project keys
+  such as `P-1` are rejected.
 - `entity.url` is missing or is not an `https` URL.
 - The payload declares `source.system: jira`, but its normalized event fails
   validation.
