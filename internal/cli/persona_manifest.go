@@ -4,15 +4,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/skill"
 )
@@ -39,9 +40,9 @@ type personaManifest struct {
 	Removed  []removedPersona `json:"removed"`
 }
 
-// personaEntry describes one staged sub-agents/*.md file. The optional
-// fields are copied verbatim from frontmatter and omitted when absent; the
-// runner checks their shape only and gives them no meaning.
+// personaEntry describes one registered persona. The optional fields are
+// copied verbatim from frontmatter and omitted when absent, null or of the
+// wrong type; the runner gives them no meaning.
 type personaEntry struct {
 	Name            string    `json:"name"`
 	Skill           string    `json:"skill"`
@@ -62,74 +63,60 @@ type removedPersona struct {
 	Path  string `json:"path"`
 }
 
-// buildPersonaManifest lists every sub-agents/*.md file (no recursion)
-// under each staged skill directory, the same discovery rule the pi and
-// codex runtimes use.
-func buildPersonaManifest(staged []stagedSkill) (personaManifest, error) {
+// buildPersonaManifest lists exactly the personas the pi and codex
+// runtimes register from the staged skills (runtime.DiscoverPersonas):
+// files discovery skips are left out with pi's warning, and a name two
+// skills declare keeps the first. Only I/O fails it.
+func buildPersonaManifest(staged []stagedSkill, agentName string, warn func(string)) (personaManifest, error) {
 	m := personaManifest{
 		Version:  personasManifestVersion,
 		Personas: []personaEntry{},
 		Removed:  []removedPersona{},
 	}
-	// persona name → the skill and file that first declared it. Only a
-	// name shared by two different skills is an error: inside one skill an
-	// override may reuse another file's bytes (and so its frontmatter
-	// name), and each entry is still told apart by its path.
-	type declared struct{ skill, file string }
-	seen := map[string]declared{}
+	byDir := make(map[string]stagedSkill, len(staged))
 	for _, s := range staged {
+		if _, ok := byDir[s.Dir]; !ok {
+			byDir[s.Dir] = s
+		}
 		skillName := skill.SandboxName(s.Dir)
 		for _, rel := range s.Removed {
-			if strings.HasPrefix(rel, "sub-agents/") {
+			// The discovery rule: sub-agents/*.md, no recursion.
+			if path.Dir(rel) == "sub-agents" && strings.HasSuffix(rel, ".md") {
 				m.Removed = append(m.Removed, removedPersona{Skill: skillName, Path: rel})
 			}
 		}
-		entries, err := os.ReadDir(filepath.Join(s.Dir, "sub-agents"))
+	}
+
+	personas, skipped := agentruntime.DiscoverPersonas(stagedSkillDirs(staged), agentName)
+	for _, sk := range skipped {
+		warn(sk.String())
+	}
+	for _, p := range personas {
+		s, ok := byDir[p.SkillDir]
+		if !ok {
+			return personaManifest{}, fmt.Errorf("%s: persona %s is not under a staged skill", personasFileName, p.Path)
+		}
+		rel, err := filepath.Rel(s.Dir, p.Path)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return personaManifest{}, fmt.Errorf("%s: reading %s/sub-agents: %w", personasFileName, skillName, err)
+			return personaManifest{}, fmt.Errorf("%s: %s: %w", personasFileName, p.Path, err)
 		}
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
-				continue
-			}
-			rel := "sub-agents/" + e.Name()
-			file := skillName + "/" + rel
-			data, err := os.ReadFile(filepath.Join(s.Dir, "sub-agents", e.Name()))
-			if err != nil {
-				return personaManifest{}, fmt.Errorf("%s: %s: %w", personasFileName, file, err)
-			}
-			p, err := personaFromFile(file, data)
-			if err != nil {
-				return personaManifest{}, err
-			}
-			if p.Name == "" {
-				p.Name = strings.TrimSuffix(e.Name(), ".md")
-			}
-			if prev, dup := seen[p.Name]; !dup {
-				seen[p.Name] = declared{skill: skillName, file: file}
-			} else if prev.skill != skillName {
-				return personaManifest{}, fmt.Errorf("%s: duplicate persona name %q in %s and %s", personasFileName, p.Name, prev.file, file)
-			}
-			sum := sha256.Sum256(data)
-			p.Skill = skillName
-			p.Path = rel
-			p.Origin = s.origin(rel)
-			p.SHA256 = hex.EncodeToString(sum[:])
-			m.Personas = append(m.Personas, p)
-		}
+		rel = filepath.ToSlash(rel)
+		skillName := skill.SandboxName(s.Dir)
+		e := personaPassThrough(skillName+"/"+rel, p.Frontmatter, warn)
+		sum := sha256.Sum256(p.Data)
+		e.Name = p.Name
+		e.Skill = skillName
+		e.Path = rel
+		e.Origin = s.origin(rel)
+		e.SHA256 = hex.EncodeToString(sum[:])
+		m.Personas = append(m.Personas, e)
 	}
 	sort.Slice(m.Personas, func(i, j int) bool {
 		a, b := m.Personas[i], m.Personas[j]
 		if a.Skill != b.Skill {
 			return a.Skill < b.Skill
 		}
-		if a.Name != b.Name {
-			return a.Name < b.Name
-		}
-		return a.Path < b.Path
+		return a.Name < b.Name
 	})
 	sort.Slice(m.Removed, func(i, j int) bool {
 		if m.Removed[i].Skill != m.Removed[j].Skill {
@@ -140,80 +127,70 @@ func buildPersonaManifest(staged []stagedSkill) (personaManifest, error) {
 	return m, nil
 }
 
-// personaFromFile reads the frontmatter fields the manifest copies. A
-// file without frontmatter yields an empty entry (its name falls back to
-// the file stem); frontmatter that does not parse, or a copied field of
-// the wrong type, is an error naming the file.
-func personaFromFile(file string, data []byte) (personaEntry, error) {
+// personaPassThrough copies the optional frontmatter fields. A field that
+// is absent or null is omitted; one of the wrong type is omitted with a
+// warning naming the file and field.
+func personaPassThrough(file string, front []byte, warn func(string)) personaEntry {
 	var p personaEntry
-	block, ok := skill.FrontmatterBlock(data)
-	if !ok {
-		if skill.HasFrontmatterFence(data) {
-			return p, fmt.Errorf("%s: %s: frontmatter does not parse: no closing ---", personasFileName, file)
-		}
-		return p, nil
+	if len(front) == 0 {
+		return p
 	}
 	var fm map[string]any
-	if err := yaml.Unmarshal(block, &fm); err != nil {
-		return p, fmt.Errorf("%s: %s: frontmatter does not parse: %w", personasFileName, file, err)
+	if err := yaml.Unmarshal(front, &fm); err != nil {
+		// Discovery already parsed this block; keep the entry, drop the fields.
+		warn(fmt.Sprintf("%s: %s: frontmatter fields not copied: %v", personasFileName, file, err))
+		return p
 	}
-	str := func(field string) (*string, error) {
-		v, ok := fm[field]
-		if !ok {
-			return nil, nil
+	wrongType := func(field, want string) {
+		warn(fmt.Sprintf("%s: %s: frontmatter field %q is not %s; omitted", personasFileName, file, field, want))
+	}
+	str := func(field string) *string {
+		v := fm[field]
+		if v == nil {
+			return nil
 		}
 		s, ok := v.(string)
 		if !ok {
-			return nil, fmt.Errorf("%s: %s: frontmatter field %q must be a string", personasFileName, file, field)
+			wrongType(field, "a string")
+			return nil
 		}
-		return &s, nil
+		return &s
 	}
-	name, err := str("name")
-	if err != nil {
-		return p, err
-	}
-	if name != nil {
-		p.Name = strings.TrimSpace(*name)
-	}
-	for field, dst := range map[string]**string{
-		"description":      &p.Description,
-		"role":             &p.Role,
-		"when":             &p.When,
-		"failure_severity": &p.FailureSeverity,
-	} {
-		if *dst, err = str(field); err != nil {
-			return p, err
+	p.Description = str("description")
+	p.Role = str("role")
+	p.When = str("when")
+	p.FailureSeverity = str("failure_severity")
+	if v := fm["always"]; v != nil {
+		if b, ok := v.(bool); ok {
+			p.Always = &b
+		} else {
+			wrongType("always", "a bool")
 		}
 	}
-	if v, ok := fm["always"]; ok {
-		b, ok := v.(bool)
-		if !ok {
-			return p, fmt.Errorf("%s: %s: frontmatter field %q must be a bool", personasFileName, file, "always")
-		}
-		p.Always = &b
-	}
-	if v, ok := fm["categories"]; ok {
+	if v := fm["categories"]; v != nil {
 		list, ok := v.([]any)
-		if !ok {
-			return p, fmt.Errorf("%s: %s: frontmatter field %q must be a list of strings", personasFileName, file, "categories")
-		}
 		cats := make([]string, 0, len(list))
 		for _, c := range list {
-			s, ok := c.(string)
-			if !ok {
-				return p, fmt.Errorf("%s: %s: frontmatter field %q must be a list of strings", personasFileName, file, "categories")
+			s, isStr := c.(string)
+			if !isStr {
+				ok = false
+				break
 			}
 			cats = append(cats, s)
 		}
-		p.Categories = &cats
+		if ok {
+			p.Categories = &cats
+		} else {
+			wrongType("categories", "a list of strings")
+		}
 	}
-	return p, nil
+	return p
 }
 
 // writePersonaManifest builds the manifest for the staged skills and
 // writes it to runDir/personas.json, returning the absolute path.
-func writePersonaManifest(staged []stagedSkill, runDir string) (string, error) {
-	m, err := buildPersonaManifest(staged)
+func writePersonaManifest(staged []stagedSkill, runDir, agentName string, warn func(string)) (string, error) {
+	m, err := buildPersonaManifest(staged, agentName, warn)
 	if err != nil {
 		return "", err
 	}

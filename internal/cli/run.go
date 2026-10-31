@@ -858,6 +858,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepWarn(w)
 	}
 
+	// 1a. Stage the skill trees (file overrides applied to per-run copies)
+	// and write the persona manifest, on the lock-file and fresh paths
+	// alike. It runs here so pi child routing below, the bootstrap and the
+	// pre-script all see the merged trees (#6158). The sandbox name, and
+	// so the run directory, is fixed this early for that reason; it must
+	// also precede provider creation (#6689).
+	sandboxName := generateSandboxName(agentName)
+	if len(sandboxName) > maxSandboxNameLen {
+		return fmt.Errorf("sandbox name %q is %d characters, exceeding the OpenShell limit of %d", sandboxName, len(sandboxName), maxSandboxNameLen)
+	}
+	// outputBase is already absolute (resolveOutputBase above).
+	runDir := filepath.Join(outputBase, sandboxName)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return fmt.Errorf("creating run directory: %w", err)
+	}
+	runSkillDirs, err := stageRunSkills(h, runDir, absFullsendDir, agentName, printer)
+	if err != nil {
+		return err
+	}
+
 	if resolved, overridden := applySandboxImageOverride(h.Image); overridden {
 		printer.StepInfo(fmt.Sprintf("Image override via FULLSEND_SANDBOX_IMAGE: %s -> %s", h.Image, resolved))
 		h.Image = resolved
@@ -1085,7 +1105,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// the openai provider. They need the run-scoped OpenAI provider even
 	// when the parent does not (#7981), so they widen the provider gate
 	// below; the parent's own credential path above stays parent-only.
-	openAIChildren := agentruntime.OpenAIChildren(runtimeBackend.Runtime.Name(), h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
+	openAIChildren := agentruntime.OpenAIChildren(runtimeBackend.Runtime.Name(), h.Agent, agentSubagents, runSkillDirs, agentName, configModelAliases)
 	needsOpenAIProvider := parentNeedsOpenAIProvider || len(openAIChildren) > 0
 	// Prepare credentials before env validation and expansion, so harness
 	// references to GOOGLE_APPLICATION_CREDENTIALS resolve to the prepared file.
@@ -1124,7 +1144,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	if vertexGap != "" {
 		var configured []string
-		for _, c := range agentruntime.VertexChildren("pi", h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases) {
+		for _, c := range agentruntime.VertexChildren("pi", h.Agent, agentSubagents, runSkillDirs, agentName, configModelAliases) {
 			// google-vertex also authenticates with an API key; dispatch decides for it.
 			if strings.HasPrefix(c.Spec, "google-vertex/") {
 				continue
@@ -1546,18 +1566,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Only harness-declared profiles and providers are imported and created;
 	// directory files not listed on the harness are skipped entirely (#7095).
 	result.Profiles = dedupResolvedProfiles(result.Profiles)
-	// The sandbox name is generated before providers are created so a
-	// run-scoped provider can carry its suffix (#6689).
-	sandboxName := generateSandboxName(agentName)
-	if len(sandboxName) > maxSandboxNameLen {
-		return fmt.Errorf("sandbox name %q is %d characters, exceeding the OpenShell limit of %d", sandboxName, len(sandboxName), maxSandboxNameLen)
-	}
+	// sandboxName was generated at step 1a, before providers are created,
+	// so a run-scoped provider can carry its suffix (#6689).
 	// Inference gateway route (ADR 0137, #8280): selected per model by the
 	// gateway/ prefix, with no precedence against the OpenAI routes, and
 	// attached in addition to every other provider, never instead of
 	// them. Decided here, before Bootstrap, because the runtime renders
 	// its gateway config from the block (PrepareGatewayRun).
-	gatewayChildren := agentruntime.GatewayChildren(runtimeBackend.Runtime.Name(), h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
+	gatewayChildren := agentruntime.GatewayChildren(runtimeBackend.Runtime.Name(), h.Agent, agentSubagents, runSkillDirs, agentName, configModelAliases)
 	gatewayModels := []string{agentruntime.EffectiveModel(resolvedModel, agentDefModel)}
 	for _, c := range gatewayChildren {
 		gatewayModels = append(gatewayModels, c.Spec)
@@ -1857,9 +1873,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	workItemID := resolveWorkItemID()
 
-	// 3. Create run directory and initialise tracer.
-	// outputBase is already absolute (resolveOutputBase above).
-	runDir := filepath.Join(outputBase, sandboxName)
+	// 3. Create run directory and initialise tracer. runDir was computed
+	// (and created) at step 1a.
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return fmt.Errorf("creating run directory: %w", err)
 	}
@@ -1928,15 +1943,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		defer cancel()
 		tracingCleanup(flushCtx)
 	}()
-
-	// 3a. Stage the skill trees (applying file overrides to per-run copies)
-	// and write the persona manifest. This runs on every path — lock file
-	// or fresh resolution — and before the pre-script, which already sees
-	// FULLSEND_PERSONAS_FILE (#6158).
-	runSkillDirs, err := stageRunSkills(h, runDir, printer)
-	if err != nil {
-		return err
-	}
 
 	// 4. Run pre-script on the host (if configured). The pre-script may
 	// request a skip via the pre-script output protocol
@@ -2353,13 +2359,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// pre-configured child naming the openai provider can be trusted only
 	// when the credential it needs is really there (#7981).
 	openAIProviderAttached := len(openAIHandles) > 0
-	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry, configModelAliases, agentSubagents, resolvedModel, remoteRepositoryDir, openAIProviderAttached)
+	boot, err := newHarnessBootstrap(h, runSkillDirs, sandboxName, agentName, forgeEgressEntry, configModelAliases, agentSubagents, resolvedModel, remoteRepositoryDir, openAIProviderAttached)
 	if err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
-	}
-	if b, ok := boot.(interface{ setSkillDirs([]string) }); ok {
-		b.setSkillDirs(runSkillDirs)
 	}
 	if rt.Name() == "claude" {
 		warnRepoSkillCollisions(hostRepositoryDir, boot.SkillDirs(), printer)
@@ -6215,6 +6218,14 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			if d.Name() == "security" {
 				return filepath.SkipDir
 			}
+			// The staged skill trees are runner input, not agent output.
+			if path == filepath.Join(outputDir, "skills") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// The persona manifest is runner-written input as well (#6158).
+		if path == filepath.Join(outputDir, personasFileName) {
 			return nil
 		}
 		// Skip the telemetry JSONL: it is still open for append, and any

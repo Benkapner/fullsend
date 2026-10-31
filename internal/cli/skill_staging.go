@@ -54,9 +54,22 @@ func (s stagedSkill) origin(rel string) string {
 // Entries without overrides keep their resolved path, so a harness with
 // no overrides stages exactly the trees it did before (#6158).
 func stageSkills(skills []harness.SkillEntry, stageRoot string, warn func(string)) ([]stagedSkill, error) {
+	return stageSkillsIn(skills, stageRoot, "", warn)
+}
+
+// stageSkillsIn is stageSkills with the directory override sources must
+// stay inside (the fullsend directory, which also holds the fetch cache).
+// Symlinks above that directory are allowed; with no directory, any
+// symlink on the path is refused.
+func stageSkillsIn(skills []harness.SkillEntry, stageRoot, trustedRoot string, warn func(string)) ([]stagedSkill, error) {
 	staged := make([]stagedSkill, 0, len(skills))
 	for i, entry := range skills {
 		if entry.Source == "" {
+			// Resolution clears Source for a skill already pulled in as a
+			// dependency; its overrides then have no tree to apply to.
+			if entry.HasOverrides() {
+				warn(fmt.Sprintf("skills[%d]: skill has no resolved source; its file overrides are not applied", i))
+			}
 			continue
 		}
 		if !entry.HasOverrides() {
@@ -65,7 +78,7 @@ func stageSkills(skills []harness.SkillEntry, stageRoot string, warn func(string
 		}
 		field := fmt.Sprintf("skills[%d]", i)
 		dest := filepath.Join(stageRoot, strconv.Itoa(i), skill.SandboxName(entry.Source))
-		s, err := stageOverriddenSkill(field, entry, dest, warn)
+		s, err := stageOverriddenSkill(field, entry, dest, trustedRoot, warn)
 		if err != nil {
 			return nil, err
 		}
@@ -86,8 +99,15 @@ func stagedSkillDirs(staged []stagedSkill) []string {
 	return dirs
 }
 
-func stageOverriddenSkill(field string, entry harness.SkillEntry, dest string, warn func(string)) (stagedSkill, error) {
-	info, err := os.Stat(entry.Source)
+func stageOverriddenSkill(field string, entry harness.SkillEntry, dest, trustedRoot string, warn func(string)) (stagedSkill, error) {
+	// A URL skill's source is a named symlink into the fetch cache
+	// (fetch.CacheNamedSymlink); resolve the root only. Symlinks inside
+	// the tree are still refused by copySkillTree.
+	root, err := filepath.EvalSymlinks(entry.Source)
+	if err != nil {
+		return stagedSkill{}, fmt.Errorf("%s: reading skill source: %w", field, err)
+	}
+	info, err := os.Stat(root)
 	if err != nil {
 		return stagedSkill{}, fmt.Errorf("%s: reading skill source: %w", field, err)
 	}
@@ -100,7 +120,7 @@ func stageOverriddenSkill(field string, entry harness.SkillEntry, dest string, w
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return stagedSkill{}, fmt.Errorf("%s: creating staging directory: %w", field, err)
 	}
-	if err := copySkillTree(field, entry.Source, dest); err != nil {
+	if err := copySkillTree(field, root, dest); err != nil {
 		return stagedSkill{}, err
 	}
 
@@ -143,7 +163,7 @@ func stageOverriddenSkill(field string, entry harness.SkillEntry, dest string, w
 			continue
 		}
 
-		data, err := readOverrideSource(*val)
+		data, err := readOverrideSource(*val, trustedRoot)
 		if err != nil {
 			return stagedSkill{}, fmt.Errorf("%s: override %q: reading override source: %w", field, key, err)
 		}
@@ -170,16 +190,41 @@ func stageOverriddenSkill(field string, entry harness.SkillEntry, dest string, w
 
 // readOverrideSource reads an override value that resolution has already
 // turned into a local path (a harness file or a cached URL file). Only a
-// regular file is accepted; a symlink is not followed.
-func readOverrideSource(p string) ([]byte, error) {
-	info, err := os.Lstat(p)
+// regular file is accepted, and a path that reaches it through a symlink
+// (the file itself or a parent directory) is refused. With a trustedRoot,
+// p must sit inside it and only symlinks above the root are allowed (for
+// example macOS /tmp → /private/tmp).
+func readOverrideSource(p, trustedRoot string) ([]byte, error) {
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return nil, err
+	}
+	want := filepath.Clean(p)
+	if trustedRoot != "" {
+		rel, err := filepath.Rel(filepath.Clean(trustedRoot), want)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("%s is outside %s", p, trustedRoot)
+		}
+		realRoot, err := filepath.EvalSymlinks(trustedRoot)
+		if err != nil {
+			return nil, err
+		}
+		want = filepath.Join(realRoot, rel)
+	}
+	// A link to a sibling in the same directory is allowed: a URL base
+	// harness's relative override is a fetch.CacheNamedSymlink
+	// (content.md → content).
+	if real != want && filepath.Dir(real) != filepath.Dir(want) {
+		return nil, fmt.Errorf("%s resolves through a symlink to %s", p, real)
+	}
+	info, err := os.Stat(real)
 	if err != nil {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file", p)
 	}
-	return os.ReadFile(p)
+	return os.ReadFile(real)
 }
 
 // copySkillTree copies src into dst, keeping file modes. Only regular
@@ -237,26 +282,22 @@ func copyRegularFile(field, src, dst string, mode fs.FileMode) error {
 }
 
 // stageRunSkills materializes the run's skill trees under runDir/skills
-// and writes runDir/personas.json. It runs after harness resolution (the
-// lock-file path included) and before the pre-script, so the pre-script
-// can already read FULLSEND_PERSONAS_FILE. It returns the directories the
+// and writes runDir/personas.json. It runs right after harness resolution
+// (the lock-file path included), so pi child routing, the bootstrap and
+// the pre-script all see the merged trees. It returns the directories the
 // runtime uploads in place of the resolved sources.
-func stageRunSkills(h *harness.Harness, runDir string, printer *ui.Printer) ([]string, error) {
-	staged, err := stageSkills(h.Skills, filepath.Join(runDir, "skills"), printer.StepWarn)
+func stageRunSkills(h *harness.Harness, runDir, trustedRoot, agentName string, printer *ui.Printer) ([]string, error) {
+	staged, err := stageSkillsIn(h.Skills, filepath.Join(runDir, "skills"), trustedRoot, printer.StepWarn)
 	if err != nil {
 		printer.StepFail("Skill staging failed")
 		return nil, err
 	}
-	if _, err := writePersonaManifest(staged, runDir); err != nil {
+	if _, err := writePersonaManifest(staged, runDir, agentName, printer.StepWarn); err != nil {
 		printer.StepFail("Persona manifest failed")
 		return nil, err
 	}
 	return stagedSkillDirs(staged), nil
 }
-
-// setSkillDirs replaces the skill directories the runtime uploads with
-// the staged ones from stageRunSkills.
-func (b *harnessBootstrap) setSkillDirs(dirs []string) { b.skillDirs = dirs }
 
 // uploadPersonaManifest copies runDir/personas.json to its sandbox path
 // next to output-schema.json.

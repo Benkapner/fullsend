@@ -34,7 +34,19 @@ var MarkerNames = [...]string{"SKILL.md", "skill.md", "Skill.md"}
 // if the content has no frontmatter. Returns an error only if frontmatter is
 // present but malformed.
 func ParseFrontmatter(content []byte) (*SkillMeta, error) {
-	fmBlock, ok := FrontmatterBlock(content)
+	content = bytes.TrimPrefix(content, utf8BOM)
+
+	lines := bytes.SplitN(content, []byte("\n"), 2)
+	if len(lines) == 0 || !bytes.Equal(bytes.TrimSpace(lines[0]), frontmatterDelim) {
+		return nil, nil
+	}
+
+	if len(lines) < 2 {
+		return nil, nil
+	}
+	rest := lines[1]
+
+	fmBlock, ok := findClosingDelimiter(rest)
 	if !ok {
 		return nil, nil
 	}
@@ -44,27 +56,6 @@ func ParseFrontmatter(content []byte) (*SkillMeta, error) {
 		return nil, fmt.Errorf("parsing skill frontmatter: %w", err)
 	}
 	return &meta, nil
-}
-
-// FrontmatterBlock returns the YAML between the opening and closing "---"
-// lines of a Markdown file (a leading UTF-8 BOM is ignored) and whether a
-// complete frontmatter block was found.
-func FrontmatterBlock(content []byte) ([]byte, bool) {
-	content = bytes.TrimPrefix(content, utf8BOM)
-
-	lines := bytes.SplitN(content, []byte("\n"), 2)
-	if len(lines) < 2 || !bytes.Equal(bytes.TrimSpace(lines[0]), frontmatterDelim) {
-		return nil, false
-	}
-	return findClosingDelimiter(lines[1])
-}
-
-// HasFrontmatterFence reports whether content opens with a "---" line,
-// whether or not the block is closed.
-func HasFrontmatterFence(content []byte) bool {
-	content = bytes.TrimPrefix(content, utf8BOM)
-	first, _, _ := bytes.Cut(content, []byte("\n"))
-	return bytes.Equal(bytes.TrimSpace(first), frontmatterDelim)
 }
 
 // findClosingDelimiter scans rest for a line that is exactly "---"

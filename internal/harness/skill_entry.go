@@ -2,6 +2,7 @@ package harness
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -182,6 +183,14 @@ func validateOverrideKey(field, key string) error {
 		if seg == ".." {
 			return fmt.Errorf("%s: override file path %q must not contain path traversal segments", field, key)
 		}
+	}
+	// Only the clean form is accepted, so two keys cannot name one file.
+	clean := path.Clean(key)
+	if clean != key {
+		return fmt.Errorf("%s: override file path %q must be in clean form (%q)", field, key, clean)
+	}
+	if clean == "." {
+		return fmt.Errorf("%s: override file path %q must name a file in the skill", field, key)
 	}
 	return nil
 }
