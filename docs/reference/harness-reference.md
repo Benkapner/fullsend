@@ -268,17 +268,18 @@ runtimes.
 **`skills`** — Skill directories to upload. Each entry is a source string (a
 local path or a forge tree URL pinned with `#sha256=`), or a single-key map
 of that source to per-file overrides. An override key is a file path
-relative to the skill root: no leading `/`, no `..` segment, no null bytes,
-and never a directory. Its value is `null` (remove the file), a local path
+relative to the skill root in clean form: no leading `/`, no `..` or `.`
+segment, no `//` or trailing `/`, no null bytes, and never a directory. Its value is `null` (remove the file), a local path
 resolved from the `.fullsend` directory, or an `https://` URL with
 `#sha256=` covered by `allowed_remote_resources`; a string replaces the file
 when it exists and adds it otherwise. For each entry with overrides, the
 runner copies the resolved skill to
-`<output-dir>/<sandbox-name>/skills/<index>/<skill-name>` after harness
-resolution and before the pre-script, then applies the overrides to the copy;
-the source is never written. A symlink in an overridden skill fails the run.
-Every run, with or without overrides, writes a persona manifest of the staged
-`sub-agents/*.md` files to `<output-dir>/<sandbox-name>/personas.json` and
+`<output-dir>/<sandbox-name>/skills/<index>/<skill-name>` right after
+harness resolution, then applies the overrides to the copy; the source is
+never written. A symlink inside an overridden skill, or on the path to an
+override file, fails the run. Every run, with or without overrides, writes a
+persona manifest of the personas the `pi` and `codex` runtimes register from
+the staged skills to `<output-dir>/<sandbox-name>/personas.json` and
 `/sandbox/workspace/.fullsend/personas.json`, and exports its path as
 `FULLSEND_PERSONAS_FILE` to the pre-script, post-script, validation script
 and sandbox. See

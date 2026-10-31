@@ -540,25 +540,29 @@ Runtimes upload the directories `BootstrapInput.SkillDirs()` returns and
 must not assume those are the harness's source paths. For a `skills:` entry
 with per-file overrides, `fullsend run` copies the resolved skill to
 `<runDir>/skills/<index>/<sandbox-name>` (where `<runDir>` is
-`<output-dir>/<sandbox-name>`) after harness resolution and before the
-pre-script, applies the overrides there, and passes that copy in
-`SkillDirs()`. Entries without overrides keep their resolved path. The fetch
+`<output-dir>/<sandbox-name>`) right after harness resolution, applies the
+overrides there, and passes that copy in `SkillDirs()`. The pi child routing
+checks (`OpenAIChildren`, `VertexChildren`, `GatewayChildren`) read the same
+staged directories. Entries without overrides keep their resolved path. The fetch
 cache and the `.fullsend` directory are never written. Upload rules, naming
 and collision checks are unchanged (`uploadHarnessSkills`, shared by the
 dummy runtime through `uploadHarnessSkillsWith`), so a runtime needs no
 override-specific code.
 
-Every run writes `<runDir>/personas.json`, one entry per staged
-`sub-agents/*.md` file, and uploads it to
+Every run writes `<runDir>/personas.json`, one entry per persona that
+`runtime.DiscoverPersonas` (the pi and codex discovery) registers from the
+staged skills, and uploads it to
 `/sandbox/workspace/.fullsend/personas.json`. The runner exports
 `FULLSEND_PERSONAS_FILE`:
 
 | Where | Value | Set by |
 |-------|-------|--------|
-| Pre-script, post-script and validation script environment | Absolute host path of `<runDir>/personas.json` | The runner, after `runner_env`/`env.runner`, so a harness cannot replace it |
+| Pre-script, post-script and validation script environment | Absolute host path of `<runDir>/personas.json` | The runner, after `runner_env`/`env.runner`, so those cannot replace it |
 | Sandbox `/sandbox/workspace/.env` | `/sandbox/workspace/.fullsend/personas.json` | The runner; reserved, so an `env.sandbox` entry with this name is dropped |
 
-The manifest schema, origins and validation errors are documented in
+The post-run output scan skips `<runDir>/skills/` and
+`<runDir>/personas.json`, which are runner input. The manifest schema,
+origins and warnings are documented in
 [Configuring with Skills § The persona manifest](../guides/user/customizing-with-skills.md#the-persona-manifest).
 
 ## Agent rule layering
