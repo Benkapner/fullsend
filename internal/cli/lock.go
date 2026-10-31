@@ -777,6 +777,18 @@ func lockForgePlatforms(harnessPath, forgePlatform string) ([]string, error) {
 	return platforms, nil
 }
 
+// lockDepURLMatches reports whether a harness value is a URL naming the
+// lock dependency URL, ignoring any #sha256= fragment on either side. Paths
+// never match.
+func lockDepURLMatches(value, depURL string) bool {
+	if !harness.IsURL(value) {
+		return false
+	}
+	v, _, _ := harness.ParseIntegrityHash(value)
+	d, _, _ := harness.ParseIntegrityHash(depURL)
+	return v == d
+}
+
 // resolveFromLock resolves harness dependencies using a lock file entry instead
 // of fetching from the network. For each pinned dependency, it verifies the
 // content exists in the local cache and replaces the harness URL field with the
@@ -788,6 +800,7 @@ func lockForgePlatforms(harnessPath, forgePlatform string) ([]string, error) {
 func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot string, orgAllowlist []string, printer *ui.Printer) (resolve.ResolveResult, error) {
 	type mutation struct {
 		field     string
+		url       string
 		localPath string
 	}
 
@@ -881,7 +894,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		// ResolvedProfile list, not by mutating a harness field. Keep it a
 		// no-op if that switch ever grows a profile case, or move this append
 		// after the rename.
-		mutations = append(mutations, mutation{field: lockDep.Field, localPath: localPath})
+		mutations = append(mutations, mutation{field: lockDep.Field, url: lockDep.URL, localPath: localPath})
 		dep := resolve.Dependency{
 			Field:     lockDep.Field,
 			URL:       lockDep.URL,
@@ -982,15 +995,6 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			// Base composition is already resolved by LoadWithBase before
 			// resolveFromLock runs. This entry exists only for cache
 			// verification.
-		case strings.HasPrefix(m.field, "base."):
-			// Files a URL base harness's skill overrides name
-			// (base.skills[N].overrides[KEY], see resolveBaseResources in
-			// internal/harness/compose.go). LoadWithBase has already put
-			// their cache paths in the merged harness, so this entry is for
-			// cache verification only. Mapping it onto h.Skills[N] would
-			// replace a child's override of the same file. Locks written
-			// before the prefix record these as skills[N].overrides[KEY]
-			// and still replay through the override case below.
 		case m.field == "pre_script":
 			h.PreScript = m.localPath
 			if err := os.Chmod(m.localPath, 0o755); err != nil {
@@ -1071,23 +1075,20 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		case strings.HasPrefix(m.field, "overlays[") && strings.Contains(m.field, ".providers["):
 		case strings.HasPrefix(m.field, "overlays[") && strings.Contains(m.field, ".openshell.profiles["):
 		case strings.Contains(m.field, ".overrides["):
-			// Override file entries are resolved by ResolveHarness and cached
-			// as individual files. Map the cache path back to the override
-			// key in the skill's Overrides map.
-			var idx int
-			if _, err := fmt.Sscanf(m.field, "skills[%d]", &idx); err != nil || idx < 0 || idx >= len(h.Skills) {
-				break
+			// Map the cached file onto every skill file override that still
+			// names its URL. The field's index is not trusted: a URL base's
+			// overrides share the skills[N].overrides[KEY] shape, and the
+			// lock keeps one entry per URL. Overrides that are already paths
+			// (local files, or base overrides LoadWithBase cached) stay.
+			for i := range h.Skills {
+				for key, val := range h.Skills[i].Overrides {
+					if val == nil || !lockDepURLMatches(*val, m.url) {
+						continue
+					}
+					resolved := m.localPath
+					h.Skills[i].Overrides[key] = &resolved
+				}
 			}
-			prefix := fmt.Sprintf("skills[%d].overrides[", idx)
-			if !strings.HasPrefix(m.field, prefix) || !strings.HasSuffix(m.field, "]") {
-				break
-			}
-			key := m.field[len(prefix) : len(m.field)-1]
-			if h.Skills[idx].Overrides == nil {
-				h.Skills[idx].Overrides = make(map[string]*string)
-			}
-			resolved := m.localPath
-			h.Skills[idx].Overrides[key] = &resolved
 		default:
 			var idx int
 			if _, err := fmt.Sscanf(m.field, "skills[%d]", &idx); err == nil && idx >= 0 && idx < len(h.Skills) && m.field == fmt.Sprintf("skills[%d]", idx) {

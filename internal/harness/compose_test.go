@@ -5329,7 +5329,7 @@ allowed_remote_resources:
 	// Should have a dependency for the override file
 	var foundOverride bool
 	for _, d := range deps {
-		if d.Field == "base.skills[0].overrides[sub-agents/security.md]" {
+		if d.Field == "skills[0].overrides[sub-agents/security.md]" {
 			foundOverride = true
 			assert.Equal(t, "resource", d.Type)
 		}

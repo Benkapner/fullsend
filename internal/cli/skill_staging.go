@@ -65,14 +65,11 @@ func stageSkillsIn(skills []harness.SkillEntry, stageRoot, trustedRoot string, w
 	staged := make([]stagedSkill, 0, len(skills))
 	for i, entry := range skills {
 		if entry.Source == "" {
-			// The harness names an empty skill source (`- "": {...}`).
-			// resolve.ResolveHarness drops such entries (and ones it
-			// cleared as already pulled in as a dependency), but a run
-			// calls it only for a harness with URL references or local
-			// profiles/providers, and the lock-file replay keeps them.
-			// Overrides then have no tree to apply to.
+			// Backstop: harness validation rejects an empty source, and
+			// resolve.ResolveHarness drops the entries whose source it
+			// clears, but the lock-file replay keeps whatever it is given.
 			if entry.HasOverrides() {
-				warn(fmt.Sprintf("skills[%d]: skill has no resolved source; its file overrides are not applied", i))
+				warn(fmt.Sprintf("skills[%d]: skill source is empty; its file overrides are not applied", i))
 			}
 			continue
 		}

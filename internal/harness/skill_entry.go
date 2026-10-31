@@ -127,14 +127,19 @@ func SkillSources(entries []SkillEntry) []string {
 	return sources
 }
 
-// ValidateSkillOverrides checks that all file override keys in the skills
-// list are safe relative paths (no traversal, no absolute paths) and that
-// override source paths are either null (removal) or non-empty strings.
+// ValidateSkillOverrides checks that every skill names a source, that all
+// file override keys in the skills list are safe relative paths (no
+// traversal, no absolute paths) and that override source paths are either
+// null (removal) or non-empty strings. It runs on the harness as loaded;
+// resolution drops the entries whose source it clears.
 // Already-resolved values (absolute cache paths or URLs) are skipped —
 // they were validated pre-resolution by resolveBaseResources or will be
 // validated by ResolveHarness.
 func ValidateSkillOverrides(skills []SkillEntry) error {
 	for i, entry := range skills {
+		if entry.Source == "" {
+			return fmt.Errorf("skills[%d]: skill source must not be empty", i)
+		}
 		for key, val := range entry.Overrides {
 			if err := validateOverrideKey(fmt.Sprintf("skills[%d]", i), key); err != nil {
 				return err

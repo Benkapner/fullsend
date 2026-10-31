@@ -721,8 +721,11 @@ func TestResolveFromLock_OverrideSlots(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:                  "agents/code.md",
-		Skills:                 []harness.SkillEntry{{Source: "skills/pr-review"}},
+		Agent: "agents/code.md",
+		Skills: []harness.SkillEntry{{
+			Source:    "skills/pr-review",
+			Overrides: map[string]*string{"sub-agents/security.md": strPtr("https://example.com/overrides/security.md#sha256=" + overrideHash)},
+		}},
 		AllowedRemoteResources: []string{"https://example.com/"},
 	}
 
@@ -760,6 +763,8 @@ func TestResolveFromLock_OverrideSlotsPreservesExisting(t *testing.T) {
 			Source: "skills/pr-review",
 			Overrides: map[string]*string{
 				"sub-agents/local.md": &existing,
+				"sub-agents/a.md":     strPtr("https://example.com/overrides/a.md#sha256=" + hashA),
+				"sub-agents/b.md":     strPtr("https://example.com/overrides/b.md#sha256=" + hashB),
 			},
 		}},
 		AllowedRemoteResources: []string{"https://example.com/"},
@@ -774,6 +779,25 @@ func TestResolveFromLock_OverrideSlotsPreservesExisting(t *testing.T) {
 	assert.Equal(t, "local/existing.md", *h.Skills[0].Overrides["sub-agents/local.md"])
 	assert.True(t, strings.HasSuffix(*h.Skills[0].Overrides["sub-agents/a.md"], "/content"))
 	assert.True(t, strings.HasSuffix(*h.Skills[0].Overrides["sub-agents/b.md"], "/content"))
+}
+
+func TestLockDepURLMatches(t *testing.T) {
+	const dep = "https://example.com/overrides/x.md"
+	hash := fetch.ComputeSHA256([]byte("x"))
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{dep + "#sha256=" + hash, true},
+		{dep, true},
+		{"https://example.com/overrides/y.md#sha256=" + hash, false},
+		{"/abs/cache/content", false},
+		{"overrides/x.md", false},
+		{"", false},
+	} {
+		assert.Equal(t, tc.want, lockDepURLMatches(tc.value, dep), tc.value)
+	}
+	assert.True(t, lockDepURLMatches(dep, dep+"#sha256="+hash), "a fragment on the dep URL is ignored too")
 }
 
 func TestResolveFromLock_OverrideDoesNotCorruptSource(t *testing.T) {
@@ -802,10 +826,12 @@ func TestResolveFromLock_OverrideDoesNotCorruptSource(t *testing.T) {
 	assert.Equal(t, "skills/pr-review", h.Skills[0].Source)
 }
 
-// A URL base and its child both override sub-agents/x.md on skill index 0.
-// The base's override is recorded under a base.-prefixed field, so after
-// `fullsend lock` and an offline load the merged harness keeps the child's
-// override, whether the child names a URL or a local file (#8974).
+// A URL base and its child both override sub-agents/x.md on skill index 0,
+// so their lock entries share the skills[0].overrides[...] field. After
+// `fullsend lock` and an offline load, the replay maps cached override files
+// by URL, so the merged harness keeps the child's override whatever the
+// entry order (#8974). The lock format is unchanged, so each entry is also
+// what an older fullsend wrote.
 func TestRunLock_BaseAndChildOverrideSameFile(t *testing.T) {
 	skillFiles := map[string][]byte{
 		"SKILL.md":        []byte("---\nname: pr-review\n---\nbody\n"),
@@ -833,14 +859,36 @@ skills:
 	fakeFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
 		return skillFiles, nil
 	}
+	baseURL := srv.URL + "/overrides/base-x.md"
+	childURL := srv.URL + "/overrides/child-x.md"
 
 	for _, tc := range []struct {
 		name          string
 		childOverride string
-		childDep      bool
+		wantURLs      []string // override URLs the lock records
+		want          []byte
+		wantCached    bool // the override is the fetch cache's file
 	}{
-		{name: "child URL override", childOverride: fmt.Sprintf("\"%s/overrides/child-x.md#sha256=%s\"", srv.URL, fetch.ComputeSHA256(childX)), childDep: true},
-		{name: "child local override", childOverride: "overrides/child-x.md"},
+		{
+			name:          "child URL override",
+			childOverride: fmt.Sprintf("\"%s#sha256=%s\"", childURL, fetch.ComputeSHA256(childX)),
+			wantURLs:      []string{baseURL, childURL},
+			want:          childX,
+		},
+		{
+			name:          "child local override",
+			childOverride: "overrides/child-x.md",
+			wantURLs:      []string{baseURL},
+			want:          childX,
+		},
+		{
+			// runLock keeps one entry per URL, the base's.
+			name:          "child URL override names the base's URL",
+			childOverride: fmt.Sprintf("\"%s#sha256=%s\"", baseURL, fetch.ComputeSHA256(baseX)),
+			wantURLs:      []string{baseURL},
+			want:          baseX,
+			wantCached:    true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -870,51 +918,49 @@ allowed_remote_resources:
 			require.NoError(t, err)
 			entry := lf.Lookup("code")
 			require.NotNil(t, entry)
-			fields := map[string]string{}
+			var overrideURLs []string
 			for _, d := range entry.Dependencies {
-				fields[d.Field] = d.URL
+				if d.Field == "skills[0].overrides[sub-agents/x.md]" {
+					overrideURLs = append(overrideURLs, d.URL)
+				}
 			}
-			assert.Equal(t, srv.URL+"/overrides/base-x.md", fields["base.skills[0].overrides[sub-agents/x.md]"])
-			if tc.childDep {
-				assert.Equal(t, srv.URL+"/overrides/child-x.md", fields["skills[0].overrides[sub-agents/x.md]"])
-			} else {
-				assert.NotContains(t, fields, "skills[0].overrides[sub-agents/x.md]")
+			assert.ElementsMatch(t, tc.wantURLs, overrideURLs)
+
+			reversed := *entry
+			reversed.Dependencies = nil
+			for i := len(entry.Dependencies) - 1; i >= 0; i-- {
+				reversed.Dependencies = append(reversed.Dependencies, entry.Dependencies[i])
 			}
 
-			// Offline load, as fullsend run does with a current lock entry.
-			fetch.DefaultPolicy = fetch.FetchPolicy{Offline: true}
-			h, _, err := harness.LoadWithBase(context.Background(), harnessPath, harness.ComposeOpts{
-				WorkspaceRoot: dir,
-				FetchPolicy:   fetch.FetchPolicy{Offline: true},
-				OrgAllowlist:  []string{srv.URL + "/", "https://github.com/test-org/"},
-			})
-			require.NoError(t, err)
-			require.NoError(t, h.ResolveRelativeTo(dir))
-			_, err = resolveFromLock(h, entry, dir, nil, printer)
-			require.NoError(t, err)
+			for _, e := range []struct {
+				name  string
+				entry *lock.HarnessLock
+			}{{"lock order", entry}, {"reversed order", &reversed}} {
+				// Offline load, as fullsend run does with a current lock entry.
+				fetch.DefaultPolicy = fetch.FetchPolicy{Offline: true}
+				h, _, err := harness.LoadWithBase(context.Background(), harnessPath, harness.ComposeOpts{
+					WorkspaceRoot: dir,
+					FetchPolicy:   fetch.FetchPolicy{Offline: true},
+					OrgAllowlist:  []string{srv.URL + "/", "https://github.com/test-org/"},
+				})
+				require.NoError(t, err, e.name)
+				require.NoError(t, h.ResolveRelativeTo(dir), e.name)
+				_, err = resolveFromLock(h, e.entry, dir, nil, printer)
+				require.NoError(t, err, e.name)
 
-			require.Len(t, h.Skills, 1)
-			got := h.Skills[0].Overrides["sub-agents/x.md"]
-			require.NotNil(t, got)
-			data, err := os.ReadFile(*got)
-			require.NoError(t, err)
-			assert.Equal(t, string(childX), string(data), "the child's override wins over the base's")
-
-			// A lock written before the base. prefix still replays.
-			oldEntry := *entry
-			oldEntry.Dependencies = append([]lock.DependencyEntry(nil), entry.Dependencies...)
-			for i := range oldEntry.Dependencies {
-				oldEntry.Dependencies[i].Field = strings.TrimPrefix(oldEntry.Dependencies[i].Field, "base.")
+				require.Len(t, h.Skills, 1, e.name)
+				got := h.Skills[0].Overrides["sub-agents/x.md"]
+				require.NotNil(t, got, e.name)
+				require.False(t, harness.IsURL(*got), "%s: override still a URL: %s", e.name, *got)
+				data, err := os.ReadFile(*got)
+				require.NoError(t, err, e.name)
+				assert.Equal(t, string(tc.want), string(data), e.name)
+				if tc.wantCached {
+					cachePath, err := fetch.CachePath(dir, fetch.ComputeSHA256(tc.want))
+					require.NoError(t, err)
+					assert.Equal(t, filepath.Join(cachePath, "content"), *got, e.name)
+				}
 			}
-			h, _, err = harness.LoadWithBase(context.Background(), harnessPath, harness.ComposeOpts{
-				WorkspaceRoot: dir,
-				FetchPolicy:   fetch.FetchPolicy{Offline: true},
-				OrgAllowlist:  []string{srv.URL + "/", "https://github.com/test-org/"},
-			})
-			require.NoError(t, err)
-			require.NoError(t, h.ResolveRelativeTo(dir))
-			_, err = resolveFromLock(h, &oldEntry, dir, nil, printer)
-			require.NoError(t, err)
 		})
 	}
 }
