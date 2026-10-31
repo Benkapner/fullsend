@@ -87,33 +87,22 @@ func TestMergeSkills_StringFormMissingChildKeepsChildSource(t *testing.T) {
 	assert.Equal(t, []string{missing}, SkillSources(got))
 }
 
-// A pinned URL child matches the base skill of the same name, so it
-// replaces it in place instead of tripping the duplicate-name check.
-func TestMergeSkills_URLChildIgnoresFragmentAndQuery(t *testing.T) {
-	dir := t.TempDir()
-	baseSkill := writeSkill(t, filepath.Join(dir, "cache", "pr-review"), "pr-review")
+// Two different pinned URL skills that share a leaf directory stay
+// separate entries; neither replaces the other or takes its overrides.
+func TestMergeSkills_PinnedURLsSharingLeafDoNotCollide(t *testing.T) {
+	base := "https://github.com/fullsend-ai/agents/tree/abc123/skills/issue-labels/github#sha256=" + strings.Repeat("a", 64)
+	child := "https://github.com/fullsend-ai/agents/tree/abc123/skills/pr-review/github#sha256=" + strings.Repeat("b", 64)
+	baseOverrides := map[string]*string{"x.md": nil}
 
-	for _, url := range []string{
-		"https://github.com/fullsend-ai/agents/tree/abc123/skills/pr-review#sha256=" + strings.Repeat("a", 64),
-		"https://github.com/fullsend-ai/agents/tree/abc123/skills/pr-review/?ref=x#sha256=" + strings.Repeat("a", 64),
-	} {
-		t.Run(url, func(t *testing.T) {
-			got := mergeSkills(
-				[]SkillEntry{{Source: "/cache/lint"}, {Source: baseSkill}},
-				[]SkillEntry{{Source: url, Overrides: map[string]*string{"sub-agents/user-experience.md": nil}}},
-			)
-			require.Len(t, got, 2)
-			assert.Equal(t, url, got[1].Source, "a URL child is fetched later and keeps its source")
-			assert.Equal(t, map[string]*string{"sub-agents/user-experience.md": nil}, got[1].Overrides)
-		})
-	}
-}
-
-func TestSkillMergeKey(t *testing.T) {
-	assert.Equal(t, "pr-review", skillMergeKey("https://example.com/skills/pr-review#sha256=abc"))
-	assert.Equal(t, "pr-review", skillMergeKey("https://example.com/skills/pr-review?x=1"))
-	assert.Equal(t, "pr-review", skillMergeKey("skills/pr-review"))
-	assert.Equal(t, "", skillMergeKey(""))
+	got := mergeSkills(
+		[]SkillEntry{{Source: base, Overrides: baseOverrides}},
+		[]SkillEntry{{Source: child, Overrides: map[string]*string{"sub-agents/y.md": nil}}},
+	)
+	require.Len(t, got, 2)
+	assert.Equal(t, base, got[0].Source)
+	assert.Equal(t, baseOverrides, got[0].Overrides)
+	assert.Equal(t, child, got[1].Source)
+	assert.Equal(t, map[string]*string{"sub-agents/y.md": nil}, got[1].Overrides)
 }
 
 func TestSkillSourcePresent(t *testing.T) {
@@ -229,4 +218,20 @@ skills:
 		"sub-agents/user-experience.md": nil,
 		"sub-agents/rbac-review.md":     strp("personas/rbac-review.md"),
 	}, h.Skills[0].Overrides)
+}
+
+// A missing map-form child does not inherit when two pinned-URL base
+// skills share its name.
+func TestMergeSkills_MissingChildAmbiguousURLBaseDoesNotInherit(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "skills", "github")
+	a := "https://github.com/o/r/tree/abc/skills/issue-labels/github#sha256=" + strings.Repeat("a", 64)
+	b := "https://github.com/o/r/tree/abc/skills/pr-review/github#sha256=" + strings.Repeat("b", 64)
+
+	got := mergeSkills(
+		[]SkillEntry{{Source: a}, {Source: b}},
+		[]SkillEntry{{Source: missing, Overrides: map[string]*string{"x.md": nil}}},
+	)
+	require.Len(t, got, 3)
+	assert.Equal(t, missing, got[2].Source)
 }

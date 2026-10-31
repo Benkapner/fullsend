@@ -2362,25 +2362,31 @@ func urlIndexPut(workspaceRoot, rawURL, hash string) error {
 // A map-form child entry (one with an overrides map) whose source is an
 // absolute path with no SKILL.md keeps the base entry's resolved source and
 // only adds its overrides: the child overlays files on the base skill
-// rather than replacing it (#6158). A URL key ignores its #fragment and
-// ?query, so a pinned URL matches the base skill of the same name.
+// rather than replacing it (#6158). Such a child that matches no base key
+// can still match the one pinned-URL base skill of its name.
 // mergeForgeConfig shares this function, so the rule holds there too.
 func mergeSkills(base, child []SkillEntry) []SkillEntry {
 	baseIndex := make(map[string]int, len(base))
 	result := make([]SkillEntry, 0, len(base)+len(child))
 
 	for _, s := range base {
-		name := skillMergeKey(s.Source)
+		name := skill.SandboxName(s.Source)
 		baseIndex[name] = len(result)
 		result = append(result, s)
 	}
 
 	// Child entries override base slots only, never other child entries.
 	for _, s := range child {
-		name := skillMergeKey(s.Source)
+		name := skill.SandboxName(s.Source)
+		inherit := s.Overrides != nil && !skillSourcePresent(s.Source)
+		if _, exists := baseIndex[name]; !exists && inherit {
+			if key, ok := uniquePinnedURLMatch(baseIndex, result, name); ok {
+				name = key
+			}
+		}
 		if idx, exists := baseIndex[name]; exists {
 			source := s.Source
-			if s.Overrides != nil && !skillSourcePresent(s.Source) {
+			if inherit {
 				source = result[idx].Source
 				log.Printf("harness: skill %q has no SKILL.md; applying its file overrides to base skill %q",
 					s.Source, source)
@@ -2402,17 +2408,29 @@ func mergeSkills(base, child []SkillEntry) []SkillEntry {
 	return result
 }
 
-// skillMergeKey is the identity mergeSkills compares: skill.SandboxName,
-// except that a URL drops its #fragment and ?query first (#6158). Sandbox
-// names elsewhere are unchanged.
-func skillMergeKey(src string) string {
-	if IsURL(src) {
-		if i := strings.IndexAny(src, "?#"); i >= 0 {
-			src = src[:i]
+// uniquePinnedURLMatch finds the one base key that is a pinned URL whose
+// name, without its #fragment or ?query, is name. It is used only for a
+// map-form child with no skill of its own; two candidates match nothing.
+func uniquePinnedURLMatch(baseIndex map[string]int, result []SkillEntry, name string) (string, bool) {
+	found := ""
+	for key, idx := range baseIndex {
+		src := result[idx].Source
+		if !IsURL(src) {
+			continue
 		}
-		return path.Base(strings.TrimRight(src, "/"))
+		bare := src
+		if i := strings.IndexAny(bare, "?#"); i >= 0 {
+			bare = bare[:i]
+		}
+		if path.Base(strings.TrimRight(bare, "/")) != name {
+			continue
+		}
+		if found != "" {
+			return "", false
+		}
+		found = key
 	}
-	return skill.SandboxName(src)
+	return found, found != ""
 }
 
 // skillSourcePresent reports whether a child skill source can stand on its
