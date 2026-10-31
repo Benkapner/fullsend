@@ -160,6 +160,12 @@ func isResolvedPath(p string) bool {
 	return filepath.IsAbs(p)
 }
 
+// ValidateOverrideKey exposes validateOverrideKey to the runner, which
+// checks every key again when it applies overrides to a staged skill tree.
+func ValidateOverrideKey(field, key string) error {
+	return validateOverrideKey(field, key)
+}
+
 // validateOverrideKey checks that a file path within a skill is a safe
 // relative path: no leading slash, no ".." segments, no null bytes.
 func validateOverrideKey(field, key string) error {

@@ -1929,6 +1929,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		tracingCleanup(flushCtx)
 	}()
 
+	// 3a. Stage the skill trees (applying file overrides to per-run copies)
+	// and write the persona manifest. This runs on every path — lock file
+	// or fresh resolution — and before the pre-script, which already sees
+	// FULLSEND_PERSONAS_FILE (#6158).
+	runSkillDirs, err := stageRunSkills(h, runDir, printer)
+	if err != nil {
+		return err
+	}
+
 	// 4. Run pre-script on the host (if configured). The pre-script may
 	// request a skip via the pre-script output protocol
 	// (FULLSEND_PRESCRIPT_OUTPUT, issue #4718), in which case the run
@@ -2161,7 +2170,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			defer remintCleanup()
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
-			postCmd.Env = postScriptEnv(h, traceparent)
+			postCmd.Env = withPersonasFile(postScriptEnv(h, traceparent), runDir)
 			// Override REPO_DIR from childScriptEnv: the harness value points to a fixed
 			// location, but sandbox output is now extracted to a temp dir. exec uses
 			// last-value-wins so this append takes precedence. TODO(fullsend-ai/agents#191):
@@ -2349,6 +2358,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
+	if b, ok := boot.(interface{ setSkillDirs([]string) }); ok {
+		b.setSkillDirs(runSkillDirs)
+	}
 	if rt.Name() == "claude" {
 		warnRepoSkillCollisions(hostRepositoryDir, boot.SkillDirs(), printer)
 	}
@@ -2365,6 +2377,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return err
 	}
 	if err := bootstrapEnv(sandboxName, remoteRepositoryDir, h, rt.EnvExports(), fetchEnvVal); err != nil {
+		printer.StepFail("Failed to bootstrap sandbox")
+		return err
+	}
+	if err := uploadPersonaManifest(sandbox.Exec, sandbox.UploadFile, sandboxName, runDir); err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
@@ -3432,6 +3448,7 @@ var reservedSandboxKeys = map[string]bool{
 	"FULLSEND_SLUG":               true,
 	"FULLSEND_TIMEOUT_MINUTES":    true,
 	"FULLSEND_ITERATION_DEADLINE": true,
+	"FULLSEND_PERSONAS_FILE":      true,
 	"TRACEPARENT":                 true,
 	runnerPathVar:                 true,
 	// OPENAI_API_KEY is reserved through oidcDenyKeys (merged by init()).
@@ -3855,6 +3872,10 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	// Expose harness identity so skills can reference their own role/slug
 	// without hardcoding values that drift from the harness YAML. See #6045.
 	lines = append(lines, buildRoleSlugEnvLines(h)...)
+
+	// The persona manifest is uploaded beside the output schema by
+	// uploadPersonaManifest on every run (#6158).
+	lines = append(lines, personasEnvLine())
 
 	// Expose output schema and expected filename inside the sandbox so
 	// agents can self-check output with fullsend-check-output. See #1107.
@@ -5292,7 +5313,7 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 	}
 	defer cleanup()
 	preCmd := exec.Command(h.PreScript)
-	preCmd.Env = append(childScriptEnv(h.RunnerEnv, traceparent), prescript.EnvVar+"="+outPath)
+	preCmd.Env = withPersonasFile(append(childScriptEnv(h.RunnerEnv, traceparent), prescript.EnvVar+"="+outPath), runDir)
 
 	// Tee stdout and stderr so skip-reason fallback (exit 78) and
 	// hard-failure diagnostics can recover the script's own message
@@ -5591,7 +5612,7 @@ func validationEnv(h *harness.Harness, hostRepoDir, runDir string) []string {
 	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
 		env = append(env, fmt.Sprintf("FULLSEND_OUTPUT_SCHEMA=%s", h.ValidationLoop.Schema))
 	}
-	return env
+	return withPersonasFile(env, runDir)
 }
 
 func envToList(env map[string]string) []string {

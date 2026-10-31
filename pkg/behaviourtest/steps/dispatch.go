@@ -33,6 +33,9 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the harness "([^"]+)" agent did not run$`, func(ctx context.Context, agent string) (context.Context, error) {
 		return ctx, thenHarnessAgentDidNotRun(world.FromContext(ctx), agent)
 	})
+	sc.Step(`^the harness "([^"]+)" workflow logs (do not )?contain "([^"]+)"$`, func(ctx context.Context, agent, negate, needle string) (context.Context, error) {
+		return ctx, thenHarnessWorkflowLogsContain(world.FromContext(ctx), agent, needle, negate == "")
+	})
 	sc.Step(`^the harness dispatch completes with an empty matrix$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, thenHarnessDispatchEmptyMatrix(world.FromContext(ctx))
 	})
@@ -396,6 +399,38 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 	w.WorkflowRun = run
 	saveWorkflowRunLogs(ctx, w, agent, run)
 	return ensureHarnessArtifacts(w, agent)
+}
+
+// thenHarnessWorkflowLogsContain checks the harness run's logs for needle
+// (want) or its absence (!want). It reads the run recorded by "the harness
+// ... workflow completes successfully", waiting for it first when no run is
+// recorded yet. A log snapshot with a job missing or truncated cannot prove
+// absence, so a negative check on one fails instead of passing.
+func thenHarnessWorkflowLogsContain(w *world.World, agent, needle string, want bool) error {
+	agent = strings.TrimSpace(agent)
+	if w.WorkflowRun == nil {
+		if err := thenHarnessWorkflowCompletes(w, agent); err != nil {
+			return err
+		}
+	}
+	run := w.WorkflowRun
+	logs, err := w.CI.GetRunLogs(context.Background(), w.Org, w.RepoName, run.ID)
+	if err != nil {
+		return fmt.Errorf("reading harness %q workflow logs (run %d): %w", agent, run.ID, err)
+	}
+	found := strings.Contains(logs, needle)
+	complete := runLogsComplete(*run, logs)
+	switch {
+	case want && !found && !complete:
+		return fmt.Errorf("harness %q workflow logs (run %d) do not contain %q, but the log snapshot is incomplete", agent, run.ID, needle)
+	case want && !found:
+		return fmt.Errorf("harness %q workflow logs (run %d) do not contain %q", agent, run.ID, needle)
+	case !want && found:
+		return fmt.Errorf("harness %q workflow logs (run %d) unexpectedly contain %q", agent, run.ID, needle)
+	case !want && !complete:
+		return fmt.Errorf("harness %q workflow logs (run %d) are incomplete, so they cannot show %q is absent", agent, run.ID, needle)
+	}
+	return nil
 }
 
 // defaultSettleDuration is the maximum time to wait for the dispatch

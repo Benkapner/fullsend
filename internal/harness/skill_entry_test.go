@@ -435,3 +435,8 @@ func TestMergeOverrides(t *testing.T) {
 func strPtr(s string) *string {
 	return &s
 }
+
+func TestValidateOverrideKey_Exported(t *testing.T) {
+	assert.NoError(t, ValidateOverrideKey("skills[0]", "sub-agents/security.md"))
+	assert.ErrorContains(t, ValidateOverrideKey("skills[0]", "../x.md"), "skills[0]: override file path \"../x.md\" must not contain path traversal segments")
+}

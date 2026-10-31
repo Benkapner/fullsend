@@ -460,3 +460,29 @@ func TestSandboxName_NonAbsolutePathSkipsDeclaredName(t *testing.T) {
 		t.Errorf("absolute path: SandboxName() = %q, want %q", got, "spoofed-top-level-skill")
 	}
 }
+
+func TestFrontmatterBlock(t *testing.T) {
+	block, ok := FrontmatterBlock([]byte("\xef\xbb\xbf---\nname: x\n---\nbody\n"))
+	if !ok || string(block) != "name: x\n" {
+		t.Fatalf("FrontmatterBlock = %q, %v", block, ok)
+	}
+	for _, in := range []string{"", "---", "no fence\n", "---\nname: x\n"} {
+		if _, ok := FrontmatterBlock([]byte(in)); ok {
+			t.Errorf("FrontmatterBlock(%q) found a block", in)
+		}
+	}
+}
+
+func TestHasFrontmatterFence(t *testing.T) {
+	for in, want := range map[string]bool{
+		"---\nname: x\n":    true,
+		"---":               true,
+		"\xef\xbb\xbf---\n": true,
+		"text\n---\n":       false,
+		"":                  false,
+	} {
+		if got := HasFrontmatterFence([]byte(in)); got != want {
+			t.Errorf("HasFrontmatterFence(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
