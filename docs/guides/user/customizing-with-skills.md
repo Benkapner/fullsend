@@ -183,61 +183,73 @@ swap in your own version, or add a new one.
 
 **Before you start:**
 
-- A harness registered in `config.yaml` (see
-  [Bring Your Own Agent](bring-your-own-agent.md)). To change a skill that a
-  `base:` harness lists, repeat that skill entry in your child harness.
+- A `.fullsend` directory with a `config.yaml` (see
+  [Bring Your Own Agent](bring-your-own-agent.md)).
 - The path of each file you want to change, relative to the skill's root
   directory (the directory that holds `SKILL.md`).
 
-### Example: remove, replace and add a persona
+### Example: change the personas of the stock review agent
 
-This harness uses `pr-review` from `fullsend-ai/agents`, pinned to a
-commit, and changes three of its files:
+This example builds on the stock review harness from `fullsend-ai/agents`.
+It removes the `user-experience` persona and adds an `rbac-review` persona.
 
-```yaml
-skills:
-  - https://github.com/fullsend-ai/agents/tree/4a6645268c6c8063c15ce5cb1b88a4f3930c74da/skills/pr-review#sha256=d0a639e6870c3e204db83855cdf1e4e10e6eb3ecfaee1695bbf8630843cb5c6c:
-      # Remove the user-experience persona.
-      sub-agents/user-experience.md: null
-      # Replace the security persona with the version from an older commit.
-      sub-agents/security.md: https://raw.githubusercontent.com/fullsend-ai/agents/cc64bb29346c43822ad5d9fd14351c7d98d642ca/skills/pr-review/sub-agents/security.md#sha256=93fa30d04fde0af9e96e115e5fcb27d3223ebfb9d456b87ad5638dba67e6e84f
-      # Add a licensing persona from a file in your .fullsend directory.
-      sub-agents/licensing.md: overrides/licensing.md
-```
-
-The added persona is `.fullsend/overrides/licensing.md`:
-
-```markdown
----
-name: licensing
-description: License compliance dimension.
-role: dimension
-categories: [licensing]
-model: haiku
-tools: Read, Grep, Glob
----
-
-# Licensing
-
-Check that new dependencies carry a license compatible with the project.
-```
-
-Its `name:` is `licensing` because the file is `licensing.md`. A persona
-whose `name:` differs from its file name is skipped.
-
-Allow both URL prefixes in `.fullsend/config.yaml`:
+**1. Register your own review harness** in `.fullsend/config.yaml`, and allow
+the agents repository's URLs:
 
 ```yaml
+version: "1"
 allowed_remote_resources:
   - https://github.com/fullsend-ai/agents/
   - https://raw.githubusercontent.com/fullsend-ai/agents/
+agents:
+  - name: review
+    source: review.yaml
 ```
 
-Get the `#sha256=` value of a URL by hashing the bytes it serves:
+**2. Write `.fullsend/review.yaml`.** It takes everything from the stock
+harness through `base:`, pinned to a commit and its hash, and lists the
+changes to `pr-review`:
+
+```yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/4a6645268c6c8063c15ce5cb1b88a4f3930c74da/harness/review.yaml#sha256=2191a0d92d0fcd51f1b84da63bbb134e8d149b7d589fb9a43aa98074c5675eac
+skills:
+  - skills/pr-review:
+      # Remove the user-experience persona.
+      sub-agents/user-experience.md: null
+      # Add a persona from a file in your .fullsend directory.
+      sub-agents/rbac-review.md: personas/rbac-review.md
+```
+
+`skills/pr-review` names the base harness's skill. You do not need a copy of
+it: when your `.fullsend` has no `skills/pr-review/SKILL.md`, the changes
+apply to the base harness's `pr-review`.
+
+**3. Add the persona** as `.fullsend/personas/rbac-review.md`. Its `name:`
+must equal its file name (`rbac-review.md`), or the persona is skipped:
+
+```markdown
+---
+name: rbac-review
+description: Checks that new endpoints and UI actions enforce the right role checks.
+role: dimension
+when: The diff adds or changes an API route, a permission check, or a role definition.
+categories: [authorization]
+model: sonnet
+tools: Read, Grep, Glob
+---
+
+# RBAC review
+
+For each new or changed endpoint or action in the diff, confirm a role or
+permission check guards it, and report any path that skips the check.
+```
+
+To get the `#sha256=` of the base harness, or of any URL, hash the bytes it
+serves:
 
 ```console
-$ curl -sL https://raw.githubusercontent.com/fullsend-ai/agents/cc64bb29346c43822ad5d9fd14351c7d98d642ca/skills/pr-review/sub-agents/security.md | sha256sum
-93fa30d04fde0af9e96e115e5fcb27d3223ebfb9d456b87ad5638dba67e6e84f  -
+$ curl -sL https://raw.githubusercontent.com/fullsend-ai/agents/4a6645268c6c8063c15ce5cb1b88a4f3930c74da/harness/review.yaml | sha256sum
+2191a0d92d0fcd51f1b84da63bbb134e8d149b7d589fb9a43aa98074c5675eac  -
 ```
 
 Pin URLs to a commit, not a branch: a branch changes, and the hash then
@@ -246,77 +258,65 @@ stops matching.
 ### Check the harness
 
 `fullsend lint` checks the override paths, that local override files exist,
-and that every URL is allowed. It does not download anything, so a wrong
-`#sha256=` shows up only when the agent runs. With the example registered as
-the agent `persona-probe`:
+and that every URL is allowed. It also says which skill the changes apply
+to (paths shortened):
 
 ```console
 $ fullsend lint --fullsend-dir .fullsend
-  ✓ Agent persona-probe resolved from config (local path)
+  ✓ Agent review resolved from config (local path)
+2026/10/31 13:38:18 harness: skill ".../.fullsend/skills/pr-review" has no SKILL.md; applying its file overrides to base skill ".../.fullsend/.fullsend-cache/resources/sha256/d0a639e6870c3e204db83855cdf1e4e10e6eb3ecfaee1695bbf8630843cb5c6c/pr-review"
 ```
+
+Lint downloads the `base:` harness and the skills it lists, so a wrong hash
+there fails lint. It does not download URL override values, so a wrong
+`#sha256=` on one of those shows up only when the agent runs.
 
 ### What you see in a run
 
-The run prints the personas it staged in two places.
+The run prints the same `has no SKILL.md; applying its file overrides` line,
+then shows the result in two places.
 
-**The persona list file.** Every run writes `personas.json`: the list of
-review personas staged for this run, after your overrides. Scripts and
-skills read it through the `FULLSEND_PERSONAS_FILE` environment variable.
-This pre-script prints it:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-echo "FULLSEND_PERSONAS_FILE=${FULLSEND_PERSONAS_FILE}"
-jq -r '.personas[] | "\(.skill)/\(.name) \(.origin) \(.path)"' "$FULLSEND_PERSONAS_FILE"
-jq -r '.removed[] | "removed: \(.skill) \(.path)"' "$FULLSEND_PERSONAS_FILE"
-```
-
-For the example harness it prints this before the sandbox starts (the run
-directory is shortened):
+**The run log (`pi` runtime).** pi logs one line per persona it registers.
+For the example, run on a pull request, `rbac-review` is there and
+`user-experience` is not:
 
 ```text
-  • Running pre-script: .../scripts/persona-probe.sh
-FULLSEND_PERSONAS_FILE=.../out/fs-per-e5e8a1ee86e6/personas.json
-pr-review/challenger upstream sub-agents/challenger.md
-pr-review/correctness upstream sub-agents/correctness.md
-pr-review/cross-repo-contracts upstream sub-agents/cross-repo-contracts.md
-pr-review/docs-currency upstream sub-agents/docs-currency.md
-pr-review/intent-coherence upstream sub-agents/intent-coherence.md
-pr-review/licensing added sub-agents/licensing.md
-pr-review/risk-assessment upstream sub-agents/risk-assessment.md
-pr-review/security override sub-agents/security.md
-pr-review/security-triage upstream sub-agents/security-triage.md
-pr-review/style-conventions upstream sub-agents/style-conventions.md
-removed: pr-review sub-agents/user-experience.md
+subagents: challenger → anthropic-vertex/claude-haiku-5-5 (from frontmatter)
+subagents: correctness → anthropic-vertex/claude-haiku-5-5 (from frontmatter)
+subagents: cross-repo-contracts → anthropic-vertex/claude-haiku-5-5 (from frontmatter)
+subagents: docs-currency → anthropic-vertex/claude-haiku-5-5 (from frontmatter)
+subagents: intent-coherence → anthropic-vertex/claude-haiku-5-5 (from frontmatter)
+subagents: rbac-review → anthropic-vertex/claude-haiku-5-5 (from frontmatter)
+subagents: risk-assessment → anthropic-vertex/claude-haiku-5-5 (from frontmatter)
+subagents: security → anthropic-vertex/claude-haiku-5-5 (from frontmatter)
+subagents: security-triage → anthropic-vertex/claude-haiku-5-5 (from frontmatter)
+subagents: style-conventions → anthropic-vertex/claude-haiku-5-5 (from frontmatter)
 ```
 
-`user-experience` is gone, `security` is your version, and `licensing` is
-new. The two changed entries in the file look like this:
+(That run mapped every model alias to Haiku in `config.yaml` to keep it
+cheap.)
+
+**The persona list file.** Every run writes `personas.json`: the list of
+review personas staged for this run, after your changes. Scripts and skills
+find it through the `FULLSEND_PERSONAS_FILE` environment variable. The
+entries your changes touched, from the same run:
 
 ```console
 $ jq '{personas: [.personas[] | select(.origin != "upstream")], removed}' "$FULLSEND_PERSONAS_FILE"
 {
   "personas": [
     {
-      "name": "licensing",
+      "name": "rbac-review",
       "skill": "pr-review",
-      "path": "sub-agents/licensing.md",
+      "path": "sub-agents/rbac-review.md",
       "origin": "added",
-      "sha256": "2628d3d6a40a2cfc489d3dcc3276e3e068a7437bf8eb75fd59b69e72d56df41c",
-      "description": "License compliance dimension.",
+      "sha256": "48bf22543eb1a4d0b8e5ad5bbbf10cfd1a61f4128c15bc43b5aeb8ee51afb588",
+      "description": "Checks that new endpoints and UI actions enforce the right role checks.",
       "role": "dimension",
+      "when": "The diff adds or changes an API route, a permission check, or a role definition.",
       "categories": [
-        "licensing"
+        "authorization"
       ]
-    },
-    {
-      "name": "security",
-      "skill": "pr-review",
-      "path": "sub-agents/security.md",
-      "origin": "override",
-      "sha256": "93fa30d04fde0af9e96e115e5fcb27d3223ebfb9d456b87ad5638dba67e6e84f",
-      "description": "Evaluates security vulnerabilities, auth/access control, data exposure, injection defense, privilege escalation, and content security."
     }
   ],
   "removed": [
@@ -328,18 +328,33 @@ $ jq '{personas: [.personas[] | select(.origin != "upstream")], removed}' "$FULL
 }
 ```
 
-The `security` entry's `sha256` equals the `#sha256=` in the harness, which
-shows your file was staged.
+A pre-script or post-script can print the whole list:
 
-**The run log (`pi` runtime).** pi logs one line per persona it registers.
-The same run logs `licensing` and `security`, and no `user-experience`:
-
-```text
-subagents: intent-coherence → anthropic-vertex/claude-sonnet-5-5 (from frontmatter)
-subagents: licensing → anthropic-vertex/claude-haiku-5-5 (from frontmatter)
-subagents: risk-assessment → anthropic-vertex/claude-sonnet-5-5 (from frontmatter)
-subagents: security → anthropic-vertex/claude-sonnet-5-5 (from frontmatter)
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+jq -r '.personas[] | "\(.skill)/\(.name) \(.origin) \(.path)"' "$FULLSEND_PERSONAS_FILE"
+jq -r '.removed[] | "removed: \(.skill) \(.path)"' "$FULLSEND_PERSONAS_FILE"
 ```
+
+Whether the review agent picks a persona for a given pull request depends on
+the review skill. The persona list only says which personas it can choose
+from.
+
+### Replace a file with a pinned URL
+
+An override value can also be a URL, pinned by the hash of the file it
+serves. This entry replaces `security.md` with its version from an older
+commit:
+
+```yaml
+skills:
+  - skills/pr-review:
+      sub-agents/security.md: https://raw.githubusercontent.com/fullsend-ai/agents/cc64bb29346c43822ad5d9fd14351c7d98d642ca/skills/pr-review/sub-agents/security.md#sha256=93fa30d04fde0af9e96e115e5fcb27d3223ebfb9d456b87ad5638dba67e6e84f
+```
+
+In the persona list file, that entry gets `"origin": "override"` and a
+`sha256` equal to the URL's `#sha256=`, which shows your file was staged.
 
 ### Override rules
 
@@ -378,8 +393,10 @@ subagents: security → anthropic-vertex/claude-sonnet-5-5 (from frontmatter)
 - A skill that has overrides must not contain symlinks.
 - Overrides work on every runtime (`claude`, `pi`, `codex`, `opencode` and
   `dummy`) and in runs that use a lock file.
-- When a child harness and its `base:` list the same skill, their overrides
-  merge. For the same file, the child wins.
+- When your harness and its `base:` list the same skill, their overrides
+  merge, and yours win for the same file. If your `.fullsend` has its own
+  copy of the skill (with a `SKILL.md`), that copy replaces the base skill
+  instead.
 
 ### The persona list file
 
