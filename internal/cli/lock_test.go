@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -799,6 +800,123 @@ func TestResolveFromLock_OverrideDoesNotCorruptSource(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "skills/pr-review", h.Skills[0].Source)
+}
+
+// A URL base and its child both override sub-agents/x.md on skill index 0.
+// The base's override is recorded under a base.-prefixed field, so after
+// `fullsend lock` and an offline load the merged harness keeps the child's
+// override, whether the child names a URL or a local file (#8974).
+func TestRunLock_BaseAndChildOverrideSameFile(t *testing.T) {
+	skillFiles := map[string][]byte{
+		"SKILL.md":        []byte("---\nname: pr-review\n---\nbody\n"),
+		"sub-agents/x.md": []byte("upstream x"),
+	}
+	treeHash := fetch.ComputeTreeHash(skillFiles)
+	skillURL := "https://github.com/test-org/test-repo/tree/main/skills/pr-review#sha256=" + treeHash
+
+	baseX := []byte("base x")
+	childX := []byte("child x")
+	baseContent := []byte(fmt.Sprintf(`agent: agents/shared.md
+role: test
+skills:
+  - "%s":
+      sub-agents/x.md: overrides/base-x.md
+`, skillURL))
+	baseHash := fetch.ComputeSHA256(baseContent)
+
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/base.yaml":            baseContent,
+		"/agents/shared.md":     []byte("# shared agent"),
+		"/overrides/base-x.md":  baseX,
+		"/overrides/child-x.md": childX,
+	})
+	fakeFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return skillFiles, nil
+	}
+
+	for _, tc := range []struct {
+		name          string
+		childOverride string
+		childDep      bool
+	}{
+		{name: "child URL override", childOverride: fmt.Sprintf("\"%s/overrides/child-x.md#sha256=%s\"", srv.URL, fetch.ComputeSHA256(childX)), childDep: true},
+		{name: "child local override", childOverride: "overrides/child-x.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "overrides"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "overrides", "child-x.md"), childX, 0o644))
+			childContent := fmt.Sprintf(`base: "%s/base.yaml#sha256=%s"
+skills:
+  - "%s":
+      sub-agents/x.md: %s
+allowed_remote_resources:
+  - "%s/"
+  - "https://github.com/test-org/"
+`, srv.URL, baseHash, skillURL, tc.childOverride, srv.URL)
+			harnessPath := filepath.Join(dir, "harness", "code.yaml")
+			require.NoError(t, os.WriteFile(harnessPath, []byte(childContent), 0o644))
+			orgConfig := fmt.Sprintf("allowed_remote_resources:\n  - \"%s/\"\n  - \"https://github.com/test-org/\"\n", srv.URL)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+			fetch.DefaultPolicy = policy
+			defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+			printer := ui.New(io.Discard)
+			require.NoError(t, runLock(context.Background(), "code", dir, "", false,
+				resolveFlags{treeFetcher: gitfetch.TreeFetchFunc(fakeFetcher)}, printer))
+
+			lf, err := lock.Load(filepath.Join(dir, "lock.yaml"))
+			require.NoError(t, err)
+			entry := lf.Lookup("code")
+			require.NotNil(t, entry)
+			fields := map[string]string{}
+			for _, d := range entry.Dependencies {
+				fields[d.Field] = d.URL
+			}
+			assert.Equal(t, srv.URL+"/overrides/base-x.md", fields["base.skills[0].overrides[sub-agents/x.md]"])
+			if tc.childDep {
+				assert.Equal(t, srv.URL+"/overrides/child-x.md", fields["skills[0].overrides[sub-agents/x.md]"])
+			} else {
+				assert.NotContains(t, fields, "skills[0].overrides[sub-agents/x.md]")
+			}
+
+			// Offline load, as fullsend run does with a current lock entry.
+			fetch.DefaultPolicy = fetch.FetchPolicy{Offline: true}
+			h, _, err := harness.LoadWithBase(context.Background(), harnessPath, harness.ComposeOpts{
+				WorkspaceRoot: dir,
+				FetchPolicy:   fetch.FetchPolicy{Offline: true},
+				OrgAllowlist:  []string{srv.URL + "/", "https://github.com/test-org/"},
+			})
+			require.NoError(t, err)
+			require.NoError(t, h.ResolveRelativeTo(dir))
+			_, err = resolveFromLock(h, entry, dir, nil, printer)
+			require.NoError(t, err)
+
+			require.Len(t, h.Skills, 1)
+			got := h.Skills[0].Overrides["sub-agents/x.md"]
+			require.NotNil(t, got)
+			data, err := os.ReadFile(*got)
+			require.NoError(t, err)
+			assert.Equal(t, string(childX), string(data), "the child's override wins over the base's")
+
+			// A lock written before the base. prefix still replays.
+			oldEntry := *entry
+			oldEntry.Dependencies = append([]lock.DependencyEntry(nil), entry.Dependencies...)
+			for i := range oldEntry.Dependencies {
+				oldEntry.Dependencies[i].Field = strings.TrimPrefix(oldEntry.Dependencies[i].Field, "base.")
+			}
+			h, _, err = harness.LoadWithBase(context.Background(), harnessPath, harness.ComposeOpts{
+				WorkspaceRoot: dir,
+				FetchPolicy:   fetch.FetchPolicy{Offline: true},
+				OrgAllowlist:  []string{srv.URL + "/", "https://github.com/test-org/"},
+			})
+			require.NoError(t, err)
+			require.NoError(t, h.ResolveRelativeTo(dir))
+			_, err = resolveFromLock(h, &oldEntry, dir, nil, printer)
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestResolveFromLock_DirectoryType(t *testing.T) {

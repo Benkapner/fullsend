@@ -1190,7 +1190,12 @@ func resolveBaseResources(ctx context.Context, base *Harness, baseURL string, al
 			if val == nil || *val == "" || IsURL(*val) || isFullsendCachePath(*val, opts.WorkspaceRoot) {
 				continue
 			}
-			overrideField := fmt.Sprintf("skills[%d].overrides[%s]", i, key)
+			// The base. prefix keeps this field apart from the child's
+			// skills[N].overrides[KEY] (recorded by resolve.ResolveHarness
+			// against the merged list), so a lock replay never maps a base
+			// override onto the merged harness, where it could replace the
+			// child's override of the same file.
+			overrideField := fmt.Sprintf("base.skills[%d].overrides[%s]", i, key)
 			if err := validateBaseRelPath(overrideField, *val); err != nil {
 				return nil, err
 			}

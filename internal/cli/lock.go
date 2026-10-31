@@ -982,6 +982,15 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			// Base composition is already resolved by LoadWithBase before
 			// resolveFromLock runs. This entry exists only for cache
 			// verification.
+		case strings.HasPrefix(m.field, "base."):
+			// Files a URL base harness's skill overrides name
+			// (base.skills[N].overrides[KEY], see resolveBaseResources in
+			// internal/harness/compose.go). LoadWithBase has already put
+			// their cache paths in the merged harness, so this entry is for
+			// cache verification only. Mapping it onto h.Skills[N] would
+			// replace a child's override of the same file. Locks written
+			// before the prefix record these as skills[N].overrides[KEY]
+			// and still replay through the override case below.
 		case m.field == "pre_script":
 			h.PreScript = m.localPath
 			if err := os.Chmod(m.localPath, 0o755); err != nil {

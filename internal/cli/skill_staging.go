@@ -65,8 +65,12 @@ func stageSkillsIn(skills []harness.SkillEntry, stageRoot, trustedRoot string, w
 	staged := make([]stagedSkill, 0, len(skills))
 	for i, entry := range skills {
 		if entry.Source == "" {
-			// Resolution clears Source for a skill already pulled in as a
-			// dependency; its overrides then have no tree to apply to.
+			// The harness names an empty skill source (`- "": {...}`).
+			// resolve.ResolveHarness drops such entries (and ones it
+			// cleared as already pulled in as a dependency), but a run
+			// calls it only for a harness with URL references or local
+			// profiles/providers, and the lock-file replay keeps them.
+			// Overrides then have no tree to apply to.
 			if entry.HasOverrides() {
 				warn(fmt.Sprintf("skills[%d]: skill has no resolved source; its file overrides are not applied", i))
 			}
@@ -175,6 +179,14 @@ func stageOverriddenSkill(field string, entry harness.SkillEntry, dest, trustedR
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return stagedSkill{}, fmt.Errorf("%s: override %q: creating parent directory: %w", field, key, err)
+		}
+		if exists && mode&0o200 == 0 {
+			// The staged copy keeps a read-only upstream file's mode; let
+			// the owner write it. Only the copy changes, and its mode is
+			// set back below.
+			if err := os.Chmod(target, mode|0o200); err != nil {
+				return stagedSkill{}, fmt.Errorf("%s: override %q: making staged file writable: %w", field, key, err)
+			}
 		}
 		if err := os.WriteFile(target, data, mode); err != nil {
 			return stagedSkill{}, fmt.Errorf("%s: override %q: writing file: %w", field, key, err)
