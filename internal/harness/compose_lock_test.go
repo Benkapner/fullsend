@@ -467,6 +467,22 @@ func TestFetchBaseScriptOrDir_LockedHashes_Online(t *testing.T) {
 		assert.Equal(t, pin, dep.SHA256)
 	})
 
+	t.Run("uncached single-file pin matching the fetched script is restored", func(t *testing.T) {
+		cacheDir := filepath.Join(t.TempDir(), "cache")
+		// The lock pinned the script's single-file hash, but that file is no
+		// longer in the cache while the remote tree fetch now succeeds.
+		pin := fetch.ComputeSHA256(files["pre.sh"])
+		dep, contentPath, err := fetchBaseScriptOrDir(context.Background(), "pre_script", baseDir, "scripts/pre.sh", []string{allowlist}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fakeTreeFetcher(files),
+			LockedHashes:  map[string]string{scriptURL: pin},
+		})
+		require.NoError(t, err)
+		assert.True(t, dep.CacheHit)
+		assert.Equal(t, pin, dep.SHA256)
+		assert.Equal(t, string(files["pre.sh"]), readFile(t, contentPath))
+	})
+
 	t.Run("re-fetched directory not matching the pin is rejected", func(t *testing.T) {
 		cacheDir := filepath.Join(t.TempDir(), "cache")
 		pin := fetch.ComputeTreeHash(map[string][]byte{"pre.sh": []byte("#!/bin/sh\necho locked")})

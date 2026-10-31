@@ -128,6 +128,12 @@ func (opts ComposeOpts) lockedHash(rawURL string) (string, bool) {
 	return hash, ok && hash != ""
 }
 
+// errLockedSingleFilePin is returned by fetchBaseScriptDirTree when the
+// fetched directory's tree hash differs from the lock pin but the script
+// file itself matches it, meaning the lock pins a single-file fetch. The
+// matching file has been cached; the caller serves it via fetchBaseFile.
+var errLockedSingleFilePin = errors.New("lock pins a single-file fetch of this script")
+
 // lockedNotCachedError reports a locked URL whose pinned content is not in
 // the cache while offline mode forbids fetching it.
 func lockedNotCachedError(field, rawURL, hash string) error {
@@ -1876,10 +1882,12 @@ func fetchBaseScriptOrDir(ctx context.Context, field, baseURLDir, relPath string
 				if err == nil {
 					return dep, contentPath, nil
 				}
-				if !isTransientFetchError(err) {
+				if !isTransientFetchError(err) && !errors.Is(err, errLockedSingleFilePin) {
 					return Dependency{}, "", err
 				}
-				// Transient tree-fetch failure — fall through to single-file fetch.
+				// Transient tree-fetch failure, or the lock pins this script's
+				// single-file hash and that file is now cached — fall through
+				// to single-file fetch.
 			}
 			// ParseRawContentURL failed — not a raw.githubusercontent.com URL.
 			// Fall through to single-file fetch.
@@ -1927,7 +1935,18 @@ func fetchBaseScriptDirTree(ctx context.Context, field, scriptDirURL, scriptFile
 		return Dependency{}, "", fmt.Errorf("base %s: caching script directory %s: %w", field, forgeInfo.Path, err)
 	}
 	if err := checkLockedHash(opts, field, scriptFileURL, treeHash); err != nil {
-		return Dependency{}, "", err
+		// A lock taken when the directory fetch fell back to a single-file
+		// fetch pins the file's hash, not the tree hash. When the fetched
+		// script still matches that pin, cache the file so the single-file
+		// path can serve it; otherwise the pin is violated.
+		pin, _ := opts.lockedHash(scriptFileURL)
+		if fetch.ComputeSHA256(files[scriptName]) != pin {
+			return Dependency{}, "", err
+		}
+		if pErr := fetch.CachePut(opts.WorkspaceRoot, scriptFileURL, files[scriptName]); pErr != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: caching: %w", field, pErr)
+		}
+		return Dependency{}, "", errLockedSingleFilePin
 	}
 
 	treePath, _, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
