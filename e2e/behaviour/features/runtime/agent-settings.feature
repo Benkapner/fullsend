@@ -44,8 +44,14 @@ Feature: Per-agent runtime and model on agents: entries in config.yaml
   # so pi registers the staged sub-agents as personas before the model
   # starts. The runner logs one `subagents: <name> → <model>` line per
   # registered persona: correctness must be among them, user-experience must
-  # not. Skill directories are fetched by github.com tree URL, which the
-  # default allowlist does not cover, so the repository allowlist gains it.
+  # not. The agents: entry pins `subagents: {correctness: haiku}` so the
+  # correctness line does not hang on its frontmatter model resolving in
+  # this run, and a correctness file that failed to register fails the run
+  # instead of only dropping the line. The positive check runs first, so
+  # the absence check cannot pass on a run that logged no persona lines;
+  # the step fails rather than passes on a truncated log. Skill directories
+  # are fetched by github.com tree URL, which the default allowlist does not
+  # cover, so the repository allowlist gains it.
   @requires:capability:runtime-pi
   Scenario: an agents: entry puts one custom agent on pi with its own model
     Given the enrolled test repository
@@ -113,6 +119,8 @@ Feature: Per-agent runtime and model on agents: entries in config.yaml
       pi-override:
         runtime: pi
         model: haiku
+        subagents:
+          correctness: haiku
       """
     And an issue
     When the issue is labeled "ready-for-pi-override"
