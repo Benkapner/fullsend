@@ -692,6 +692,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// A current lock entry pins the relative files of a URL base, so pass
+	// its hashes in before composition fetches them (#8979).
+	composeOpts.LockedHashes = lockedDependencyHashes(absFullsendDir, agentName, harnessPath)
+
 	h, baseDeps, err := harness.LoadWithBase(ctx, harnessPath, composeOpts)
 	if err != nil {
 		printer.StepFail("Failed to load harness")

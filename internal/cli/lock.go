@@ -829,6 +829,35 @@ func planSkillOverrideReplay(h *harness.Harness, deps []resolve.Dependency) ([]s
 	return plan, nil
 }
 
+// lockedDependencyHashes returns the URL-to-SHA256 pins of agentName's
+// entry in <absFullsendDir>/lock.yaml, for harness.LoadWithBase to resolve
+// a URL base's relative files to the locked content instead of the cache
+// URL index (#8979). It returns nil when there is no readable lock file, no
+// entry for the agent, or the entry is stale for the harness at
+// harnessPath; the run warns about those cases when it consults the lock
+// after composition.
+func lockedDependencyHashes(absFullsendDir, agentName, harnessPath string) map[string]string {
+	lf, err := lock.Load(filepath.Join(absFullsendDir, "lock.yaml"))
+	if err != nil {
+		return nil
+	}
+	entry := lf.Lookup(agentName)
+	if entry == nil {
+		return nil
+	}
+	data, err := os.ReadFile(harnessPath)
+	if err != nil || entry.IsStale(fetch.ComputeSHA256(data)) {
+		return nil
+	}
+	pins := make(map[string]string, len(entry.Dependencies))
+	for _, dep := range entry.Dependencies {
+		if dep.URL != "" && dep.SHA256 != "" {
+			pins[dep.URL] = dep.SHA256
+		}
+	}
+	return pins
+}
+
 // resolveFromLock resolves harness dependencies using a lock file entry instead
 // of fetching from the network. For each pinned dependency, it verifies the
 // content exists in the local cache and replaces the harness URL field with the
