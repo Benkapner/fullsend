@@ -10,6 +10,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -256,7 +258,9 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	}
 
 	// Merge base into child (child overrides base)
-	mergeBaseIntoChild(base, child)
+	if err := mergeBaseIntoChild(base, child); err != nil {
+		return nil, nil, fmt.Errorf("merging base harness %s: %w", child.Base, err)
+	}
 
 	// Clear the base field (consumed)
 	child.Base = ""
@@ -535,7 +539,9 @@ func loadBaseChain(
 		// Merge ancestor into base. The recursive call already resolved
 		// the ancestor's forge/overlays, so ancestorBase is flat (no
 		// forge or overlay blocks remain).
-		mergeBaseIntoChild(ancestorBase, base)
+		if err := mergeBaseIntoChild(ancestorBase, base); err != nil {
+			return nil, nil, fmt.Errorf("base harness %s: %w", baseRef, err)
+		}
 		base.Base = ""
 	}
 
@@ -596,7 +602,9 @@ func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
 	// forge map around would violate the mergeBaseIntoChild precondition.
 	if base.Forge != nil && opts.ForgePlatform != "" {
 		if fc, ok := base.Forge[opts.ForgePlatform]; ok && fc != nil {
-			mergeForgeConfig(base, fc)
+			if err := mergeForgeConfig(base, fc); err != nil {
+				return fmt.Errorf("invalid base harness: forge.%s: %w", opts.ForgePlatform, err)
+			}
 		}
 	}
 	base.Forge = nil
@@ -734,7 +742,10 @@ func matchingAllowedPrefix(rawURL string, allowlist []string) string {
 // and overlay values participate in the merge as top-level fields, not as
 // forge/overlay blocks that would compete with the child's own forge/overlay
 // values during the final ResolveForge/ResolveOverlays (#6798).
-func mergeBaseIntoChild(base, child *Harness) {
+//
+// It returns mergeSkills' error for a map-form child skill that matches
+// more than one pinned-URL base skill.
+func mergeBaseIntoChild(base, child *Harness) error {
 	// Enforce precondition: base must be flat (forge/overlays resolved).
 	if base.Forge != nil || base.Overlays != nil {
 		panic("mergeBaseIntoChild: base.Forge and base.Overlays must be nil (call resolveBaseForgeAndOverlays first)")
@@ -799,7 +810,11 @@ func mergeBaseIntoChild(base, child *Harness) {
 	// matches a base skill replaces the base entry. This allows child
 	// harnesses to override built-in skills via base: composition.
 	if base.Skills != nil || child.Skills != nil {
-		child.Skills = mergeSkills(base.Skills, child.Skills)
+		skills, err := mergeSkills(base.Skills, child.Skills)
+		if err != nil {
+			return err
+		}
+		child.Skills = skills
 	}
 	if base.Plugins != nil {
 		merged := make([]PluginSpec, 0, len(base.Plugins)+len(child.Plugins))
@@ -881,6 +896,7 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if child.Security == nil {
 		child.Security = base.Security
 	}
+	return nil
 }
 
 // isFullsendCachePath reports whether p is a path already inside fullsend's
@@ -2363,9 +2379,12 @@ func urlIndexPut(workspaceRoot, rawURL, hash string) error {
 // absolute path with no SKILL.md keeps the base entry's resolved source and
 // only adds its overrides: the child overlays files on the base skill
 // rather than replacing it (#6158). Such a child that matches no base key
-// can still match the one pinned-URL base skill of its name.
+// can still match the one pinned-URL base skill of its name. When two or
+// more pinned-URL base skills match that name, mergeSkills returns an error
+// naming them all rather than guessing (#8973); the child must use the full
+// base URL as its map key.
 // mergeForgeConfig shares this function, so the rule holds there too.
-func mergeSkills(base, child []SkillEntry) []SkillEntry {
+func mergeSkills(base, child []SkillEntry) ([]SkillEntry, error) {
 	baseIndex := make(map[string]int, len(base))
 	result := make([]SkillEntry, 0, len(base)+len(child))
 
@@ -2380,8 +2399,18 @@ func mergeSkills(base, child []SkillEntry) []SkillEntry {
 		name := skill.SandboxName(s.Source)
 		inherit := s.Overrides != nil && !skillSourcePresent(s.Source)
 		if _, exists := baseIndex[name]; !exists && inherit {
-			if key, ok := uniquePinnedURLMatch(baseIndex, result, name); ok {
-				name = key
+			switch keys := pinnedURLMatches(baseIndex, result, name); len(keys) {
+			case 0:
+			case 1:
+				name = keys[0]
+			default:
+				sources := make([]string, len(keys))
+				for i, key := range keys {
+					sources[i] = strconv.Quote(result[baseIndex[key]].Source)
+				}
+				return nil, fmt.Errorf("skill %q has no SKILL.md and its name %q matches %d base skills pinned by URL: %s; "+
+					"write the full base URL as the map key instead of the short name",
+					s.Source, name, len(keys), strings.Join(sources, ", "))
 			}
 		}
 		if idx, exists := baseIndex[name]; exists {
@@ -2405,14 +2434,15 @@ func mergeSkills(base, child []SkillEntry) []SkillEntry {
 		}
 	}
 
-	return result
+	return result, nil
 }
 
-// uniquePinnedURLMatch finds the one base key that is a pinned URL whose
-// name, without its #fragment or ?query, is name. It is used only for a
-// map-form child with no skill of its own; two candidates match nothing.
-func uniquePinnedURLMatch(baseIndex map[string]int, result []SkillEntry, name string) (string, bool) {
-	found := ""
+// pinnedURLMatches returns, in base order, the base keys that are pinned
+// URLs whose name, without its #fragment or ?query, is name. It is used
+// only for a map-form child with no skill of its own: one match is
+// inherited, and more than one is an error in mergeSkills.
+func pinnedURLMatches(baseIndex map[string]int, result []SkillEntry, name string) []string {
+	var found []string
 	for key, idx := range baseIndex {
 		src := result[idx].Source
 		if !IsURL(src) {
@@ -2425,12 +2455,10 @@ func uniquePinnedURLMatch(baseIndex map[string]int, result []SkillEntry, name st
 		if path.Base(strings.TrimRight(bare, "/")) != name {
 			continue
 		}
-		if found != "" {
-			return "", false
-		}
-		found = key
+		found = append(found, key)
 	}
-	return found, found != ""
+	sort.Slice(found, func(i, j int) bool { return baseIndex[found[i]] < baseIndex[found[j]] })
+	return found
 }
 
 // skillSourcePresent reports whether a child skill source can stand on its
@@ -2481,7 +2509,7 @@ func mergeHostFiles(base, child []HostFile) []HostFile {
 // Deprecated: no longer called in production. Since #6798, base forge blocks
 // are resolved by resolveBaseForgeAndOverlays before mergeBaseIntoChild runs.
 // Retained for test coverage only.
-func mergeForgeBlocks(base, child map[string]*ForgeConfig) map[string]*ForgeConfig {
+func mergeForgeBlocks(base, child map[string]*ForgeConfig) (map[string]*ForgeConfig, error) {
 	if child == nil {
 		child = make(map[string]*ForgeConfig)
 	}
@@ -2489,7 +2517,9 @@ func mergeForgeBlocks(base, child map[string]*ForgeConfig) map[string]*ForgeConf
 	for key, baseFC := range base {
 		if childFC, exists := child[key]; exists && childFC != nil {
 			// Merge per-platform ForgeConfig
-			mergeForgeConfigInto(baseFC, childFC)
+			if err := mergeForgeConfigInto(baseFC, childFC); err != nil {
+				return nil, fmt.Errorf("forge.%s: %w", key, err)
+			}
 		} else if !exists {
 			// Child doesn't have this platform — inherit from base
 			child[key] = baseFC
@@ -2497,7 +2527,7 @@ func mergeForgeBlocks(base, child map[string]*ForgeConfig) map[string]*ForgeConf
 		// If child[key] exists but is nil, child explicitly nulls out this platform
 	}
 
-	return child
+	return child, nil
 }
 
 // mergeForgeConfigInto merges base ForgeConfig fields into child.
@@ -2506,9 +2536,9 @@ func mergeForgeBlocks(base, child map[string]*ForgeConfig) map[string]*ForgeConf
 //
 // Deprecated: no longer called in production. See mergeForgeBlocks deprecation
 // note above.
-func mergeForgeConfigInto(base, child *ForgeConfig) {
+func mergeForgeConfigInto(base, child *ForgeConfig) error {
 	if base == nil {
-		return
+		return nil
 	}
 
 	// Scalars: child overrides if non-empty
@@ -2524,7 +2554,11 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 
 	// Skills: base + child with child-overrides-base by skill identity
 	if base.Skills != nil || child.Skills != nil {
-		child.Skills = mergeSkills(base.Skills, child.Skills)
+		skills, err := mergeSkills(base.Skills, child.Skills)
+		if err != nil {
+			return err
+		}
+		child.Skills = skills
 	}
 
 	// Providers: base + child (concatenated)
@@ -2573,6 +2607,7 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 
 	// ValidationLoop: field-level merge (child non-zero wins, base fills gaps).
 	child.ValidationLoop = mergeValidationLoop(base.ValidationLoop, child.ValidationLoop)
+	return nil
 }
 
 // FetchAgentHarness fetches a URL-sourced agent harness using the same

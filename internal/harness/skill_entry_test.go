@@ -419,7 +419,7 @@ func TestMergeSkills_WithOverrides(t *testing.T) {
 		},
 	}
 
-	result := mergeSkills(base, child)
+	result := mustMergeSkills(t, base, child)
 	require.Len(t, result, 1)
 	assert.Equal(t, "skills/pr-review", result[0].Source)
 	// Child override wins for security.md
