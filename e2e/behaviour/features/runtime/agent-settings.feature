@@ -47,9 +47,10 @@ Feature: Per-agent runtime and model on agents: entries in config.yaml
   # not. The agents: entry pins `subagents: {correctness: haiku}` so the
   # correctness line does not hang on its frontmatter model resolving in
   # this run, and a correctness file that failed to register fails the run
-  # instead of only dropping the line. The positive check runs first, so
-  # the absence check cannot pass on a run that logged no persona lines;
-  # the step fails rather than passes on a truncated log. Skill directories
+  # instead of only dropping the line. pi prints these lines as one block at
+  # bootstrap; the step reads only that block, requires an ordinary log line
+  # on both sides of it so it was not cut off, and fails if it is missing,
+  # so truncation elsewhere in the job log does not matter. Skill directories
   # are fetched by github.com tree URL, which the default allowlist does not
   # cover, so the repository allowlist gains it.
   @requires:capability:runtime-pi
@@ -129,5 +130,4 @@ Feature: Per-agent runtime and model on agents: entries in config.yaml
     And the run requested model "haiku" from "agents.pi-override" and the provider reported a "haiku" model
     And the pi session transcript records at least one tool call
     And the run metrics report tokens
-    And the harness "pi-override" workflow logs contain "subagents: correctness →"
-    And the harness "pi-override" workflow logs do not contain "subagents: user-experience →"
+    And the harness "pi-override" workflow logs register persona "correctness" and not "user-experience"

@@ -706,3 +706,15 @@ func TestThenHarnessWorkflowLogsContain(t *testing.T) {
 	err = thenHarnessWorkflowLogsContain(newWorld(nil, logs, nil), "pi", "x", true)
 	require.ErrorContains(t, err, "no workflow trigger time recorded")
 }
+
+func TestGivenFullsendFile(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scm}
+	require.NoError(t, givenFullsendFile(w, "personas/./rbac-review.md", "---\nname: rbac-review\n---"))
+	assert.Equal(t, "---\nname: rbac-review\n---\n", string(scm.files["org/repo/.fullsend/personas/rbac-review.md"]))
+
+	for _, bad := range []string{"", "/etc/x", "..", "../x", "a/../../x"} {
+		assert.Error(t, givenFullsendFile(w, bad, "x"), bad)
+	}
+	assert.Error(t, givenFullsendFile(&world.World{SCM: scm}, "a.md", "x"))
+}
