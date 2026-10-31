@@ -563,7 +563,7 @@ staged skills, and uploads it to
 The post-run output scan skips `<runDir>/skills/` and
 `<runDir>/personas.json`, which are runner input. The manifest schema,
 origins and warnings are documented in
-[Configuring with Skills § The persona manifest](../guides/user/customizing-with-skills.md#the-persona-manifest).
+[Configuring with Skills § The persona list file](../guides/user/customizing-with-skills.md#the-persona-list-file).
 
 ## Agent rule layering
 

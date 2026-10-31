@@ -171,41 +171,41 @@ agent registration:
 
 ## Overriding single files in a skill
 
-A whole-skill override makes you maintain a full copy of the skill. To change
-only a few files, such as one sub-agent of a review skill, keep the upstream
-skill and list per-file overrides on its harness `skills:` entry. Each run
-copies the skill into a fresh directory, applies your overrides to the copy,
-and uploads the copy to the sandbox. The upstream skill, whether it sits in
-your `.fullsend` directory or in the fetch cache, is never modified.
+You can change a few files of a shipped skill without copying the whole
+skill. List the files on the skill's `skills:` entry in your harness. Each
+file can be removed, replaced, or added. Every other file still comes from
+the upstream skill, so you keep its updates.
+
+The most common use is the review skill, `pr-review`. Its review personas
+(the reviewers it can dispatch, such as `security` or `correctness`) are the
+files in its `sub-agents/` directory. With overrides you can turn one off,
+swap in your own version, or add a new one.
 
 **Before you start:**
 
 - A harness registered in `config.yaml` (see
   [Bring Your Own Agent](bring-your-own-agent.md)). To change a skill that a
   `base:` harness lists, repeat that skill entry in your child harness.
-- The paths of the files you want to change, relative to the skill's root
+- The path of each file you want to change, relative to the skill's root
   directory (the directory that holds `SKILL.md`).
 
-### Example: remove, replace and add files
+### Example: remove, replace and add a persona
 
-This harness takes the `pr-review` skill from `fullsend-ai/agents`, pinned to
-a commit, and changes three files in it:
+This harness uses `pr-review` from `fullsend-ai/agents`, pinned to a
+commit, and changes three of its files:
 
 ```yaml
 skills:
   - https://github.com/fullsend-ai/agents/tree/4a6645268c6c8063c15ce5cb1b88a4f3930c74da/skills/pr-review#sha256=d0a639e6870c3e204db83855cdf1e4e10e6eb3ecfaee1695bbf8630843cb5c6c:
-      # Remove: null deletes the file from this run's copy.
+      # Remove the user-experience persona.
       sub-agents/user-experience.md: null
-      # Replace: the upstream skill has this file. Here the replacement is
-      # the same file at an older commit, pinned by the SHA-256 of its bytes.
+      # Replace the security persona with the version from an older commit.
       sub-agents/security.md: https://raw.githubusercontent.com/fullsend-ai/agents/cc64bb29346c43822ad5d9fd14351c7d98d642ca/skills/pr-review/sub-agents/security.md#sha256=93fa30d04fde0af9e96e115e5fcb27d3223ebfb9d456b87ad5638dba67e6e84f
-      # Add: the upstream skill has no such file.
+      # Add a licensing persona from a file in your .fullsend directory.
       sub-agents/licensing.md: overrides/licensing.md
 ```
 
-The added file lives in your `.fullsend` directory as
-`overrides/licensing.md`. Its frontmatter `name:` matches the file name, so
-the runtimes register it as a persona:
+The added persona is `.fullsend/overrides/licensing.md`:
 
 ```markdown
 ---
@@ -222,8 +222,10 @@ tools: Read, Grep, Glob
 Check that new dependencies carry a license compatible with the project.
 ```
 
-Every URL, the skill's and the override's, must be covered by
-`allowed_remote_resources` in `.fullsend/config.yaml`:
+Its `name:` is `licensing` because the file is `licensing.md`. A persona
+whose `name:` differs from its file name is skipped.
+
+Allow both URL prefixes in `.fullsend/config.yaml`:
 
 ```yaml
 allowed_remote_resources:
@@ -231,104 +233,66 @@ allowed_remote_resources:
   - https://raw.githubusercontent.com/fullsend-ai/agents/
 ```
 
-A harness can also declare its own `allowed_remote_resources`, but each entry
-must be covered by the `config.yaml` list.
-
-To get the `#sha256=` value, hash the exact bytes the URL serves:
+Get the `#sha256=` value of a URL by hashing the bytes it serves:
 
 ```console
 $ curl -sL https://raw.githubusercontent.com/fullsend-ai/agents/cc64bb29346c43822ad5d9fd14351c7d98d642ca/skills/pr-review/sub-agents/security.md | sha256sum
 93fa30d04fde0af9e96e115e5fcb27d3223ebfb9d456b87ad5638dba67e6e84f  -
 ```
 
-Pin the URL to a commit SHA, not a branch, so the hash keeps matching.
+Pin URLs to a commit, not a branch: a branch changes, and the hash then
+stops matching.
 
-### Override rules
+### Check the harness
 
-An entry with overrides is a single-key map. The key is the skill source (a
-local path or a pinned URL, as in the plain string form). The value maps
-paths inside the skill to override values.
-
-**Keys** name a file inside the skill:
-
-- Relative to the skill root, with `/` separators.
-- No leading `/`, no `..` segment, no null bytes.
-- In clean form: no `./` prefix, no `//`, no trailing `/`. Two keys can
-  then never name the same file.
-- A file, never a directory.
-
-**Values** decide what happens to that file:
-
-| Value | Key exists upstream | Key does not exist upstream |
-|-------|---------------------|-----------------------------|
-| `null` | The file is removed from this run's copy | Warning; nothing changes |
-| Local path or URL | The file is replaced; it keeps the upstream file mode | The file is added with mode `0644`; missing parent directories are created |
-
-- A local path resolves from the `.fullsend` directory, like every other
-  relative harness path. It must exist.
-- A URL must use `https://`, carry a `#sha256=` hash of the file, and be
-  covered by `allowed_remote_resources`. The runner fetches it during harness
-  resolution and checks the hash before the run continues.
-
-**Staging:**
-
-- The runner copies each skill that has overrides to
-  `<output-dir>/<sandbox-name>/skills/<index>/<skill-name>` right after
-  harness resolution, then applies the overrides there. This happens before
-  the runner decides which providers pi sub-agents need, before the sandbox
-  is created and before the pre-script, so all of them see the merged tree.
-  `<index>` is the entry's position in the resolved `skills:` list.
-- Only regular files and directories are copied, with their modes. The
-  skill root may be a link (a URL skill's root is a link into the fetch
-  cache), but a symlink inside the skill tree fails the run.
-- An override file must be a regular file inside the `.fullsend` directory
-  (URL overrides are cached there). A symlinked file, or a symlinked
-  directory inside `.fullsend` on the way to it, fails the run. Symlinks
-  above the `.fullsend` directory, such as macOS `/tmp`, are fine.
-- Entries without overrides are uploaded from their resolved location, as
-  before.
-- Overrides work on every runtime (`claude`, `pi`, `codex`, `opencode` and
-  `dummy`), and in runs that resolve from a lock file.
-
-**Composition:** when a child harness lists a skill whose identity matches a
-`base:` entry, the child entry replaces the base entry and the two override
-maps merge. For the same key, the child's value wins.
-
-### Check the harness before a run
-
-`fullsend lint` validates override keys, checks that local override files
-exist, and checks URL overrides against the allowlists. It does not fetch
-URLs, so a wrong `#sha256=` value only shows up at run time. For the example
-above, registered as the agent `persona-probe`:
+`fullsend lint` checks the override paths, that local override files exist,
+and that every URL is allowed. It does not download anything, so a wrong
+`#sha256=` shows up only when the agent runs. With the example registered as
+the agent `persona-probe`:
 
 ```console
 $ fullsend lint --fullsend-dir .fullsend
   ✓ Agent persona-probe resolved from config (local path)
 ```
 
-Without the `https://github.com/fullsend-ai/agents/` entry it fails:
+### What you see in a run
 
-```console
-$ fullsend lint --fullsend-dir .fullsend
-  ✓ Agent persona-probe resolved from config (local path)
-Error: validating allowed remote resources for agent "persona-probe": skills[0].source: URL "https://github.com/fullsend-ai/agents/tree/4a6645268c6c8063c15ce5cb1b88a4f3930c74da/skills/pr-review" is not in allowed_remote_resources
+The run prints the personas it staged in two places.
+
+**The persona list file.** Every run writes `personas.json`: the list of
+review personas staged for this run, after your overrides. Scripts and
+skills read it through the `FULLSEND_PERSONAS_FILE` environment variable.
+This pre-script prints it:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+echo "FULLSEND_PERSONAS_FILE=${FULLSEND_PERSONAS_FILE}"
+jq -r '.personas[] | "\(.skill)/\(.name) \(.origin) \(.path)"' "$FULLSEND_PERSONAS_FILE"
+jq -r '.removed[] | "removed: \(.skill) \(.path)"' "$FULLSEND_PERSONAS_FILE"
 ```
 
-Checks that need the staged tree, such as symlinks in the skill and
-directory keys, run only in `fullsend run`, as do the persona warnings
-below.
+For the example harness it prints this before the sandbox starts (the run
+directory is shortened):
 
-### The persona manifest
+```text
+  • Running pre-script: .../scripts/persona-probe.sh
+FULLSEND_PERSONAS_FILE=.../out/fs-per-e5e8a1ee86e6/personas.json
+pr-review/challenger upstream sub-agents/challenger.md
+pr-review/correctness upstream sub-agents/correctness.md
+pr-review/cross-repo-contracts upstream sub-agents/cross-repo-contracts.md
+pr-review/docs-currency upstream sub-agents/docs-currency.md
+pr-review/intent-coherence upstream sub-agents/intent-coherence.md
+pr-review/licensing added sub-agents/licensing.md
+pr-review/risk-assessment upstream sub-agents/risk-assessment.md
+pr-review/security override sub-agents/security.md
+pr-review/security-triage upstream sub-agents/security-triage.md
+pr-review/style-conventions upstream sub-agents/style-conventions.md
+removed: pr-review sub-agents/user-experience.md
+```
 
-Every run writes a persona manifest, `personas.json`, even when the harness
-has no overrides. It lists exactly the sub-agent personas the `pi` and
-`codex` runtimes register from the staged skills, after overrides are
-applied, so scripts and skills can read the final roster instead of
-guessing it.
-
-A run of the example harness writes a manifest with ten `pr-review`
-personas: eight unchanged, plus `security` and `licensing`. The changed
-entries and the removal, from that run's `personas.json`:
+`user-experience` is gone, `security` is your version, and `licensing` is
+new. The two changed entries in the file look like this:
 
 ```console
 $ jq '{personas: [.personas[] | select(.origin != "upstream")], removed}' "$FULLSEND_PERSONAS_FILE"
@@ -364,10 +328,11 @@ $ jq '{personas: [.personas[] | select(.origin != "upstream")], removed}' "$FULL
 }
 ```
 
-The `security` entry's `sha256` is the `#sha256=` of the override URL, so a
-reader can tell which bytes were staged. On the `pi` runtime the same run
-logs one registration line per manifest entry, and none for
-`user-experience`:
+The `security` entry's `sha256` equals the `#sha256=` in the harness, which
+shows your file was staged.
+
+**The run log (`pi` runtime).** pi logs one line per persona it registers.
+The same run logs `licensing` and `security`, and no `user-experience`:
 
 ```text
 subagents: intent-coherence → anthropic-vertex/claude-sonnet-5-5 (from frontmatter)
@@ -376,118 +341,94 @@ subagents: risk-assessment → anthropic-vertex/claude-sonnet-5-5 (from frontmat
 subagents: security → anthropic-vertex/claude-sonnet-5-5 (from frontmatter)
 ```
 
-**Manifest rules:**
+### Override rules
 
-- One entry per registered persona. The runner reads the staged
-  `sub-agents/*.md` files of each skill (subdirectories of `sub-agents/`
-  are not read) with the same rules the runtimes use.
-- A file is registered only when its frontmatter parses and its `name:`
-  equals the file name without `.md`. The name must be lowercase
-  alphanumeric segments joined by hyphens, at most 64 characters, and not
-  reserved (`default`, `explore`, `agent`, the agent's own name, a
-  built-in agent name or a Claude Code built-in agent type).
-- Any other file is skipped with a warning in the run log, and the run goes
-  on. The persona is then missing from the manifest and from the runtime.
-- When two skills declare the same name, the first skill in the resolved
-  `skills:` list wins and the other file is skipped with a warning.
-- Entries are sorted by `skill`, then by `name`.
-- `skill` is the skill's sandbox name. `path` is relative to the skill root,
-  with `/` separators.
-- `origin` is `upstream` (unchanged file), `override` (replaced file) or
-  `added` (new file).
-- `sha256` is the hex SHA-256 of the staged file's bytes.
-- `description`, `role`, `when`, `categories`, `always` and
-  `failure_severity` are copied verbatim from the frontmatter when present
-  and omitted when absent or `null`. The runner checks only their types:
-  `categories` must be a list of strings, `always` a boolean, and the rest
-  strings. A field of the wrong type is left out of that entry with a
-  warning naming the file and field. Other frontmatter keys are ignored.
-- `removed` lists every `null` override that removed an upstream
-  `sub-agents/*.md` file.
-- Empty lists are written as `[]`.
+**Keys** name one file inside the skill:
 
-### Where to read the manifest
+- Relative to the skill root, with `/` separators, because the key is a path
+  inside the skill.
+- No leading `/` and no `..`, so a key cannot reach outside the skill.
+- In clean form (no `./`, `//` or trailing `/`), so two keys cannot name the
+  same file.
+- A file, not a directory. Override each file of a directory separately.
+
+**Values** say what happens to that file:
+
+| Value | File exists in the skill | File does not exist |
+|-------|--------------------------|---------------------|
+| `null` | Removed | Warning; nothing changes |
+| Local path or URL | Replaced; keeps its file mode | Added with mode `0644` |
+
+- A local path is relative to the `.fullsend` directory and must exist.
+- A URL must use `https://`, end in `#sha256=` with the file's hash, and be
+  allowed by `allowed_remote_resources`. The runner checks the hash before
+  the run starts.
+- An override file must be a regular file. A symlink into another
+  directory, or a symlinked directory inside `.fullsend` on the way to it,
+  fails the run, so an override cannot pull in a file from outside your
+  configuration.
+
+**How a run applies them:**
+
+- The runner copies the skill into the run's output directory and changes
+  the copy. The skill in your `.fullsend` directory or in the download cache
+  is never changed.
+- This happens right after the harness loads, so the pre-script, the
+  sandbox and the agent all see the same files.
+- A skill that has overrides must not contain symlinks.
+- Overrides work on every runtime (`claude`, `pi`, `codex`, `opencode` and
+  `dummy`) and in runs that use a lock file.
+- When a child harness and its `base:` list the same skill, their overrides
+  merge. For the same file, the child wins.
+
+### The persona list file
 
 | Reader | Path | Environment variable |
 |--------|------|----------------------|
-| Pre-script, post-script, validation script (host) | `<output-dir>/<sandbox-name>/personas.json` | `FULLSEND_PERSONAS_FILE` (absolute host path) |
-| Agent and skills (sandbox) | `/sandbox/workspace/.fullsend/personas.json` | `FULLSEND_PERSONAS_FILE` |
+| Pre-script, post-script, validation script | `<output-dir>/<sandbox-name>/personas.json` | `FULLSEND_PERSONAS_FILE` |
+| Agent and skills in the sandbox | `/sandbox/workspace/.fullsend/personas.json` | `FULLSEND_PERSONAS_FILE` |
 
-The runner sets `FULLSEND_PERSONAS_FILE` itself. `env.runner` and
-`runner_env` do not override it in host scripts, and `env.sandbox` drops it
-as a reserved name. Other ways to set sandbox variables, such as a
-`host_files` entry that writes into the sandbox `.env.d` directory, are not
-blocked, so treat the variable as set by the runner only when the harness
-does not do that. The sandbox copy sits outside the
-target repository checkout, so a pull request cannot plant its own manifest.
-
-A pre-script or post-script can read the roster with `jq`. This script prints
-it:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-echo "FULLSEND_PERSONAS_FILE=${FULLSEND_PERSONAS_FILE}"
-jq -r '.personas[] | "\(.skill)/\(.name) \(.origin) \(.path)"' "$FULLSEND_PERSONAS_FILE"
-jq -r '.removed[] | "removed: \(.skill) \(.path)"' "$FULLSEND_PERSONAS_FILE"
-```
-
-As the pre-script of the example harness, it prints this in the run log
-before the sandbox starts (the run directory is shortened here):
-
-```text
-  • Running pre-script: .../scripts/persona-probe.sh
-FULLSEND_PERSONAS_FILE=.../out/fs-per-e5e8a1ee86e6/personas.json
-pr-review/challenger upstream sub-agents/challenger.md
-pr-review/correctness upstream sub-agents/correctness.md
-pr-review/cross-repo-contracts upstream sub-agents/cross-repo-contracts.md
-pr-review/docs-currency upstream sub-agents/docs-currency.md
-pr-review/intent-coherence upstream sub-agents/intent-coherence.md
-pr-review/licensing added sub-agents/licensing.md
-pr-review/risk-assessment upstream sub-agents/risk-assessment.md
-pr-review/security override sub-agents/security.md
-pr-review/security-triage upstream sub-agents/security-triage.md
-pr-review/style-conventions upstream sub-agents/style-conventions.md
-removed: pr-review sub-agents/user-experience.md
-```
-
-A skill can tell the agent to read `$FULLSEND_PERSONAS_FILE` (or the sandbox
-path above) to pick which personas to dispatch, instead of hard-coding a
-roster that an override may have changed.
+- The file is written on every run, even with no overrides. An empty list
+  means no skill has personas.
+- It lists exactly the personas the `pi` and `codex` runtimes register. A
+  skill on any runtime can read it to pick from the staged personas instead
+  of a fixed list.
+- A file in `sub-agents/` becomes a persona only when its `name:` equals its
+  file name and is not a reserved name (`default`, `explore`, `agent`, the
+  agent's own name or a built-in agent name). Other files are skipped with a
+  warning.
+- When two skills have a persona with the same name, the first skill in
+  `skills:` wins and the other file is skipped with a warning.
+- `origin` is `upstream` (unchanged), `override` (replaced) or `added`
+  (new). `sha256` is the hash of the staged file.
+- `description`, `role`, `when`, `categories`, `always` and
+  `failure_severity` are copied from the persona's frontmatter. A field of
+  the wrong type is left out with a warning.
+- `removed` lists the personas a `null` override removed.
+- The sandbox copy sits outside the repository checkout, so a pull request
+  cannot plant its own. `env.sandbox` and `env.runner` cannot change the
+  variable.
 
 ### If it goes wrong
 
-Errors name the entry's position in the resolved `skills:` list (`N`) and
-the override key (`KEY`). Errors from `fullsend lint` and harness loading are
-prefixed with the agent name and the stage, such as
-`loading harness for agent "review": invalid harness:`.
+Messages name the entry's position in `skills:` (`skills[0]` is the first)
+and the file key.
 
 | Message | Cause | Fix |
 |---------|-------|-----|
-| `skills[N]: override file path "KEY" must be relative (no leading /)` | The key starts with `/` | Write the path relative to the skill root |
-| `skills[N]: override file path "KEY" must not contain path traversal segments` | The key has a `..` segment | Name a file inside the skill |
-| `skills[N]: override file path "KEY" must be in clean form ("CLEAN")` | The key has a `./` prefix, `//`, a `.` segment or a trailing `/` | Write the key as shown in the message |
-| `skills[N]: override file path "KEY" must name a file in the skill` | The key is `.` | Name a file inside the skill |
-| `skills[N]: override "KEY" names a directory; only files can be overridden` | The key is a directory in the skill | Override each file in the directory separately |
-| `skills[N]: skill tree contains a symlink at "PATH"; overridden skills must contain only regular files and directories` | A skill that has overrides contains a symlink | Replace the symlink with a regular file in the skill source; the copy fails before overrides apply, so a `null` override cannot remove it |
-| `skills[N]: override "KEY": reading override source: ...` | The local override file or the fetched copy could not be read | Check the path, which resolves from the `.fullsend` directory |
-| `skills[N]: override "KEY": reading override source: PATH resolves through a symlink to REAL` | The override file, or a directory on its path, is a symlink | Commit the file itself at the path the harness names |
-| `skills[N]: skill has no resolved source; its file overrides are not applied` (warning) | The skill was already pulled in as a dependency of another resource, so this entry was dropped with its overrides | List the skill once, with its overrides |
-| `skills[N].overrides[KEY]: stat ...: no such file or directory` (from `fullsend lint`) | The local override file does not exist | Fix the path or commit the file |
-| `skills[N]: override "KEY" is null but the skill has no such file; nothing removed` (warning) | A `null` key names a file the upstream skill does not have | Fix the path, or drop the key if upstream already removed the file |
-| `skills[N].overrides[KEY] URL must include #sha256=... integrity hash` | A URL override has no `#sha256=` hash | Append `#sha256=<hex digest of the file>` |
-| `skills[N]: override source for "KEY" must not contain query or fragment markers` | A value with `?` or `#` was read as a local path, often an `http://` URL (only `https://` counts as a URL) | Use an `https://` URL, or drop the `?`/`#` from the local path |
-| `... URL "..." is not in allowed_remote_resources` | No allowlist entry covers the override URL | Add a prefix to `allowed_remote_resources` in `config.yaml` |
-| `allowed_remote_resources[N]: "..." is not covered by the org allowlist` | The harness allowlist names a prefix that `config.yaml` does not cover | Add the prefix to `config.yaml` too, or remove it from the harness |
-| `skills[N].overrides[KEY]: integrity check failed for ...: expected ..., got ...` | The fetched bytes do not match the `#sha256=` value | Recompute the hash, and pin the URL to a commit SHA |
-| `persona PATH skipped: name already declared by skill "SKILL"` (warning) | Two skills declare the same persona name; the first one wins | Rename one persona, or remove one file with `null` |
-| `persona PATH skipped: frontmatter name "NAME" must equal file basename "STEM"` (warning) | The file's `name:` differs from its file name, for example an override that reuses another persona's file | Make `name:` match the file name |
-| `persona PATH skipped: frontmatter name: is required` (warning) | The file has no frontmatter `name:` | Add `name:` equal to the file name |
-| `persona PATH skipped: frontmatter does not parse: ...` (warning) | The file's YAML frontmatter is invalid | Fix the frontmatter in the override file, or override the broken upstream file |
-| `persona PATH skipped: name is reserved` and similar (warning) | The name breaks a naming rule above | Rename the persona |
-| `personas.json: FILE: frontmatter field "FIELD" is not a string; omitted` (warning) | `description`, `role`, `when` or `failure_severity` is not a string | Quote the value |
-| `personas.json: FILE: frontmatter field "FIELD" is not a list of strings; omitted` (warning) | `categories` is not a list of strings | Write `categories: [a, b]` |
-| `personas.json: FILE: frontmatter field "FIELD" is not a bool; omitted` (warning) | `always` is not `true` or `false` | Use an unquoted `true` or `false` |
+| `skills[0].overrides[sub-agents/security.md]: integrity check failed for https://...: expected 93fa...840, got 93fa...84f` | The URL serves different bytes than the `#sha256=` says | Use the `got` value, and pin the URL to a commit |
+| `... skills[0].source: URL "https://github.com/fullsend-ai/agents/tree/..." is not in allowed_remote_resources` | No `allowed_remote_resources` entry covers the URL | Add the URL prefix to `allowed_remote_resources` in `config.yaml` |
+| `skills[0].overrides[KEY] URL must include #sha256=... integrity hash` | A URL value has no `#sha256=` | Append `#sha256=` and the file's hash |
+| `skills[0]: override file path "../licensing.md" must not contain path traversal segments` | The key has `..` | Name a file inside the skill |
+| `skills[0]: override file path "KEY" must be relative (no leading /)` | The key starts with `/` | Write the path relative to the skill root |
+| `skills[0]: override file path "KEY" must be in clean form ("CLEAN")` | The key has `./`, `//` or a trailing `/` | Use the form shown in the message |
+| `persona .../sub-agents/license-check.md skipped: frontmatter name "licensing" must equal file basename "license-check"` (warning) | The persona's `name:` differs from its file name | Make `name:` match the file name, or rename the key |
+| `persona .../extra-review/sub-agents/security.md skipped: name already declared by skill "pr-review"` (warning) | Two skills have a persona with the same name; the first one wins | Rename one persona, or remove one with `null` |
+| `persona PATH skipped: frontmatter name: is required` (warning) | The persona has no `name:` | Add `name:` equal to the file name |
+| `skills[0]: override "KEY" is null but the skill has no such file; nothing removed` (warning) | The removed file is not in the skill | Fix the path, or drop the key |
+| `skills[0]: override "KEY": reading override source: PATH resolves through a symlink to REAL` | The override file, or a directory on its path inside `.fullsend`, is a symlink | Commit the file itself at the path the harness names |
+| `skills[0]: skill tree contains a symlink at "PATH"; overridden skills must contain only regular files and directories` | A skill with overrides contains a symlink | Replace the symlink with a regular file in the skill |
+| `personas.json: FILE: frontmatter field "FIELD" is not a string; omitted` (warning) | A copied frontmatter field has the wrong type (also `is not a list of strings` or `is not a bool`) | Fix the field in the persona's frontmatter |
 
 ## When to use skills vs. AGENTS.md
 
