@@ -95,8 +95,8 @@ func TestStageRunSkills_BaseOverlayOverrideOutsideFullsendDirRefused(t *testing.
 	assert.Contains(t, err.Error(), "is outside")
 }
 
-// On the lock-file path the base skill's lock entry rewrites the inherited
-// slot's source to the same cached tree and keeps the child's overrides.
+// On the lock-file path the base skill's lock entry leaves the inherited
+// slot's source, already the cached tree, and keeps the child's overrides.
 func TestResolveFromLock_InheritedBaseSkillKeepsChildOverrides(t *testing.T) {
 	dotfs := realTempDir(t)
 	files := map[string][]byte{
@@ -104,7 +104,11 @@ func TestResolveFromLock_InheritedBaseSkillKeepsChildOverrides(t *testing.T) {
 		"sub-agents/user-experience.md": []byte("---\nname: user-experience\n---\n"),
 	}
 	skillFileURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/skills/pr-review/SKILL.md"
-	_, err := fetch.CachePutDir(dotfs, skillFileURL, files)
+	treeHash, err := fetch.CachePutDir(dotfs, skillFileURL, files)
+	require.NoError(t, err)
+	treePath, _, err := fetch.CacheGetDir(dotfs, treeHash)
+	require.NoError(t, err)
+	baseSkill, err := fetch.CacheNamedSymlink(treePath, "pr-review")
 	require.NoError(t, err)
 	entry := &lock.HarnessLock{Dependencies: []lock.DependencyEntry{{
 		Field: "skills[0]", URL: skillFileURL, SHA256: fetch.ComputeTreeHash(files), Type: "directory",
@@ -114,7 +118,7 @@ func TestResolveFromLock_InheritedBaseSkillKeepsChildOverrides(t *testing.T) {
 	writeTree(t, dotfs, map[string]string{"personas/rbac-review.md": "---\nname: rbac-review\n---\n"})
 	h := &harness.Harness{
 		Skills: []harness.SkillEntry{{
-			Source: filepath.Join(dotfs, ".fullsend-cache", "pr-review"),
+			Source: baseSkill,
 			Overrides: map[string]*string{
 				"sub-agents/user-experience.md": nil,
 				"sub-agents/rbac-review.md":     &rbac,
@@ -125,7 +129,7 @@ func TestResolveFromLock_InheritedBaseSkillKeepsChildOverrides(t *testing.T) {
 	_, err = resolveFromLock(h, entry, dotfs, nil, ui.New(io.Discard))
 	require.NoError(t, err)
 	require.Len(t, h.Skills, 1)
-	assert.Equal(t, "pr-review", filepath.Base(h.Skills[0].Source))
+	assert.Equal(t, baseSkill, h.Skills[0].Source)
 	assert.Len(t, h.Skills[0].Overrides, 2)
 
 	runDir := realTempDir(t)

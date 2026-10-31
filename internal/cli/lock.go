@@ -840,6 +840,7 @@ func planSkillOverrideReplay(h *harness.Harness, deps []resolve.Dependency) ([]s
 func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot string, orgAllowlist []string, printer *ui.Printer) (resolve.ResolveResult, error) {
 	type mutation struct {
 		field     string
+		url       string
 		localPath string
 	}
 
@@ -933,7 +934,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		// ResolvedProfile list, not by mutating a harness field. Keep it a
 		// no-op if that switch ever grows a profile case, or move this append
 		// after the rename.
-		mutations = append(mutations, mutation{field: lockDep.Field, localPath: localPath})
+		mutations = append(mutations, mutation{field: lockDep.Field, url: lockDep.URL, localPath: localPath})
 		dep := resolve.Dependency{
 			Field:     lockDep.Field,
 			URL:       lockDep.URL,
@@ -1026,13 +1027,24 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	}
 
 	// All deps confirmed in cache — apply mutations to the harness.
+	//
+	// A URL base records its relative resources under the same field names
+	// a child uses (agent, policy, pre_script, skills[N] with N the base's
+	// index, ...), and LoadWithBase has already put their cache paths on the
+	// merged harness with child values winning. A dependency therefore only
+	// replaces a harness field that still holds its URL; any other value was
+	// resolved by LoadWithBase and is left as is (#8977).
 	urlResolvedPlugins := make(map[string]bool)
 	for _, m := range mutations {
 		switch {
 		case m.field == "agent":
-			h.Agent = m.localPath
+			if lockFieldHolds(h.Agent, m.url) {
+				h.Agent = m.localPath
+			}
 		case m.field == "policy":
-			h.Policy = m.localPath
+			if lockFieldHolds(h.Policy, m.url) {
+				h.Policy = m.localPath
+			}
 		case strings.HasPrefix(m.field, "policy["):
 			// Transitive policy reference — leaf node, no harness field to set.
 		case m.field == "base":
@@ -1040,17 +1052,23 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			// resolveFromLock runs. This entry exists only for cache
 			// verification.
 		case m.field == "pre_script":
+			if !lockFieldHolds(h.PreScript, m.url) {
+				break
+			}
 			h.PreScript = m.localPath
 			if err := os.Chmod(m.localPath, 0o755); err != nil {
 				return resolve.ResolveResult{}, fmt.Errorf("setting executable permission on cached pre_script: %w", err)
 			}
 		case m.field == "post_script":
+			if !lockFieldHolds(h.PostScript, m.url) {
+				break
+			}
 			h.PostScript = m.localPath
 			if err := os.Chmod(m.localPath, 0o755); err != nil {
 				return resolve.ResolveResult{}, fmt.Errorf("setting executable permission on cached post_script: %w", err)
 			}
 		case m.field == "validation_loop.script":
-			if h.ValidationLoop != nil {
+			if h.ValidationLoop != nil && lockFieldHolds(h.ValidationLoop.Script, m.url) {
 				h.ValidationLoop.Script = m.localPath
 				if err := os.Chmod(m.localPath, 0o755); err != nil {
 					return resolve.ResolveResult{}, fmt.Errorf("setting executable permission on cached validation_loop.script: %w", err)
@@ -1073,7 +1091,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		case strings.HasPrefix(m.field, "overlays[") && strings.HasSuffix(m.field, ".validation_loop.script"):
 			// Same as overlay pre_script above.
 		case m.field == "validation_loop.schema":
-			if h.ValidationLoop != nil {
+			if h.ValidationLoop != nil && lockFieldHolds(h.ValidationLoop.Schema, m.url) {
 				h.ValidationLoop.Schema = m.localPath
 			}
 		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".validation_loop.schema"):
@@ -1124,7 +1142,11 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		default:
 			var idx int
 			if _, err := fmt.Sscanf(m.field, "skills[%d]", &idx); err == nil && idx >= 0 && idx < len(h.Skills) && m.field == fmt.Sprintf("skills[%d]", idx) {
-				h.Skills[idx].Source = m.localPath
+				// The merged list's slot N may be a different skill from
+				// the base's slot N the entry was recorded for.
+				if lockFieldHolds(h.Skills[idx].Source, m.url) {
+					h.Skills[idx].Source = m.localPath
+				}
 			} else {
 				// Transitive skill dependency — append as additional skill.
 				h.Skills = append(h.Skills, harness.SkillEntry{Source: m.localPath})
@@ -1227,6 +1249,20 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		Profiles:  profiles,
 		Providers: providers,
 	}, nil
+}
+
+// lockFieldHolds reports whether a harness field value is the URL a lock
+// dependency was recorded for, compared with the "#" fragment stripped.
+// Local and cache paths never match, so values LoadWithBase already resolved
+// (the child's own and a URL base's alike) are not replaced on replay.
+func lockFieldHolds(value, lockURL string) bool {
+	if lockURL == "" {
+		return false
+	}
+	if i := strings.LastIndex(value, "#"); i >= 0 {
+		value = value[:i]
+	}
+	return value == lockURL
 }
 
 // isTreeLockField reports whether a lock dependency field names a cached
