@@ -794,26 +794,6 @@ type skillOverrideReplay struct {
 	path  string
 }
 
-// baseFileCachePath is the path fetchBaseFile (internal/harness/compose.go)
-// gives a base file cached under hash: the cache entry's content file, or
-// its "content<ext>" symlink when the URL names a file extension. With
-// create set, the symlink is created if missing.
-func baseFileCachePath(workspaceRoot, fileURL, hash string, create bool) (string, error) {
-	dir, err := fetch.CachePath(workspaceRoot, hash)
-	if err != nil {
-		return "", err
-	}
-	contentPath := filepath.Join(dir, "content")
-	ext := path.Ext(fileURL)
-	if ext == "" {
-		return contentPath, nil
-	}
-	if create {
-		return fetch.CacheNamedSymlink(contentPath, "content"+ext)
-	}
-	return filepath.Join(dir, "content"+ext), nil
-}
-
 // planSkillOverrideReplay works out the skill file override values a lock
 // replay sets, without changing the harness.
 //
@@ -822,63 +802,28 @@ func baseFileCachePath(workspaceRoot, fileURL, hash string, create bool) (string
 // keep one entry per URL, so it may sit under agent, policy, another skill's
 // override or an overlay. A URL with no entry is an error.
 //
-// An override that LoadWithBase already turned into a cache path (a URL
-// base's relative override, see resolveBaseResources) was looked up in the
-// URL index, not the lock. When that path is the one the index currently
-// gives a locked file dependency's URL and the lock pins other content, it
-// is replaced by the locked content's path. Any other path is left alone.
-func planSkillOverrideReplay(h *harness.Harness, deps []resolve.Dependency, workspaceRoot string) ([]skillOverrideReplay, error) {
+// An override that is a path is left as it is.
+// A URL base's cached relative files follow the URL index, not the lock (#8979).
+func planSkillOverrideReplay(h *harness.Harness, deps []resolve.Dependency) ([]skillOverrideReplay, error) {
 	byURL := make(map[string]string, len(deps))
-	type pin struct {
-		url, hash string
-	}
-	pinsByPath := make(map[string][]pin)
 	for _, d := range deps {
 		if d.Type == "directory" {
 			continue
 		}
 		byURL[lockCleanURL(d.URL)] = d.LocalPath
-		current, ok := harness.URLIndexLookup(workspaceRoot, d.URL)
-		if !ok {
-			continue
-		}
-		currentPath, err := baseFileCachePath(workspaceRoot, d.URL, current, false)
-		if err != nil {
-			continue
-		}
-		pinsByPath[currentPath] = append(pinsByPath[currentPath], pin{url: d.URL, hash: d.SHA256})
 	}
 
 	var plan []skillOverrideReplay
 	for i := range h.Skills {
 		for key, val := range h.Skills[i].Overrides {
-			if val == nil || *val == "" {
+			if val == nil || *val == "" || !harness.IsURL(*val) {
 				continue
 			}
-			if harness.IsURL(*val) {
-				localPath, ok := byURL[lockCleanURL(*val)]
-				if !ok {
-					return nil, fmt.Errorf("skills[%d]: override %q URL %s has no entry in the lock file — run 'fullsend lock' to update", i, key, *val)
-				}
-				plan = append(plan, skillOverrideReplay{skill: i, key: key, path: localPath})
-				continue
+			localPath, ok := byURL[lockCleanURL(*val)]
+			if !ok {
+				return nil, fmt.Errorf("skills[%d]: override %q URL %s has no entry in the lock file (it may come from an overlay that did not match at lock time); resolving without the lock", i, key, *val)
 			}
-			pins := pinsByPath[*val]
-			if len(pins) == 0 {
-				continue
-			}
-			for _, p := range pins[1:] {
-				if p.hash != pins[0].hash {
-					return nil, fmt.Errorf("skills[%d]: override %q (%s) is the cached file of %s and %s, which the lock file pins to different content — run 'fullsend lock' to update", i, key, *val, pins[0].url, p.url)
-				}
-			}
-			lockedPath, err := baseFileCachePath(workspaceRoot, pins[0].url, pins[0].hash, true)
-			if err != nil {
-				return nil, fmt.Errorf("skills[%d]: override %q: naming locked cache file for %s: %w", i, key, pins[0].url, err)
-			}
-			if lockedPath != *val {
-				plan = append(plan, skillOverrideReplay{skill: i, key: key, path: lockedPath})
-			}
+			plan = append(plan, skillOverrideReplay{skill: i, key: key, path: localPath})
 		}
 	}
 	return plan, nil
@@ -1075,7 +1020,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		}
 	}
 
-	overrideReplay, err := planSkillOverrideReplay(h, deps, workspaceRoot)
+	overrideReplay, err := planSkillOverrideReplay(h, deps)
 	if err != nil {
 		return resolve.ResolveResult{}, err
 	}

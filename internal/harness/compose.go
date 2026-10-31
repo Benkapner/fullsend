@@ -2297,13 +2297,6 @@ func urlIndexPath(workspaceRoot string) string {
 	return filepath.Join(workspaceRoot, ".fullsend-cache", "url-index.json")
 }
 
-// URLIndexLookup returns the SHA256 the URL-to-hash index records for
-// rawURL, the hash a base file fetch (fetchBaseFile) reuses on a cache hit.
-// Returns ("", false) on miss or read error.
-func URLIndexLookup(workspaceRoot, rawURL string) (string, bool) {
-	return urlIndexLookup(workspaceRoot, rawURL)
-}
-
 // urlIndexLookup reads the URL-to-hash index and returns the SHA256 for the
 // given URL. Returns ("", false) on miss or read error.
 func urlIndexLookup(workspaceRoot, rawURL string) (string, bool) {
