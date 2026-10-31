@@ -2358,26 +2358,38 @@ func urlIndexPut(workspaceRoot, rawURL, hash string) error {
 // When a child replaces a base entry whose directory basename differs (i.e.
 // the match came from the declared SKILL.md name), the replacement is
 // logged so it is not silent.
+//
+// A map-form child entry (one with an overrides map) whose source is an
+// absolute path with no SKILL.md keeps the base entry's resolved source and
+// only adds its overrides: the child overlays files on the base skill
+// rather than replacing it (#6158). A URL key ignores its #fragment and
+// ?query, so a pinned URL matches the base skill of the same name.
+// mergeForgeConfig shares this function, so the rule holds there too.
 func mergeSkills(base, child []SkillEntry) []SkillEntry {
 	baseIndex := make(map[string]int, len(base))
 	result := make([]SkillEntry, 0, len(base)+len(child))
 
 	for _, s := range base {
-		name := skill.SandboxName(s.Source)
+		name := skillMergeKey(s.Source)
 		baseIndex[name] = len(result)
 		result = append(result, s)
 	}
 
 	// Child entries override base slots only, never other child entries.
 	for _, s := range child {
-		name := skill.SandboxName(s.Source)
+		name := skillMergeKey(s.Source)
 		if idx, exists := baseIndex[name]; exists {
-			if filepath.Base(result[idx].Source) != filepath.Base(s.Source) {
+			source := s.Source
+			if s.Overrides != nil && !skillSourcePresent(s.Source) {
+				source = result[idx].Source
+				log.Printf("harness: skill %q has no SKILL.md; applying its file overrides to base skill %q",
+					s.Source, source)
+			} else if filepath.Base(result[idx].Source) != filepath.Base(s.Source) {
 				log.Printf("harness: skill %q (%q) replaces base skill at %q: both declare the skill name %q",
 					s.Source, filepath.Base(s.Source), result[idx].Source, name)
 			}
 			merged := SkillEntry{
-				Source:    s.Source,
+				Source:    source,
 				Overrides: mergeOverrides(result[idx].Overrides, s.Overrides),
 			}
 			result[idx] = merged
@@ -2388,6 +2400,35 @@ func mergeSkills(base, child []SkillEntry) []SkillEntry {
 	}
 
 	return result
+}
+
+// skillMergeKey is the identity mergeSkills compares: skill.SandboxName,
+// except that a URL drops its #fragment and ?query first (#6158). Sandbox
+// names elsewhere are unchanged.
+func skillMergeKey(src string) string {
+	if IsURL(src) {
+		if i := strings.IndexAny(src, "?#"); i >= 0 {
+			src = src[:i]
+		}
+		return path.Base(strings.TrimRight(src, "/"))
+	}
+	return skill.SandboxName(src)
+}
+
+// skillSourcePresent reports whether a child skill source can stand on its
+// own. URLs (fetched later) and relative paths (not yet resolved, so not
+// checkable here) count as present; an absolute path must hold a skill
+// marker file.
+func skillSourcePresent(src string) bool {
+	if src == "" || IsURL(src) || !filepath.IsAbs(src) {
+		return true
+	}
+	for _, marker := range skill.MarkerNames {
+		if info, err := os.Stat(filepath.Join(src, marker)); err == nil && info.Mode().IsRegular() {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeHostFiles concatenates base and child host files, with child entries

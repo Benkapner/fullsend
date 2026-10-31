@@ -282,7 +282,10 @@ persona manifest of the personas found in the staged skills (by the rules the
 `pi` and `codex` runtimes use to discover them) to `<output-dir>/<sandbox-name>/personas.json` and
 `/sandbox/workspace/.fullsend/personas.json`, and exports its path as
 `FULLSEND_PERSONAS_FILE` to the pre-script, post-script, validation script
-and sandbox. See
+and sandbox. Under `base:` composition, a map-form entry whose name matches a
+base skill but whose path has no `SKILL.md` in the `.fullsend` directory
+keeps the base skill's source and applies only its overrides, so a child can
+override files in an inherited skill without copying it. See
 [Configuring with Skills § Overriding single files in a skill](../guides/user/customizing-with-skills.md#overriding-single-files-in-a-skill).
 
 **`plugins`** — Directories a runtime loads. Which runtime loads an entry follows from the directory, not from the key: a directory with `plugin.json` at its root or `.claude-plugin/plugin.json` is a Claude plugin and Claude Code loads it; anything else must be a directory pi's `-e` loader resolves an entry point in, and pi loads it as an extension ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)). Each runtime names and skips the entries in the other format, so one list works whichever runtime the org configures.
@@ -481,7 +484,7 @@ More-specific entries go last so they override broader defaults.
 | Field type | Behavior |
 |-----------|----------|
 | Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
-| `skills` | Merged with deduplication by skill identity (declared `SKILL.md` name when on disk, otherwise basename). Child overrides a matching base entry; sibling nested dirs that share a leaf name are kept; two entries with one identity in a single list are both kept and fail at bootstrap; when a child entry replaces a base entry, their per-file override maps merge (child keys win) |
+| `skills` | Merged with deduplication by skill identity (declared `SKILL.md` name when on disk, otherwise basename). Child overrides a matching base entry; sibling nested dirs that share a leaf name are kept; two entries with one identity in a single list are both kept and fail at bootstrap; when a child entry replaces a base entry, their per-file override maps merge (child keys win); a map-form child entry whose path has no `SKILL.md` keeps the base entry's source; a URL entry is matched without its `#sha256=` fragment |
 | `providers`, `openshell.profiles` | Concatenated (base + child); also applies per matched overlay |
 | `plugins`, `api_servers` | Concatenated (base + child); each entry keeps its own `env`/`pi` |
 | `host_files` | Concatenated; child overrides by `dest` |
