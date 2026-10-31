@@ -278,8 +278,8 @@ runner copies the resolved skill to
 harness resolution, then applies the overrides to the copy; the source is
 never written. A symlink inside an overridden skill, or on the path to an
 override file, fails the run. Every run, with or without overrides, writes a
-persona manifest of the personas the `pi` and `codex` runtimes register from
-the staged skills to `<output-dir>/<sandbox-name>/personas.json` and
+persona manifest of the personas found in the staged skills (by the rules the
+`pi` and `codex` runtimes use to discover them) to `<output-dir>/<sandbox-name>/personas.json` and
 `/sandbox/workspace/.fullsend/personas.json`, and exports its path as
 `FULLSEND_PERSONAS_FILE` to the pre-script, post-script, validation script
 and sandbox. See

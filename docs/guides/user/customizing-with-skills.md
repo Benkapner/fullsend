@@ -390,9 +390,12 @@ subagents: security → anthropic-vertex/claude-sonnet-5-5 (from frontmatter)
 
 - The file is written on every run, even with no overrides. An empty list
   means no skill has personas.
-- It lists exactly the personas the `pi` and `codex` runtimes register. A
-  skill on any runtime can read it to pick from the staged personas instead
-  of a fixed list.
+- It lists the personas found with the same rules `pi` and `codex` use to
+  discover them. A skill on any runtime can read it to pick from the staged
+  personas instead of a fixed list.
+- `pi` and `codex` can still drop a listed persona later, for example when
+  its model is not available in the run or its tools are not supported. They
+  log a warning when they do.
 - A file in `sub-agents/` becomes a persona only when its `name:` equals its
   file name and is not a reserved name (`default`, `explore`, `agent`, the
   agent's own name or a built-in agent name). Other files are skipped with a
