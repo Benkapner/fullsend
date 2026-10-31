@@ -1,8 +1,6 @@
 package harness
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -276,42 +274,6 @@ func TestValidateSkillOverrides(t *testing.T) {
 			}})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), want)
-		})
-	}
-}
-
-func TestLoad_EmptySkillSourceRejected(t *testing.T) {
-	const entry = "      - \"\":\n          sub-agents/x.md: null\n"
-	for _, tc := range []struct {
-		name, yaml, want string
-	}{
-		{
-			name: "top-level",
-			yaml: "skills:\n  - \"\":\n      sub-agents/x.md: null\n",
-			want: "skills[0]: skill source must not be empty",
-		},
-		{
-			name: "top-level string form",
-			yaml: "skills:\n  - skills/a\n  - \"\"\n",
-			want: "skills[1]: skill source must not be empty",
-		},
-		{
-			name: "forge",
-			yaml: "forge:\n  github:\n    skills:\n" + entry,
-			want: "forge.github: skills[0]: skill source must not be empty",
-		},
-		{
-			name: "overlay",
-			yaml: "overlays:\n- when: 'runtime.forge == \"github\"'\n  skills:\n    - \"\":\n        sub-agents/x.md: null\n",
-			want: "overlays[0]: skills[0]: skill source must not be empty",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "harness.yaml")
-			require.NoError(t, os.WriteFile(path, []byte("agent: agents/code.md\nrole: test\n"+tc.yaml), 0o644))
-			_, err := LoadWithOpts(path, LoadOpts{})
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
 }

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -781,23 +782,175 @@ func TestResolveFromLock_OverrideSlotsPreservesExisting(t *testing.T) {
 	assert.True(t, strings.HasSuffix(*h.Skills[0].Overrides["sub-agents/b.md"], "/content"))
 }
 
-func TestLockDepURLMatches(t *testing.T) {
-	const dep = "https://example.com/overrides/x.md"
-	hash := fetch.ComputeSHA256([]byte("x"))
-	for _, tc := range []struct {
-		value string
-		want  bool
-	}{
-		{dep + "#sha256=" + hash, true},
-		{dep, true},
-		{"https://example.com/overrides/y.md#sha256=" + hash, false},
-		{"/abs/cache/content", false},
-		{"overrides/x.md", false},
-		{"", false},
-	} {
-		assert.Equal(t, tc.want, lockDepURLMatches(tc.value, dep), tc.value)
+// runLock and resolve keep one lock entry per URL, so an override URL can be
+// recorded under any field. The replay maps it by URL (#8974).
+func TestResolveFromLock_OverrideURLRecordedUnderOtherField(t *testing.T) {
+	agentContent := []byte("# shared agent")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	forgeX := []byte("forge x")
+	forgeHash := fetch.ComputeSHA256(forgeX)
+	const agentURL = "https://example.com/agents/shared.md"
+	const forgeURL = "https://example.com/overrides/forge-x.md"
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, agentURL, agentContent))
+	require.NoError(t, fetch.CachePut(root, forgeURL, forgeX))
+	entry := &lock.HarnessLock{Dependencies: []lock.DependencyEntry{
+		{Field: "agent", URL: agentURL, SHA256: agentHash},
+		{Field: "forge.github.skills[0].overrides[sub-agents/y.md]", URL: forgeURL, SHA256: forgeHash},
+	}}
+
+	h := &harness.Harness{
+		Agent: agentURL + "#sha256=" + agentHash,
+		Skills: []harness.SkillEntry{{
+			Source: "skills/pr-review",
+			Overrides: map[string]*string{
+				"sub-agents/x.md": strPtr(agentURL + "#sha256=" + agentHash),
+				"sub-agents/y.md": strPtr(forgeURL),
+			},
+		}},
+		AllowedRemoteResources: []string{"https://example.com/"},
 	}
-	assert.True(t, lockDepURLMatches(dep, dep+"#sha256="+hash), "a fragment on the dep URL is ignored too")
+	_, err := resolveFromLock(h, entry, root, nil, ui.New(io.Discard))
+	require.NoError(t, err)
+
+	for key, want := range map[string][]byte{"sub-agents/x.md": agentContent, "sub-agents/y.md": forgeX} {
+		got := h.Skills[0].Overrides[key]
+		require.NotNil(t, got, key)
+		require.False(t, harness.IsURL(*got), "%s still a URL: %s", key, *got)
+		data, err := os.ReadFile(*got)
+		require.NoError(t, err, key)
+		assert.Equal(t, string(want), string(data), key)
+	}
+}
+
+// A URL override with no lock entry fails the replay with the harness
+// unchanged, so run falls back to normal resolution.
+func TestResolveFromLock_OverrideURLMissingFromLock(t *testing.T) {
+	agentContent := []byte("# agent")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	const agentURL = "https://example.com/agents/code.md"
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, agentURL, agentContent))
+	entry := &lock.HarnessLock{Dependencies: []lock.DependencyEntry{
+		{Field: "agent", URL: agentURL, SHA256: agentHash},
+	}}
+
+	const missing = "https://example.com/overrides/missing.md"
+	h := &harness.Harness{
+		Agent: agentURL,
+		Skills: []harness.SkillEntry{{
+			Source:    "skills/pr-review",
+			Overrides: map[string]*string{"sub-agents/x.md": strPtr(missing)},
+		}},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+	_, err := resolveFromLock(h, entry, root, nil, ui.New(io.Discard))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `skills[0]: override "sub-agents/x.md" URL `+missing+" has no entry in the lock file — run 'fullsend lock' to update")
+	assert.Equal(t, agentURL, h.Agent, "the harness is unchanged")
+	assert.Equal(t, missing, *h.Skills[0].Overrides["sub-agents/x.md"])
+}
+
+// LoadWithBase caches a URL base's relative override through the URL
+// index, not the lock. If the index moves to other content after locking,
+// the offline replay pins the override back to the locked content and
+// leaves the child's local override alone (#8974).
+func TestRunLock_BaseOverrideIndexChangedAfterLock(t *testing.T) {
+	skillFiles := map[string][]byte{
+		"SKILL.md":        []byte("---\nname: pr-review\n---\nbody\n"),
+		"sub-agents/x.md": []byte("upstream x"),
+		"sub-agents/y.md": []byte("upstream y"),
+	}
+	treeHash := fetch.ComputeTreeHash(skillFiles)
+	skillURL := "https://github.com/test-org/test-repo/tree/main/skills/pr-review#sha256=" + treeHash
+
+	baseX := []byte("base x")
+	movedX := []byte("base x, changed after lock")
+	childY := []byte("child y")
+	baseContent := []byte(fmt.Sprintf(`agent: agents/shared.md
+role: test
+skills:
+  - "%s":
+      sub-agents/x.md: overrides/base-x.md
+`, skillURL))
+	baseHash := fetch.ComputeSHA256(baseContent)
+
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/base.yaml":           baseContent,
+		"/agents/shared.md":    []byte("# shared agent"),
+		"/overrides/base-x.md": baseX,
+	})
+	fakeFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return skillFiles, nil
+	}
+	baseXURL := srv.URL + "/overrides/base-x.md"
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "overrides"), 0o755))
+	childYPath := filepath.Join(dir, "overrides", "child-y.md")
+	require.NoError(t, os.WriteFile(childYPath, childY, 0o644))
+	childContent := fmt.Sprintf(`base: "%s/base.yaml#sha256=%s"
+skills:
+  - "%s":
+      sub-agents/y.md: overrides/child-y.md
+allowed_remote_resources:
+  - "%s/"
+  - "https://github.com/test-org/"
+`, srv.URL, baseHash, skillURL, srv.URL)
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	require.NoError(t, os.WriteFile(harnessPath, []byte(childContent), 0o644))
+	orgConfig := fmt.Sprintf("allowed_remote_resources:\n  - \"%s/\"\n  - \"https://github.com/test-org/\"\n", srv.URL)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+	printer := ui.New(io.Discard)
+	require.NoError(t, runLock(context.Background(), "code", dir, "", false,
+		resolveFlags{treeFetcher: gitfetch.TreeFetchFunc(fakeFetcher)}, printer))
+	lf, err := lock.Load(filepath.Join(dir, "lock.yaml"))
+	require.NoError(t, err)
+	entry := lf.Lookup("code")
+	require.NotNil(t, entry)
+
+	// After locking, the URL index moves to other cached content.
+	require.NoError(t, fetch.CachePut(dir, baseXURL, movedX))
+	indexPath := filepath.Join(dir, ".fullsend-cache", "url-index.json")
+	raw, err := os.ReadFile(indexPath)
+	require.NoError(t, err)
+	var index map[string]string
+	require.NoError(t, json.Unmarshal(raw, &index))
+	require.Equal(t, fetch.ComputeSHA256(baseX), index[baseXURL])
+	index[baseXURL] = fetch.ComputeSHA256(movedX)
+	raw, err = json.Marshal(index)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(indexPath, raw, 0o600))
+
+	h, _, err := harness.LoadWithBase(context.Background(), harnessPath, harness.ComposeOpts{
+		WorkspaceRoot: dir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{srv.URL + "/", "https://github.com/test-org/"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.ResolveRelativeTo(dir))
+	require.Len(t, h.Skills, 1)
+	loaded, err := os.ReadFile(*h.Skills[0].Overrides["sub-agents/x.md"])
+	require.NoError(t, err)
+	require.Equal(t, string(movedX), string(loaded), "the load follows the URL index")
+
+	fetch.DefaultPolicy = fetch.FetchPolicy{Offline: true}
+	_, err = resolveFromLock(h, entry, dir, nil, printer)
+	require.NoError(t, err)
+
+	got := *h.Skills[0].Overrides["sub-agents/x.md"]
+	data, err := os.ReadFile(got)
+	require.NoError(t, err)
+	assert.Equal(t, string(baseX), string(data), "the replay restores the locked content")
+	cachePath, err := fetch.CachePath(dir, fetch.ComputeSHA256(baseX))
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(cachePath, "content.md"), got)
+	assert.Equal(t, childYPath, *h.Skills[0].Overrides["sub-agents/y.md"], "the child's local override is untouched")
 }
 
 func TestResolveFromLock_OverrideDoesNotCorruptSource(t *testing.T) {
@@ -887,6 +1040,14 @@ skills:
 			childOverride: fmt.Sprintf("\"%s#sha256=%s\"", baseURL, fetch.ComputeSHA256(baseX)),
 			wantURLs:      []string{baseURL},
 			want:          baseX,
+			wantCached:    true,
+		},
+		{
+			// The lock records the URL once, under the base's agent field.
+			name:          "child URL override names the base agent's URL",
+			childOverride: fmt.Sprintf("\"%s/agents/shared.md#sha256=%s\"", srv.URL, fetch.ComputeSHA256([]byte("# shared agent"))),
+			wantURLs:      []string{baseURL},
+			want:          []byte("# shared agent"),
 			wantCached:    true,
 		},
 	} {

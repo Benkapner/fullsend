@@ -777,16 +777,111 @@ func lockForgePlatforms(harnessPath, forgePlatform string) ([]string, error) {
 	return platforms, nil
 }
 
-// lockDepURLMatches reports whether a harness value is a URL naming the
-// lock dependency URL, ignoring any #sha256= fragment on either side. Paths
-// never match.
-func lockDepURLMatches(value, depURL string) bool {
-	if !harness.IsURL(value) {
-		return false
+// lockCleanURL strips a #sha256= fragment, the form lock and resolve key
+// dependency URLs by.
+func lockCleanURL(u string) string {
+	clean, _, _ := harness.ParseIntegrityHash(u)
+	if clean == "" {
+		return u
 	}
-	v, _, _ := harness.ParseIntegrityHash(value)
-	d, _, _ := harness.ParseIntegrityHash(depURL)
-	return v == d
+	return clean
+}
+
+// skillOverrideReplay is one skill file override value resolveFromLock sets.
+type skillOverrideReplay struct {
+	skill int
+	key   string
+	path  string
+}
+
+// baseFileCachePath is the path fetchBaseFile (internal/harness/compose.go)
+// gives a base file cached under hash: the cache entry's content file, or
+// its "content<ext>" symlink when the URL names a file extension. With
+// create set, the symlink is created if missing.
+func baseFileCachePath(workspaceRoot, fileURL, hash string, create bool) (string, error) {
+	dir, err := fetch.CachePath(workspaceRoot, hash)
+	if err != nil {
+		return "", err
+	}
+	contentPath := filepath.Join(dir, "content")
+	ext := path.Ext(fileURL)
+	if ext == "" {
+		return contentPath, nil
+	}
+	if create {
+		return fetch.CacheNamedSymlink(contentPath, "content"+ext)
+	}
+	return filepath.Join(dir, "content"+ext), nil
+}
+
+// planSkillOverrideReplay works out the skill file override values a lock
+// replay sets, without changing the harness.
+//
+// An override that names a URL gets the cached file of the lock entry for
+// that URL, whatever field the entry is recorded under: runLock and resolve
+// keep one entry per URL, so it may sit under agent, policy, another skill's
+// override or an overlay. A URL with no entry is an error.
+//
+// An override that LoadWithBase already turned into a cache path (a URL
+// base's relative override, see resolveBaseResources) was looked up in the
+// URL index, not the lock. When that path is the one the index currently
+// gives a locked file dependency's URL and the lock pins other content, it
+// is replaced by the locked content's path. Any other path is left alone.
+func planSkillOverrideReplay(h *harness.Harness, deps []resolve.Dependency, workspaceRoot string) ([]skillOverrideReplay, error) {
+	byURL := make(map[string]string, len(deps))
+	type pin struct {
+		url, hash string
+	}
+	pinsByPath := make(map[string][]pin)
+	for _, d := range deps {
+		if d.Type == "directory" {
+			continue
+		}
+		byURL[lockCleanURL(d.URL)] = d.LocalPath
+		current, ok := harness.URLIndexLookup(workspaceRoot, d.URL)
+		if !ok {
+			continue
+		}
+		currentPath, err := baseFileCachePath(workspaceRoot, d.URL, current, false)
+		if err != nil {
+			continue
+		}
+		pinsByPath[currentPath] = append(pinsByPath[currentPath], pin{url: d.URL, hash: d.SHA256})
+	}
+
+	var plan []skillOverrideReplay
+	for i := range h.Skills {
+		for key, val := range h.Skills[i].Overrides {
+			if val == nil || *val == "" {
+				continue
+			}
+			if harness.IsURL(*val) {
+				localPath, ok := byURL[lockCleanURL(*val)]
+				if !ok {
+					return nil, fmt.Errorf("skills[%d]: override %q URL %s has no entry in the lock file — run 'fullsend lock' to update", i, key, *val)
+				}
+				plan = append(plan, skillOverrideReplay{skill: i, key: key, path: localPath})
+				continue
+			}
+			pins := pinsByPath[*val]
+			if len(pins) == 0 {
+				continue
+			}
+			for _, p := range pins[1:] {
+				if p.hash != pins[0].hash {
+					return nil, fmt.Errorf("skills[%d]: override %q (%s) is the cached file of %s and %s, which the lock file pins to different content — run 'fullsend lock' to update", i, key, *val, pins[0].url, p.url)
+				}
+			}
+			lockedPath, err := baseFileCachePath(workspaceRoot, pins[0].url, pins[0].hash, true)
+			if err != nil {
+				return nil, fmt.Errorf("skills[%d]: override %q: naming locked cache file for %s: %w", i, key, pins[0].url, err)
+			}
+			if lockedPath != *val {
+				plan = append(plan, skillOverrideReplay{skill: i, key: key, path: lockedPath})
+			}
+		}
+	}
+	return plan, nil
 }
 
 // resolveFromLock resolves harness dependencies using a lock file entry instead
@@ -800,7 +895,6 @@ func lockDepURLMatches(value, depURL string) bool {
 func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot string, orgAllowlist []string, printer *ui.Printer) (resolve.ResolveResult, error) {
 	type mutation struct {
 		field     string
-		url       string
 		localPath string
 	}
 
@@ -894,7 +988,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		// ResolvedProfile list, not by mutating a harness field. Keep it a
 		// no-op if that switch ever grows a profile case, or move this append
 		// after the rename.
-		mutations = append(mutations, mutation{field: lockDep.Field, url: lockDep.URL, localPath: localPath})
+		mutations = append(mutations, mutation{field: lockDep.Field, localPath: localPath})
 		dep := resolve.Dependency{
 			Field:     lockDep.Field,
 			URL:       lockDep.URL,
@@ -979,6 +1073,11 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 				}
 			}
 		}
+	}
+
+	overrideReplay, err := planSkillOverrideReplay(h, deps, workspaceRoot)
+	if err != nil {
+		return resolve.ResolveResult{}, err
 	}
 
 	// All deps confirmed in cache — apply mutations to the harness.
@@ -1075,20 +1174,8 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		case strings.HasPrefix(m.field, "overlays[") && strings.Contains(m.field, ".providers["):
 		case strings.HasPrefix(m.field, "overlays[") && strings.Contains(m.field, ".openshell.profiles["):
 		case strings.Contains(m.field, ".overrides["):
-			// Map the cached file onto every skill file override that still
-			// names its URL. The field's index is not trusted: a URL base's
-			// overrides share the skills[N].overrides[KEY] shape, and the
-			// lock keeps one entry per URL. Overrides that are already paths
-			// (local files, or base overrides LoadWithBase cached) stay.
-			for i := range h.Skills {
-				for key, val := range h.Skills[i].Overrides {
-					if val == nil || !lockDepURLMatches(*val, m.url) {
-						continue
-					}
-					resolved := m.localPath
-					h.Skills[i].Overrides[key] = &resolved
-				}
-			}
+			// Skill file overrides are set by URL after this loop
+			// (planSkillOverrideReplay), not by the field's index.
 		default:
 			var idx int
 			if _, err := fmt.Sscanf(m.field, "skills[%d]", &idx); err == nil && idx >= 0 && idx < len(h.Skills) && m.field == fmt.Sprintf("skills[%d]", idx) {
@@ -1098,6 +1185,13 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 				h.Skills = append(h.Skills, harness.SkillEntry{Source: m.localPath})
 			}
 		}
+	}
+
+	// Set skill file overrides. The loop above only appends to h.Skills,
+	// so the planned indices still hold.
+	for _, o := range overrideReplay {
+		resolved := o.path
+		h.Skills[o.skill].Overrides[o.key] = &resolved
 	}
 
 	// Remove any remaining URL entries from skills. In diamond dependency

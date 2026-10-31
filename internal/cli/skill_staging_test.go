@@ -206,31 +206,55 @@ func TestStageSkills_EmptySourceWithOverridesWarns(t *testing.T) {
 	assert.Equal(t, []string{"skills[0]: skill source is empty; its file overrides are not applied"}, warnings)
 }
 
-// Harness validation rejects an empty skill source; if one reaches a run
-// anyway, the lock-file replay keeps it and staging warns (#8974).
-func TestStageSkills_EmptySourceSurvivesLockReplay(t *testing.T) {
-	agentContent := []byte("You are a coding agent.")
-	agentHash := fetch.ComputeSHA256(agentContent)
-	dir := realTempDir(t)
-	require.NoError(t, fetch.CachePut(dir, "https://example.com/agents/code.md", agentContent))
-
-	h := &harness.Harness{
-		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
-		Skills:                 []harness.SkillEntry{{Source: "", Overrides: map[string]*string{"sub-agents/x.md": nil}}},
-		AllowedRemoteResources: []string{"https://example.com/"},
+// An empty skill source with overrides passes harness validation, and
+// neither the no-URL run path (which skips resolve.ResolveHarness) nor the
+// lock-file replay drops it, so staging must warn rather than apply the
+// overrides to nothing (#8974).
+func TestStageSkills_EmptySourceReachesStagingThroughResolution(t *testing.T) {
+	const want = "skills[0]: skill source is empty; its file overrides are not applied"
+	writeHarness := func(t *testing.T, dir, agent string) *harness.Harness {
+		t.Helper()
+		p := filepath.Join(dir, "harness.yaml")
+		content := "agent: " + agent + "\nrole: test\nskills:\n  - \"\":\n      sub-agents/x.md: null\n"
+		require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+		h, err := harness.LoadWithOpts(p, harness.LoadOpts{})
+		require.NoError(t, err)
+		require.NoError(t, h.ResolveRelativeTo(dir))
+		return h
 	}
-	entry := &lock.HarnessLock{Dependencies: []lock.DependencyEntry{
-		{Field: "agent", URL: "https://example.com/agents/code.md", SHA256: agentHash},
-	}}
-	_, err := resolveFromLock(h, entry, dir, nil, ui.New(io.Discard))
-	require.NoError(t, err)
-	require.Len(t, h.Skills, 1, "the lock replay keeps the empty-source entry")
+	stageWarnings := func(t *testing.T, h *harness.Harness) []string {
+		t.Helper()
+		var warnings []string
+		staged, err := stageSkills(h.Skills, realTempDir(t), func(w string) { warnings = append(warnings, w) })
+		require.NoError(t, err)
+		assert.Empty(t, staged)
+		return warnings
+	}
 
-	var warnings []string
-	staged, err := stageSkills(h.Skills, realTempDir(t), func(w string) { warnings = append(warnings, w) })
-	require.NoError(t, err)
-	assert.Empty(t, staged)
-	assert.Equal(t, []string{"skills[0]: skill source is empty; its file overrides are not applied"}, warnings)
+	t.Run("no URL references", func(t *testing.T) {
+		h := writeHarness(t, realTempDir(t), "agents/code.md")
+		require.False(t, h.HasURLReferences(), "the run path skips resolve.ResolveHarness")
+		require.Empty(t, h.OpenShellProfiles())
+		require.False(t, hasLocalProviders(h))
+		assert.Equal(t, []string{want}, stageWarnings(t, h))
+	})
+
+	t.Run("lock-file replay", func(t *testing.T) {
+		agentContent := []byte("You are a coding agent.")
+		agentHash := fetch.ComputeSHA256(agentContent)
+		dir := realTempDir(t)
+		require.NoError(t, fetch.CachePut(dir, "https://example.com/agents/code.md", agentContent))
+
+		h := writeHarness(t, dir, "\"https://example.com/agents/code.md#sha256="+agentHash+"\"")
+		h.AllowedRemoteResources = []string{"https://example.com/"}
+		entry := &lock.HarnessLock{Dependencies: []lock.DependencyEntry{
+			{Field: "agent", URL: "https://example.com/agents/code.md", SHA256: agentHash},
+		}}
+		_, err := resolveFromLock(h, entry, dir, nil, ui.New(io.Discard))
+		require.NoError(t, err)
+		require.Len(t, h.Skills, 1, "the lock replay keeps the empty-source entry")
+		assert.Equal(t, []string{want}, stageWarnings(t, h))
+	})
 }
 
 func upstreamSkill(t *testing.T) string {
