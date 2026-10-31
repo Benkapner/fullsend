@@ -206,6 +206,7 @@ script-test:
 	$(call run-timed,bash hack/gitlab-runner-vm/create-openshift-vm_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/create-gcp-vm_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/podman-prune_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/os-update_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/grow-root-fs_test.sh)
 	$(call run-timed,bash hack/setup-e2e-inference-gateway_test.sh)
 	$(call run-timed,bash hack/setup-new-e2e-org_test.sh)
