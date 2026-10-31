@@ -1090,6 +1090,26 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		return resolve.ResolveResult{}, err
 	}
 
+	// Snapshot the fields the apply loop mutates so a skill-override merge
+	// failure below can restore the harness and keep the contract that the
+	// caller may fall back to network-based resolution on the same h.
+	origHarness := *h
+	origSkills := make([]harness.SkillEntry, len(h.Skills))
+	for i, s := range h.Skills {
+		origSkills[i] = s
+		if s.Overrides != nil {
+			origSkills[i].Overrides = make(map[string]*string, len(s.Overrides))
+			for k, v := range s.Overrides {
+				origSkills[i].Overrides[k] = v
+			}
+		}
+	}
+	origPlugins := append([]harness.PluginSpec(nil), h.Plugins...)
+	var origValidationLoop harness.ValidationLoop
+	if h.ValidationLoop != nil {
+		origValidationLoop = *h.ValidationLoop
+	}
+
 	// All deps confirmed in cache — apply mutations to the harness.
 	//
 	// A URL base records its relative resources under the same field names
@@ -1249,6 +1269,14 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		}
 	}
 	if err := harness.MergeDuplicateSkillOverrides(h.Skills, dupSkillPaths); err != nil {
+		*h = origHarness
+		h.Skills = origSkills
+		h.Plugins = origPlugins
+		if origHarness.ValidationLoop != nil {
+			vl := origValidationLoop
+			h.ValidationLoop = origHarness.ValidationLoop
+			*h.ValidationLoop = vl
+		}
 		return resolve.ResolveResult{}, err
 	}
 	filteredSkills := h.Skills[:0]

@@ -170,3 +170,36 @@ func TestResolveFromLock_OverridesWithoutLockEntry(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "skills[0]: file overrides cannot be applied")
 }
+
+// TestResolveFromLock_OverrideMergeFailureLeavesHarnessUnchanged: when the
+// duplicate-override merge fails after other mutations were applied, the
+// harness is restored so the caller can fall back to network resolution.
+func TestResolveFromLock_OverrideMergeFailureLeavesHarnessUnchanged(t *testing.T) {
+	const agentURL = "https://github.com/test-org/test-repo/blob/main/agents/code.md"
+	const skillURL = "https://github.com/test-org/test-repo/tree/main/skills/b#sha256=abc"
+	agentContent := []byte("agent")
+	agentHash := fetch.ComputeSHA256(agentContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, agentURL, agentContent))
+
+	h := &harness.Harness{
+		Agent: agentURL,
+		Skills: []harness.SkillEntry{{
+			Source:    skillURL,
+			Overrides: map[string]*string{"sub-agents/x.md": nil},
+		}},
+		AllowedRemoteResources: []string{"https://github.com/test-org/"},
+	}
+	lockEntry := &lock.HarnessLock{Dependencies: []lock.DependencyEntry{
+		{Field: "agent", URL: agentURL, SHA256: agentHash},
+	}}
+
+	_, err := resolveFromLock(h, lockEntry, root, nil, ui.New(io.Discard))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "skills[0]: file overrides cannot be applied")
+	assert.Equal(t, agentURL, h.Agent, "agent must be restored after a merge failure")
+	require.Len(t, h.Skills, 1)
+	assert.Equal(t, skillURL, h.Skills[0].Source)
+	assert.Equal(t, map[string]*string{"sub-agents/x.md": nil}, h.Skills[0].Overrides)
+}
