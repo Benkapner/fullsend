@@ -458,3 +458,42 @@ func TestValidateOverrideKey_Exported(t *testing.T) {
 	assert.NoError(t, ValidateOverrideKey("skills[0]", "sub-agents/security.md"))
 	assert.ErrorContains(t, ValidateOverrideKey("skills[0]", "../x.md"), "skills[0]: override file path \"../x.md\" must not contain path traversal segments")
 }
+
+func TestMergeDuplicateSkillOverrides(t *testing.T) {
+	local := "/cache/override.md"
+	const kept = "/cache/tree/b"
+
+	t.Run("merges onto kept entry", func(t *testing.T) {
+		skills := []SkillEntry{
+			{Source: ""},
+			{Source: "/local/a"},
+			{Source: kept, Overrides: map[string]*string{"keep.md": nil}},
+		}
+		skills[0].Overrides = map[string]*string{"sub-agents/x.md": nil, "y.md": &local}
+		require.NoError(t, MergeDuplicateSkillOverrides(skills, map[int]string{0: kept}))
+		assert.Equal(t, map[string]*string{"keep.md": nil, "sub-agents/x.md": nil, "y.md": &local}, skills[2].Overrides)
+		assert.Nil(t, skills[1].Overrides)
+	})
+
+	t.Run("duplicate without overrides is ignored", func(t *testing.T) {
+		skills := []SkillEntry{{Source: ""}}
+		require.NoError(t, MergeDuplicateSkillOverrides(skills, map[int]string{0: ""}))
+	})
+
+	t.Run("same key conflicts and leaves skills unchanged", func(t *testing.T) {
+		skills := []SkillEntry{
+			{Source: kept},
+			{Source: "", Overrides: map[string]*string{"a.md": nil}},
+			{Source: "", Overrides: map[string]*string{"a.md": &local}},
+		}
+		err := MergeDuplicateSkillOverrides(skills, map[int]string{1: kept, 2: kept})
+		require.EqualError(t, err, `skills[2]: override for "a.md" is also set by another entry for the same skill; set it in one entry only`)
+		assert.Nil(t, skills[0].Overrides)
+	})
+
+	t.Run("no kept entry", func(t *testing.T) {
+		skills := []SkillEntry{{Source: "https://example.com/b", Overrides: map[string]*string{"a.md": nil}}}
+		err := MergeDuplicateSkillOverrides(skills, map[int]string{0: ""})
+		require.EqualError(t, err, "skills[0]: file overrides cannot be applied: no resolved entry for the same skill")
+	})
+}

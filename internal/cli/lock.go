@@ -1236,6 +1236,21 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	// lock file deduplicates by URL, so the direct reference has no lock
 	// entry. The transitive dep was appended above; the direct URL is
 	// redundant and must be filtered out, mirroring resolve.ResolveHarness.
+	// Its file overrides (including URL-valued ones mapped back above) move
+	// onto the kept entry for the same skill first.
+	dupSkillPaths := make(map[int]string)
+	for i, s := range h.Skills {
+		if harness.IsURL(s.Source) {
+			cleanURL, _, _ := harness.ParseIntegrityHash(s.Source)
+			if cleanURL == "" {
+				cleanURL = s.Source
+			}
+			dupSkillPaths[i] = resolvedURLs[cleanURL]
+		}
+	}
+	if err := harness.MergeDuplicateSkillOverrides(h.Skills, dupSkillPaths); err != nil {
+		return resolve.ResolveResult{}, err
+	}
 	filteredSkills := h.Skills[:0]
 	for _, s := range h.Skills {
 		if !harness.IsURL(s.Source) {
