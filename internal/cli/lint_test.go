@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -851,4 +853,73 @@ func TestLintCommand_RejectsPositionalArgs(t *testing.T) {
 	cmd := newLintCmd()
 	_, err := executeCmd(cmd, []string{"garbage"})
 	require.Error(t, err)
+}
+
+func TestLintCommand_JSONOutput(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+	dir := t.TempDir()
+	cfg := `version: "1"
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	writeLintAgentFixture(t, dir, "my-agent")
+	harnessYAML := `role: triage
+agent: agents/my-agent.md
+policy: policies/base.yaml
+env:
+  runner:
+    GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(harnessYAML), 0o644))
+
+	var stdout, stderr bytes.Buffer
+	cmd := newLintCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs([]string{"--fullsend-dir", dir, "--format", "json"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	var result lintJSONResult
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &result))
+	assert.True(t, result.OK)
+	assert.Equal(t, 1, result.SchemaVersion)
+	assert.Len(t, result.Diagnostics, 1)
+	assert.Equal(t, "my-agent", result.Diagnostics[0].Agent)
+	assert.Equal(t, "warning", result.Diagnostics[0].Severity)
+	assert.Contains(t, stderr.String(), "my-agent resolved from config")
+}
+
+func TestLintCommand_JSONOutputReportsErrors(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"999\"\n"), 0o644))
+
+	var stdout, stderr bytes.Buffer
+	cmd := newLintCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs([]string{"--fullsend-dir", dir, "--format", "json"})
+	err := cmd.Execute()
+	require.Error(t, err)
+
+	var result lintJSONResult
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &result))
+	assert.False(t, result.OK)
+	assert.Equal(t, 1, result.Summary.Errors)
+	assert.Contains(t, result.Errors[0], "lint found 1 error-level diagnostic(s)")
+	assert.Equal(t, "config", result.Diagnostics[0].Agent)
+}
+
+func TestLintCommand_RejectsUnsupportedFormat(t *testing.T) {
+	cmd := newLintCmd()
+	_, err := executeCmd(cmd, []string{"--fullsend-dir", t.TempDir(), "--format", "sarif"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--format must be one of: text, json")
 }

@@ -26,6 +26,7 @@ fullsend lint [flags]
 | `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in `config.yaml`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--offline` | Reject network fetches; only use cached remote resources |
 | `--strict` | Exit non-zero on warning-level diagnostics (deprecations), not just error-level ones |
+| `--format` | Output format: `text` (default) or `json` |
 
 ## Resolution and composition
 
@@ -68,8 +69,9 @@ fetched — lint validates what is on disk.
 
 ## Diagnostics
 
-Each diagnostic prints as `<agent>: <severity>: <field>: <message>`; config-level
-diagnostics use `config` as the context. Values that arrive
+In the default text format, each diagnostic prints as
+`<agent>: <severity>: <field>: <message>`; config-level diagnostics use `config`
+as the context. Values that arrive
 via base, overlay, or forge composition are reported at the merged top-level fields
 (`env.runner`, `env.sandbox`, `runner_env`); unconsumed forge sections report their own
 position (`forge[<name>].…`).
@@ -96,6 +98,14 @@ position (`forge[<name>].…`).
 All agents are linted before the command exits. A harness that fails to resolve, load,
 or validate does not stop the run — the failure is collected, the remaining agents are
 still linted, and every error is reported together at the end.
+
+### JSON format
+
+Use `--format json` when another program needs to consume the result. Standard output
+contains one JSON document with `schema_version`, `ok`, `strict`, `diagnostics`,
+`warnings`, `errors`, and a `summary` containing warning and error counts. Progress
+messages are written to standard error so standard output remains valid JSON. The
+default text format and exit codes are unchanged.
 
 ## Related
 

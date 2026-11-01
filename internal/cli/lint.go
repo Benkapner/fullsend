@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -13,7 +12,6 @@ import (
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
-	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 func newLintCmd() *cobra.Command {
@@ -21,13 +19,19 @@ func newLintCmd() *cobra.Command {
 	var forgeFlag string
 	var strict bool
 	var offline bool
+	var format string
 
 	cmd := &cobra.Command{
 		Use:   "lint",
 		Short: "Lint configuration and harness definitions",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runLint(cmd, fullsendDir, forgeFlag, strict, offline)
+			switch format {
+			case lintOutputText, lintOutputJSON:
+			default:
+				return fmt.Errorf("--format must be one of: text, json (got %q)", format)
+			}
+			return runLint(cmd, fullsendDir, forgeFlag, strict, offline, format)
 		},
 	}
 
@@ -35,6 +39,7 @@ func newLintCmd() *cobra.Command {
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to use (e.g. "github", "gitlab"); auto-detected from config.yaml or CI env vars when omitted`)
 	cmd.Flags().BoolVar(&strict, "strict", false, "exit non-zero on warning-level diagnostics (deprecations), not just error-level ones")
 	cmd.Flags().BoolVar(&offline, "offline", false, "reject network fetches; only use cached remote resources")
+	cmd.Flags().StringVar(&format, "format", lintOutputText, "output format: text, json")
 
 	return cmd
 }
@@ -47,23 +52,28 @@ func newLintCmd() *cobra.Command {
 // validation (ResolveRelativeTo, ValidateFilesExist) so a harness run
 // would reject fails lint too, and reports harness lint diagnostics per
 // agent.
-func runLint(cmd *cobra.Command, fullsendDir, forgeFlag string, strict, offline bool) error {
-	absFullsendDir, err := filepath.Abs(fullsendDir)
-	if err != nil {
-		return err
+func runLint(cmd *cobra.Command, fullsendDir, forgeFlag string, strict, offline bool, format string) error {
+	reporter := newLintReporter(cmd, format)
+	finishError := func(err error) error {
+		return reporter.finish([]error{err}, 0, 0, strict)
 	}
 
-	printer := ui.New(cmd.OutOrStdout())
+	absFullsendDir, err := filepath.Abs(fullsendDir)
+	if err != nil {
+		return finishError(err)
+	}
+
+	printer := reporter.printer
 
 	// Layered config load (config.yaml over config.base.yaml), same as
 	// run/lock. Lint requires a config: without one there are no
 	// registered agents to lint.
 	cfg, err := loadLockConfig(filepath.Join(absFullsendDir, "config.yaml"))
 	if err != nil {
-		return err
+		return finishError(err)
 	}
 	if cfg == nil {
-		return fmt.Errorf("no config.yaml in %s: nothing to lint", absFullsendDir)
+		return finishError(fmt.Errorf("no config.yaml in %s: nothing to lint", absFullsendDir))
 	}
 
 	policy := fetch.DefaultPolicy
@@ -71,12 +81,12 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag string, strict, offline 
 
 	forgePlatform, err := detectForgePlatform(forgeFlag, cfg)
 	if err != nil {
-		return fmt.Errorf("invalid --forge flag: %w", err)
+		return finishError(fmt.Errorf("invalid --forge flag: %w", err))
 	}
 
 	composeGitToken, tokenErr := resolveToken()
 	if tokenErr != nil {
-		printer.StepWarn("Git token not available; private repo fetches may fail")
+		reporter.warning("Git token not available; private repo fetches may fail")
 	}
 
 	// Same fetch machinery as run, so lint is read-only for config and
@@ -107,7 +117,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag string, strict, offline 
 	// agents still lint and every problem is reported together.
 	configErr := cfg.Validate()
 	if configErr != nil {
-		emitDiagnosticWithContext(printer, "config", harness.Diagnostic{
+		reporter.diagnostic("config", harness.Diagnostic{
 			Severity: harness.SeverityError,
 			Field:    "config.yaml",
 			Message:  configErr.Error(),
@@ -182,7 +192,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag string, strict, offline 
 			}
 		}
 		for _, diag := range h.Lint() {
-			emitDiagnosticWithContext(printer, agentName, diag)
+			reporter.diagnostic(agentName, diag)
 			if diag.Severity == harness.SeverityError {
 				errDiags++
 			} else {
@@ -214,7 +224,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag string, strict, offline 
 	if strict && warnDiags > 0 {
 		errs = append(errs, fmt.Errorf("lint found %d warning-level diagnostic(s) (--strict)", warnDiags))
 	}
-	return errors.Join(errs...)
+	return reporter.finish(errs, errDiags, warnDiags, strict)
 }
 
 // validateURLReferencesAllowed applies run's per-URL allowlist check
