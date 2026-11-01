@@ -13,7 +13,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 )
 
-// Tests for ComposeOpts.LockedHashes (#8979): a lock entry pins the
+// Tests for ComposeOpts.LockedPins (#8979): a lock entry pins the
 // relative files of a URL base, so a locked load resolves each pinned URL
 // to the locked content, not to whatever url-index.json points at.
 
@@ -34,6 +34,10 @@ func seedLockedTree(t *testing.T, cacheDir, rawURL string, files map[string][]by
 	return treeHash
 }
 
+func filePin(hash string) LockedPin { return LockedPin{SHA256: hash, Type: "resource"} }
+
+func dirPin(hash string) LockedPin { return LockedPin{SHA256: hash, Type: "directory"} }
+
 func readFile(t *testing.T, p string) string {
 	t.Helper()
 	data, err := os.ReadFile(p)
@@ -48,7 +52,7 @@ func failingTreeFetcher(t *testing.T) func(context.Context, string, string, stri
 	}
 }
 
-func TestLoadWithBase_LockedHashes_URLBaseFilesUseLockedContent(t *testing.T) {
+func TestLoadWithBase_LockedPins_URLBaseFilesUseLockedContent(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
@@ -77,13 +81,13 @@ plugins:
 	baseURL := "https://example.com/harness/triage.yaml#sha256=" + computeHash(baseContent)
 
 	// The content the lock recorded for every relative file.
-	locked := map[string]string{
-		agentURL:    seedLockedFile(t, cacheDir, agentURL, []byte("locked agent")),
-		policyURL:   seedLockedFile(t, cacheDir, policyURL, []byte("locked: policy")),
-		overrideURL: seedLockedFile(t, cacheDir, overrideURL, []byte("locked override")),
-		skillURL:    seedLockedTree(t, cacheDir, skillURL, map[string][]byte{"SKILL.md": []byte("# locked skill")}, true),
-		pluginURL:   seedLockedTree(t, cacheDir, pluginURL, map[string][]byte{"plugin.json": []byte(`{"name":"locked"}`)}, true),
-		scriptURL:   seedLockedTree(t, cacheDir, scriptURL, map[string][]byte{"pre.sh": []byte("#!/bin/sh\necho locked")}, true),
+	locked := map[string]LockedPin{
+		agentURL:    filePin(seedLockedFile(t, cacheDir, agentURL, []byte("locked agent"))),
+		policyURL:   filePin(seedLockedFile(t, cacheDir, policyURL, []byte("locked: policy"))),
+		overrideURL: filePin(seedLockedFile(t, cacheDir, overrideURL, []byte("locked override"))),
+		skillURL:    dirPin(seedLockedTree(t, cacheDir, skillURL, map[string][]byte{"SKILL.md": []byte("# locked skill")}, true)),
+		pluginURL:   dirPin(seedLockedTree(t, cacheDir, pluginURL, map[string][]byte{"plugin.json": []byte(`{"name":"locked"}`)}, true)),
+		scriptURL:   dirPin(seedLockedTree(t, cacheDir, scriptURL, map[string][]byte{"pre.sh": []byte("#!/bin/sh\necho locked")}, true)),
 	}
 
 	// Later content that the URL index moved to after locking, for example
@@ -104,20 +108,20 @@ role: test
 base: `+baseURL+`
 `)
 
-	load := func(t *testing.T, pins map[string]string) *Harness {
+	load := func(t *testing.T, pins map[string]LockedPin) *Harness {
 		t.Helper()
 		h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 			FetchPolicy:   fetch.FetchPolicy{Offline: true},
 			OrgAllowlist:  []string{"https://example.com/"},
 			TreeFetcher:   failingTreeFetcher(t),
-			LockedHashes:  pins,
+			LockedPins:    pins,
 		})
 		require.NoError(t, err)
 		if pins != nil {
 			for _, d := range deps {
 				if want, ok := pins[d.URL]; ok {
-					assert.Equal(t, want, d.SHA256, "dependency %s (%s) must report the locked hash", d.Field, d.URL)
+					assert.Equal(t, want.SHA256, d.SHA256, "dependency %s (%s) must report the locked hash", d.Field, d.URL)
 				}
 			}
 		}
@@ -147,7 +151,7 @@ base: `+baseURL+`
 	})
 }
 
-func TestLoadWithBase_LockedHashes_SharedContentIsKeyedByURL(t *testing.T) {
+func TestLoadWithBase_LockedPins_SharedContentIsKeyedByURL(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
@@ -178,32 +182,32 @@ role: test
 base: `+baseURL+`
 `)
 
-	load := func(t *testing.T, pins map[string]string) *Harness {
+	load := func(t *testing.T, pins map[string]LockedPin) *Harness {
 		t.Helper()
 		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 			FetchPolicy:   fetch.FetchPolicy{Offline: true},
 			OrgAllowlist:  []string{"https://example.com/"},
-			LockedHashes:  pins,
+			LockedPins:    pins,
 		})
 		require.NoError(t, err)
 		return h
 	}
 
 	t.Run("both URLs pinned to the same content", func(t *testing.T) {
-		h := load(t, map[string]string{agentURL: shared, policyURL: shared})
+		h := load(t, map[string]LockedPin{agentURL: filePin(shared), policyURL: filePin(shared)})
 		assert.Equal(t, "shared", readFile(t, h.Agent))
 		assert.Equal(t, "shared", readFile(t, h.Policy))
 	})
 
 	t.Run("pinning one URL does not pin another with the same content", func(t *testing.T) {
-		h := load(t, map[string]string{agentURL: shared})
+		h := load(t, map[string]LockedPin{agentURL: filePin(shared)})
 		assert.Equal(t, "shared", readFile(t, h.Agent))
 		assert.Equal(t, "policy v2", readFile(t, h.Policy))
 	})
 }
 
-func TestLoadWithBase_LockedHashes_URLSourcedChildOwnFiles(t *testing.T) {
+func TestLoadWithBase_LockedPins_URLSourcedChildOwnFiles(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
@@ -225,10 +229,10 @@ func TestLoadWithBase_LockedHashes_URLSourcedChildOwnFiles(t *testing.T) {
 		FetchPolicy:   fetch.FetchPolicy{Offline: true},
 		OrgAllowlist:  []string{"https://example.com/"},
 		SourceURL:     "https://example.com/harness/child.yaml",
-		LockedHashes: map[string]string{
-			childAgentURL:  lockedChildAgent,
-			childPolicyURL: lockedChildPolicy,
-			baseAgentURL:   lockedBaseAgent,
+		LockedPins: map[string]LockedPin{
+			childAgentURL:  filePin(lockedChildAgent),
+			childPolicyURL: filePin(lockedChildPolicy),
+			baseAgentURL:   filePin(lockedBaseAgent),
 		},
 	}
 
@@ -262,7 +266,7 @@ base: https://example.com/harness/triage.yaml#sha256=`+computeHash(baseContent)+
 	})
 }
 
-func TestLoadWithBase_LockedHashes_OfflineMissingLockedContent(t *testing.T) {
+func TestLoadWithBase_LockedPins_OfflineMissingLockedContent(t *testing.T) {
 	missing := computeHash([]byte("never cached"))
 
 	tests := []struct {
@@ -270,11 +274,13 @@ func TestLoadWithBase_LockedHashes_OfflineMissingLockedContent(t *testing.T) {
 		baseYAML  string
 		lockedURL string
 		field     string
+		pinType   string
 	}{
-		{"agent", "agent: agents/triage.md\nrole: test\n", "https://example.com/agents/triage.md", "agent"},
-		{"skill", "agent: agents/triage.md\nrole: test\nskills:\n  - skills/common\n", "https://example.com/skills/common/SKILL.md", "skills[0]"},
-		{"plugin", "agent: agents/triage.md\nrole: test\nplugins:\n  - plugins/gopls-lsp\n", "https://example.com/plugins/gopls-lsp/", "plugins[0]"},
-		{"script", "agent: agents/triage.md\nrole: test\npre_script: scripts/pre.sh\n", "https://example.com/scripts/pre.sh", "pre_script"},
+		{"agent", "agent: agents/triage.md\nrole: test\n", "https://example.com/agents/triage.md", "agent", "resource"},
+		{"skill", "agent: agents/triage.md\nrole: test\nskills:\n  - skills/common\n", "https://example.com/skills/common/SKILL.md", "skills[0]", "directory"},
+		{"plugin", "agent: agents/triage.md\nrole: test\nplugins:\n  - plugins/gopls-lsp\n", "https://example.com/plugins/gopls-lsp/", "plugins[0]", "directory"},
+		{"script directory", "agent: agents/triage.md\nrole: test\npre_script: scripts/pre.sh\n", "https://example.com/scripts/pre.sh", "pre_script", "directory"},
+		{"script single file", "agent: agents/triage.md\nrole: test\npre_script: scripts/pre.sh\n", "https://example.com/scripts/pre.sh", "pre_script", "script"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -299,17 +305,17 @@ func TestLoadWithBase_LockedHashes_OfflineMissingLockedContent(t *testing.T) {
 				WorkspaceRoot: cacheDir,
 				FetchPolicy:   fetch.FetchPolicy{Offline: true},
 				OrgAllowlist:  []string{"https://example.com/"},
-				LockedHashes:  map[string]string{tt.lockedURL: missing},
+				LockedPins:    map[string]LockedPin{tt.lockedURL: {SHA256: missing, Type: tt.pinType}},
 			})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "base "+tt.field+":")
 			assert.Contains(t, err.Error(), "pinned in the lock file with sha256="+missing)
-			assert.Contains(t, err.Error(), "run 'fullsend lock' first")
+			assert.Contains(t, err.Error(), "run 'fullsend lock --update' first")
 		})
 	}
 }
 
-func TestFetchBaseFile_LockedHashes_Online(t *testing.T) {
+func TestFetchBaseFile_LockedPins_Online(t *testing.T) {
 	served := []byte("served agent")
 	server, policy := setupScriptTestServer(t, nil, map[string][]byte{"/agents/triage.md": served})
 	fileURL := server.URL + "/agents/triage.md"
@@ -321,7 +327,7 @@ func TestFetchBaseFile_LockedHashes_Online(t *testing.T) {
 		dep, contentPath, err := fetchBaseFile(context.Background(), "agent", server.URL+"/", "agents/triage.md", allowlist, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 			FetchPolicy:   policy,
-			LockedHashes:  map[string]string{fileURL: pin},
+			LockedPins:    map[string]LockedPin{fileURL: filePin(pin)},
 		}, "resource", false)
 		require.NoError(t, err)
 		assert.False(t, dep.CacheHit)
@@ -335,7 +341,7 @@ func TestFetchBaseFile_LockedHashes_Online(t *testing.T) {
 		_, _, err := fetchBaseFile(context.Background(), "agent", server.URL+"/", "agents/triage.md", allowlist, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 			FetchPolicy:   policy,
-			LockedHashes:  map[string]string{fileURL: pin},
+			LockedPins:    map[string]LockedPin{fileURL: filePin(pin)},
 		}, "resource", false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "the lock file pins sha256="+pin)
@@ -348,7 +354,7 @@ func TestFetchBaseFile_LockedHashes_Online(t *testing.T) {
 	})
 }
 
-func TestFetchBaseSkill_LockedHashes_Online(t *testing.T) {
+func TestFetchBaseSkill_LockedPins_Online(t *testing.T) {
 	const (
 		baseDir   = "https://raw.githubusercontent.com/org/repo/ref/"
 		skillURL  = baseDir + "skills/common/SKILL.md"
@@ -362,7 +368,7 @@ func TestFetchBaseSkill_LockedHashes_Online(t *testing.T) {
 		dep, _, err := fetchBaseSkill(context.Background(), "skills[0]", baseDir, "skills/common", []string{allowlist}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 			TreeFetcher:   failingTreeFetcher(t),
-			LockedHashes:  map[string]string{skillURL: pin},
+			LockedPins:    map[string]LockedPin{skillURL: dirPin(pin)},
 		})
 		require.NoError(t, err)
 		assert.True(t, dep.CacheHit)
@@ -375,7 +381,7 @@ func TestFetchBaseSkill_LockedHashes_Online(t *testing.T) {
 		dep, _, err := fetchBaseSkill(context.Background(), "skills[0]", baseDir, "skills/common", []string{allowlist}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 			TreeFetcher:   fakeTreeFetcher(files),
-			LockedHashes:  map[string]string{skillURL: pin},
+			LockedPins:    map[string]LockedPin{skillURL: dirPin(pin)},
 		})
 		require.NoError(t, err)
 		assert.False(t, dep.CacheHit)
@@ -388,7 +394,7 @@ func TestFetchBaseSkill_LockedHashes_Online(t *testing.T) {
 		_, _, err := fetchBaseSkill(context.Background(), "skills[0]", baseDir, "skills/common", []string{allowlist}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 			TreeFetcher:   fakeTreeFetcher(files),
-			LockedHashes:  map[string]string{skillURL: pin},
+			LockedPins:    map[string]LockedPin{skillURL: dirPin(pin)},
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "the lock file pins sha256="+pin)
@@ -397,7 +403,7 @@ func TestFetchBaseSkill_LockedHashes_Online(t *testing.T) {
 	})
 }
 
-func TestFetchBasePlugin_LockedHashes_Online(t *testing.T) {
+func TestFetchBasePlugin_LockedPins_Online(t *testing.T) {
 	const (
 		baseDir   = "https://raw.githubusercontent.com/org/repo/ref/"
 		pluginURL = baseDir + "plugins/gopls-lsp/"
@@ -411,7 +417,7 @@ func TestFetchBasePlugin_LockedHashes_Online(t *testing.T) {
 		dep, _, err := fetchBasePlugin(context.Background(), "plugins[0]", baseDir, "plugins/gopls-lsp", []string{allowlist}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 			TreeFetcher:   failingTreeFetcher(t),
-			LockedHashes:  map[string]string{pluginURL: pin},
+			LockedPins:    map[string]LockedPin{pluginURL: dirPin(pin)},
 		})
 		require.NoError(t, err)
 		assert.True(t, dep.CacheHit)
@@ -424,14 +430,14 @@ func TestFetchBasePlugin_LockedHashes_Online(t *testing.T) {
 		_, _, err := fetchBasePlugin(context.Background(), "plugins[0]", baseDir, "plugins/gopls-lsp", []string{allowlist}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 			TreeFetcher:   fakeTreeFetcher(files),
-			LockedHashes:  map[string]string{pluginURL: pin},
+			LockedPins:    map[string]LockedPin{pluginURL: dirPin(pin)},
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "the lock file pins sha256="+pin)
 	})
 }
 
-func TestFetchBaseScriptOrDir_LockedHashes_Online(t *testing.T) {
+func TestFetchBaseScriptOrDir_LockedPins_Online(t *testing.T) {
 	const (
 		baseDir   = "https://raw.githubusercontent.com/org/repo/ref/"
 		scriptURL = baseDir + "scripts/pre.sh"
@@ -446,7 +452,7 @@ func TestFetchBaseScriptOrDir_LockedHashes_Online(t *testing.T) {
 		dep, contentPath, err := fetchBaseScriptOrDir(context.Background(), "pre_script", baseDir, "scripts/pre.sh", []string{allowlist}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 			TreeFetcher:   failingTreeFetcher(t),
-			LockedHashes:  map[string]string{scriptURL: pin},
+			LockedPins:    map[string]LockedPin{scriptURL: {SHA256: pin, Type: "script"}},
 		})
 		require.NoError(t, err)
 		assert.True(t, dep.CacheHit)
@@ -460,7 +466,7 @@ func TestFetchBaseScriptOrDir_LockedHashes_Online(t *testing.T) {
 		dep, _, err := fetchBaseScriptOrDir(context.Background(), "pre_script", baseDir, "scripts/pre.sh", []string{allowlist}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 			TreeFetcher:   fakeTreeFetcher(files),
-			LockedHashes:  map[string]string{scriptURL: pin},
+			LockedPins:    map[string]LockedPin{scriptURL: dirPin(pin)},
 		})
 		require.NoError(t, err)
 		assert.False(t, dep.CacheHit)
@@ -475,7 +481,7 @@ func TestFetchBaseScriptOrDir_LockedHashes_Online(t *testing.T) {
 		dep, contentPath, err := fetchBaseScriptOrDir(context.Background(), "pre_script", baseDir, "scripts/pre.sh", []string{allowlist}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 			TreeFetcher:   fakeTreeFetcher(files),
-			LockedHashes:  map[string]string{scriptURL: pin},
+			LockedPins:    map[string]LockedPin{scriptURL: {SHA256: pin, Type: "script"}},
 		})
 		require.NoError(t, err)
 		assert.True(t, dep.CacheHit)
@@ -489,9 +495,122 @@ func TestFetchBaseScriptOrDir_LockedHashes_Online(t *testing.T) {
 		_, _, err := fetchBaseScriptOrDir(context.Background(), "pre_script", baseDir, "scripts/pre.sh", []string{allowlist}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 			TreeFetcher:   fakeTreeFetcher(files),
-			LockedHashes:  map[string]string{scriptURL: pin},
+			LockedPins:    map[string]LockedPin{scriptURL: dirPin(pin)},
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "the lock file pins sha256="+pin)
+	})
+}
+
+// TestLoadWithBase_LockedPins_ScriptAndHostFileShareURL covers one URL used
+// as a script (directory dependency) and as a host_files src (file). The lock
+// keeps one entry per URL, the script's tree hash, so the host file must not
+// be held to it.
+func TestLoadWithBase_LockedPins_ScriptAndHostFileShareURL(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	const (
+		agentURL  = "https://example.com/agents/triage.md"
+		scriptURL = "https://example.com/scripts/pre.sh"
+		scriptDir = "https://example.com/scripts"
+	)
+	script := []byte("#!/bin/sh\necho locked")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+pre_script: scripts/pre.sh
+host_files:
+  - src: scripts/pre.sh
+    dest: /tmp/pre.sh
+`)
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
+	require.NoError(t, urlIndexPut(cacheDir, agentURL, seedLockedFile(t, cacheDir, agentURL, []byte("agent"))))
+
+	// The cache as the locking run left it: the script's directory fetch
+	// first, then the host file's single-file fetch of the same URL.
+	treeHash := seedLockedTree(t, cacheDir, scriptURL, map[string][]byte{"pre.sh": script}, true)
+	require.NoError(t, urlIndexPut(cacheDir, "scriptdir:"+scriptDir, treeHash))
+	require.NoError(t, urlIndexPut(cacheDir, scriptURL, seedLockedFile(t, cacheDir, scriptURL, script)))
+
+	path := writeTestHarness(t, dir, "child.yaml", "role: test\nbase: https://example.com/harness/triage.yaml#sha256="+computeHash(baseContent)+"\n")
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+		LockedPins:    map[string]LockedPin{scriptURL: dirPin(treeHash)},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, string(script), readFile(t, h.PreScript))
+	require.Len(t, h.HostFiles, 1)
+	assert.Equal(t, string(script), readFile(t, h.HostFiles[0].Src))
+}
+
+// TestFetchBaseTree_FilePinIgnored checks that a file-kind pin, as a legacy
+// lock may hold for a skill or plugin URL, does not apply to a tree fetch.
+func TestFetchBaseTree_FilePinIgnored(t *testing.T) {
+	const baseDir = "https://example.com/"
+	legacyPin := computeHash([]byte("single file"))
+
+	t.Run("skill", func(t *testing.T) {
+		cacheDir := filepath.Join(t.TempDir(), "cache")
+		skillURL := baseDir + "skills/common/SKILL.md"
+		tree := seedLockedTree(t, cacheDir, skillURL, map[string][]byte{"SKILL.md": []byte("# skill")}, true)
+		require.NoError(t, urlIndexPut(cacheDir, skillURL, tree))
+		require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillURL, tree))
+		dep, _, err := fetchBaseSkill(context.Background(), "skills[0]", baseDir, "skills/common", []string{baseDir}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   fetch.FetchPolicy{Offline: true},
+			LockedPins:    map[string]LockedPin{skillURL: {SHA256: legacyPin}},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, tree, dep.SHA256)
+	})
+
+	t.Run("plugin", func(t *testing.T) {
+		cacheDir := filepath.Join(t.TempDir(), "cache")
+		pluginURL := baseDir + "plugins/gopls-lsp/"
+		files := map[string][]byte{"plugin.json": []byte(`{"name":"gopls-lsp"}`)}
+		seedPluginTreeCache(t, cacheDir, pluginURL, files)
+		tree := fetch.ComputeTreeHash(files)
+		dep, _, err := fetchBasePlugin(context.Background(), "plugins[0]", baseDir, "plugins/gopls-lsp", []string{baseDir}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   fetch.FetchPolicy{Offline: true},
+			LockedPins:    map[string]LockedPin{pluginURL: {SHA256: legacyPin}},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, tree, dep.SHA256)
+	})
+}
+
+// TestLockedPins_KindMismatchOnline checks that a directory pin does not
+// hold a single-file fetch to a tree hash, and that a directory-pinned
+// script never falls back to an unpinned single-file fetch.
+func TestLockedPins_KindMismatchOnline(t *testing.T) {
+	served := []byte("#!/bin/sh\necho served")
+	server, policy := setupScriptTestServer(t, nil, map[string][]byte{"/scripts/pre.sh": served})
+	scriptURL := server.URL + "/scripts/pre.sh"
+	allowlist := []string{server.URL + "/"}
+	treePin := fetch.ComputeTreeHash(map[string][]byte{"pre.sh": served})
+
+	t.Run("file fetch ignores a directory pin", func(t *testing.T) {
+		dep, _, err := fetchBaseFile(context.Background(), "host_files[0].src", server.URL+"/", "scripts/pre.sh", allowlist, ComposeOpts{
+			WorkspaceRoot: filepath.Join(t.TempDir(), "cache"),
+			FetchPolicy:   policy,
+			LockedPins:    map[string]LockedPin{scriptURL: dirPin(treePin)},
+		}, "resource", false)
+		require.NoError(t, err)
+		assert.Equal(t, fetch.ComputeSHA256(served), dep.SHA256)
+	})
+
+	t.Run("directory-pinned script without a tree source fails", func(t *testing.T) {
+		_, _, err := fetchBaseScriptOrDir(context.Background(), "pre_script", server.URL+"/", "scripts/pre.sh", allowlist, ComposeOpts{
+			WorkspaceRoot: filepath.Join(t.TempDir(), "cache"),
+			FetchPolicy:   policy,
+			LockedPins:    map[string]LockedPin{scriptURL: dirPin(treePin)},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "pinned in the lock file to directory sha256="+treePin)
 	})
 }

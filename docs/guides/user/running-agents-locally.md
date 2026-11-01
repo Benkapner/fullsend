@@ -399,10 +399,13 @@ resolution and prints a warning suggesting you re-run `fullsend lock`.
 A current lock entry also pins the files a URL `base:` (or an agent fetched from
 a URL) names by relative path: agent, policy, skills, skill file overrides,
 scripts, plugins and the rest. They resolve to the locked content even when the
-cache has since fetched newer content for the same URL. If locked content is
-missing from the cache, an `--offline` run fails and asks you to run
-`fullsend lock`, and an online run re-fetches it and fails if it no longer
-matches the lock (`fullsend lock --update` re-pins it).
+cache has since fetched newer content for the same URL. `fullsend run` prints
+`Pinning N dependencies from lock file` when it applies these pins. If locked
+content is missing from the cache, an `--offline` run fails and asks you to run
+`fullsend lock --update`, and an online run re-fetches it and fails if it no
+longer matches the lock (`fullsend lock --update` re-pins it). A lock entry for
+an agent fetched from a URL that was written before fullsend recorded these
+files does not pin them; run `fullsend lock --update` to add them.
 
 Use `--update` to force re-resolution even if the lock entry appears current.
 A current entry is also not composed, so `fullsend lock` does not check it for

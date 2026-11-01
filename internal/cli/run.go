@@ -41,7 +41,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	vertexinference "github.com/fullsend-ai/fullsend/internal/inference/vertex"
 	"github.com/fullsend-ai/fullsend/internal/inference/vertexauth"
-	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
@@ -693,8 +692,24 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// A current lock entry pins the relative files of a URL base, so pass
-	// its hashes in before composition fetches them (#8979).
-	composeOpts.LockedHashes = lockedDependencyHashes(absFullsendDir, agentName, harnessPath)
+	// its pins in before composition fetches them (#8979).
+	lockState, err := readRunLock(absFullsendDir, agentName, harnessPath)
+	if err != nil {
+		return err
+	}
+	switch {
+	case lockState.loadErr != nil:
+		printer.StepWarn("Could not load lock file: " + lockState.loadErr.Error())
+	case lockState.stale:
+		printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s%s' to update.", agentName, fullsendDirArg(fullsendDir)))
+	case len(lockState.pins) > 0:
+		noun := "dependency"
+		if len(lockState.pins) > 1 {
+			noun = "dependencies"
+		}
+		printer.StepInfo(fmt.Sprintf("Pinning %d %s from lock file", len(lockState.pins), noun))
+	}
+	composeOpts.LockedPins = lockState.pins
 
 	h, baseDeps, err := harness.LoadWithBase(ctx, harnessPath, composeOpts)
 	if err != nil {
@@ -755,37 +770,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			return fmt.Errorf("validating allowed remote resources: %w", err)
 		}
 
-		// Check for a lock file with a current entry for this harness.
+		// Use a current lock entry for this harness; a stale entry or an
+		// unreadable lock file was reported before composition.
 		usedLock := false
 
-		lockPath := filepath.Join(absFullsendDir, "lock.yaml")
-		lf, lockErr := lock.Load(lockPath)
-		if lockErr != nil {
-			printer.StepWarn("Could not load lock file: " + lockErr.Error())
-		}
-
-		if lf != nil {
-			if entry := lf.Lookup(agentName); entry != nil {
-				harnessData, hashErr := os.ReadFile(harnessPath)
-				if hashErr != nil {
-					return fmt.Errorf("reading harness file for lock check: %w", hashErr)
-				}
-				harnessHash := fetch.ComputeSHA256(harnessData)
-
-				if entry.IsStale(harnessHash) {
-					printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s%s' to update.", agentName, fullsendDirArg(fullsendDir)))
-				} else {
-					printer.StepStart("Using pinned dependencies from lock file")
-					lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, orgAllowlist, printer)
-					if lockResolveErr != nil {
-						printer.StepFail("Lock file resolution failed: " + lockResolveErr.Error())
-						printer.StepWarn("Falling back to normal resolution")
-					} else {
-						result = lockResult
-						usedLock = true
-						printer.StepDone(fmt.Sprintf("Resolved %d dependencies from lock file", len(result.Deps)))
-					}
-				}
+		if entry := lockState.entry; entry != nil && !lockState.stale {
+			printer.StepStart("Using pinned dependencies from lock file")
+			lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, orgAllowlist, printer)
+			if lockResolveErr != nil {
+				printer.StepFail("Lock file resolution failed: " + lockResolveErr.Error())
+				printer.StepWarn("Falling back to normal resolution")
+			} else {
+				result = lockResult
+				usedLock = true
+				printer.StepDone(fmt.Sprintf("Resolved %d dependencies from lock file", len(result.Deps)))
 			}
 		}
 

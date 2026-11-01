@@ -275,6 +275,13 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 		}
 	}
 
+	// Same as runAgent: a URL-sourced harness's own relative files resolve
+	// against its source URL, so the lock records them.
+	var sourceURL string
+	if len(agentSourceDeps) > 0 {
+		sourceURL = agentSourceDeps[0].URL
+	}
+
 	for _, platform := range forgePlatforms {
 		h, baseDeps, loadErr := harness.LoadWithBase(ctx, harnessPath, harness.ComposeOpts{
 			WorkspaceRoot: absFullsendDir,
@@ -285,6 +292,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			TreeFetcher:   rFlags.treeFetcher,
 			GitToken:      composeGitToken,
 			Config:        harness.BuildConfigMap(orgCfg),
+			SourceURL:     sourceURL,
 		})
 		if loadErr != nil {
 			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))
@@ -829,33 +837,43 @@ func planSkillOverrideReplay(h *harness.Harness, deps []resolve.Dependency) ([]s
 	return plan, nil
 }
 
-// lockedDependencyHashes returns the URL-to-SHA256 pins of agentName's
-// entry in <absFullsendDir>/lock.yaml, for harness.LoadWithBase to resolve
-// a URL base's relative files to the locked content instead of the cache
-// URL index (#8979). It returns nil when there is no readable lock file, no
-// entry for the agent, or the entry is stale for the harness at
-// harnessPath; the run warns about those cases when it consults the lock
-// after composition.
-func lockedDependencyHashes(absFullsendDir, agentName, harnessPath string) map[string]string {
+// runLockState is what runAgent reads from lock.yaml before composition.
+type runLockState struct {
+	loadErr error             // lock.yaml exists but cannot be loaded
+	entry   *lock.HarnessLock // agentName's entry; nil if none
+	stale   bool              // entry does not match the harness file
+	// pins are the current entry's pins for harness.LoadWithBase, which
+	// resolves a URL base's relative files to them instead of the cache URL
+	// index (#8979). Nil when there is no current entry.
+	pins map[string]harness.LockedPin
+}
+
+// readRunLock reads agentName's entry in <absFullsendDir>/lock.yaml and
+// checks it against the harness at harnessPath.
+func readRunLock(absFullsendDir, agentName, harnessPath string) (runLockState, error) {
 	lf, err := lock.Load(filepath.Join(absFullsendDir, "lock.yaml"))
 	if err != nil {
-		return nil
+		return runLockState{loadErr: err}, nil
 	}
 	entry := lf.Lookup(agentName)
 	if entry == nil {
-		return nil
+		return runLockState{}, nil
 	}
 	data, err := os.ReadFile(harnessPath)
-	if err != nil || entry.IsStale(fetch.ComputeSHA256(data)) {
-		return nil
+	if err != nil {
+		return runLockState{}, fmt.Errorf("reading harness file for lock check: %w", err)
 	}
-	pins := make(map[string]string, len(entry.Dependencies))
+	st := runLockState{entry: entry, stale: entry.IsStale(fetch.ComputeSHA256(data))}
+	if st.stale {
+		return st, nil
+	}
+	st.pins = make(map[string]harness.LockedPin, len(entry.Dependencies))
 	for _, dep := range entry.Dependencies {
 		if dep.URL != "" && dep.SHA256 != "" {
-			pins[dep.URL] = dep.SHA256
+			st.pins[dep.URL] = harness.LockedPin{SHA256: dep.SHA256, Type: dep.Type}
 		}
 	}
-	return pins
+	return st, nil
 }
 
 // resolveFromLock resolves harness dependencies using a lock file entry instead

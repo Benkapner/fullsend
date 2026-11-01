@@ -97,13 +97,15 @@ type ComposeOpts struct {
 	// empty disables the check.
 	RunnerSecretNames map[string]bool
 
-	// LockedHashes maps a remote URL to the SHA256 that the harness's
-	// lock.yaml entry pins for it (#8979). A relative file of a URL base or
+	// LockedPins maps a remote URL to the pin that the harness's lock.yaml
+	// entry records for it (#8979). A relative file of a URL base or
 	// URL-sourced harness whose URL is pinned here resolves to the pinned
 	// content instead of the cache URL index entry, and content fetched for
-	// it must match the pin. Keys are URLs exactly as the lock records them,
-	// never cache paths. Nil disables pinning.
-	LockedHashes map[string]string
+	// it must match the pin. A file pin applies only to single-file fetches
+	// and a directory pin only to tree fetches; a pin of the other kind is
+	// ignored. Keys are URLs exactly as the lock records them, never cache
+	// paths. Nil disables pinning.
+	LockedPins map[string]LockedPin
 
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
 	// when OrgAllowlist is empty. This is for testing only; production callers should
@@ -122,33 +124,55 @@ func resolveTreeFetcher(opts ComposeOpts) gitfetch.TreeFetchFunc {
 	return defaultTreeFetchFn
 }
 
-// lockedHash returns the SHA256 that opts.LockedHashes pins for rawURL.
-func (opts ComposeOpts) lockedHash(rawURL string) (string, bool) {
-	hash, ok := opts.LockedHashes[rawURL]
-	return hash, ok && hash != ""
+// LockedPin is one lock.yaml dependency pin: the content hash and the
+// dependency type the lock recorded ("directory" for a tree hash; "",
+// "file" or any other type for a single-file hash).
+type LockedPin struct {
+	SHA256 string
+	Type   string
 }
 
-// errLockedSingleFilePin is returned by fetchBaseScriptDirTree when the
-// fetched directory's tree hash differs from the lock pin but the script
-// file itself matches it, meaning the lock pins a single-file fetch. The
+// IsDir reports whether p pins a directory tree.
+func (p LockedPin) IsDir() bool { return p.Type == "directory" }
+
+// lockedFilePin returns the single-file hash opts.LockedPins pins for
+// rawURL, or "" when rawURL has no file pin.
+func (opts ComposeOpts) lockedFilePin(rawURL string) (string, bool) {
+	pin := opts.LockedPins[rawURL]
+	if pin.SHA256 == "" || pin.IsDir() {
+		return "", false
+	}
+	return pin.SHA256, true
+}
+
+// lockedDirPin returns the tree hash opts.LockedPins pins for rawURL, or ""
+// when rawURL has no directory pin.
+func (opts ComposeOpts) lockedDirPin(rawURL string) (string, bool) {
+	pin := opts.LockedPins[rawURL]
+	if pin.SHA256 == "" || !pin.IsDir() {
+		return "", false
+	}
+	return pin.SHA256, true
+}
+
+// errLockedSingleFilePin is returned by fetchBaseScriptDirTree when the lock
+// pins the script's single-file hash and the fetched script matches it. The
 // matching file has been cached; the caller serves it via fetchBaseFile.
 var errLockedSingleFilePin = errors.New("lock pins a single-file fetch of this script")
 
 // lockedNotCachedError reports a locked URL whose pinned content is not in
 // the cache while offline mode forbids fetching it.
 func lockedNotCachedError(field, rawURL, hash string) error {
-	return fmt.Errorf("base %s: URL %s is pinned in the lock file with sha256=%s, but that content is not in cache and offline mode is enabled (run 'fullsend lock' first)", field, rawURL, hash)
+	return fmt.Errorf("base %s: URL %s is pinned in the lock file with sha256=%s, but that content is not in cache and offline mode is enabled (run 'fullsend lock --update' first)", field, rawURL, hash)
 }
 
-// checkLockedHash returns an error when rawURL is pinned in
-// opts.LockedHashes and got, the hash of the content just fetched for it,
-// differs from the pin.
-func checkLockedHash(opts ComposeOpts, field, rawURL, got string) error {
-	want, ok := opts.lockedHash(rawURL)
-	if !ok || want == got {
+// checkLockedHash returns an error when pin is set and differs from got,
+// the hash of the content just fetched for rawURL.
+func checkLockedHash(field, rawURL, pin, got string) error {
+	if pin == "" || pin == got {
 		return nil
 	}
-	return fmt.Errorf("base %s: content fetched from %s has sha256=%s, but the lock file pins sha256=%s (run 'fullsend lock --update' to re-pin)", field, rawURL, got, want)
+	return fmt.Errorf("base %s: content fetched from %s has sha256=%s, but the lock file pins sha256=%s (run 'fullsend lock --update' to re-pin)", field, rawURL, got, pin)
 }
 
 // LoadWithBase loads a harness with base composition and conditional
@@ -1688,7 +1712,7 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 	// A locked URL resolves to the content its lock entry pins, never to
 	// whatever the URL index currently points at (#8979).
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, fileURL)
-	lockedHash, locked := opts.lockedHash(fileURL)
+	lockedHash, locked := opts.lockedFilePin(fileURL)
 	if locked {
 		hash, indexHit = lockedHash, true
 	}
@@ -1747,7 +1771,7 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 	}
 
 	hash = fetch.ComputeSHA256(content)
-	if err := checkLockedHash(opts, field, fileURL, hash); err != nil {
+	if err := checkLockedHash(field, fileURL, lockedHash, hash); err != nil {
 		return Dependency{}, "", err
 	}
 
@@ -1815,13 +1839,17 @@ func fetchBaseScriptOrDir(ctx context.Context, field, baseURLDir, relPath string
 		// Check directory cache — first via the directory key, then via the
 		// file URL key (which also maps to the tree hash when directory-fetched).
 		// The second lookup handles offline mode when the scriptdir: key was
-		// evicted but the per-file URL index entry persists. A locked script
-		// URL is looked up by its pinned hash only (#8979).
+		// evicted but the per-file URL index entry persists. A script URL
+		// with a directory pin is looked up by that hash only, and one with
+		// a file pin is served by the single-file path (#8979).
 		var treeHashes []string
-		lockedHash, locked := opts.lockedHash(fileURL)
-		if locked {
-			treeHashes = []string{lockedHash}
-		} else {
+		dirPin, dirLocked := opts.lockedDirPin(fileURL)
+		filePin, fileLocked := opts.lockedFilePin(fileURL)
+		switch {
+		case dirLocked:
+			treeHashes = []string{dirPin}
+		case fileLocked:
+		default:
 			for _, cacheKey := range []string{"scriptdir:" + scriptDirURL, fileURL} {
 				if treeHash, indexHit := urlIndexLookup(opts.WorkspaceRoot, cacheKey); indexHit {
 					treeHashes = append(treeHashes, treeHash)
@@ -1862,12 +1890,10 @@ func fetchBaseScriptOrDir(ctx context.Context, field, baseURLDir, relPath string
 			}, contentPath, nil
 		}
 
-		// A lock taken when the script fell back to a single-file fetch pins
-		// the file's hash; serve that cached file instead of re-fetching the
-		// directory, whose tree hash cannot match the pin.
+		// A file pin whose content is cached needs no directory fetch.
 		pinnedFileCached := false
-		if locked {
-			content, _, err := fetch.CacheGet(opts.WorkspaceRoot, lockedHash)
+		if fileLocked {
+			content, _, err := fetch.CacheGet(opts.WorkspaceRoot, filePin)
 			pinnedFileCached = err == nil && content != nil
 		}
 
@@ -1882,7 +1908,7 @@ func fetchBaseScriptOrDir(ctx context.Context, field, baseURLDir, relPath string
 				if err == nil {
 					return dep, contentPath, nil
 				}
-				if !isTransientFetchError(err) && !errors.Is(err, errLockedSingleFilePin) {
+				if dirLocked || (!isTransientFetchError(err) && !errors.Is(err, errLockedSingleFilePin)) {
 					return Dependency{}, "", err
 				}
 				// Transient tree-fetch failure, or the lock pins this script's
@@ -1891,6 +1917,14 @@ func fetchBaseScriptOrDir(ctx context.Context, field, baseURLDir, relPath string
 			}
 			// ParseRawContentURL failed — not a raw.githubusercontent.com URL.
 			// Fall through to single-file fetch.
+		}
+
+		// The single-file path cannot satisfy a directory pin.
+		if dirLocked {
+			if opts.FetchPolicy.Offline {
+				return Dependency{}, "", lockedNotCachedError(field, fileURL, dirPin)
+			}
+			return Dependency{}, "", fmt.Errorf("base %s: URL %s is pinned in the lock file to directory sha256=%s, which cannot be fetched from this URL (run 'fullsend lock --update' to re-pin)", field, fileURL, dirPin)
 		}
 	}
 
@@ -1934,13 +1968,15 @@ func fetchBaseScriptDirTree(ctx context.Context, field, scriptDirURL, scriptFile
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: caching script directory %s: %w", field, forgeInfo.Path, err)
 	}
-	if err := checkLockedHash(opts, field, scriptFileURL, treeHash); err != nil {
-		// A lock taken when the directory fetch fell back to a single-file
-		// fetch pins the file's hash, not the tree hash. When the fetched
-		// script still matches that pin, cache the file so the single-file
-		// path can serve it; otherwise the pin is violated.
-		pin, _ := opts.lockedHash(scriptFileURL)
-		if fetch.ComputeSHA256(files[scriptName]) != pin {
+	dirPin, _ := opts.lockedDirPin(scriptFileURL)
+	if err := checkLockedHash(field, scriptFileURL, dirPin, treeHash); err != nil {
+		return Dependency{}, "", err
+	}
+	// A file pin comes from a lock taken when the script fell back to a
+	// single-file fetch: cache the script for that path when it matches.
+	if filePin, ok := opts.lockedFilePin(scriptFileURL); ok {
+		got := fetch.ComputeSHA256(files[scriptName])
+		if err := checkLockedHash(field, scriptFileURL, filePin, got); err != nil {
 			return Dependency{}, "", err
 		}
 		if pErr := fetch.CachePut(opts.WorkspaceRoot, scriptFileURL, files[scriptName]); pErr != nil {
@@ -2006,7 +2042,7 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 	// locked skill URL resolves to its pinned tree, never to the URL index,
 	// and its pinned tree is served as is (#8979).
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, skillFileURL)
-	lockedHash, locked := opts.lockedHash(skillFileURL)
+	lockedHash, locked := opts.lockedDirPin(skillFileURL)
 	if locked {
 		indexHit = true
 	}
@@ -2110,7 +2146,8 @@ func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, sk
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: caching skill directory: %w", field, err)
 	}
-	if err := checkLockedHash(opts, field, skillFileURL, treeHash); err != nil {
+	pin, _ := opts.lockedDirPin(skillFileURL)
+	if err := checkLockedHash(field, skillFileURL, pin, treeHash); err != nil {
 		return Dependency{}, "", err
 	}
 
@@ -2207,7 +2244,7 @@ func fetchBaseDir(ctx context.Context, kind baseDirKind, field, baseURLDir, dirP
 	// A locked directory URL resolves to its pinned tree, never to the URL
 	// index, and its pinned tree is served as is (#8979).
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, keyURL)
-	lockedHash, locked := opts.lockedHash(keyURL)
+	lockedHash, locked := opts.lockedDirPin(keyURL)
 	if locked {
 		indexHit = true
 	}
@@ -2318,7 +2355,8 @@ func fetchBaseDirTree(ctx context.Context, kind baseDirKind, field, dirURL, keyU
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: caching %s directory: %w", field, kind.label, err)
 	}
-	if err := checkLockedHash(opts, field, keyURL, treeHash); err != nil {
+	pin, _ := opts.lockedDirPin(keyURL)
+	if err := checkLockedHash(field, keyURL, pin, treeHash); err != nil {
 		return Dependency{}, "", err
 	}
 
