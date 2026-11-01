@@ -1090,9 +1090,12 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		return resolve.ResolveResult{}, err
 	}
 
-	// Snapshot the fields the apply loop mutates so a skill-override merge
-	// failure below can restore the harness and keep the contract that the
-	// caller may fall back to network-based resolution on the same h.
+	// Snapshot the fields the apply loop and the override replay mutate (the
+	// replay writes into the skills' Overrides maps, hence the map copies) so
+	// a skill-override merge failure below can restore the harness and keep
+	// the contract that the caller may fall back to network-based resolution
+	// on the same h. Unlike the replay plan above, the merge cannot run
+	// earlier: the entry it keeps may be a transitive skill the loop appends.
 	origHarness := *h
 	origSkills := make([]harness.SkillEntry, len(h.Skills))
 	for i, s := range h.Skills {

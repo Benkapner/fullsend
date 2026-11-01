@@ -203,3 +203,50 @@ func TestResolveFromLock_OverrideMergeFailureLeavesHarnessUnchanged(t *testing.T
 	assert.Equal(t, skillURL, h.Skills[0].Source)
 	assert.Equal(t, map[string]*string{"sub-agents/x.md": nil}, h.Skills[0].Overrides)
 }
+
+// TestResolveFromLock_OverrideConflictRestoresReplayedValues: two direct
+// entries for one skill set the same override key. The merge fails after the
+// apply loop and the override replay have changed the harness (agent,
+// validation_loop.schema, the skill's Source and its URL-valued override), so
+// every one of those values must be restored.
+func TestResolveFromLock_OverrideConflictRestoresReplayedValues(t *testing.T) {
+	const base = "https://github.com/test-org/test-repo/tree/main/"
+	const agentURL = "https://github.com/test-org/test-repo/blob/main/agents/code.md"
+	const schemaURL = "https://github.com/test-org/test-repo/blob/main/schema.json"
+	const overrideURL = "https://github.com/test-org/test-repo/blob/main/x.md"
+	bFiles := map[string][]byte{"SKILL.md": []byte("# Skill B"), "sub-agents/x.md": []byte("x")}
+	bHash := fetch.ComputeTreeHash(bFiles)
+
+	root := t.TempDir()
+	_, err := fetch.CachePutDir(root, base+"skills/b", bFiles)
+	require.NoError(t, err)
+	files := map[string][]byte{agentURL: []byte("agent"), schemaURL: []byte("{}"), overrideURL: []byte("custom x")}
+	for u, c := range files {
+		require.NoError(t, fetch.CachePut(root, u, c))
+	}
+
+	newHarness := func() *harness.Harness {
+		val := overrideURL
+		return &harness.Harness{
+			Agent:          agentURL,
+			ValidationLoop: &harness.ValidationLoop{Script: "scripts/v.sh", Schema: schemaURL},
+			Skills: []harness.SkillEntry{
+				{Source: base + "skills/b#sha256=" + bHash, Overrides: map[string]*string{"sub-agents/x.md": &val}},
+				{Source: base + "skills/b#sha256=" + bHash, Overrides: map[string]*string{"sub-agents/x.md": nil}},
+			},
+			AllowedRemoteResources: []string{"https://github.com/test-org/"},
+		}
+	}
+	lockEntry := &lock.HarnessLock{Dependencies: []lock.DependencyEntry{
+		{Field: "agent", URL: agentURL, SHA256: fetch.ComputeSHA256(files[agentURL])},
+		{Field: "validation_loop.schema", URL: schemaURL, SHA256: fetch.ComputeSHA256(files[schemaURL])},
+		{Field: "skills[0]", URL: base + "skills/b", SHA256: bHash, Type: "directory"},
+		{Field: "skills[0].overrides[sub-agents/x.md]", URL: overrideURL, SHA256: fetch.ComputeSHA256(files[overrideURL])},
+	}}
+
+	h := newHarness()
+	_, err = resolveFromLock(h, lockEntry, root, nil, ui.New(io.Discard))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `override for "sub-agents/x.md" is also set by another entry`)
+	assert.Equal(t, newHarness(), h)
+}
