@@ -285,7 +285,12 @@ persona manifest of the personas found in the staged skills (by the rules the
 and sandbox. Under `base:` composition, a map-form entry whose name matches a
 base skill but whose path has no `SKILL.md` in the `.fullsend` directory
 keeps the base skill's source and applies only its overrides, so a child can
-override files in an inherited skill without copying it. See
+override files in an inherited skill without copying it. When you list a
+skill directly and another skill also pulls it in through its
+`dependencies:`, only one copy is staged, and the direct entry's overrides
+apply to that copy whatever the list order. Two entries for the same skill
+may set the same file to the same value; setting it to different values is
+an error. See
 [Configuring with Skills § Overriding single files in a skill](../guides/user/customizing-with-skills.md#overriding-single-files-in-a-skill).
 
 **`plugins`** — Directories a runtime loads. Which runtime loads an entry follows from the directory, not from the key: a directory with `plugin.json` at its root or `.claude-plugin/plugin.json` is a Claude plugin and Claude Code loads it; anything else must be a directory pi's `-e` loader resolves an entry point in, and pi loads it as an extension ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)). Each runtime names and skips the entries in the other format, so one list works whichever runtime the org configures.

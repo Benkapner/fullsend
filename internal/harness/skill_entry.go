@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -213,6 +214,77 @@ func validateOverrideValue(field, key, val string) error {
 		}
 	}
 	return nil
+}
+
+// MergeDuplicateSkillOverrides moves the file overrides of skill entries that
+// are about to be dropped as duplicates onto the entry that is kept for the
+// same skill. dupPaths maps the index of each duplicate in skills to the
+// resolved local path of its skill tree; the kept entry is the first entry
+// whose Source equals that path. A duplicate is typically a direct entry for
+// a URL that an earlier skill already pulled in transitively, or a second
+// direct entry for the same URL.
+//
+// Overrides for different keys are merged. Two entries that set the same key
+// to the same value agree; two entries that set it to different values are a
+// conflict and return an error rather than picking one. A duplicate with
+// overrides and no kept entry also returns an error, so overrides are never
+// dropped silently. skills is modified only when no error is returned.
+func MergeDuplicateSkillOverrides(skills []SkillEntry, dupPaths map[int]string) error {
+	indices := make([]int, 0, len(dupPaths))
+	for i := range dupPaths {
+		if skills[i].HasOverrides() {
+			indices = append(indices, i)
+		}
+	}
+	sort.Ints(indices)
+
+	merged := make(map[int]map[string]*string)
+	for _, i := range indices {
+		skillPath := dupPaths[i]
+		kept := -1
+		for k := range skills {
+			if skillPath != "" && skills[k].Source == skillPath {
+				kept = k
+				break
+			}
+		}
+		if kept < 0 {
+			return fmt.Errorf("skills[%d]: file overrides cannot be applied: no resolved entry for the same skill", i)
+		}
+		dst, ok := merged[kept]
+		if !ok {
+			dst = make(map[string]*string, len(skills[kept].Overrides)+len(skills[i].Overrides))
+			for key, val := range skills[kept].Overrides {
+				dst[key] = val
+			}
+			merged[kept] = dst
+		}
+		keys := make([]string, 0, len(skills[i].Overrides))
+		for key := range skills[i].Overrides {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			val := skills[i].Overrides[key]
+			if prev, exists := dst[key]; exists && !sameOverrideValue(prev, val) {
+				return fmt.Errorf("skills[%d]: override for %q is also set by another entry for the same skill; set it in one entry only", i, key)
+			}
+			dst[key] = val
+		}
+	}
+	for k, overrides := range merged {
+		skills[k].Overrides = overrides
+	}
+	return nil
+}
+
+// sameOverrideValue reports whether two override values are equal: both nil
+// (file removed) or both set to the same source.
+func sameOverrideValue(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 // mergeOverrides merges two override maps. Values from the higher-priority
