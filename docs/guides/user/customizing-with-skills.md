@@ -448,6 +448,7 @@ and the file key.
 | `skills[0]: override "KEY" is null but the skill has no such file; nothing removed` (warning) | The removed file is not in the skill | Fix the path, or drop the key |
 | `skills[0]: override "KEY": reading override source: PATH resolves through a symlink to REAL` | The override file, or a directory on its path inside `.fullsend`, is a symlink | Commit the file itself at the path the harness names |
 | `skills[0]: skill tree contains a symlink at "PATH"; overridden skills must contain only regular files and directories` | A skill with overrides contains a symlink | Replace the symlink with a regular file in the skill |
+| `skill "PATH" has no SKILL.md and its name "NAME" matches 2 base skills pinned by URL: "https://...", "https://..."; write the full base URL as the map key instead of the short name` | Your entry has no skill directory of its own, and your `base:` pins two URL skills whose last path segment is `NAME` | Write the full URL of the base skill you mean, with its `#sha256=`, as the map key |
 | `personas.json: FILE: frontmatter field "FIELD" is not a string; omitted` (warning) | A copied frontmatter field has the wrong type (also `is not a list of strings` or `is not a bool`) | Fix the field in the persona's frontmatter |
 
 ## When to use skills vs. AGENTS.md
