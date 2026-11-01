@@ -320,3 +320,31 @@ func TestResolveFromLock_NestedURLBasePluginsKeepTheirPaths(t *testing.T) {
 		assert.Contains(t, string(got), `"name":"`+name+`"`, "plugins[%d]", i)
 	}
 }
+
+// A URL base's relative host file is recorded as host_files[N].src. Replay
+// must leave it to LoadWithBase and not append it as a skill (#8979).
+func TestResolveFromLock_URLBaseHostFileIsNotASkill(t *testing.T) {
+	baseContent := []byte("agent: agents/shared.md\nrole: test\nhost_files:\n  - src: files/data.txt\n    dest: /tmp/data.txt\n")
+	policyContent := []byte("# child policy\n")
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/harness/base.yaml": baseContent,
+		"/agents/shared.md":  []byte("# shared agent\n"),
+		"/files/data.txt":    []byte("data\n"),
+		"/policies/p.yaml":   policyContent,
+	})
+
+	dir := t.TempDir()
+	writeTestFiles(t, dir, map[string]string{
+		"harness/code.yaml": fmt.Sprintf("base: %q\npolicy: %q\nallowed_remote_resources:\n  - %q\n",
+			srv.URL+"/harness/base.yaml#sha256="+fetch.ComputeSHA256(baseContent),
+			srv.URL+"/policies/p.yaml#sha256="+fetch.ComputeSHA256(policyContent),
+			srv.URL+"/"),
+		"config.yaml": fmt.Sprintf("allowed_remote_resources:\n  - %q\n", srv.URL+"/"),
+	})
+
+	before, after := lockThenReplay(t, dir, policy, []string{srv.URL + "/"}, nil)
+
+	assert.Empty(t, after.Skills, "a host file must not become a skill")
+	require.Len(t, after.HostFiles, 1)
+	assert.Equal(t, before.HostFiles[0].Src, after.HostFiles[0].Src)
+}

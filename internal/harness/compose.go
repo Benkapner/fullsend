@@ -1848,8 +1848,11 @@ func fetchBaseFileFromPinnedTree(ctx context.Context, field, baseURLDir, relPath
 			return Dependency{}, "", err
 		}
 		treePath, entry, err = fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
-		if err != nil || treePath == "" {
-			return Dependency{}, "", fmt.Errorf("base %s: directory sha256=%s for %s missing from cache after fetch: %v", field, treeHash, fileURL, err)
+		if err != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: reading directory sha256=%s for %s from cache: %w", field, treeHash, fileURL, err)
+		}
+		if treePath == "" {
+			return Dependency{}, "", fmt.Errorf("base %s: directory sha256=%s for %s missing from cache after fetch", field, treeHash, fileURL)
 		}
 	}
 	if dir != "." {

@@ -1176,6 +1176,9 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			// Agent source is informational — the harness is already loaded
 			// from the resolved path. This entry exists for cache verification
 			// and lock-file completeness; no harness mutation needed.
+		case strings.Contains(m.field, "host_files[") && strings.HasSuffix(m.field, "].src"):
+			// LoadWithBase already set host_files[].src to the cached path
+			// (top-level, forge and overlay variants); verification only.
 		case strings.HasPrefix(m.field, "plugins["):
 			var idx int
 			// Index was validated during collection; Sscanf is safe here.
