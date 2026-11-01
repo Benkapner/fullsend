@@ -224,9 +224,9 @@ func validateOverrideValue(field, key, val string) error {
 // a URL that an earlier skill already pulled in transitively, or a second
 // direct entry for the same URL.
 //
-// Overrides for different keys are merged. Two entries that set an override
-// for the same key are a conflict and return an error rather than picking
-// one. A duplicate with overrides and no kept entry also returns an error,
+// Overrides for different keys are merged. Two entries that set the same key
+// to the same value agree; two entries that set it to different values are a
+// conflict and return an error rather than picking one. A duplicate with overrides and no kept entry also returns an error,
 // so overrides are never dropped silently. skills is modified only when no
 // error is returned.
 func MergeDuplicateSkillOverrides(skills []SkillEntry, dupPaths map[int]string) error {
@@ -240,10 +240,10 @@ func MergeDuplicateSkillOverrides(skills []SkillEntry, dupPaths map[int]string) 
 
 	merged := make(map[int]map[string]*string)
 	for _, i := range indices {
-		path := dupPaths[i]
+		skillPath := dupPaths[i]
 		kept := -1
 		for k := range skills {
-			if path != "" && skills[k].Source == path {
+			if skillPath != "" && skills[k].Source == skillPath {
 				kept = k
 				break
 			}
@@ -265,16 +265,26 @@ func MergeDuplicateSkillOverrides(skills []SkillEntry, dupPaths map[int]string) 
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			if _, exists := dst[key]; exists {
+			val := skills[i].Overrides[key]
+			if prev, exists := dst[key]; exists && !sameOverrideValue(prev, val) {
 				return fmt.Errorf("skills[%d]: override for %q is also set by another entry for the same skill; set it in one entry only", i, key)
 			}
-			dst[key] = skills[i].Overrides[key]
+			dst[key] = val
 		}
 	}
 	for k, overrides := range merged {
 		skills[k].Overrides = overrides
 	}
 	return nil
+}
+
+// sameOverrideValue reports whether two override values are equal: both nil
+// (file removed) or both set to the same source.
+func sameOverrideValue(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 // mergeOverrides merges two override maps. Values from the higher-priority

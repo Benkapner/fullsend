@@ -491,6 +491,32 @@ func TestMergeDuplicateSkillOverrides(t *testing.T) {
 		assert.Nil(t, skills[0].Overrides)
 	})
 
+	t.Run("same key same value agrees", func(t *testing.T) {
+		a, b := "/cache/same.md", "/cache/same.md"
+		skills := []SkillEntry{
+			{Source: kept, Overrides: map[string]*string{"x.md": nil}},
+			{Source: "", Overrides: map[string]*string{"x.md": nil, "y.md": &a}},
+			{Source: "", Overrides: map[string]*string{"y.md": &b}},
+		}
+		require.NoError(t, MergeDuplicateSkillOverrides(skills, map[int]string{1: kept, 2: kept}))
+		require.Len(t, skills[0].Overrides, 2)
+		assert.Nil(t, skills[0].Overrides["x.md"])
+		require.NotNil(t, skills[0].Overrides["y.md"])
+		assert.Equal(t, "/cache/same.md", *skills[0].Overrides["y.md"])
+	})
+
+	t.Run("same key different strings conflict", func(t *testing.T) {
+		other := "/cache/other.md"
+		skills := []SkillEntry{
+			{Source: kept},
+			{Source: "", Overrides: map[string]*string{"a.md": &local}},
+			{Source: "", Overrides: map[string]*string{"a.md": &other}},
+		}
+		err := MergeDuplicateSkillOverrides(skills, map[int]string{1: kept, 2: kept})
+		require.EqualError(t, err, `skills[2]: override for "a.md" is also set by another entry for the same skill; set it in one entry only`)
+		assert.Nil(t, skills[0].Overrides)
+	})
+
 	t.Run("no kept entry", func(t *testing.T) {
 		skills := []SkillEntry{{Source: "https://example.com/b", Overrides: map[string]*string{"a.md": nil}}}
 		err := MergeDuplicateSkillOverrides(skills, map[int]string{0: ""})

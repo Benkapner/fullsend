@@ -117,9 +117,15 @@ func TestDirectURLOverrideSurvivesTransitiveDup(t *testing.T) {
 }
 
 // TestDuplicateDirectOverrides: two direct entries for skill b (with a
-// transitive copy from a) merge overrides for different keys and fail on
-// overrides for the same key.
+// transitive copy from a) merge overrides for different keys, agree when they
+// set the same key to the same value, and fail when the values differ.
 func TestDuplicateDirectOverrides(t *testing.T) {
+	content := []byte("custom x")
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(content)
+	}))
+	overrideURL := srv.URL + "/overrides/x.md#sha256=" + fetch.ComputeSHA256(content)
+
 	run := func(t *testing.T, first, second map[string]*string) (*harness.Harness, error) {
 		t.Helper()
 		reg, aURL, bURL := reproSkills()
@@ -129,11 +135,12 @@ func TestDuplicateDirectOverrides(t *testing.T) {
 				{Source: bURL, Overrides: first},
 				{Source: bURL, Overrides: second},
 			},
-			AllowedRemoteResources: []string{testForgeBase},
+			AllowedRemoteResources: []string{testForgeBase, srv.URL + "/"},
 		}
 		_, err := ResolveHarness(context.Background(), h, ResolveOpts{
 			WorkspaceRoot: t.TempDir(),
 			TreeFetcher:   reg.fetcher(),
+			FetchPolicy:   policy,
 			MaxDepth:      -1,
 		})
 		return h, err
@@ -149,8 +156,29 @@ func TestDuplicateDirectOverrides(t *testing.T) {
 		assert.Contains(t, b.Overrides, "SKILL.md")
 	})
 
-	t.Run("same key fails", func(t *testing.T) {
-		_, err := run(t, map[string]*string{"sub-agents/x.md": nil}, map[string]*string{"sub-agents/x.md": nil})
+	t.Run("same key same value agrees", func(t *testing.T) {
+		h, err := run(t, map[string]*string{"sub-agents/x.md": nil}, map[string]*string{"sub-agents/x.md": nil})
+		require.NoError(t, err)
+		require.Len(t, h.Skills, 2)
+		b := skillB(t, h)
+		v, ok := b.Overrides["sub-agents/x.md"]
+		assert.True(t, ok, "override sub-agents/x.md: null was dropped; got overrides=%v", b.Overrides)
+		assert.Nil(t, v)
+	})
+
+	t.Run("same key same URL agrees", func(t *testing.T) {
+		u1, u2 := overrideURL, overrideURL
+		h, err := run(t, map[string]*string{"sub-agents/x.md": &u1}, map[string]*string{"sub-agents/x.md": &u2})
+		require.NoError(t, err)
+		b := skillB(t, h)
+		v := b.Overrides["sub-agents/x.md"]
+		require.NotNil(t, v)
+		assert.True(t, strings.HasSuffix(*v, "/content"), "override not resolved to a cache path: %s", *v)
+	})
+
+	t.Run("same key different values fails", func(t *testing.T) {
+		u := overrideURL
+		_, err := run(t, map[string]*string{"sub-agents/x.md": nil}, map[string]*string{"sub-agents/x.md": &u})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `skills[2]: override for "sub-agents/x.md" is also set by another entry for the same skill`)
 	})
