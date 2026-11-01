@@ -16,6 +16,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -202,7 +203,58 @@ func TestStageSkills_EmptySourceWithOverridesWarns(t *testing.T) {
 	}, realTempDir(t), func(w string) { warnings = append(warnings, w) })
 	require.NoError(t, err)
 	assert.Empty(t, staged)
-	assert.Equal(t, []string{"skills[0]: skill has no resolved source; its file overrides are not applied"}, warnings)
+	assert.Equal(t, []string{"skills[0]: skill source is empty; its file overrides are not applied"}, warnings)
+}
+
+// An empty skill source with overrides passes harness validation, and
+// neither the no-URL run path (which skips resolve.ResolveHarness) nor the
+// lock-file replay drops it, so staging must warn rather than apply the
+// overrides to nothing (#8974).
+func TestStageSkills_EmptySourceReachesStagingThroughResolution(t *testing.T) {
+	const want = "skills[0]: skill source is empty; its file overrides are not applied"
+	writeHarness := func(t *testing.T, dir, agent string) *harness.Harness {
+		t.Helper()
+		p := filepath.Join(dir, "harness.yaml")
+		content := "agent: " + agent + "\nrole: test\nskills:\n  - \"\":\n      sub-agents/x.md: null\n"
+		require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+		h, err := harness.LoadWithOpts(p, harness.LoadOpts{})
+		require.NoError(t, err)
+		require.NoError(t, h.ResolveRelativeTo(dir))
+		return h
+	}
+	stageWarnings := func(t *testing.T, h *harness.Harness) []string {
+		t.Helper()
+		var warnings []string
+		staged, err := stageSkills(h.Skills, realTempDir(t), func(w string) { warnings = append(warnings, w) })
+		require.NoError(t, err)
+		assert.Empty(t, staged)
+		return warnings
+	}
+
+	t.Run("no URL references", func(t *testing.T) {
+		h := writeHarness(t, realTempDir(t), "agents/code.md")
+		require.False(t, h.HasURLReferences(), "the run path skips resolve.ResolveHarness")
+		require.Empty(t, h.OpenShellProfiles())
+		require.False(t, hasLocalProviders(h))
+		assert.Equal(t, []string{want}, stageWarnings(t, h))
+	})
+
+	t.Run("lock-file replay", func(t *testing.T) {
+		agentContent := []byte("You are a coding agent.")
+		agentHash := fetch.ComputeSHA256(agentContent)
+		dir := realTempDir(t)
+		require.NoError(t, fetch.CachePut(dir, "https://example.com/agents/code.md", agentContent))
+
+		h := writeHarness(t, dir, "\"https://example.com/agents/code.md#sha256="+agentHash+"\"")
+		h.AllowedRemoteResources = []string{"https://example.com/"}
+		entry := &lock.HarnessLock{Dependencies: []lock.DependencyEntry{
+			{Field: "agent", URL: "https://example.com/agents/code.md", SHA256: agentHash},
+		}}
+		_, err := resolveFromLock(h, entry, dir, nil, ui.New(io.Discard))
+		require.NoError(t, err)
+		require.Len(t, h.Skills, 1, "the lock replay keeps the empty-source entry")
+		assert.Equal(t, []string{want}, stageWarnings(t, h))
+	})
 }
 
 func upstreamSkill(t *testing.T) string {
@@ -274,6 +326,28 @@ func TestStageSkills_ReplaceKeepsUpstreamMode(t *testing.T) {
 	info, err := os.Stat(filepath.Join(staged[0].Dir, "scripts", "run.sh"))
 	require.NoError(t, err)
 	assert.Equal(t, fs.FileMode(0o755), info.Mode().Perm())
+}
+
+func TestStageSkills_ReplaceReadOnlyUpstreamFile(t *testing.T) {
+	src := upstreamSkill(t)
+	readOnly := filepath.Join(src, "sub-agents", "security.md")
+	require.NoError(t, os.Chmod(readOnly, 0o444))
+	before := snapshotTree(t, src)
+
+	override := filepath.Join(realTempDir(t), "security.md")
+	require.NoError(t, os.WriteFile(override, []byte("---\nname: security\n---\nlocal security\n"), 0o644))
+
+	staged, err := stageSkills([]harness.SkillEntry{
+		{Source: src, Overrides: map[string]*string{"sub-agents/security.md": strPtr(override)}},
+	}, realTempDir(t), func(string) {})
+	require.NoError(t, err)
+	require.Len(t, staged, 1)
+
+	got := snapshotTree(t, staged[0].Dir)
+	assert.Equal(t, "-r--r--r--:---\nname: security\n---\nlocal security\n", got["sub-agents/security.md"],
+		"the override's content with the upstream read-only mode")
+	assert.Equal(t, originOverride, staged[0].origin("sub-agents/security.md"))
+	assert.Equal(t, before, snapshotTree(t, src), "the resolved source tree must stay byte-identical")
 }
 
 func TestStageSkills_NoOverridesKeepsSource(t *testing.T) {
