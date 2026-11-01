@@ -101,10 +101,11 @@ type ComposeOpts struct {
 	// entry records for it (#8979). A relative file of a URL base or
 	// URL-sourced harness whose URL is pinned here resolves to the pinned
 	// content instead of the cache URL index entry, and content fetched for
-	// it must match the pin. A file pin applies only to single-file fetches
-	// and a directory pin only to tree fetches; a pin of the other kind is
-	// ignored. Keys are URLs exactly as the lock records them, never cache
-	// paths. Nil disables pinning.
+	// it must match the pin. A single-file fetch with a directory pin is
+	// served from the pinned tree; a script tree fetch with a file pin falls
+	// back to a single-file fetch of the pinned content; skill and plugin
+	// tree fetches ignore a file pin. Keys are URLs exactly as the lock
+	// records them, never cache paths. Nil disables pinning.
 	LockedPins map[string]LockedPin
 
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
@@ -1699,8 +1700,10 @@ func validateBaseRelPath(field, val string) error {
 // fetchBaseFile fetches a single file from a URL derived from the base
 // harness's directory and the file's relative path. The file is cached
 // content-addressed and the local cache path is returned. When executable
-// is true, the cached file is chmod'd to 0o755. depType controls the
-// Dependency.Type and audit log FetchType ("script" or "resource").
+// is true, the cached file is chmod'd to 0o755. depType sets the audit log
+// FetchType ("script" or "resource") and the Dependency.Type, except that a
+// file served from a directory pin returns Type "directory" with the tree
+// hash, so the lock keeps the pin it came from.
 func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allowlist []string, opts ComposeOpts, depType string, executable bool) (Dependency, string, error) {
 	fileURL := baseURLDir + relPath
 
@@ -1765,7 +1768,7 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 		if locked {
 			return Dependency{}, "", lockedNotCachedError(field, fileURL, lockedHash)
 		}
-		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, fileURL)
+		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock --update' first)", field, fileURL)
 	}
 
 	content, err := fetch.FetchURL(ctx, fileURL, opts.FetchPolicy)
@@ -2149,7 +2152,7 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 		if locked {
 			return Dependency{}, "", lockedNotCachedError(field, skillFileURL, lockedHash)
 		}
-		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, skillFileURL)
+		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock --update' first)", field, skillFileURL)
 	}
 
 	dep, dirPath, err := fetchBaseSkillDir(ctx, field, skillDirURL, skillFileURL, skillPath, allowedBy, allowlist, opts)
@@ -2363,7 +2366,7 @@ func fetchBaseDir(ctx context.Context, kind baseDirKind, field, baseURLDir, dirP
 		if locked {
 			return Dependency{}, "", lockedNotCachedError(field, keyURL, lockedHash)
 		}
-		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, keyURL)
+		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock --update' first)", field, keyURL)
 	}
 
 	dep, dirPath, err := fetchBaseDirTree(ctx, kind, field, dirURL, keyURL, dirPath, allowedBy, allowlist, opts)

@@ -368,3 +368,46 @@ func TestRunAgent_WarnsWhenLockEntryLeavesDependenciesUnpinned(t *testing.T) {
 		assert.Contains(t, out, "fullsend lock --update")
 	})
 }
+
+// TestRunAgent_UnpinnedWarningNamesForgePlatform checks that a thin child
+// over a base with forge.github files, locked without --forge, is told to
+// lock with --forge github when a github run composes those files (#8979).
+func TestRunAgent_UnpinnedWarningNamesForgePlatform(t *testing.T) {
+	usePreScriptStub(t)
+	skip := []byte("#!/bin/bash\necho \"skipped=true\" >> \"${FULLSEND_PRESCRIPT_OUTPUT}\"\n")
+	baseContent := []byte("agent: agents/code.md\npolicy: policies/sandbox.yaml\nrole: test\npre_script: scripts/pre-code.sh\nforge:\n  github:\n    pre_script: scripts/gh.sh\n")
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/harness/base.yaml":     baseContent,
+		"/agents/code.md":        []byte("locked agent"),
+		"/policies/sandbox.yaml": []byte("version: 1\n"),
+		"/scripts/pre-code.sh":   skip,
+		"/scripts/gh.sh":         skip,
+	})
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"), []byte(fmt.Sprintf(
+		"role: test\nbase: %s/harness/base.yaml#sha256=%s\n", srv.URL, fetch.ComputeSHA256(baseContent))), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(fmt.Sprintf(
+		"agents:\n  - harness/code.yaml\nallowed_remote_resources:\n  - \"%s/\"\n", srv.URL)), 0o644))
+
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+
+	require.NoError(t, runLock(context.Background(), "code", dir, "", false, resolveFlags{}, ui.New(os.Stdout)))
+
+	run := func(t *testing.T) string {
+		t.Helper()
+		var out bytes.Buffer
+		err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "github", "",
+			resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+		require.NoError(t, err)
+		return out.String()
+	}
+
+	out := run(t)
+	assert.Contains(t, out, "fullsend lock --update --forge github code")
+
+	require.NoError(t, runLock(context.Background(), "code", dir, "github", true, resolveFlags{}, ui.New(os.Stdout)))
+	assert.NotContains(t, run(t), "fullsend lock --update")
+}

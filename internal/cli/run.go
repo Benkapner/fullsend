@@ -724,8 +724,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if len(unpinned) > 1 {
 				noun = "dependencies"
 			}
-			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run 'fullsend lock --update %s%s' to pin them",
-				agentName, len(unpinned), noun, unpinned[0], agentName, fullsendDirArg(fullsendDir)))
+			// Without --forge, lock reads forge keys from the child only, so
+			// a base's forge files need the platform named.
+			forgeArg := ""
+			if composeOpts.ForgePlatform != "" {
+				forgeArg = " --forge " + composeOpts.ForgePlatform
+			}
+			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run 'fullsend lock --update%s %s%s' to pin them",
+				agentName, len(unpinned), noun, unpinned[0], forgeArg, agentName, fullsendDirArg(fullsendDir)))
 		}
 	}
 

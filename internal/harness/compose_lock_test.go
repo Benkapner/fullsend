@@ -642,3 +642,48 @@ func TestLockedPins_KindMismatchOnline(t *testing.T) {
 		assert.Contains(t, err.Error(), "pinned in the lock file to directory sha256="+treePin)
 	})
 }
+
+// TestFetchBaseFile_FromPinnedTree covers fetchBaseFileFromPinnedTree
+// branches the composed loads do not reach.
+func TestFetchBaseFile_FromPinnedTree(t *testing.T) {
+	const baseDir = "https://raw.githubusercontent.com/org/repo/ref/"
+	fileURL := baseDir + "scripts/pre.sh"
+	script := []byte("#!/bin/sh\necho pinned")
+
+	tests := []struct {
+		name       string
+		tree       map[string][]byte // seeded tree; nil leaves the pin uncached
+		executable bool
+		wantErr    string
+	}{
+		{name: "offline with pinned tree missing", wantErr: "is pinned in the lock file with sha256="},
+		{name: "executable", tree: map[string][]byte{"pre.sh": script}, executable: true},
+		{name: "file missing from pinned tree", tree: map[string][]byte{"other.sh": script}, wantErr: "has no pre.sh"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cacheDir := filepath.Join(t.TempDir(), "cache")
+			treePin := fetch.ComputeTreeHash(map[string][]byte{"pre.sh": script})
+			if tt.tree != nil {
+				treePin = seedLockedTree(t, cacheDir, fileURL, tt.tree, true)
+			}
+			dep, contentPath, err := fetchBaseFile(context.Background(), "host_files[0].src", baseDir, "scripts/pre.sh", []string{baseDir}, ComposeOpts{
+				WorkspaceRoot: cacheDir,
+				FetchPolicy:   fetch.FetchPolicy{Offline: true},
+				TreeFetcher:   failingTreeFetcher(t),
+				LockedPins:    map[string]LockedPin{fileURL: dirPin(treePin)},
+			}, "resource", tt.executable)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, "directory", dep.Type)
+			assert.Equal(t, treePin, dep.SHA256)
+			info, err := os.Stat(contentPath)
+			require.NoError(t, err)
+			assert.Equal(t, os.FileMode(0o755), info.Mode().Perm())
+		})
+	}
+}
