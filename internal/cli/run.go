@@ -716,6 +716,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Failed to load harness")
 		return fmt.Errorf("loading harness: %w", err)
 	}
+	// An entry written before these files were locked is still current but
+	// leaves them to the URL index (#8979).
+	if lockState.entry != nil && !lockState.stale {
+		if unpinned := unpinnedDeps(baseDeps, lockState.pins); len(unpinned) > 0 {
+			noun := "dependency"
+			if len(unpinned) > 1 {
+				noun = "dependencies"
+			}
+			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run 'fullsend lock --update %s%s' to pin them",
+				agentName, len(unpinned), noun, unpinned[0], agentName, fullsendDirArg(fullsendDir)))
+		}
+	}
 
 	// Emit the harness-resolved role as a step output so the finalize step
 	// in action.yml can pass it to reconcile-status --role instead of using

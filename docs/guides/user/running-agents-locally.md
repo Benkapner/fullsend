@@ -405,7 +405,8 @@ content is missing from the cache, an `--offline` run fails and asks you to run
 `fullsend lock --update`, and an online run re-fetches it and fails if it no
 longer matches the lock (`fullsend lock --update` re-pins it). A lock entry for
 an agent fetched from a URL that was written before fullsend recorded these
-files does not pin them; run `fullsend lock --update` to add them.
+files does not pin them; run `fullsend lock --update` to add them. `fullsend run`
+warns when a current lock entry leaves any of these files unpinned.
 
 Use `--update` to force re-resolution even if the lock entry appears current.
 A current entry is also not composed, so `fullsend lock` does not check it for

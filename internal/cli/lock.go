@@ -876,6 +876,23 @@ func readRunLock(absFullsendDir, agentName, harnessPath string) (runLockState, e
 	return st, nil
 }
 
+// unpinnedDeps returns the URLs of composed dependencies that pins lacks. A
+// base harness is skipped: its #sha256 fragment pins it, not the lock.
+func unpinnedDeps(deps []harness.Dependency, pins map[string]harness.LockedPin) []string {
+	var urls []string
+	seen := make(map[string]bool)
+	for _, dep := range deps {
+		if dep.URL == "" || dep.Field == "base" || seen[dep.URL] {
+			continue
+		}
+		seen[dep.URL] = true
+		if _, ok := pins[dep.URL]; !ok {
+			urls = append(urls, dep.URL)
+		}
+	}
+	return urls
+}
+
 // resolveFromLock resolves harness dependencies using a lock file entry instead
 // of fetching from the network. For each pinned dependency, it verifies the
 // content exists in the local cache and replaces the harness URL field with the

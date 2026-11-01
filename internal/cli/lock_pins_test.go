@@ -309,3 +309,62 @@ func writeRunLock(t *testing.T, dir, harnessHash string) {
 		},
 	}}}))
 }
+
+// TestRunAgent_WarnsWhenLockEntryLeavesDependenciesUnpinned checks that a
+// current entry written before a URL agent's own files were locked asks for
+// `fullsend lock --update`, and a fully pinned entry does not (#8979).
+func TestRunAgent_WarnsWhenLockEntryLeavesDependenciesUnpinned(t *testing.T) {
+	usePreScriptStub(t)
+	harnessContent := []byte("agent: agents/code.md\npolicy: policies/sandbox.yaml\nrole: test\npre_script: scripts/pre-code.sh\n")
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/harness/code.yaml":     harnessContent,
+		"/agents/code.md":        []byte("locked agent"),
+		"/policies/sandbox.yaml": []byte("version: 1\n"),
+		"/scripts/pre-code.sh":   []byte("#!/bin/bash\necho \"skipped=true\" >> \"${FULLSEND_PRESCRIPT_OUTPUT}\"\n"),
+	})
+
+	dir := t.TempDir()
+	harnessURL := fmt.Sprintf("%s/harness/code.yaml#sha256=%s", srv.URL, fetch.ComputeSHA256(harnessContent))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(fmt.Sprintf(
+		"agents:\n  - name: code\n    source: \"%s\"\nallowed_remote_resources:\n  - \"%s/\"\n", harnessURL, srv.URL)), 0o644))
+
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+
+	require.NoError(t, runLock(context.Background(), "code", dir, "", false, resolveFlags{}, ui.New(os.Stdout)))
+	lockPath := filepath.Join(dir, "lock.yaml")
+	lf, err := lock.Load(lockPath)
+	require.NoError(t, err)
+	entry := lf.Lookup("code")
+	require.NotNil(t, entry)
+
+	run := func(t *testing.T) string {
+		t.Helper()
+		var out bytes.Buffer
+		err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "",
+			resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+		require.NoError(t, err)
+		return out.String()
+	}
+
+	t.Run("fully pinned entry", func(t *testing.T) {
+		assert.NotContains(t, run(t), "fullsend lock --update")
+	})
+
+	t.Run("entry with only agent_source", func(t *testing.T) {
+		old := *entry
+		old.Dependencies = nil
+		for _, d := range entry.Dependencies {
+			if d.Field == "agent_source" {
+				old.Dependencies = append(old.Dependencies, d)
+			}
+		}
+		require.Len(t, old.Dependencies, 1)
+		lf.SetHarness("code", old)
+		require.NoError(t, lock.Save(lockPath, lf))
+
+		out := run(t)
+		assert.Contains(t, out, "Lock entry for code does not pin 3 dependencies")
+		assert.Contains(t, out, "fullsend lock --update")
+	})
+}
