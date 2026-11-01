@@ -1101,7 +1101,9 @@ func TestResolveFromLock_DirectoryTypeScript(t *testing.T) {
 		},
 	}
 
+	// Replay only replaces a field that still holds the entry's URL.
 	h := &harness.Harness{
+		PreScript:              "https://raw.githubusercontent.com/org/repo/main/scripts/pre-code.sh",
 		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/"},
 	}
 
@@ -2288,8 +2290,9 @@ func TestResolveFromLock_PluginRawContentURL(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:                  "agents/code.md",
-		Plugins:                []harness.PluginSpec{{Path: "plugins/gopls-lsp"}},
+		Agent: "agents/code.md",
+		// The slot holds the entry's URL, so replay replaces it (#8977).
+		Plugins:                []harness.PluginSpec{{Path: pluginFileURL}},
 		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
 	}
 
@@ -2339,6 +2342,8 @@ func TestResolveFromLock_SkillRawContentURL(t *testing.T) {
 		Dependencies: []lock.DependencyEntry{depA, depB},
 	}
 
+	// LoadWithBase has already resolved base skills to local paths, so the
+	// replay verifies them without replacing the harness fields (#8977).
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
 		Skills:                 []harness.SkillEntry{{Source: "skills/pr-review"}, {Source: "skills/code-review"}},
@@ -2349,15 +2354,14 @@ func TestResolveFromLock_SkillRawContentURL(t *testing.T) {
 	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 2)
-	require.Len(t, h.Skills, 2)
+	assert.Equal(t, []harness.SkillEntry{{Source: "skills/pr-review"}, {Source: "skills/code-review"}}, h.Skills)
 
-	assert.Equal(t, "pr-review", filepath.Base(h.Skills[0].Source),
+	assert.Equal(t, "pr-review", filepath.Base(lockResult.Deps[0].LocalPath),
 		"skill basename must be derived from the URL directory, not the SKILL.md marker file")
-	assert.Equal(t, "code-review", filepath.Base(h.Skills[1].Source),
+	assert.Equal(t, "code-review", filepath.Base(lockResult.Deps[1].LocalPath),
 		"skills must keep distinct basenames — the basename is the identity fallback when SKILL.md declares no valid name")
-	for _, s := range h.Skills {
-		assert.False(t, harness.IsURL(s.Source))
-		assert.FileExists(t, filepath.Join(s.Source, "SKILL.md"))
+	for _, d := range lockResult.Deps {
+		assert.FileExists(t, filepath.Join(d.LocalPath, "SKILL.md"))
 	}
 }
 
