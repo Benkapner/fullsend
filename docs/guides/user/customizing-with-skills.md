@@ -397,6 +397,9 @@ In the persona list file, that entry gets `"origin": "override"` and a
   merge, and yours win for the same file. If your `.fullsend` has its own
   copy of the skill (with a `SKILL.md`), that copy replaces the base skill
   instead.
+- When you list a skill directly and another skill in `skills:` also pulls
+  it in through `dependencies:`, the skill is staged once and your direct
+  entry's overrides apply to it, whatever the list order.
 
 ### The persona list file
 
@@ -449,6 +452,8 @@ and the file key.
 | `skills[0]: override "KEY": reading override source: PATH resolves through a symlink to REAL` | The override file, or a directory on its path inside `.fullsend`, is a symlink | Commit the file itself at the path the harness names |
 | `skills[0]: skill tree contains a symlink at "PATH"; overridden skills must contain only regular files and directories` | A skill with overrides contains a symlink | Replace the symlink with a regular file in the skill |
 | `skill "PATH" has no SKILL.md and its name "NAME" matches 2 base skills pinned by URL: "https://...", "https://..."; write the full base URL as the map key instead of the short name` | Your entry has no skill directory of its own, and your `base:` pins two URL skills whose last path segment is `NAME` | Write the full URL of the base skill you mean, with its `#sha256=`, as the map key |
+| `skills[1]: override for "KEY" is also set by another entry for the same skill; set it in one entry only` | Two entries for the same skill set the same file to different values | Drop one entry, or give both the same value |
+| `skills[1]: file overrides cannot be applied: no resolved entry for the same skill` | A duplicate entry has overrides, but the run kept no entry for that skill (for example a lock entry that no longer matches) | Run `fullsend lock --update`, or drop the duplicate entry |
 | `personas.json: FILE: frontmatter field "FIELD" is not a string; omitted` (warning) | A copied frontmatter field has the wrong type (also `is not a list of strings` or `is not a bool`) | Fix the field in the persona's frontmatter |
 
 ## When to use skills vs. AGENTS.md

@@ -226,9 +226,9 @@ func validateOverrideValue(field, key, val string) error {
 //
 // Overrides for different keys are merged. Two entries that set the same key
 // to the same value agree; two entries that set it to different values are a
-// conflict and return an error rather than picking one. A duplicate with overrides and no kept entry also returns an error,
-// so overrides are never dropped silently. skills is modified only when no
-// error is returned.
+// conflict and return an error rather than picking one. A duplicate with
+// overrides and no kept entry also returns an error, so overrides are never
+// dropped silently. skills is modified only when no error is returned.
 func MergeDuplicateSkillOverrides(skills []SkillEntry, dupPaths map[int]string) error {
 	indices := make([]int, 0, len(dupPaths))
 	for i := range dupPaths {
