@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 )
 
 // Tests for ComposeOpts.LockedPins (#8979): a lock entry pins the
@@ -504,8 +505,8 @@ func TestFetchBaseScriptOrDir_LockedPins_Online(t *testing.T) {
 
 // TestLoadWithBase_LockedPins_ScriptAndHostFileShareURL covers one URL used
 // as a script (directory dependency) and as a host_files src (file). The lock
-// keeps one entry per URL, the script's tree hash, so the host file must not
-// be held to it.
+// keeps one entry per URL, the script's tree hash, so the host file is served
+// from that tree even after the URL index moved on.
 func TestLoadWithBase_LockedPins_ScriptAndHostFileShareURL(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
@@ -528,11 +529,11 @@ host_files:
 	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
 	require.NoError(t, urlIndexPut(cacheDir, agentURL, seedLockedFile(t, cacheDir, agentURL, []byte("agent"))))
 
-	// The cache as the locking run left it: the script's directory fetch
-	// first, then the host file's single-file fetch of the same URL.
 	treeHash := seedLockedTree(t, cacheDir, scriptURL, map[string][]byte{"pre.sh": script}, true)
 	require.NoError(t, urlIndexPut(cacheDir, "scriptdir:"+scriptDir, treeHash))
-	require.NoError(t, urlIndexPut(cacheDir, scriptURL, seedLockedFile(t, cacheDir, scriptURL, script)))
+	// A later unlocked run moved the URL index to newer content.
+	newer := []byte("#!/bin/sh\necho NEWER")
+	require.NoError(t, urlIndexPut(cacheDir, scriptURL, seedLockedFile(t, cacheDir, scriptURL, newer)))
 
 	path := writeTestHarness(t, dir, "child.yaml", "role: test\nbase: https://example.com/harness/triage.yaml#sha256="+computeHash(baseContent)+"\n")
 	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
@@ -584,8 +585,7 @@ func TestFetchBaseTree_FilePinIgnored(t *testing.T) {
 	})
 }
 
-// TestLockedPins_KindMismatchOnline checks that a directory pin does not
-// hold a single-file fetch to a tree hash, and that a directory-pinned
+// TestLockedPins_KindMismatchOnline checks that a directory-pinned file or
 // script never falls back to an unpinned single-file fetch.
 func TestLockedPins_KindMismatchOnline(t *testing.T) {
 	served := []byte("#!/bin/sh\necho served")
@@ -594,14 +594,42 @@ func TestLockedPins_KindMismatchOnline(t *testing.T) {
 	allowlist := []string{server.URL + "/"}
 	treePin := fetch.ComputeTreeHash(map[string][]byte{"pre.sh": served})
 
-	t.Run("file fetch ignores a directory pin", func(t *testing.T) {
-		dep, _, err := fetchBaseFile(context.Background(), "host_files[0].src", server.URL+"/", "scripts/pre.sh", allowlist, ComposeOpts{
+	t.Run("directory-pinned file without a tree source fails", func(t *testing.T) {
+		_, _, err := fetchBaseFile(context.Background(), "host_files[0].src", server.URL+"/", "scripts/pre.sh", allowlist, ComposeOpts{
 			WorkspaceRoot: filepath.Join(t.TempDir(), "cache"),
 			FetchPolicy:   policy,
 			LockedPins:    map[string]LockedPin{scriptURL: dirPin(treePin)},
 		}, "resource", false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "pinned in the lock file to directory sha256="+treePin)
+	})
+
+	t.Run("directory-pinned file is served from the re-fetched tree", func(t *testing.T) {
+		const baseDir = "https://raw.githubusercontent.com/org/repo/ref/"
+		files := map[string][]byte{"pre.sh": served}
+		dep, contentPath, err := fetchBaseFile(context.Background(), "host_files[0].src", baseDir, "scripts/pre.sh", []string{baseDir}, ComposeOpts{
+			WorkspaceRoot: filepath.Join(t.TempDir(), "cache"),
+			TreeFetcher:   fakeTreeFetcher(files),
+			LockedPins:    map[string]LockedPin{baseDir + "scripts/pre.sh": dirPin(treePin)},
+		}, "resource", false)
 		require.NoError(t, err)
-		assert.Equal(t, fetch.ComputeSHA256(served), dep.SHA256)
+		assert.Equal(t, treePin, dep.SHA256)
+		assert.Equal(t, string(served), readFile(t, contentPath))
+	})
+
+	t.Run("transient tree fetch error for a directory-pinned script is returned", func(t *testing.T) {
+		const baseDir = "https://raw.githubusercontent.com/org/repo/ref/"
+		transient := &gitfetch.TransientError{Err: errors.New("connection reset")}
+		_, _, err := fetchBaseScriptOrDir(context.Background(), "pre_script", baseDir, "scripts/pre.sh", []string{baseDir}, ComposeOpts{
+			WorkspaceRoot: filepath.Join(t.TempDir(), "cache"),
+			TreeFetcher: func(context.Context, string, string, string, string) (map[string][]byte, error) {
+				return nil, transient
+			},
+			LockedPins: map[string]LockedPin{baseDir + "scripts/pre.sh": dirPin(treePin)},
+		})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, transient)
+		assert.NotContains(t, err.Error(), "re-pin")
 	})
 
 	t.Run("directory-pinned script without a tree source fails", func(t *testing.T) {

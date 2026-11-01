@@ -1711,6 +1711,9 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 
 	// A locked URL resolves to the content its lock entry pins, never to
 	// whatever the URL index currently points at (#8979).
+	if treePin, ok := opts.lockedDirPin(fileURL); ok {
+		return fetchBaseFileFromPinnedTree(ctx, field, baseURLDir, relPath, allowedBy, allowlist, opts, depType, treePin, executable)
+	}
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, fileURL)
 	lockedHash, locked := opts.lockedFilePin(fileURL)
 	if locked {
@@ -1817,6 +1820,60 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 		FetchedAt: fetchedAt,
 		CacheHit:  false,
 		Type:      depType,
+	}, contentPath, nil
+}
+
+// fetchBaseFileFromPinnedTree serves relPath from the script directory tree
+// its URL is pinned to. The lock keeps one entry per URL, so a file that is
+// also a directory-fetched script carries the script's tree pin (#8979).
+func fetchBaseFileFromPinnedTree(ctx context.Context, field, baseURLDir, relPath, allowedBy string, allowlist []string, opts ComposeOpts, depType, treeHash string, executable bool) (Dependency, string, error) {
+	fileURL := baseURLDir + relPath
+	dir, name := path.Dir(relPath), path.Base(relPath)
+
+	treePath, entry, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
+	cacheHit := err == nil && treePath != ""
+	if !cacheHit {
+		if opts.FetchPolicy.Offline {
+			return Dependency{}, "", lockedNotCachedError(field, fileURL, treeHash)
+		}
+		_, parseErr := forge.ParseRawContentURL(baseURLDir + dir)
+		if dir == "." || parseErr != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: URL %s is pinned in the lock file to directory sha256=%s, which cannot be fetched from this URL (run 'fullsend lock --update' to re-pin)", field, fileURL, treeHash)
+		}
+		// fetchBaseScriptDirTree verifies the fetched tree against the pin.
+		if _, _, err := fetchBaseScriptDirTree(ctx, field, baseURLDir+dir, fileURL, name, allowedBy, allowlist, opts); err != nil {
+			return Dependency{}, "", err
+		}
+		treePath, entry, err = fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
+		if err != nil || treePath == "" {
+			return Dependency{}, "", fmt.Errorf("base %s: directory sha256=%s for %s missing from cache after fetch: %v", field, treeHash, fileURL, err)
+		}
+	}
+	if dir != "." {
+		if treePath, err = fetch.CacheNamedSymlink(treePath, path.Base(dir)); err != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: %w", field, err)
+		}
+	}
+	contentPath := filepath.Join(treePath, name)
+	if _, err := os.Stat(contentPath); err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: directory sha256=%s pinned for %s has no %s (run 'fullsend lock --update' to re-pin)", field, treeHash, fileURL, name)
+	}
+	if executable {
+		if chErr := os.Chmod(contentPath, 0o755); chErr != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: setting executable permission on cached file: %w", field, chErr)
+		}
+	}
+	if aErr := auditBaseFetch(opts, fileURL, treeHash, allowedBy, cacheHit, entry.FetchTime, depType); aErr != nil {
+		return Dependency{}, "", aErr
+	}
+	return Dependency{
+		Field:     field,
+		URL:       fileURL,
+		LocalPath: contentPath,
+		SHA256:    treeHash,
+		FetchedAt: entry.FetchTime,
+		CacheHit:  cacheHit,
+		Type:      "directory",
 	}, contentPath, nil
 }
 
