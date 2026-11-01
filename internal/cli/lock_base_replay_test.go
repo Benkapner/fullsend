@@ -267,3 +267,56 @@ func TestLockFieldHolds(t *testing.T) {
 		assert.Equal(t, tc.want, lockFieldHolds(tc.value, tc.url), "lockFieldHolds(%q, %q)", tc.value, tc.url)
 	}
 }
+
+// In a nested URL base chain (child -> B -> A), each base records its
+// relative plugins as plugins[N] with N its own index, but A's plugins are
+// merged in front of B's. B's plugins[1] entry must not replace B's own
+// plugins[0] in merged slot 1, and the child's own URL plugin is still
+// resolved.
+func TestResolveFromLock_NestedURLBasePluginsKeepTheirPaths(t *testing.T) {
+	pluginFiles := func(name string) map[string][]byte {
+		return map[string][]byte{"plugin.json": []byte(`{"name":"` + name + `"}`)}
+	}
+	treeFetcher := gitfetch.TreeFetchFunc(func(_ context.Context, _, p, _, _ string) (map[string][]byte, error) {
+		return pluginFiles(path.Base(p)), nil
+	})
+
+	// Both bases are served from the cache; their plugins come through the
+	// tree fetcher.
+	aURL := "https://raw.githubusercontent.com/test-org/base-a/main/harness/a.yaml"
+	aContent := []byte("role: test\nplugins:\n  - plugins/pa\n")
+	bURL := "https://raw.githubusercontent.com/test-org/base-b/main/harness/b.yaml"
+	bContent := []byte(fmt.Sprintf("base: %q\nrole: test\nplugins:\n  - plugins/pb0\n  - plugins/pb1\n", aURL+"#sha256="+fetch.ComputeSHA256(aContent)))
+	pcURL := "https://github.com/test-org/plugins-repo/tree/main/plugins/pc#sha256=" + fetch.ComputeTreeHash(pluginFiles("pc"))
+	allowlist := []string{"https://raw.githubusercontent.com/test-org/", "https://github.com/test-org/"}
+
+	dir := t.TempDir()
+	require.NoError(t, fetch.CachePut(dir, aURL, aContent))
+	require.NoError(t, fetch.CachePut(dir, bURL, bContent))
+	writeTestFiles(t, dir, map[string]string{
+		"agents/mine.md": "# my agent\n",
+		"harness/code.yaml": fmt.Sprintf("base: %q\nagent: agents/mine.md\nplugins:\n  - %q\nallowed_remote_resources:\n  - %q\n  - %q\n",
+			bURL+"#sha256="+fetch.ComputeSHA256(bContent), pcURL, allowlist[0], allowlist[1]),
+		"config.yaml": fmt.Sprintf("allowed_remote_resources:\n  - %q\n  - %q\n", allowlist[0], allowlist[1]),
+	})
+
+	before, after := lockThenReplay(t, dir, fetch.FetchPolicy{}, allowlist, treeFetcher)
+
+	names := []string{"pa", "pb0", "pb1", "pc"}
+	require.Len(t, before.Plugins, len(names))
+	for i, name := range names[:3] {
+		assert.Equal(t, name, filepath.Base(before.Plugins[i].Path), "before plugins[%d]", i)
+	}
+
+	require.Len(t, after.Plugins, len(names), "every base plugin must survive the replay of the bases' plugins[N] entries")
+	for i := range names[:3] {
+		assert.Equal(t, before.Plugins[i].Path, after.Plugins[i].Path, "base plugins[%d] keeps the path LoadWithBase resolved", i)
+	}
+	assert.False(t, harness.IsURL(after.Plugins[3].Path), "the child's URL plugin is replaced by its cached path")
+	for i, name := range names {
+		assert.Equal(t, name, filepath.Base(after.Plugins[i].Path), "plugins[%d]", i)
+		got, err := os.ReadFile(filepath.Join(after.Plugins[i].Path, "plugin.json"))
+		require.NoError(t, err)
+		assert.Contains(t, string(got), `"name":"`+name+`"`, "plugins[%d]", i)
+	}
+}

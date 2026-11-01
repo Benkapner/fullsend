@@ -2290,8 +2290,9 @@ func TestResolveFromLock_PluginRawContentURL(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:                  "agents/code.md",
-		Plugins:                []harness.PluginSpec{{Path: "plugins/gopls-lsp"}},
+		Agent: "agents/code.md",
+		// The slot holds the entry's URL, so replay replaces it (#8977).
+		Plugins:                []harness.PluginSpec{{Path: pluginFileURL}},
 		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
 	}
 

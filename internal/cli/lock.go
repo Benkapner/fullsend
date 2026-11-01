@@ -1117,9 +1117,12 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			// Index was validated during collection; Sscanf is safe here.
 			fmt.Sscanf(m.field, "plugins[%d]", &idx)
 			// Only the path is replaced: the entry's env and pi options are
-			// the harness author's and survive resolution.
-			h.Plugins[idx].Path = m.localPath
-			urlResolvedPlugins[m.localPath] = true
+			// the harness author's and survive resolution. A nested base's
+			// plugins[N] may name a different merged slot, so match the URL.
+			if idx >= 0 && idx < len(h.Plugins) && lockFieldHolds(h.Plugins[idx].Path, m.url) {
+				h.Plugins[idx].Path = m.localPath
+				urlResolvedPlugins[m.localPath] = true
+			}
 		case strings.HasPrefix(m.field, "forge.") && strings.Contains(m.field, ".skills["):
 			// Forge-scoped skills are resolved during LoadWithBase and merged
 			// into h.Skills by ResolveForge before resolveFromLock runs; the
